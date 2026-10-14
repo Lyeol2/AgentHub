@@ -16,7 +16,7 @@ pm`에서 자동으로 찾는다.
 
 ### 데스크톱 앱
 
-`dist/`에 만들어지는 `AgentHub Setup <버전>.exe`(설치형)나 `AgentHub-<버전>-portable.exe`(설치 없이 실행)를 쓴다. 앱이 서버를 내부에서 띄우고 창을 연다. 창을 닫으면 실행 중인 에이전트를 멈추고 세션을 저장한 뒤 종료한다.
+[Releases](https://github.com/Lyeol2/AgentHub/releases)나 `dist/`의 `AgentHub-Setup-<버전>.exe`(설치형)나 `AgentHub-<버전>-portable.exe`(설치 없이 실행)를 쓴다. 앱이 서버를 내부에서 띄우고 창을 연다. 창을 닫으면 실행 중인 에이전트를 멈추고 세션을 저장한 뒤 종료한다.
 
 설치본의 세션 기록과 설정은 `%APPDATA%AgentHubdata`에 저장된다.
 
@@ -26,6 +26,20 @@ npm run app
 ```
 
 `npm run app`은 소스에서 바로 앱을 띄운다. 이때는 저장소의 `data/`를 쓴다. 설치 파일은 `npm run dist`로 만든다.
+
+### 업데이트
+
+설치형 앱은 시작할 때와 사이드바 아래 **업데이트 확인** 버튼을 누를 때 GitHub Releases의 최신 버전을 확인한다. 새 버전이 있으면 받은 뒤 **재시작해서 설치**로 적용한다. 받아 둔 업데이트는 앱을 닫을 때도 설치된다.
+
+저장소가 비공개라서 앱에 토큰을 넣지 않고, 이 PC의 GitHub CLI 로그인(`gh auth token`)을 확인할 때마다 빌려 쓴다. `gh auth login`이 되어 있어야 하고, 그 계정이 저장소를 읽을 수 있어야 한다. 포터블 버전은 자기 자신을 바꿀 수 없어서 릴리스 페이지를 연다.
+
+### 릴리스
+
+```bash
+npm run release
+```
+
+테스트, 버전 올리기(기본 patch, `npm run release minor`처럼 지정 가능), 빌드, 커밋·태그 push, GitHub Release 생성까지 한 번에 한다. 앱의 업데이트 기능은 릴리스에 함께 올라가는 `latest.yml`을 읽는다. 커밋하지 않은 변경이 있으면 시작하지 않는다.
 
 ### 브라우저
 

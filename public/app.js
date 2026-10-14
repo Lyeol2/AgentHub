@@ -176,6 +176,71 @@ function renderLimits() {
 $("refresh-limits").addEventListener("click", loadLimits);
 setInterval(loadLimits, 60_000);
 
+// ── 업데이트 ────────────────────────────────────────────────────
+async function loadUpdate() {
+  try {
+    state.update = await api("GET", "/api/update");
+  } catch {
+    return;
+  }
+  renderUpdate();
+}
+
+async function updateAction(action) {
+  try {
+    state.update = await api("POST", `/api/update/${action}`);
+  } catch (err) {
+    state.update = { ...state.update, status: "error", error: err.message };
+  }
+  renderUpdate();
+}
+
+function renderUpdate() {
+  const u = state.update;
+  if (!u) return;
+  const version = el("span", { class: "version" }, `AgentHub v${u.current}`);
+  const button = (label, action, cls = "ghost") => el("button", { class: cls, onclick: () => updateAction(action) }, label);
+  let action = null;
+  let note = null;
+
+  if (!u.desktop) {
+    note = el("span", { class: "note" }, "업데이트는 데스크톱 앱에서 할 수 있습니다.");
+  } else if (u.portable) {
+    action = button("새 버전 받기", "check");
+    note = el("span", { class: "note" }, "포터블 버전은 릴리스 페이지에서 직접 받습니다.");
+  } else if (!u.supported) {
+    note = el("span", { class: "note" }, "개발 모드에서는 업데이트하지 않습니다.");
+  } else {
+    switch (u.status) {
+      case "checking":
+        action = el("button", { class: "ghost", disabled: "" }, "확인 중…");
+        break;
+      case "available":
+        action = button(`v${u.latest} 받기`, "download", "primary");
+        note = el("span", { class: "new" }, "새 버전이 있습니다.");
+        break;
+      case "downloading":
+        action = el("button", { class: "ghost", disabled: "" }, `받는 중 ${u.progress}%`);
+        break;
+      case "ready":
+        action = button("재시작해서 설치", "install", "primary");
+        note = el("span", { class: "new" }, `v${u.latest} 준비됨 · 앱을 닫아도 설치됩니다.`);
+        break;
+      case "none":
+        action = button("업데이트 확인", "check");
+        note = el("span", { class: "note" }, "최신 버전입니다.");
+        break;
+      case "error":
+        action = button("다시 확인", "check");
+        note = el("span", { class: "note error", title: u.error ?? "" }, u.error ?? "업데이트 확인 실패");
+        break;
+      default:
+        action = button("업데이트 확인", "check");
+    }
+  }
+  $("update-box").replaceChildren(el("div", { class: "line" }, version, action), note);
+}
+
 // ── 사이드바 ────────────────────────────────────────────────────
 async function loadSessions() {
   state.sessions = await api("GET", "/api/sessions");
@@ -589,12 +654,16 @@ function connectStream() {
   });
   source.addEventListener("sessions", loadSessions);
   source.addEventListener("limits", loadLimits);
+  source.addEventListener("update", (e) => {
+    state.update = JSON.parse(e.data);
+    renderUpdate();
+  });
   // 연결이 끊겼다가 돌아오면 놓친 이벤트를 다시 받아 온다.
   source.addEventListener("open", () => {
     if (state.current) selectSession(state.current.id);
   });
 }
 
-await Promise.all([loadStatus(), loadSessions(), loadLimits()]);
+await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate()]);
 goDashboard();
 connectStream();

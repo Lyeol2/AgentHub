@@ -2,6 +2,7 @@
 import { app, BrowserWindow, Menu, dialog, shell } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { Updater } from "./updater.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ICON = path.join(HERE, "..", "build", "icon.ico");
@@ -38,7 +39,11 @@ async function start() {
     app.exit(1);
     return;
   }
+  const updater = new Updater();
+  server.setUpdater(updater);
   createWindow(`http://127.0.0.1:${server.port}/`);
+  // 시작하고 잠시 뒤 조용히 확인한다. 실패해도 화면의 업데이트 버튼에만 표시된다.
+  if (updater.state.supported) setTimeout(() => updater.check(), 5000);
 }
 
 function createWindow(url) {

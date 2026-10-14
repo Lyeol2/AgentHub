@@ -15,6 +15,7 @@ const port = Number(process.env.PORT ?? config.port);
 const store = new SessionStore();
 const runner = new Runner(store);
 const PUBLIC_DIR = path.join(ROOT, "public");
+const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
 const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
 const cliPaths = () => ({
@@ -78,6 +79,13 @@ function broadcast(type, data) {
 }
 runner.on("event", (sessionId, event) => broadcast("event", { sessionId, event }));
 runner.on("state", (sessionId, state) => broadcast("state", { sessionId, state }));
+// 데스크톱 앱(Electron)이 업데이트 기능을 넘겨준다. 브라우저로 쓸 때는 없다.
+let updater = null;
+export function setUpdater(next) {
+  updater = next;
+  updater.on("state", (state) => broadcast("update", state));
+}
+
 runner.on("limit", (agent, info) => {
   if (agent === "claude") recordClaudeLimit(info);
   broadcast("limits", {});
@@ -123,6 +131,20 @@ async function handleApi(req, res, url) {
   }
 
   if (parts[0] === "limits" && method === "GET") return send(res, 200, readLimits());
+
+  if (parts[0] === "update") {
+    if (method === "GET" && parts.length === 1) {
+      return send(res, 200, updater?.state ?? { supported: false, desktop: false, current: VERSION, status: "idle" });
+    }
+    if (method === "POST" && ["check", "download", "install"].includes(parts[1])) {
+      if (!updater) throw new HttpError(400, "데스크톱 앱에서만 업데이트할 수 있습니다.");
+      try {
+        return send(res, 200, await updater[parts[1]]());
+      } catch (err) {
+        throw new HttpError(409, err.message);
+      }
+    }
+  }
 
   if (parts[0] === "settings" && method === "PUT") {
     const body = await readJson(req);

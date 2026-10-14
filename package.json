@@ -9,8 +9,9 @@
   "scripts": {
     "start": "node server/index.mjs",
     "app": "electron .",
-    "dist": "electron-builder --win",
-    "test": "node --test"
+    "dist": "electron-builder --win --publish never",
+    "test": "node --test",
+    "release": "node scripts/release.mjs"
   },
   "engines": {
     "node": ">=20"
@@ -35,15 +36,31 @@
     ],
     "win": {
       "icon": "build/icon.ico",
-      "target": ["nsis", "portable"]
+      "target": [
+        "nsis",
+        "portable"
+      ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "AgentHub"
+      "shortcutName": "AgentHub",
+      "artifactName": "AgentHub-Setup-${version}.${ext}"
     },
     "portable": {
       "artifactName": "AgentHub-${version}-portable.exe"
-    }
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Lyeol2",
+        "repo": "AgentHub",
+        "private": true,
+        "releaseType": "release"
+      }
+    ]
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
   }
 }

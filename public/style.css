@@ -199,6 +199,17 @@ main { display: flex; min-width: 0; min-height: 0; height: 100vh; }
 .limit-mini .item .line { display: flex; justify-content: space-between; }
 .limit-mini .bar { height: 4px; }
 
+/* ── 업데이트 ─────────────────────────────────────────────── */
+.update-box { display: grid; gap: 5px; padding: 6px 10px 2px; font-size: 11.5px; color: var(--muted); }
+.update-box:empty { display: none; }
+.update-box .line { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.update-box .version { color: var(--faint); font-variant-numeric: tabular-nums; }
+.update-box button { padding: 2px 9px; font-size: 11.5px; }
+.update-box button.primary { font-weight: 600; }
+.update-box .note { color: var(--faint); overflow-wrap: anywhere; }
+.update-box .note.error { color: var(--danger); min-height: 0; font-size: 11.5px; }
+.update-box .new { color: var(--accent); font-weight: 600; }
+
 /* ── 세션 화면 ────────────────────────────────────────────── */
 .session-title { min-width: 0; }
 .title-row { display: flex; gap: 10px; align-items: center; min-width: 0; }
