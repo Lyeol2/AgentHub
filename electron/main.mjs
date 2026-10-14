@@ -42,8 +42,11 @@ async function start() {
   const updater = new Updater();
   server.setUpdater(updater);
   createWindow(`http://127.0.0.1:${server.port}/`);
-  // 시작하고 잠시 뒤 조용히 확인한다. 실패해도 화면의 업데이트 버튼에만 표시된다.
-  if (updater.state.supported) setTimeout(() => updater.check(), 5000);
+  // 시작하고 잠시 뒤, 이후 1시간마다 조용히 확인한다. 실패해도 화면의 업데이트 버튼에만 표시된다.
+  if (updater.state.supported) {
+    setTimeout(() => updater.check(), 5000);
+    setInterval(() => updater.check(), 60 * 60 * 1000).unref(); // 켜 둔 채로 쓰는 경우를 위해 1시간마다
+  }
 }
 
 function createWindow(url) {

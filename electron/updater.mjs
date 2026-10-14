@@ -51,9 +51,10 @@ export class Updater extends EventEmitter {
       error: null,
     };
 
-    autoUpdater.autoDownload = false;
-    autoUpdater.autoInstallOnAppQuit = true; // 받아 둔 업데이트는 앱을 닫을 때 설치된다.
-    autoUpdater.on("update-available", (info) => this.set({ status: "available", latest: info.version }));
+    // 새 버전을 찾으면 바로 백그라운드에서 받는다. 받아 둔 업데이트는 앱을 닫을 때 설치 창 없이 설치된다.
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on("update-available", (info) => this.set({ status: "downloading", latest: info.version, progress: 0 }));
     autoUpdater.on("update-not-available", (info) => this.set({ status: "none", latest: info.version }));
     autoUpdater.on("download-progress", (p) => this.set({ status: "downloading", progress: Math.round(p.percent) }));
     autoUpdater.on("update-downloaded", (info) => this.set({ status: "ready", latest: info.version, progress: 100 }));
@@ -71,7 +72,7 @@ export class Updater extends EventEmitter {
       return this.state;
     }
     if (!this.state.supported) throw new Error("설치한 앱에서만 업데이트할 수 있습니다.");
-    if (["checking", "downloading"].includes(this.state.status)) return this.state;
+    if (["checking", "downloading", "ready"].includes(this.state.status)) return this.state;
     this.set({ status: "checking", error: null });
     try {
       autoUpdater.setFeedURL({ provider: "github", owner: OWNER, repo: REPO, private: true, token: await ghToken() });
@@ -92,7 +93,8 @@ export class Updater extends EventEmitter {
   install() {
     if (this.state.status !== "ready") throw new Error("설치할 업데이트가 없습니다.");
     // before-quit에서 서버가 세션을 저장한 뒤 설치 프로그램이 실행된다.
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    // 설치 창 없이(/S) 설치하고 끝나면 앱을 다시 실행한다.
+    setImmediate(() => autoUpdater.quitAndInstall(true, true));
     return this.state;
   }
 }

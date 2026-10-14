@@ -222,10 +222,11 @@ function renderUpdate() {
         break;
       case "downloading":
         action = el("button", { class: "ghost", disabled: "" }, `받는 중 ${u.progress}%`);
+        note = el("span", { class: "note" }, `v${u.latest ?? ""} 업데이트를 받고 있습니다.`);
         break;
       case "ready":
-        action = button("재시작해서 설치", "install", "primary");
-        note = el("span", { class: "new" }, `v${u.latest} 준비됨 · 앱을 닫아도 설치됩니다.`);
+        action = button("재시작해서 업데이트", "install", "primary");
+        note = el("span", { class: "new" }, `v${u.latest} 준비됨 · 앱을 닫아도 다음 실행 때 적용됩니다.`);
         break;
       case "none":
         action = button("업데이트 확인", "check");
