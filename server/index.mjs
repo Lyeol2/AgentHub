@@ -250,3 +250,12 @@ for (const signal of ["SIGINT", "SIGTERM"]) {
     process.exit(0);
   });
 }
+
+// Windows 런처(AgentHub.exe)는 신호를 보낼 수 없으므로 stdin을 닫아 종료를 알린다.
+if (process.env.AGENTHUB_LAUNCHER === "1") {
+  process.stdin.on("end", () => {
+    store.flushAll();
+    process.exit(0);
+  });
+  process.stdin.resume();
+}

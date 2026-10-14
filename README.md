@@ -18,6 +18,20 @@ npm start
 
 브라우저에서 <http://127.0.0.1:4517>을 연다. 포트는 `PORT` 환경 변수나 `data/config.json`의 `port`로 바꾼다.
 
+### Windows 실행파일
+
+`AgentHub.exe`를 더블클릭하면 서버를 창 없이 띄우고 브라우저를 연다. 트레이 아이콘을 클릭하면 다시 열리고, 우클릭 메뉴의 **종료**로 서버를 끈다. 이미 실행 중이면 브라우저만 연다. 서버 출력은 `data/agenthub.log`에 남는다.
+
+실행파일은 Node.js를 포함하지 않는 런처라서 Node.js 20 이상이 설치되어 있어야 하고, 저장소 폴더 안에 있어야 한다. 빌드는 Windows에 기본으로 들어 있는 C# 컴파일러를 쓴다.
+
+```bash
+powershell -ExecutionPolicy Bypass -File launcher/build.ps1
+```
+
+아이콘을 바꾸려면 `launcher/make-icon.ps1`을 고친 뒤 실행하고 다시 빌드한다.
+
+### 사용법
+
 1. **설정**에서 프로젝트 폴더를 추가한다.
 2. **새 세션**에서 에이전트, 프로젝트, 권한을 고른다.
 3. 요청을 보내면 CLI 출력이 실시간으로 표시된다. 다음 요청은 같은 CLI 세션을 이어서 실행한다.
