@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AgentHub</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <aside class="sidebar">
+    <header class="brand">
+      <h1>AgentHub</h1>
+      <button id="open-settings" class="ghost" title="설정">설정</button>
+    </header>
+    <div id="cli-status" class="cli-status"></div>
+    <button id="open-new" class="primary">새 세션</button>
+    <nav id="session-list" class="session-list" aria-label="세션 목록"></nav>
+  </aside>
+
+  <main id="main">
+    <section id="empty" class="empty">
+      <p>왼쪽에서 세션을 고르거나 새 세션을 만드세요.</p>
+    </section>
+
+    <section id="session" class="session" hidden>
+      <header class="session-head">
+        <div class="session-title">
+          <span id="s-agent" class="badge"></span>
+          <h2 id="s-title"></h2>
+          <span id="s-state" class="state"></span>
+        </div>
+        <div class="session-meta" id="s-meta"></div>
+        <div class="session-actions">
+          <button id="s-diff" class="ghost">변경 보기</button>
+          <button id="s-stop" class="ghost">중지</button>
+          <button id="s-delete" class="ghost danger">삭제</button>
+          <label class="toggle"><input type="checkbox" id="s-show-log"> 로그 표시</label>
+        </div>
+      </header>
+      <ol id="s-events" class="events"></ol>
+      <form id="s-form" class="composer">
+        <textarea id="s-prompt" rows="3" placeholder="요청을 입력하세요. Ctrl+Enter로 보내기"></textarea>
+        <button type="submit" class="primary">보내기</button>
+      </form>
+    </section>
+  </main>
+
+  <dialog id="new-dialog">
+    <form method="dialog" id="new-form" class="dialog-form">
+      <h3>새 세션</h3>
+      <label>에이전트
+        <select name="agent" id="new-agent">
+          <option value="claude">Claude Code</option>
+          <option value="codex">Codex</option>
+        </select>
+      </label>
+      <label>프로젝트
+        <select name="projectPath" id="new-project" required></select>
+      </label>
+      <label>제목 <input name="title" placeholder="예: 가방 UI 버그 수정"></label>
+      <label>모델 <input name="model" placeholder="비우면 CLI 기본값"></label>
+      <label>권한 <select name="permission" id="new-permission"></select></label>
+      <label class="check"><input type="checkbox" name="isolate" checked>
+        별도 작업 폴더(git worktree)에서 실행
+      </label>
+      <p class="hint">작업 폴더는 현재 커밋(HEAD) 기준으로 만들어집니다. 커밋하지 않은 수정은 포함되지 않습니다. Unity 프로젝트는 작업 폴더에서 열면 Library를 다시 만듭니다.</p>
+      <p class="error" id="new-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate class="ghost">취소</button>
+        <button value="ok" class="primary">만들기</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <form method="dialog" class="dialog-form" id="settings-form">
+      <h3>설정</h3>
+      <h4>프로젝트</h4>
+      <ul id="project-list" class="project-list"></ul>
+      <div class="row">
+        <input id="project-path" placeholder="예: E:\Git\Project_GBS">
+        <button type="button" id="add-project" class="ghost">추가</button>
+      </div>
+      <h4>CLI 경로</h4>
+      <p class="hint">비워 두면 PATH와 Claude 데스크톱 앱 폴더에서 자동으로 찾습니다.</p>
+      <label>claude <input id="cli-claude"></label>
+      <label>codex <input id="cli-codex"></label>
+      <p class="error" id="settings-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate class="ghost">닫기</button>
+        <button value="ok" class="primary">저장</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="diff-dialog" class="wide">
+    <form method="dialog" class="dialog-form">
+      <h3>변경 사항 <small id="diff-base"></small></h3>
+      <pre id="diff-status" class="diff-status"></pre>
+      <pre id="diff-body" class="diff"></pre>
+      <menu><button class="primary">닫기</button></menu>
+    </form>
+  </dialog>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

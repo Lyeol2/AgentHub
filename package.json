@@ -1,0 +1,14 @@
+{
+  "name": "agenthub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local web app that runs Claude Code and Codex CLI sessions side by side.",
+  "type": "module",
+  "scripts": {
+    "start": "node server/index.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
