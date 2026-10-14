@@ -2,11 +2,33 @@
 import { randomUUID } from "node:crypto";
 
 export const PERMISSION_MODES = ["plan", "acceptEdits", "bypassPermissions"];
+export const CHAT_PERMISSION = "acceptEdits";
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+
+// 별칭은 CLI가 그때그때 최신 모델로 바꿔 준다. 목록에 없는 모델 ID도 직접 입력할 수 있다.
+export function models() {
+  return [
+    { id: "fable", label: "Fable" },
+    { id: "opus", label: "Opus" },
+    { id: "sonnet", label: "Sonnet" },
+    { id: "haiku", label: "Haiku" },
+  ].map((m) => ({ ...m, efforts: EFFORTS }));
+}
+
+export const efforts = () => EFFORTS;
+
+// 일반 채팅은 코딩 도구 없이 대화만 한다.
+const CHAT_PROMPT = "You are Claude, a helpful AI assistant having a conversation with the user. " +
+  "Answer directly and conversationally, using Markdown where it helps. Reply in the language the user writes in.";
 
 export function buildArgs(session) {
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
   args.push("--permission-mode", session.permission ?? "acceptEdits");
   if (session.model) args.push("--model", session.model);
+  if (session.effort) args.push("--effort", session.effort);
+  if (session.chat) {
+    args.push("--tools", "", "--system-prompt", CHAT_PROMPT, "--strict-mcp-config", "--disable-slash-commands");
+  }
   if (session.agentSessionId) {
     args.push("--resume", session.agentSessionId);
   } else {

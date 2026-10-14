@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const DATA_DIR = process.env.AGENTHUB_DATA ?? path.join(ROOT, "data");
+// 일반 채팅 세션의 작업 폴더. 프로젝트 감지에서는 뺀다.
+export const CHAT_DIR = path.join(DATA_DIR, "chat");
 const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 
 const DEFAULTS = {

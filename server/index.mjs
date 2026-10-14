@@ -2,7 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { ROOT, loadConfig, saveConfig } from "./config.mjs";
+import { ROOT, CHAT_DIR, loadConfig, saveConfig } from "./config.mjs";
 import { locateCli, cliVersion } from "./cli.mjs";
 import { SessionStore, summary } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
@@ -21,6 +21,24 @@ const links = new LinkStore();
 const PUBLIC_DIR = path.join(ROOT, "public");
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
 const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
+
+function checkModel(model) {
+  model = String(model ?? "").trim();
+  if (model && !MODEL_PATTERN.test(model)) throw new HttpError(400, "모델 이름 형식이 올바르지 않습니다.");
+  return model;
+}
+
+function checkEffort(agent, effort) {
+  effort = String(effort ?? "").trim();
+  if (effort && !AGENTS[agent].efforts().includes(effort)) throw new HttpError(400, "추론 강도가 올바르지 않습니다.");
+  return effort;
+}
+
+function agentStatus(agent, cliPath, version) {
+  const a = AGENTS[agent];
+  // autoPath: 직접 지정한 경로와 상관없이 자동으로 찾은 경로(설정 화면에 읽기 전용으로 보여 준다)
+  return { path: cliPath, autoPath: locateCli(agent, ""), version, permissions: a.PERMISSION_MODES, models: a.models(), efforts: a.efforts() };
+}
 
 const cliPaths = () => ({
   claude: locateCli("claude", config.cli.claude),
@@ -156,9 +174,8 @@ async function handleApi(req, res, url) {
     const [claudeVersion, codexVersion] = await Promise.all([cliVersion(paths.claude), cliVersion(paths.codex)]);
     return send(res, 200, {
       agents: {
-        // autoPath: 직접 지정한 경로와 상관없이 자동으로 찾은 경로(설정 화면에 읽기 전용으로 보여 준다)
-        claude: { path: paths.claude, autoPath: locateCli("claude", ""), version: claudeVersion, permissions: AGENTS.claude.PERMISSION_MODES },
-        codex: { path: paths.codex, autoPath: locateCli("codex", ""), version: codexVersion, permissions: AGENTS.codex.PERMISSION_MODES },
+        claude: agentStatus("claude", paths.claude, claudeVersion),
+        codex: agentStatus("codex", paths.codex, codexVersion),
       },
       cliOverrides: config.cli,
       projects: config.projects,
@@ -239,6 +256,7 @@ async function handleApi(req, res, url) {
       const body = await readJson(req);
       const from = getSession(body.from);
       const to = getSession(body.to);
+      if (from.chat || to.chat) throw new HttpError(400, "일반 채팅 세션은 연결할 수 없습니다.");
       if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");
       if (!samePath(from.projectPath, to.projectPath)) throw new HttpError(400, "같은 프로젝트의 세션끼리만 연결할 수 있습니다.");
       if (links.list().some((l) => l.from === from.id && l.to === to.id)) throw new HttpError(409, "이미 연결되어 있습니다.");
@@ -273,17 +291,20 @@ async function handleApi(req, res, url) {
       const body = await readJson(req);
       const agent = body.agent;
       if (!AGENTS[agent]) throw new HttpError(400, "agent는 claude 또는 codex입니다.");
-      const project = ensureProject(body.projectPath);
-      const model = String(body.model ?? "").trim();
-      if (model && !MODEL_PATTERN.test(model)) throw new HttpError(400, "모델 이름 형식이 올바르지 않습니다.");
-      const permission = body.permission ?? AGENTS[agent].PERMISSION_MODES.at(-1);
+      // 일반 채팅은 프로젝트 없이 빈 폴더에서 도구 없이 대화만 한다.
+      const chat = !!body.chat;
+      const project = chat ? { name: "일반 채팅", path: null } : ensureProject(body.projectPath);
+      const model = checkModel(body.model);
+      const effort = checkEffort(agent, body.effort);
+      const permission = chat ? AGENTS[agent].CHAT_PERMISSION : body.permission ?? AGENTS[agent].PERMISSION_MODES.at(-1);
       if (!AGENTS[agent].PERMISSION_MODES.includes(permission)) throw new HttpError(400, "권한 모드가 올바르지 않습니다.");
 
       const id = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
-      const git = await isGitRepo(project.path);
-      let cwd = project.path;
+      if (chat) fs.mkdirSync(CHAT_DIR, { recursive: true });
+      const git = chat ? false : await isGitRepo(project.path);
+      let cwd = chat ? CHAT_DIR : project.path;
       let worktree = null;
-      if (body.isolate) {
+      if (body.isolate && !chat) {
         if (!git) throw new HttpError(400, "git 저장소가 아니어서 작업 폴더를 분리할 수 없습니다.");
         worktree = await createWorktree(project.path, id);
         cwd = worktree.dir;
@@ -292,10 +313,12 @@ async function handleApi(req, res, url) {
       const now = new Date().toISOString();
       const session = {
         id,
-        title: String(body.title ?? "").trim() || `${agent} 세션`,
+        title: String(body.title ?? "").trim() || (chat ? "새 채팅" : `${agent} 세션`),
         role: String(body.role ?? "").trim().slice(0, ROLE_MAX),
         agent,
+        chat,
         model,
+        effort,
         permission,
         projectName: project.name,
         projectPath: project.path,
@@ -358,8 +381,13 @@ async function handleApi(req, res, url) {
       if (!prompt) throw new HttpError(400, "내용을 입력하세요.");
       if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
       session.chainDepth = 0; // 사용자가 직접 보낸 요청은 새 흐름이다.
+      let input = withRole(session, prompt);
+      const intro = AGENTS[session.agent].CHAT_INTRO;
+      if (session.chat && intro && !session.agentSessionId) input = `${intro}
+
+${input}`;
       try {
-        runner.send(session, prompt, cliPaths()[session.agent], withRole(session, prompt));
+        runner.send(session, prompt, cliPaths()[session.agent], input);
       } catch (err) {
         throw new HttpError(409, err.message);
       }
@@ -369,6 +397,13 @@ async function handleApi(req, res, url) {
     if (parts.length === 2 && method === "PUT") {
       const body = await readJson(req);
       if (body.title !== undefined) session.title = String(body.title).trim() || session.title;
+      // 모델·추론 강도·권한은 다음 요청부터 적용된다.
+      if (body.model !== undefined) session.model = checkModel(body.model);
+      if (body.effort !== undefined) session.effort = checkEffort(session.agent, body.effort);
+      if (body.permission !== undefined && !session.chat) {
+        if (!AGENTS[session.agent].PERMISSION_MODES.includes(body.permission)) throw new HttpError(400, "권한 모드가 올바르지 않습니다.");
+        session.permission = body.permission;
+      }
       if (body.role !== undefined) {
         const role = String(body.role).trim().slice(0, ROLE_MAX);
         if (role !== (session.role ?? "") && session.agentSessionId) session.roleChanged = true;

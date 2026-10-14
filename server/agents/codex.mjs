@@ -1,5 +1,40 @@
 // Codex CLI(`codex exec --json`) 연결.
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
 export const PERMISSION_MODES = ["read-only", "workspace-write"];
+export const CHAT_PERMISSION = "read-only";
+const DEFAULT_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
+const MODELS_CACHE = path.join(process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"), "models_cache.json");
+
+// Codex CLI가 받아 둔 모델 목록(~/.codex/models_cache.json)과 모델마다 지원하는 추론 강도.
+export function models() {
+  try {
+    const cache = JSON.parse(fs.readFileSync(MODELS_CACHE, "utf8"));
+    return (cache.models ?? [])
+      .filter((m) => m.slug && m.visibility === "list")
+      .sort((a, b) => (a.priority ?? 99) - (b.priority ?? 99))
+      .map((m) => ({
+        id: m.slug,
+        label: m.display_name ?? m.slug,
+        efforts: (m.supported_reasoning_levels ?? []).map((l) => l.effort).filter(Boolean),
+        defaultEffort: m.default_reasoning_level ?? null,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+// 모델별 추론 강도를 모두 합친 목록. 캐시가 없으면 기본 목록을 쓴다.
+export function efforts() {
+  const all = new Set(models().flatMap((m) => m.efforts));
+  return all.size ? [...all] : DEFAULT_EFFORTS;
+}
+
+// 일반 채팅은 시스템 프롬프트를 바꿀 수 없어 새 대화의 첫 요청 앞에 붙인다.
+export const CHAT_INTRO = "[일반 대화] 코딩 작업이 아니라 사용자와 나누는 일반 대화다. " +
+  "파일을 읽거나 명령을 실행하지 말고 바로 답한다. 사용자가 쓴 언어로 답한다.";
 
 export function buildArgs(session) {
   const sandbox = session.permission ?? "workspace-write";
@@ -11,6 +46,9 @@ export function buildArgs(session) {
     args.push("--json", "--sandbox", sandbox, "--cd", session.cwd);
   }
   if (session.model) args.push("--model", session.model);
+  if (session.effort) args.push("-c", `model_reasoning_effort=${session.effort}`);
+  // 일반 채팅은 git 저장소가 아닌 빈 폴더에서 실행한다.
+  if (session.chat) args.push("--skip-git-repo-check");
   args.push("-");
   return args;
 }

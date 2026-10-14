@@ -72,6 +72,21 @@ test("codex: 재개 인자에는 resume과 샌드박스 설정이 들어간다",
   assert.equal(args.at(-1), "-");
 });
 
+test("claude: 추론 강도와 일반 채팅(도구 없음) 인자를 넘긴다", () => {
+  const args = claude.buildArgs({ permission: "acceptEdits", model: "opus", effort: "high", chat: true });
+  assert.equal(args[args.indexOf("--effort") + 1], "high");
+  assert.equal(args[args.indexOf("--tools") + 1], "");
+  assert.ok(args.includes("--system-prompt"));
+  assert.ok(!claude.buildArgs({ permission: "plan" }).includes("--tools"));
+});
+
+test("codex: 추론 강도는 설정 덮어쓰기로, 일반 채팅은 git 확인 없이 실행한다", () => {
+  const args = codex.buildArgs({ agentSessionId: "t1", permission: "read-only", effort: "low", chat: true });
+  assert.equal(args[args.indexOf("model_reasoning_effort=low") - 1], "-c");
+  assert.ok(args.includes("--skip-git-repo-check"));
+  assert.equal(args.at(-1), "-");
+});
+
 test("claude: rate_limit_event는 화면 이벤트가 아니라 한도 정보로 넘긴다", () => {
   const info = { status: "allowed", resetsAt: 1792000000, rateLimitType: "five_hour" };
   const [ev] = claude.parseLine(JSON.stringify({ type: "rate_limit_event", rate_limit_info: info, session_id: "s" }));

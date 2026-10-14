@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import * as claude from "./agents/claude.mjs";
+import { CHAT_DIR } from "./config.mjs";
 
 const HOME = os.homedir();
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude");
@@ -300,14 +301,17 @@ function allSessions() {
 }
 
 // ── 공개 함수 ───────────────────────────────────────────────────
+// AgentHub 일반 채팅으로 만든 기록은 프로젝트 세션이 아니다.
+const projectSessions = () => allSessions().filter((s) => s.cwd && !samePath(s.cwd, CHAT_DIR) && !isInside(s.cwd, CHAT_DIR));
+
 export function discoverSessions(projectPath) {
-  return allSessions().filter((s) => s.cwd && (samePath(projectRoot(s.cwd), projectPath) || isInside(s.cwd, projectPath)));
+  return projectSessions().filter((s) => s.cwd && (samePath(projectRoot(s.cwd), projectPath) || isInside(s.cwd, projectPath)));
 }
 
 // 세션 기록에 나온 작업 폴더를 프로젝트 단위로 묶는다.
 export function discoverProjects() {
   const projects = new Map();
-  for (const s of allSessions()) {
+  for (const s of projectSessions()) {
     const root = projectRoot(s.cwd);
     if (!isProjectDir(root)) continue;
     const key = root.toLowerCase();

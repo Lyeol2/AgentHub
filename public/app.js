@@ -22,6 +22,7 @@ async function api(method, url, body) {
 }
 
 const AGENT_LABEL = { claude: "Claude", codex: "Codex" };
+const CHAT_LABEL = { claude: "Claude 채팅", codex: "ChatGPT" };
 const STATE_LABEL = { idle: "대기", running: "실행 중", error: "오류", interrupted: "중단됨" };
 
 function el(tag, attrs = {}, ...children) {
@@ -36,6 +37,9 @@ function el(tag, attrs = {}, ...children) {
 }
 
 const badge = (agent) => el("span", { class: `badge ${agent}` }, AGENT_LABEL[agent]);
+// 세션은 일반 채팅이면 채팅 이름으로 표시한다.
+const sessionLabel = (s) => (s.chat ? CHAT_LABEL : AGENT_LABEL)[s.agent];
+const sessionBadge = (s) => el("span", { class: `badge ${s.agent}${s.chat ? " chat" : ""}` }, sessionLabel(s));
 const pill = (s) => el("span", { class: `pill ${s}` }, STATE_LABEL[s] ?? s);
 
 function timeAgo(iso) {
@@ -308,7 +312,7 @@ function renderSessionList() {
       el("span", { class: "top" },
         el("span", { class: `dot ${s.state}` }),
         el("span", { class: "name" }, s.title)),
-      el("span", { class: "sub" }, `${AGENT_LABEL[s.agent]} · ${s.projectName}`))),
+      el("span", { class: "sub" }, s.chat ? sessionLabel(s) : `${AGENT_LABEL[s.agent]} · ${s.projectName}`))),
   );
 }
 
@@ -356,7 +360,7 @@ function renderDashboard() {
 function sessionRow(s, withProject) {
   return el("tr", { class: "click", onclick: () => selectSession(s.id) },
     el("td", { class: "title-cell", title: s.title }, s.title),
-    el("td", {}, badge(s.agent)),
+    el("td", {}, sessionBadge(s)),
     withProject ? el("td", {}, s.projectName) : el("td", { class: "path" }, s.worktree ? "작업 폴더" : "원본"),
     el("td", {}, pill(s.state)),
     el("td", { class: "num" }, timeAgo(s.updatedAt)));
@@ -744,22 +748,25 @@ function renderFlow() {
 function renderSession() {
   const s = state.current;
   if (!s) return;
-  $("s-crumb-project").textContent = s.projectName;
-  $("s-crumb").textContent = ` / 세션${s.imported ? " · 가져옴" : ""}`;
-  $("s-agent").className = `badge ${s.agent}`;
-  $("s-agent").textContent = AGENT_LABEL[s.agent];
+  $("s-crumb-project").textContent = s.chat ? "대시보드" : s.projectName;
+  $("s-crumb").textContent = ` / ${s.chat ? "일반 채팅" : "세션"}${s.imported ? " · 가져옴" : ""}`;
+  $("s-agent").className = `badge ${s.agent}${s.chat ? " chat" : ""}`;
+  $("s-agent").textContent = sessionLabel(s);
   $("s-title").textContent = s.title;
   renderState();
 
   const meta = [
-    s.worktree ? `작업 폴더 ${s.cwd} (브랜치 ${s.worktree.branch})` : `원본 폴더 ${s.cwd}`,
-    `권한 ${s.permission}`,
-    s.model ? `모델 ${s.model}` : null,
+    s.chat ? "도구 없이 대화만" : s.worktree ? `작업 폴더 ${s.cwd} (브랜치 ${s.worktree.branch})` : `원본 폴더 ${s.cwd}`,
+    s.chat ? null : `권한 ${s.permission}`,
+    `모델 ${s.model || "기본값"}`,
+    `추론 ${s.effort || "기본값"}`,
     s.agentSessionId ? `CLI 세션 ${s.agentSessionId.slice(0, 8)}` : null,
   ].filter(Boolean);
   $("s-meta").textContent = meta.join("  ·  ");
   $("s-meta").title = s.agentSessionId ?? "";
   $("s-diff").disabled = !s.baseCommit;
+  $("s-diff").hidden = !!s.chat;
+  $("s-back").hidden = !!s.chat;
   renderFlow();
 
   $("s-events").replaceChildren(...s.events.map(renderEvent));
@@ -822,7 +829,9 @@ $("s-prompt").addEventListener("keydown", (e) => {
 
 $("s-crumb-project").addEventListener("click", (e) => {
   e.preventDefault();
-  if (state.current) goProject(state.current.projectPath);
+  if (!state.current) return;
+  if (state.current.chat) goDashboard();
+  else goProject(state.current.projectPath);
 });
 $("s-back").addEventListener("click", () => state.current && goProject(state.current.projectPath));
 
@@ -861,7 +870,8 @@ $("s-delete").addEventListener("click", async () => {
     await api("DELETE", `/api/sessions/${s.id}${removeWorktree ? "?removeWorktree=1" : ""}`);
     const back = s.projectPath;
     await loadSessions();
-    await goProject(back);
+    if (back) await goProject(back);
+    else goDashboard();
   } catch (err) {
     alert(err.message);
   }
@@ -891,9 +901,83 @@ $("s-diff").addEventListener("click", async () => {
   }
 });
 
+// ── 모델·추론 강도 ──────────────────────────────────────────────
+function fillModels(listId, agent) {
+  $(listId).replaceChildren(...state.status.agents[agent].models.map((m) => el("option", { value: m.id }, m.label)));
+}
+
+// 고른 모델이 지원하는 추론 강도만 보여 준다. 모르는 모델이면 에이전트 전체 목록을 쓴다.
+function fillEfforts(selectId, agent, model, current = $(selectId).value) {
+  const info = state.status.agents[agent];
+  const known = info.models.find((m) => m.id === model);
+  const efforts = known?.efforts.length ? known.efforts : info.efforts;
+  const fallback = known?.defaultEffort ? ` (${known.defaultEffort})` : "";
+  $(selectId).replaceChildren(
+    el("option", { value: "" }, `CLI 기본값${fallback}`),
+    ...efforts.map((e) => el("option", { value: e }, e)));
+  $(selectId).value = efforts.includes(current) ? current : "";
+}
+
+// ── 세션 설정 ───────────────────────────────────────────────────
+$("s-config").addEventListener("click", async () => {
+  const s = state.current;
+  if (!s) return;
+  await loadStatus();
+  $("config-title").value = s.title;
+  $("config-model").value = s.model ?? "";
+  fillModels("config-models", s.agent);
+  fillEfforts("config-effort", s.agent, s.model ?? "", s.effort ?? "");
+  $("config-permission-row").hidden = !!s.chat;
+  $("config-permission").replaceChildren(
+    ...state.status.agents[s.agent].permissions.map((m) => el("option", { value: m }, m)));
+  $("config-permission").value = s.permission;
+  $("config-error").textContent = "";
+  $("config-dialog").showModal();
+});
+
+$("config-model").addEventListener("input", () => {
+  if (state.current) fillEfforts("config-effort", state.current.agent, $("config-model").value.trim());
+});
+
+$("config-form").addEventListener("submit", async (e) => {
+  if (e.submitter?.value !== "ok") return;
+  e.preventDefault();
+  const s = state.current;
+  const body = { title: $("config-title").value, model: $("config-model").value.trim(), effort: $("config-effort").value };
+  if (!s.chat) body.permission = $("config-permission").value;
+  try {
+    const updated = await api("PUT", `/api/sessions/${s.id}`, body);
+    Object.assign(state.current, { title: updated.title, model: updated.model, effort: updated.effort, permission: updated.permission });
+    $("config-dialog").close();
+    renderSession();
+    loadSessions();
+  } catch (err) {
+    $("config-error").textContent = err.message;
+  }
+});
+
 // ── 새 세션 ─────────────────────────────────────────────────────
+const newKind = () => {
+  const [agent, mode] = $("new-agent").value.split("-");
+  return { agent, chat: mode === "chat" };
+};
+
+function syncNewKind() {
+  const { agent, chat } = newKind();
+  for (const node of $("new-form").querySelectorAll(".for-project")) node.hidden = chat;
+  for (const node of $("new-form").querySelectorAll(".for-chat")) node.hidden = !chat;
+  $("new-project").required = !chat;
+  $("new-title").placeholder = chat ? "예: 여행 일정 짜기" : "예: 가방 UI 버그 수정";
+  $("new-role").placeholder = chat
+    ? "예: 친절한 영어 선생님. 틀린 표현은 고쳐 준다."
+    : "예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 '검토 요청'이라고 쓴다.";
+  fillPermissions();
+  fillModels("new-models", agent);
+  fillEfforts("new-effort", agent, $("new-model").value.trim());
+}
+
 function fillPermissions() {
-  const agent = $("new-agent").value;
+  const { agent } = newKind();
   const modes = state.status.agents[agent].permissions;
   $("new-permission").replaceChildren(...modes.map((m) => el("option", { value: m }, m)));
   $("new-permission").value = modes.at(-1);
@@ -901,33 +985,42 @@ function fillPermissions() {
   if (agent === "claude") $("new-permission").value = "acceptEdits";
 }
 
-async function openNew(projectPath) {
+// kind: claude | codex | claude-chat | codex-chat
+async function openNew(projectPath, kind) {
   await loadStatus();
   const projects = sortedProjects();
-  if (!projects.length) {
-    alert("먼저 설정에서 프로젝트를 추가하세요.");
-    openSettings();
-    return;
+  if (!projects.length && !kind?.endsWith("-chat")) {
+    if (!confirm("등록된 프로젝트가 없습니다. 프로젝트 없이 일반 채팅을 시작할까요?\n\n취소를 누르면 설정에서 프로젝트를 추가합니다.")) {
+      openSettings();
+      return;
+    }
+    kind = "claude-chat";
   }
   $("new-project").replaceChildren(
     ...projects.map((p) => el("option", { value: p.path }, `${p.name} — ${p.path}`)));
   const match = projectPath && projects.find((p) => samePath(p.path, projectPath));
   if (match) $("new-project").value = match.path;
-  fillPermissions();
+  if (kind) $("new-agent").value = kind;
+  else if ($("new-agent").value.endsWith("-chat")) $("new-agent").value = "claude";
+  syncNewKind();
   $("new-error").textContent = "";
   $("new-dialog").showModal();
 }
 
 $("open-new").addEventListener("click", () => openNew(state.project ?? state.current?.projectPath));
 $("open-new-top").addEventListener("click", () => openNew());
-$("new-agent").addEventListener("change", fillPermissions);
+$("nav-chat").addEventListener("click", () => openNew(null, "claude-chat"));
+$("new-agent").addEventListener("change", syncNewKind);
+$("new-model").addEventListener("input", () => fillEfforts("new-effort", newKind().agent, $("new-model").value.trim()));
 
 $("new-form").addEventListener("submit", async (e) => {
   if (e.submitter?.value !== "ok") return;
   e.preventDefault();
   const form = new FormData(e.target);
-  const body = Object.fromEntries(form);
+  const { kind, ...body } = Object.fromEntries(form);
+  Object.assign(body, newKind());
   body.isolate = form.has("isolate");
+  if (body.chat) delete body.projectPath;
   try {
     const created = await api("POST", "/api/sessions", body);
     $("new-dialog").close();

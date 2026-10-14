@@ -136,6 +136,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 }
 .badge.claude { color: var(--claude); background: rgb(232 135 92 / .1); }
 .badge.codex { color: var(--codex); background: rgb(76 194 138 / .1); }
+.badge.chat { border-style: dashed; }
 .pill {
   font-size: 11px; padding: 1px 9px; border-radius: 999px; white-space: nowrap;
   background: var(--panel-2); color: var(--muted); border: 1px solid var(--line-strong);
