@@ -7,7 +7,7 @@ import path from "node:path";
 
 const bump = process.argv[2] ?? "patch";
 const run = (cmd, args, opts = {}) =>
-  execFileSync(cmd, args, { stdio: "inherit", shell: process.platform === "win32" && !path.isAbsolute(cmd), ...opts });
+  execFileSync(cmd, args, { stdio: "inherit", shell: process.platform === "win32" && ["npm", "npx"].includes(cmd), ...opts }); // npm·npx는 .cmd라 셸이 필요하다.
 const read = (cmd, args) => execFileSync(cmd, args, { encoding: "utf8" }).trim();
 
 function findGh() {
