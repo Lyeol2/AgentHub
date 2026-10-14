@@ -1037,8 +1037,12 @@ $("s-form").addEventListener("submit", async (e) => {
   }
 });
 
+// Enter로 보내고 Shift+Enter로 줄을 바꾼다. 한글 조합 중인 Enter는 무시한다.
 $("s-prompt").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) $("s-form").requestSubmit();
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    $("s-form").requestSubmit();
+  }
 });
 
 $("s-crumb-project").addEventListener("click", (e) => {
