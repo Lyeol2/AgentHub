@@ -101,6 +101,12 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .icon-btn:hover { color: var(--text); }
 .project-nav { display: grid; gap: 1px; max-height: 28vh; overflow-y: auto; }
 .project-nav .nav-item { padding: 6px 10px; }
+.project-nav .nav-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.pill.detected { margin-left: 8px; font-size: 10.5px; padding: 0 7px; color: var(--muted); }
+.notice {
+  margin: 0; padding: 10px 14px; border-radius: var(--radius);
+  background: var(--accent-soft); border: 1px solid rgb(76 141 255 / .3); color: var(--text); font-size: 12.5px;
+}
 .project-nav .count { margin-left: auto; font-size: 11px; color: var(--faint); }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--faint); flex: none; }
 .dot.running { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }

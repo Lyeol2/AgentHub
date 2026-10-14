@@ -22,7 +22,7 @@
     </nav>
 
     <div class="nav-section">
-      <div class="nav-label">프로젝트 <button class="icon-btn" id="add-project-nav" title="프로젝트 추가">+</button></div>
+      <div class="nav-label">프로젝트 <button class="icon-btn" id="add-project-nav" title="프로젝트 직접 추가">+</button></div>
       <div id="project-nav" class="project-nav"></div>
     </div>
 
@@ -87,16 +87,17 @@
         </div>
       </header>
       <div class="content">
-        <div class="card">
-          <div class="card-head"><h3>AgentHub 세션</h3></div>
-          <table class="table" id="p-sessions"></table>
-        </div>
+        <p class="notice" id="p-registered">Claude Code·Codex 기록에서 자동으로 찾은 프로젝트입니다. 세션을 가져오거나 새로 만들면 AgentHub 프로젝트로 등록됩니다.</p>
         <div class="card">
           <div class="card-head">
-            <h3>감지된 세션 <span class="muted">Claude Code · Codex에서 만든 세션</span></h3>
+            <h3>Claude Code · Codex 세션 <span class="muted">이 프로젝트에서 연 세션</span></h3>
           </div>
           <p class="hint pad">가져오면 기존 대화 기록을 보여 주고, 다음 요청부터 같은 CLI 세션을 이어서 실행합니다. 다른 앱에서 같은 세션을 동시에 쓰지 마세요.</p>
           <table class="table" id="p-found"></table>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>AgentHub 세션</h3></div>
+          <table class="table" id="p-sessions"></table>
         </div>
       </div>
     </section>

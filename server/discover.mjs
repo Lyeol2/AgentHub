@@ -11,12 +11,38 @@ const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude");
 const CODEX_DIR = process.env.CODEX_HOME ?? path.join(HOME, ".codex");
 const MAX_EVENTS = 400;
 
-// 프로젝트 폴더 자체이거나 그 아래, 또는 AgentHub 작업 폴더(<저장소>.agenthub/...)인지.
-function belongsTo(cwd, projectPath) {
-  if (!cwd) return false;
-  const c = path.resolve(cwd).toLowerCase();
-  const p = path.resolve(projectPath).toLowerCase();
-  return c === p || c.startsWith(p + path.sep) || c.startsWith(`${p}.agenthub${path.sep}`);
+// 세션의 작업 폴더를 프로젝트 폴더(가능하면 git 저장소 루트)로 바꾼다.
+// AgentHub 작업 폴더(<저장소>.agenthub/<ID>)와 Claude Code 작업 트리(<저장소>/.claude/worktrees/<이름>)는 원래 저장소로 묶는다.
+const rootCache = new Map();
+export function projectRoot(cwd) {
+  if (!cwd) return null;
+  let dir = path.resolve(cwd);
+  if (rootCache.has(dir)) return rootCache.get(dir);
+  let base = dir;
+  const agenthub = base.match(/^(.*)\.agenthub[\\/][^\\/]+/i);
+  if (agenthub) base = agenthub[1];
+  const claudeTree = base.match(/^(.*?)[\\/]\.claude[\\/]worktrees[\\/]/i);
+  if (claudeTree) base = claudeTree[1];
+  let root = base;
+  for (let cur = base; ; cur = path.dirname(cur)) {
+    if (fs.existsSync(path.join(cur, ".git"))) {
+      root = cur;
+      break;
+    }
+    if (path.dirname(cur) === cur) break;
+  }
+  rootCache.set(dir, root);
+  return root;
+}
+
+const samePath = (a, b) => !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+const isInside = (child, parent) => path.resolve(child).toLowerCase().startsWith(path.resolve(parent).toLowerCase() + path.sep);
+
+// 임시 폴더나 CLI 자체 폴더에서 연 세션은 프로젝트로 보지 않는다.
+function isProjectDir(dir) {
+  if (!dir || !fs.existsSync(dir)) return false;
+  if (samePath(dir, HOME) || samePath(dir, path.parse(dir).root)) return false;
+  return ![os.tmpdir(), CLAUDE_DIR, CODEX_DIR].some((skip) => samePath(dir, skip) || isInside(dir, skip));
 }
 
 function readLines(file) {
@@ -31,14 +57,25 @@ function parseJson(line) {
   }
 }
 
-function firstLine(file, max = 1 << 20) {
+// 첫 줄만 필요하므로 줄바꿈이 나올 때까지 조금씩 읽는다(최대 4MB).
+function firstLine(file, max = 4 << 20) {
   const fd = fs.openSync(file, "r");
   try {
-    const buf = Buffer.alloc(Math.min(max, fs.fstatSync(fd).size));
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    const text = buf.toString("utf8", 0, n);
-    const end = text.indexOf("\n");
-    return end < 0 ? text : text.slice(0, end);
+    const chunks = [];
+    let total = 0;
+    const chunk = Buffer.alloc(64 * 1024);
+    while (total < max) {
+      const n = fs.readSync(fd, chunk, 0, chunk.length, total);
+      if (!n) break;
+      const end = chunk.subarray(0, n).indexOf(10); // "\n"
+      if (end >= 0) {
+        chunks.push(Buffer.from(chunk.subarray(0, end)));
+        break;
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, n)));
+      total += n;
+    }
+    return Buffer.concat(chunks).toString("utf8");
   } finally {
     fs.closeSync(fd);
   }
@@ -58,15 +95,6 @@ function claudeUserText(msg) {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) return content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
   return "";
-}
-
-function claudeProjectDirs(projectPath) {
-  const base = path.join(CLAUDE_DIR, "projects");
-  if (!fs.existsSync(base)) return [];
-  const encoded = path.resolve(projectPath).replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
-  return fs.readdirSync(base)
-    .filter((name) => name.toLowerCase() === encoded || name.toLowerCase().startsWith(`${encoded}-`))
-    .map((name) => path.join(base, name));
 }
 
 // 기록 파일 요약은 파일이 바뀌지 않았으면 다시 읽지 않는다.
@@ -108,13 +136,21 @@ function summarizeClaude(file, stat) {
   };
 }
 
-function scanClaude(projectPath) {
+function allClaude() {
+  const base = path.join(CLAUDE_DIR, "projects");
+  if (!fs.existsSync(base)) return [];
   const found = [];
-  for (const dir of claudeProjectDirs(projectPath)) {
-    for (const name of fs.readdirSync(dir)) {
-      if (!name.endsWith(".jsonl")) continue;
-      const entry = cached(path.join(dir, name), summarizeClaude);
-      if (entry && belongsTo(entry.cwd, projectPath)) found.push(entry);
+  for (const name of fs.readdirSync(base)) {
+    const dir = path.join(base, name);
+    if (!fs.statSync(dir).isDirectory()) continue;
+    for (const file of fs.readdirSync(dir)) {
+      if (!file.endsWith(".jsonl")) continue;
+      try {
+        const entry = cached(path.join(dir, file), summarizeClaude);
+        if (entry) found.push(entry);
+      } catch {
+        // 쓰는 중이거나 읽을 수 없는 파일은 건너뛴다.
+      }
     }
   }
   return found;
@@ -201,7 +237,20 @@ function codexHistory(file) {
   return events;
 }
 
-function scanCodex(projectPath) {
+// 목록에는 사용자 요청만 필요하므로 해당 줄만 파싱한다(기록 파일이 수십 MB일 수 있다).
+function codexPrompts(file) {
+  const prompts = [];
+  for (const line of readLines(file)) {
+    if (!line.includes('"role":"user"') || !line.includes('"response_item"')) continue;
+    const p = parseJson(line)?.payload;
+    if (p?.type !== "message" || p.role !== "user") continue;
+    const text = codexText(p.content);
+    if (text && !isInjected(text)) prompts.push({ text });
+  }
+  return prompts;
+}
+
+function allCodex() {
   const names = codexThreadNames();
   const found = [];
   for (const file of walk(path.join(CODEX_DIR, "sessions"))) {
@@ -212,20 +261,25 @@ function scanCodex(projectPath) {
       continue;
     }
     // 하위 에이전트·검토용 스레드(source가 객체)는 빼고 사용자가 연 세션만 본다.
-    if (!meta?.id || typeof meta.source !== "string" || !belongsTo(meta.cwd, projectPath)) continue;
-    const entry = cached(file, (f, stat) => {
-      const prompts = codexHistory(f).filter((e) => e.kind === "user");
-      if (!prompts.length) return null;
-      return {
-        agent: "codex",
-        agentSessionId: meta.id,
-        firstPrompt: prompts[0].text,
-        cwd: meta.cwd,
-        turns: prompts.length,
-        updatedAt: stat.mtime.toISOString(),
-        file,
-      };
-    });
+    if (!meta?.id || typeof meta.source !== "string") continue;
+    let entry;
+    try {
+      entry = cached(file, (f, stat) => {
+        const prompts = codexPrompts(f);
+        if (!prompts.length) return null;
+        return {
+          agent: "codex",
+          agentSessionId: meta.id,
+          firstPrompt: prompts[0].text,
+          cwd: meta.cwd,
+          turns: prompts.length,
+          updatedAt: stat.mtime.toISOString(),
+          file,
+        };
+      });
+    } catch {
+      continue;
+    }
     if (!entry) continue;
     const { firstPrompt, ...rest } = entry;
     found.push({ ...rest, title: oneLine(names.get(meta.id) ?? firstPrompt) });
@@ -233,17 +287,38 @@ function scanCodex(projectPath) {
   return found;
 }
 
-// ── 공개 함수 ───────────────────────────────────────────────────
-export function discoverSessions(projectPath) {
+function allSessions() {
   const all = [];
-  for (const scan of [scanClaude, scanCodex]) {
+  for (const scan of [allClaude, allCodex]) {
     try {
-      all.push(...scan(projectPath));
+      all.push(...scan());
     } catch (err) {
       console.error(`세션 검색 실패: ${err.message}`);
     }
   }
   return all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+// ── 공개 함수 ───────────────────────────────────────────────────
+export function discoverSessions(projectPath) {
+  return allSessions().filter((s) => s.cwd && (samePath(projectRoot(s.cwd), projectPath) || isInside(s.cwd, projectPath)));
+}
+
+// 세션 기록에 나온 작업 폴더를 프로젝트 단위로 묶는다.
+export function discoverProjects() {
+  const projects = new Map();
+  for (const s of allSessions()) {
+    const root = projectRoot(s.cwd);
+    if (!isProjectDir(root)) continue;
+    const key = root.toLowerCase();
+    if (!projects.has(key)) {
+      projects.set(key, { path: root, name: path.basename(root), claude: 0, codex: 0, lastActive: s.updatedAt });
+    }
+    const p = projects.get(key);
+    p[s.agent]++;
+    if (s.updatedAt > p.lastActive) p.lastActive = s.updatedAt;
+  }
+  return [...projects.values()].sort((a, b) => b.lastActive.localeCompare(a.lastActive));
 }
 
 export function loadHistory(found) {

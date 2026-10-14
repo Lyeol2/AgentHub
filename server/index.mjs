@@ -7,7 +7,7 @@ import { locateCli, cliVersion } from "./cli.mjs";
 import { SessionStore, summary } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
 import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince } from "./git.mjs";
-import { discoverSessions, loadHistory } from "./discover.mjs";
+import { discoverProjects, discoverSessions, loadHistory } from "./discover.mjs";
 import { readLimits, recordClaudeLimit } from "./limits.mjs";
 
 const config = loadConfig();
@@ -99,9 +99,18 @@ function getSession(id) {
   return session;
 }
 
-function findProject(projectPath) {
-  const project = config.projects.find((p) => p.path === projectPath);
-  if (!project) throw new HttpError(400, "등록된 프로젝트를 선택하세요.");
+const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+
+// 등록된 프로젝트를 찾고, 없으면(자동 감지된 프로젝트) 그 자리에서 등록한다.
+function ensureProject(projectPath) {
+  if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+  const existing = config.projects.find((p) => samePath(p.path, projectPath));
+  if (existing) return existing;
+  const dir = path.resolve(projectPath);
+  if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
+  const project = { name: path.basename(dir), path: dir };
+  config.projects.push(project);
+  saveConfig(config);
   return project;
 }
 
@@ -167,9 +176,23 @@ async function handleApi(req, res, url) {
       saveConfig(config);
       return send(res, 200, config.projects);
     }
+    // 등록한 프로젝트와 Claude Code·Codex 기록에서 감지한 프로젝트를 합친 목록.
+    if (parts[1] === "all" && method === "GET") {
+      const detected = discoverProjects();
+      const merged = config.projects.map((p) => {
+        const d = detected.find((x) => samePath(x.path, p.path));
+        return { name: p.name, path: p.path, registered: true, claude: d?.claude ?? 0, codex: d?.codex ?? 0, lastActive: d?.lastActive ?? null };
+      });
+      for (const d of detected) {
+        if (!merged.some((p) => samePath(p.path, d.path))) merged.push({ ...d, registered: false });
+      }
+      return send(res, 200, merged);
+    }
     // AgentHub 밖에서 만든 Claude Code·Codex 세션 목록. 이미 가져온 것은 linkedId로 표시한다.
     if (parts[1] === "discover" && method === "GET") {
-      const project = findProject(url.searchParams.get("path"));
+      const projectPath = url.searchParams.get("path");
+      if (!projectPath || !fs.existsSync(projectPath)) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
+      const project = { path: path.resolve(projectPath) };
       const linked = new Map(store.list().filter((s) => s.agentSessionId).map((s) => [s.agentSessionId, s.id]));
       return send(res, 200, discoverSessions(project.path).map(({ file, ...found }) => ({
         ...found,
@@ -190,8 +213,7 @@ async function handleApi(req, res, url) {
       const body = await readJson(req);
       const agent = body.agent;
       if (!AGENTS[agent]) throw new HttpError(400, "agent는 claude 또는 codex입니다.");
-      const project = config.projects.find((p) => p.path === body.projectPath);
-      if (!project) throw new HttpError(400, "등록된 프로젝트를 선택하세요.");
+      const project = ensureProject(body.projectPath);
       const model = String(body.model ?? "").trim();
       if (model && !MODEL_PATTERN.test(model)) throw new HttpError(400, "모델 이름 형식이 올바르지 않습니다.");
       const permission = body.permission ?? AGENTS[agent].PERMISSION_MODES.at(-1);
@@ -232,7 +254,7 @@ async function handleApi(req, res, url) {
 
     if (parts[1] === "import" && method === "POST") {
       const body = await readJson(req);
-      const project = findProject(body.projectPath);
+      const project = ensureProject(body.projectPath);
       const existing = store.list().find((s) => s.agentSessionId && s.agentSessionId === body.agentSessionId);
       if (existing) return send(res, 200, summary(existing));
       const found = discoverSessions(project.path)
@@ -328,6 +350,8 @@ export const listening = new Promise((resolve, reject) => {
   server.listen(port, "127.0.0.1", () => {
     console.log(`AgentHub: http://127.0.0.1:${port}`);
     resolve();
+    // 첫 프로젝트 검색은 기록 파일을 모두 읽어 1~2초 걸리므로 미리 해 둔다. 이후에는 바뀐 파일만 읽는다.
+    setTimeout(() => discoverProjects(), 200);
   });
 });
 

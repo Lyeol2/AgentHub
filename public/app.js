@@ -175,6 +175,7 @@ function renderLimits() {
 
 $("refresh-limits").addEventListener("click", loadLimits);
 setInterval(loadLimits, 60_000);
+setInterval(() => loadProjects(), 120_000); // 다른 앱에서 새로 연 프로젝트도 잡는다.
 
 // ── 업데이트 ────────────────────────────────────────────────────
 async function loadUpdate() {
@@ -250,23 +251,47 @@ async function loadSessions() {
   if (state.view === "project") renderProjectSessions();
 }
 
+// ── 프로젝트 목록(등록 + 자동 감지) ─────────────────────────────
+const samePath = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+const hubSessions = (p) => state.sessions.filter((s) => samePath(s.projectPath, p.path));
+
+async function loadProjects() {
+  try {
+    state.projects = await api("GET", "/api/projects/all");
+  } catch {
+    return;
+  }
+  renderProjectNav();
+  if (state.view === "dashboard") renderDashboard();
+}
+
+// 감지된 기록과 AgentHub 세션 중 가장 최근 활동
+function lastActive(p) {
+  return [p.lastActive, ...hubSessions(p).map((s) => s.updatedAt)].filter(Boolean).sort().at(-1) ?? null;
+}
+
+function sortedProjects() {
+  return [...(state.projects ?? [])].sort((a, b) => (lastActive(b) ?? "").localeCompare(lastActive(a) ?? ""));
+}
+
 function renderProjectNav() {
-  const projects = state.status?.projects ?? [];
+  const projects = sortedProjects();
   $("project-nav").replaceChildren(
     ...projects.map((p) => {
-      const sessions = state.sessions.filter((s) => s.projectPath === p.path);
-      const running = sessions.some((s) => s.state === "running");
+      const running = hubSessions(p).some((s) => s.state === "running");
+      const total = p.claude + p.codex;
       return el("button", {
-        class: `nav-item${state.view === "project" && state.project === p.path ? " active" : ""}`,
-        title: p.path,
+        class: `nav-item${state.view === "project" && samePath(state.project, p.path) ? " active" : ""}`,
+        title: `${p.path}
+Claude Code ${p.claude} · Codex ${p.codex} · AgentHub ${hubSessions(p).length}`,
         onclick: () => goProject(p.path),
       },
       el("span", { class: `dot${running ? " running" : ""}` }),
-      p.name,
-      el("span", { class: "count" }, String(sessions.length)));
+      el("span", { class: "nav-name" }, p.name),
+      el("span", { class: "count" }, String(total + hubSessions(p).length)));
     }),
   );
-  if (!projects.length) $("project-nav").append(el("div", { class: "hint", style: "padding:4px 10px" }, "등록된 프로젝트가 없습니다."));
+  if (!projects.length) $("project-nav").append(el("div", { class: "hint", style: "padding:4px 10px" }, "감지된 프로젝트가 없습니다."));
 }
 
 function renderSessionList() {
@@ -294,7 +319,7 @@ $("nav-dashboard").addEventListener("click", goDashboard);
 // ── 대시보드 ────────────────────────────────────────────────────
 function renderDashboard() {
   const sessions = state.sessions;
-  const projects = state.status?.projects ?? [];
+  const projects = sortedProjects();
   const count = (st) => sessions.filter((s) => s.state === st).length;
   const kpi = (label, value, cls = "", hint = "") =>
     el("div", { class: "kpi" },
@@ -305,20 +330,21 @@ function renderDashboard() {
     kpi("전체 세션", sessions.length, "", `Claude ${sessions.filter((s) => s.agent === "claude").length} · Codex ${sessions.filter((s) => s.agent === "codex").length}`),
     kpi("실행 중", count("running"), count("running") ? "accent" : ""),
     kpi("오류·중단", count("error") + count("interrupted"), count("error") ? "danger" : ""),
-    kpi("프로젝트", projects.length),
+    kpi("프로젝트", projects.length, "", `감지 ${projects.filter((p) => !p.registered).length} · 등록 ${projects.filter((p) => p.registered).length}`),
   );
 
-  table("project-table", [["이름"], ["경로"], ["세션", "num"], ["최근 활동", "num"]],
+  table("project-table", [["이름"], ["경로"], ["Claude", "num"], ["Codex", "num"], ["AgentHub", "num"], ["최근 활동", "num"]],
     projects.map((p) => {
-      const list = sessions.filter((s) => s.projectPath === p.path);
-      const latest = list.map((s) => s.updatedAt).sort().at(-1);
+      const latest = lastActive(p);
       return el("tr", { class: "click", onclick: () => goProject(p.path) },
-        el("td", {}, p.name),
+        el("td", {}, p.name, p.registered ? null : el("span", { class: "pill detected" }, "감지됨")),
         el("td", { class: "path" }, p.path),
-        el("td", { class: "num" }, String(list.length)),
+        el("td", { class: "num" }, String(p.claude || "—")),
+        el("td", { class: "num" }, String(p.codex || "—")),
+        el("td", { class: "num" }, String(hubSessions(p).length || "—")),
         el("td", { class: "num" }, latest ? timeAgo(latest) : "—"));
     }),
-    "설정에서 프로젝트를 추가하세요.");
+    state.projects ? "Claude Code나 Codex로 작업한 프로젝트가 없습니다. 설정에서 직접 추가할 수도 있습니다." : "프로젝트를 찾는 중…");
 
   table("recent-table", [["세션"], ["에이전트"], ["프로젝트"], ["상태"], ["업데이트", "num"]],
     sessions.slice(0, 8).map((s) => sessionRow(s, true)),
@@ -336,11 +362,11 @@ function sessionRow(s, withProject) {
 
 // ── 프로젝트 ────────────────────────────────────────────────────
 function currentProject() {
-  return state.status.projects.find((p) => p.path === state.project);
+  return state.projects?.find((p) => samePath(p.path, state.project));
 }
 
 function renderProjectSessions() {
-  const list = state.sessions.filter((s) => s.projectPath === state.project);
+  const list = state.sessions.filter((s) => samePath(s.projectPath, state.project));
   table("p-sessions", [["세션"], ["에이전트"], ["폴더"], ["상태"], ["업데이트", "num"]],
     list.map((s) => sessionRow(s, false)), "이 프로젝트에서 만든 세션이 없습니다.");
 }
@@ -350,6 +376,7 @@ async function renderProject() {
   if (!p) return goDashboard();
   $("p-name").textContent = p.name;
   $("p-path").textContent = p.path;
+  $("p-registered").hidden = p.registered;
   renderProjectSessions();
   table("p-found", [["세션"], ["에이전트"], ["요청", "num"], ["마지막 사용", "num"], ["", "right"]], [],
     "기록을 찾는 중…");
@@ -384,7 +411,7 @@ async function importSession(p, f, button) {
     const created = await api("POST", "/api/sessions/import", {
       projectPath: p.path, agent: f.agent, agentSessionId: f.agentSessionId,
     });
-    await loadSessions();
+    await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 가져오면서 등록된다.
     await selectSession(created.id);
   } catch (err) {
     alert(err.message);
@@ -393,7 +420,10 @@ async function importSession(p, f, button) {
   }
 }
 
-$("p-rescan").addEventListener("click", () => renderProject());
+$("p-rescan").addEventListener("click", async () => {
+  await loadProjects();
+  await renderProject();
+});
 $("p-new").addEventListener("click", () => openNew(state.project));
 
 // ── 세션 화면 ───────────────────────────────────────────────────
@@ -520,14 +550,16 @@ function fillPermissions() {
 
 async function openNew(projectPath) {
   await loadStatus();
-  if (!state.status.projects.length) {
+  const projects = sortedProjects();
+  if (!projects.length) {
     alert("먼저 설정에서 프로젝트를 추가하세요.");
     openSettings();
     return;
   }
   $("new-project").replaceChildren(
-    ...state.status.projects.map((p) => el("option", { value: p.path }, `${p.name} — ${p.path}`)));
-  if (projectPath) $("new-project").value = projectPath;
+    ...projects.map((p) => el("option", { value: p.path }, `${p.name} — ${p.path}`)));
+  const match = projectPath && projects.find((p) => samePath(p.path, projectPath));
+  if (match) $("new-project").value = match.path;
   fillPermissions();
   $("new-error").textContent = "";
   $("new-dialog").showModal();
@@ -547,7 +579,7 @@ $("new-form").addEventListener("submit", async (e) => {
     const created = await api("POST", "/api/sessions", body);
     $("new-dialog").close();
     e.target.reset();
-    await loadSessions();
+    await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 세션을 만들면서 등록된다.
     await selectSession(created.id);
     $("s-prompt").focus();
   } catch (err) {
@@ -572,9 +604,8 @@ function renderProjects() {
   );
 }
 
-function refreshProjects() {
-  renderProjectNav();
-  if (state.view === "dashboard") renderDashboard();
+async function refreshProjects() {
+  await loadProjects();
   if (state.view === "project" && !currentProject()) goDashboard();
 }
 
@@ -664,6 +695,6 @@ function connectStream() {
   });
 }
 
-await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate()]);
+await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate(), loadProjects()]);
 goDashboard();
 connectStream();

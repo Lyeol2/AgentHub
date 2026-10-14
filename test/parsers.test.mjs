@@ -78,3 +78,12 @@ test("claude: rate_limit_event는 화면 이벤트가 아니라 한도 정보로
   assert.equal(ev.kind, "limit");
   assert.deepEqual(ev.rateLimit, info);
 });
+
+test("discover: AgentHub 작업 폴더와 하위 폴더는 원래 저장소로 묶는다", async () => {
+  const path = await import("node:path");
+  const { projectRoot } = await import("../server/discover.mjs");
+  const repo = path.resolve(import.meta.dirname, "..");
+  assert.equal(projectRoot(`${repo}.agenthub${path.sep}abc123`), repo);
+  assert.equal(projectRoot(path.join(repo, "server", "agents")), repo);
+  assert.equal(projectRoot(path.join(repo, ".claude", "worktrees", "feature-x")), repo);
+});
