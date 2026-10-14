@@ -406,3 +406,43 @@ dialog::backdrop { background: rgb(4 6 10 / .65); backdrop-filter: blur(2px); }
 .plan-result { color: var(--ok); font-size: 12.5px; }
 .plan-actions { display: flex; gap: 6px; }
 .graph-edges path.edge.command { stroke: rgb(170 120 255 / .55); stroke-dasharray: 2 5; stroke-width: 1.4; }
+
+/* ── 일반 채팅 ────────────────────────────────────────────── */
+.chat-list { flex: none; max-height: 24vh; }
+.cli-status .cli-text { overflow: hidden; text-overflow: ellipsis; }
+.login-btn { margin-left: auto; flex: none; padding: 0 7px; font-size: 11px; color: var(--danger); border-color: rgb(240 100 100 / .45); background: rgb(240 100 100 / .08); }
+.chat-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 16px; border-bottom: 1px solid var(--line); background: var(--bg);
+}
+.chat-pick { display: flex; gap: 6px; flex: none; }
+.chat-pick select { width: auto; max-width: 180px; padding: 5px 8px; font-size: 12.5px; background: var(--panel); }
+.chat-pick select:disabled { opacity: .55; }
+.chat-title {
+  flex: 1; min-width: 0; border: 0; background: transparent; padding: 4px 6px;
+  font-weight: 600; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-title:disabled { opacity: 1; color: var(--muted); }
+.chat-body { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+.chat-empty { margin: auto; max-width: 460px; padding: 24px; text-align: center; display: grid; gap: 8px; }
+.chat-empty h2 { margin: 0; font-size: 22px; font-weight: 650; }
+.chat-events { width: 100%; max-width: 860px; margin: 0 auto; padding: 24px; gap: 14px; }
+.chat-events:empty { display: none; }
+.chat-events .ev.status, .chat-events .ev.result, .chat-events .ev.log { display: none; }
+.chat-events .ev.text { max-width: 100%; }
+.chat-events .ev.user { max-width: 80%; }
+.chat-events.running::after { content: "답변 작성 중…"; color: var(--faint); font-size: 12.5px; animation: chat-pulse 1.2s ease-in-out infinite; }
+@keyframes chat-pulse { 50% { opacity: .35; } }
+.chat-composer { width: 100%; max-width: 860px; margin: 0 auto; border-top: 0; padding: 8px 24px 18px; background: transparent; }
+.chat-composer textarea { min-height: 52px; max-height: 40vh; border-radius: 10px; }
+.view.chat { background: var(--bg); }
+
+/* 별도 창으로 연 채팅: 사이드바 없이 채팅만 */
+body.popup { grid-template-columns: 1fr; }
+body.popup .sidebar { display: none; }
+
+@media (max-width: 640px) {
+  .chat-bar { flex-wrap: wrap; }
+  .chat-pick { flex-wrap: wrap; }
+  .chat-events, .chat-composer { padding-left: 16px; padding-right: 16px; }
+}

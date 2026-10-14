@@ -63,8 +63,9 @@ function table(id, headers, rows, emptyText) {
 // ── 화면 전환 ───────────────────────────────────────────────────
 function show(view) {
   state.view = view;
-  for (const name of ["dashboard", "project", "session"]) $(`view-${name}`).hidden = name !== view;
+  for (const name of ["dashboard", "project", "session", "chat"]) $(`view-${name}`).hidden = name !== view;
   $("nav-dashboard").classList.toggle("active", view === "dashboard");
+  $("nav-chat").classList.toggle("active", view === "chat" && !state.current);
   renderProjectNav();
   renderSessionList();
 }
@@ -83,23 +84,68 @@ async function goProject(projectPath) {
   await renderProject();
 }
 
+// 일반 채팅은 채팅 화면으로, 나머지는 세션 화면으로 연다.
 async function selectSession(id) {
   state.current = await api("GET", `/api/sessions/${id}`);
   state.project = null;
-  show("session");
-  renderSession();
+  if (state.current.chat) {
+    show("chat");
+    renderChat();
+  } else {
+    show("session");
+    renderSession();
+  }
 }
+
+// 지금 보이는 대화 목록(채팅 화면이면 채팅 쪽)
+const eventsList = () => $(state.view === "chat" ? "c-events" : "s-events");
 
 // ── CLI 상태 ────────────────────────────────────────────────────
 async function loadStatus() {
   state.status = await api("GET", "/api/status");
-  $("cli-status").replaceChildren(
-    ...Object.entries(state.status.agents).map(([name, info]) =>
-      el("div", { title: info.path ?? "CLI를 찾지 못했습니다" },
-        el("span", { class: `dot ${info.path ? "ok" : "error"}` }),
-        `${AGENT_LABEL[name]} ${info.path ? info.version ?? "버전 확인 실패" : "없음"}`)),
-  );
+  renderCliStatus();
   renderProjectNav();
+}
+
+// 로그인 여부는 CLI를 실행해 확인하므로 따로, 느리게 불러온다. true | false | null(확인 실패)
+async function loadAuth(fresh = false) {
+  try {
+    state.auth = await api("GET", `/api/auth${fresh ? "?fresh=1" : ""}`);
+  } catch {
+    return;
+  }
+  renderCliStatus();
+}
+
+function renderCliStatus() {
+  if (!state.status) return;
+  $("cli-status").replaceChildren(
+    ...Object.entries(state.status.agents).map(([name, info]) => {
+      const loggedIn = state.auth?.[name];
+      const needLogin = info.path && loggedIn === false;
+      return el("div", { title: info.path ?? "CLI를 찾지 못했습니다" },
+        el("span", { class: `dot ${!info.path || needLogin ? "error" : "ok"}` }),
+        el("span", { class: "cli-text" }, `${AGENT_LABEL[name]} ${info.path ? info.version ?? "버전 확인 실패" : "없음"}`),
+        needLogin ? el("button", { class: "login-btn", onclick: () => startLogin(name), title: "새 창에서 CLI 로그인을 엽니다" }, "로그인 필요") : null);
+    }),
+  );
+}
+
+// 새 콘솔 창에서 로그인 명령을 연다. 끝날 때까지 몇 초마다 다시 확인한다.
+async function startLogin(agent) {
+  try {
+    await api("POST", `/api/auth/${agent}/login`);
+  } catch (err) {
+    alert(err.message);
+    return;
+  }
+  alert(`${AGENT_LABEL[agent]} 로그인 창을 열었습니다. 창의 안내대로 브라우저에서 로그인한 뒤 그 창을 닫으세요.`);
+  clearInterval(state.authPoll);
+  let tries = 0;
+  state.authPoll = setInterval(async () => {
+    await loadAuth(true);
+    if (state.auth?.[agent] || ++tries >= 60) clearInterval(state.authPoll);
+  }, 5000);
 }
 
 // ── 사용 한도 ───────────────────────────────────────────────────
@@ -301,20 +347,23 @@ Claude Code ${p.claude} · Codex ${p.codex} · AgentHub ${hubSessions(p).length}
   if (!projects.length) $("project-nav").append(el("div", { class: "hint", style: "padding:4px 10px" }, "감지된 프로젝트가 없습니다."));
 }
 
+// 일반 채팅과 프로젝트 세션은 사이드바에서 따로 보여 준다.
 function renderSessionList() {
   const q = state.filter.toLowerCase();
   const items = state.sessions.filter((s) => !q || `${s.title} ${s.projectName}`.toLowerCase().includes(q));
+  const item = (s, sub) => el("button", {
+    class: `session-item${state.current?.id === s.id ? " active" : ""}`,
+    onclick: () => selectSession(s.id),
+  },
+  el("span", { class: "top" },
+    el("span", { class: `dot ${s.state}` }),
+    el("span", { class: "name" }, s.title)),
+  el("span", { class: "sub" }, sub));
+  const chats = items.filter((s) => s.chat);
+  $("chat-list").replaceChildren(...chats.map((s) => item(s, `${sessionLabel(s)}${s.model ? ` · ${s.model}` : ""} · ${timeAgo(s.updatedAt)}`)));
+  if (!chats.length) $("chat-list").append(el("div", { class: "hint", style: "padding:4px 10px" }, q ? "찾는 채팅이 없습니다." : "채팅이 없습니다."));
   $("session-list").replaceChildren(
-    ...items.map((s) =>
-      el("button", {
-        class: `session-item${state.current?.id === s.id ? " active" : ""}`,
-        onclick: () => selectSession(s.id),
-      },
-      el("span", { class: "top" },
-        el("span", { class: `dot ${s.state}` }),
-        el("span", { class: "name" }, s.title)),
-      el("span", { class: "sub" }, s.chat ? sessionLabel(s) : `${AGENT_LABEL[s.agent]} · ${s.projectName}`))),
-  );
+    ...items.filter((s) => !s.chat).map((s) => item(s, `${AGENT_LABEL[s.agent]} · ${s.projectName}`)));
 }
 
 $("session-filter").addEventListener("input", (e) => {
@@ -888,6 +937,7 @@ function renderSession() {
 
 function renderState() {
   const s = state.current;
+  if (state.view === "chat") return renderChatState();
   const label = $("s-state");
   label.textContent = STATE_LABEL[s.state] ?? s.state;
   label.className = `pill ${s.state}`;
@@ -967,7 +1017,7 @@ function renderEvent(ev) {
 }
 
 function scrollToBottom() {
-  const list = $("s-events");
+  const list = eventsList();
   list.scrollTop = list.scrollHeight;
 }
 
@@ -1120,6 +1170,188 @@ $("config-form").addEventListener("submit", async (e) => {
   }
 });
 
+// ── 일반 채팅 화면 ──────────────────────────────────────────────
+// 새 채팅은 첫 메시지를 보낼 때 세션을 만든다. 그 전까지 고른 AI·모델·추론 강도는 초안에 두고, 다음 새 채팅에도 쓴다.
+const CHAT_PREFS_KEY = "agenthub.chat";
+const POPUP_CHAT = new URLSearchParams(location.search).get("chat"); // 별도 창으로 연 채팅(세션 id 또는 "new")
+
+function loadChatPrefs() {
+  const prefs = { agent: "claude", model: "", effort: "" };
+  try {
+    Object.assign(prefs, JSON.parse(localStorage.getItem(CHAT_PREFS_KEY) ?? "{}"));
+  } catch {
+    // 저장소를 못 쓰면 기본값
+  }
+  if (!state.status.agents[prefs.agent]) prefs.agent = "claude";
+  return prefs;
+}
+
+function saveChatPrefs({ agent, model, effort }) {
+  try {
+    localStorage.setItem(CHAT_PREFS_KEY, JSON.stringify({ agent, model, effort }));
+  } catch {
+    // 저장하지 못해도 이번 채팅에는 지장 없다.
+  }
+}
+
+function openChat() {
+  state.current = null;
+  state.project = null;
+  state.chatDraft = loadChatPrefs();
+  show("chat");
+  renderChat();
+  $("c-prompt").focus();
+}
+
+// 지금 채팅의 설정: 세션이 있으면 세션 값, 없으면 새 채팅 초안
+const chatConfig = () => state.current ?? state.chatDraft;
+
+function renderChat() {
+  const s = state.current;
+  $("c-title").textContent = s?.title ?? "새 채팅";
+  $("c-title").disabled = !s;
+  $("c-delete").hidden = !s;
+  $("c-popout").hidden = !!POPUP_CHAT;
+  $("c-empty").hidden = !!s?.events.length;
+  $("c-events").replaceChildren(...(s?.events ?? []).map(renderEvent));
+  if (POPUP_CHAT) document.title = `${s?.title ?? "새 채팅"} · AgentHub`;
+  renderChatPick();
+  renderChatState();
+  scrollToBottom();
+}
+
+// AI·모델·추론 강도 선택. 대화는 CLI별로 이어지므로 시작한 뒤에는 AI만 바꿀 수 없다.
+function renderChatPick() {
+  const cfg = chatConfig();
+  const started = !!state.current;
+  $("c-agent").value = cfg.agent;
+  $("c-agent").disabled = started;
+  $("c-agent").title = started ? "대화를 시작한 뒤에는 AI를 바꿀 수 없습니다. 새 채팅에서 고르세요." : "AI";
+  const models = state.status.agents[cfg.agent].models;
+  const options = [el("option", { value: "" }, "기본 모델"), ...models.map((m) => el("option", { value: m.id }, m.label))];
+  // 목록에 없는 모델(직접 넣은 ID)도 고른 값으로 보여 준다.
+  if (cfg.model && !models.some((m) => m.id === cfg.model)) options.push(el("option", { value: cfg.model }, cfg.model));
+  $("c-model").replaceChildren(...options);
+  $("c-model").value = cfg.model ?? "";
+  fillEfforts("c-effort", cfg.agent, cfg.model ?? "", cfg.effort ?? "");
+}
+
+function renderChatState() {
+  const s = state.current;
+  const running = s?.state === "running";
+  $("c-state").hidden = !s || s.state === "idle";
+  if (s) {
+    $("c-state").textContent = STATE_LABEL[s.state] ?? s.state;
+    $("c-state").className = `pill ${s.state}`;
+  }
+  $("c-stop").hidden = !running;
+  $("c-form").querySelector("button").disabled = running;
+  $("c-events").classList.toggle("running", running);
+  if (running) $("c-empty").hidden = true;
+}
+
+// 새 채팅이면 초안만 바꾸고, 진행 중인 채팅이면 다음 메시지부터 적용되도록 저장한다.
+async function changeChat(patch) {
+  const s = state.current;
+  if (!s) {
+    Object.assign(state.chatDraft, patch);
+    saveChatPrefs(state.chatDraft);
+    renderChatPick();
+    return;
+  }
+  try {
+    const updated = await api("PUT", `/api/sessions/${s.id}`, patch);
+    Object.assign(s, { model: updated.model, effort: updated.effort });
+    saveChatPrefs(s);
+  } catch (err) {
+    alert(err.message);
+  }
+  renderChatPick();
+  loadSessions();
+}
+
+$("c-agent").addEventListener("change", () => changeChat({ agent: $("c-agent").value, model: "", effort: "" }));
+$("c-model").addEventListener("change", () => {
+  const cfg = chatConfig();
+  const model = $("c-model").value;
+  // 바꾼 모델이 지금 추론 강도를 지원하지 않으면 기본값으로 돌린다.
+  const known = state.status.agents[cfg.agent].models.find((m) => m.id === model);
+  const effort = known?.efforts.length && !known.efforts.includes(cfg.effort) ? "" : cfg.effort;
+  changeChat({ model, effort });
+});
+$("c-effort").addEventListener("change", () => changeChat({ effort: $("c-effort").value }));
+
+const chatTitle = (text) => {
+  const line = firstLine(text).trim();
+  return line.length > 40 ? `${line.slice(0, 40)}…` : line;
+};
+
+$("c-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const prompt = $("c-prompt").value.trim();
+  if (!prompt) return;
+  $("c-form").querySelector("button").disabled = true;
+  try {
+    let s = state.current;
+    if (!s) {
+      const { agent, model, effort } = state.chatDraft;
+      s = await api("POST", "/api/sessions", { chat: true, agent, model, effort, title: chatTitle(prompt) });
+    }
+    await api("POST", `/api/sessions/${s.id}/messages`, { prompt });
+    $("c-prompt").value = "";
+    if (!state.current) {
+      await loadSessions();
+      await selectSession(s.id);
+    }
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    if (state.view === "chat") renderChatState();
+  }
+});
+
+// Enter로 보내고 Shift+Enter로 줄을 바꾼다. 한글 조합 중인 Enter는 무시한다.
+$("c-prompt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    $("c-form").requestSubmit();
+  }
+});
+
+$("c-title").addEventListener("click", async () => {
+  const s = state.current;
+  if (!s) return;
+  const title = prompt("채팅 이름", s.title);
+  if (title === null || !title.trim()) return;
+  try {
+    s.title = (await api("PUT", `/api/sessions/${s.id}`, { title })).title;
+    renderChat();
+    loadSessions();
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+$("c-stop").addEventListener("click", () => state.current && api("POST", `/api/sessions/${state.current.id}/stop`).catch((e) => alert(e.message)));
+$("c-new").addEventListener("click", () => openChat());
+
+$("c-delete").addEventListener("click", async () => {
+  const s = state.current;
+  if (!s || !confirm(`"${s.title}" 채팅을 삭제할까요?`)) return;
+  try {
+    await api("DELETE", `/api/sessions/${s.id}`);
+    await loadSessions();
+    openChat();
+  } catch (err) {
+    alert(err.message);
+  }
+});
+
+// 데스크톱 앱에서는 AgentHub 창으로, 브라우저에서는 팝업으로 열린다.
+$("c-popout").addEventListener("click", () => {
+  window.open(`/?chat=${state.current?.id ?? "new"}`, "_blank", "width=760,height=900");
+});
+
 // ── 새 세션 ─────────────────────────────────────────────────────
 const newKind = () => {
   const [agent, mode] = $("new-agent").value.split("-");
@@ -1197,11 +1429,9 @@ async function openNew(projectPath, { orchestrator = false, kind } = {}) {
   await loadStatus();
   const projects = sortedProjects();
   if (!projects.length && !kind?.endsWith("-chat")) {
-    if (!confirm("등록된 프로젝트가 없습니다. 프로젝트 없이 일반 채팅을 시작할까요?\n\n취소를 누르면 설정에서 프로젝트를 추가합니다.")) {
-      openSettings();
-      return;
-    }
-    kind = "claude-chat";
+    if (confirm("등록된 프로젝트가 없습니다. 프로젝트 없이 일반 채팅을 시작할까요?\n\n취소를 누르면 설정에서 프로젝트를 추가합니다.")) openChat();
+    else openSettings();
+    return;
   }
   $("new-project").replaceChildren(
     ...projects.map((p) => el("option", { value: p.path }, `${p.name} — ${p.path}`)));
@@ -1221,7 +1451,8 @@ async function openNew(projectPath, { orchestrator = false, kind } = {}) {
 
 $("open-new").addEventListener("click", () => openNew(state.project ?? state.current?.projectPath));
 $("open-new-top").addEventListener("click", () => openNew());
-$("nav-chat").addEventListener("click", () => openNew(null, { kind: "claude-chat" }));
+$("nav-chat").addEventListener("click", () => openChat());
+$("open-chat").addEventListener("click", () => openChat());
 $("new-agent").addEventListener("change", () => {
   syncNewKind();
   syncOrchestrator();
@@ -1365,7 +1596,7 @@ function connectStream() {
     const s = state.current;
     if (s?.id !== sessionId || event.seq < s.events.length) return;
     s.events.push(event);
-    const list = $("s-events");
+    const list = eventsList();
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
     list.append(renderEvent(event));
     if (atBottom) scrollToBottom();
@@ -1404,5 +1635,14 @@ function connectStream() {
 }
 
 await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate(), loadProjects(), loadLinks()]);
-goDashboard();
+// 별도 창으로 연 채팅은 사이드바 없이 채팅 화면만 보여 준다.
+if (POPUP_CHAT) {
+  document.body.classList.add("popup");
+  if (POPUP_CHAT === "new") openChat();
+  else await selectSession(POPUP_CHAT).catch(openChat);
+} else {
+  goDashboard();
+}
 connectStream();
+loadAuth();
+setInterval(loadAuth, 5 * 60_000);

@@ -4,7 +4,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { ROOT, CHAT_DIR, loadConfig, saveConfig } from "./config.mjs";
-import { locateCli, cliVersion } from "./cli.mjs";
+import { locateCli, cliVersion, cliAuth, openLogin } from "./cli.mjs";
 import { SessionStore, summary } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
 import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince } from "./git.mjs";
@@ -388,6 +388,27 @@ async function handleApi(req, res, url) {
       cliOverrides: config.cli,
       projects: config.projects,
     });
+  }
+
+  // CLI 로그인 상태. fresh=1이면 캐시를 쓰지 않고 다시 확인한다.
+  if (parts[0] === "auth" && parts.length === 1 && method === "GET") {
+    const paths = cliPaths();
+    const fresh = url.searchParams.get("fresh") === "1";
+    const [claude, codex] = await Promise.all([cliAuth("claude", paths.claude, { fresh }), cliAuth("codex", paths.codex, { fresh })]);
+    return send(res, 200, { claude, codex });
+  }
+
+  if (parts[0] === "auth" && parts[2] === "login" && method === "POST") {
+    const agent = parts[1];
+    if (!AGENTS[agent]) throw new HttpError(400, "agent는 claude 또는 codex입니다.");
+    const file = cliPaths()[agent];
+    if (!file) throw new HttpError(400, "CLI를 찾지 못했습니다. 설정에서 경로를 지정하세요.");
+    try {
+      openLogin(agent, file);
+    } catch (err) {
+      throw new HttpError(400, err.message);
+    }
+    return send(res, 200, { ok: true });
   }
 
   if (parts[0] === "limits" && method === "GET") return send(res, 200, readLimits());

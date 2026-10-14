@@ -146,3 +146,61 @@ function readVersion(file) {
     setTimeout(() => child.kill(), 15000);
   });
 }
+
+// ── 로그인 ──────────────────────────────────────────────────────
+// 로그인 여부는 CLI를 실행해야 알 수 있어 잠시 캐시한다. 결과: true | false | null(확인 실패)
+const AUTH_TTL = 60_000;
+const authCache = new Map();
+
+export function cliAuth(agent, file, { fresh = false } = {}) {
+  if (!file) return Promise.resolve(null);
+  const cached = authCache.get(file);
+  if (!fresh && cached && Date.now() - cached.at < AUTH_TTL) return cached.promise;
+  const promise = readAuth(agent, file);
+  authCache.set(file, { at: Date.now(), promise });
+  return promise;
+}
+
+function readAuth(agent, file) {
+  const args = agent === "claude" ? ["auth", "status"] : ["login", "status"];
+  return new Promise((resolve) => {
+    let out = "";
+    const child = spawnCli(file, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (out += d));
+    const timer = setTimeout(() => child.kill(), 15000);
+    child.on("error", () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    child.on("close", () => {
+      clearTimeout(timer);
+      if (agent === "claude") {
+        // 로그인하지 않았으면 종료 코드 2와 함께 loggedIn: false를 낸다.
+        try {
+          return resolve(!!JSON.parse(out).loggedIn);
+        } catch {
+          return resolve(null);
+        }
+      }
+      if (/not logged in/i.test(out)) return resolve(false);
+      resolve(/logged in/i.test(out) ? true : null);
+    });
+  });
+}
+
+// 로그인은 브라우저 인증이라 사용자가 직접 해야 한다. CLI의 로그인 명령을 새 콘솔 창에서 열어 준다.
+// 창은 끝난 뒤에도 남겨 두어 오류를 읽을 수 있게 한다.
+export function openLogin(agent, file) {
+  const args = agent === "claude" ? "auth login" : "login";
+  authCache.delete(file);
+  if (!isWindows) throw new Error(`터미널에서 직접 실행하세요: "${file}" ${args}`);
+  const line = `start "AgentHub login" cmd /k ""${file}" ${args}"`;
+  const child = spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", line], {
+    detached: true,
+    stdio: "ignore",
+    windowsVerbatimArguments: true,
+  });
+  child.on("error", () => {});
+  child.unref();
+}

@@ -72,25 +72,45 @@ function createWindow(url) {
     if (win && !win.isDestroyed() && !win.isVisible()) win.show();
   }, 5000);
 
-  // 앱 밖으로 나가는 링크는 기본 브라우저에서 연다.
-  const isLocal = (target) => target.startsWith(url);
-  win.webContents.setWindowOpenHandler(({ url: target }) => {
+  guard(win.webContents, url);
+
+  win.on("closed", () => (win = null));
+  win.loadURL(url);
+}
+
+// 앱 밖으로 나가는 링크는 기본 브라우저에서 연다. 앱 안의 링크(채팅 "새 창으로")는 AgentHub 창으로 연다.
+function guard(contents, base) {
+  const isLocal = (target) => target.startsWith(base);
+  contents.setWindowOpenHandler(({ url: target }) => {
+    if (isLocal(target)) {
+      return {
+        action: "allow",
+        overrideBrowserWindowOptions: {
+          width: 760,
+          height: 900,
+          minWidth: 420,
+          minHeight: 400,
+          icon: ICON,
+          backgroundColor: "#0d1016",
+          autoHideMenuBar: true,
+          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+        },
+      };
+    }
     if (/^https?:/.test(target)) shell.openExternal(target);
     return { action: "deny" };
   });
-  win.webContents.on("will-navigate", (event, target) => {
+  contents.on("did-create-window", (child) => guard(child.webContents, base));
+  contents.on("will-navigate", (event, target) => {
     if (isLocal(target)) return;
     event.preventDefault();
     if (/^https?:/.test(target)) shell.openExternal(target);
   });
-  win.webContents.on("before-input-event", (event, input) => {
+  contents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
-    if (input.key === "F5" || (input.control && input.key.toLowerCase() === "r")) win.reload();
-    if (input.key === "F12") win.webContents.toggleDevTools();
+    if (input.key === "F5" || (input.control && input.key.toLowerCase() === "r")) contents.reload();
+    if (input.key === "F12") contents.toggleDevTools();
   });
-
-  win.on("closed", () => (win = null));
-  win.loadURL(url);
 }
 
 app.on("window-all-closed", () => app.quit());

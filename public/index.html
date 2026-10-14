@@ -30,6 +30,11 @@
       <div id="project-nav" class="project-nav"></div>
     </div>
 
+    <div class="nav-section">
+      <div class="nav-label">채팅 <button class="icon-btn" id="open-chat" title="새 채팅">+</button></div>
+      <nav id="chat-list" class="session-list chat-list" aria-label="채팅 목록"></nav>
+    </div>
+
     <div class="nav-section grow">
       <div class="nav-label">세션 <button class="icon-btn" id="open-new" title="새 세션">+</button></div>
       <input id="session-filter" class="filter" placeholder="세션 검색">
@@ -140,6 +145,39 @@
       <ol id="s-events" class="events"></ol>
       <form id="s-form" class="composer">
         <textarea id="s-prompt" rows="3" placeholder="요청을 입력하세요. Ctrl+Enter로 보내기"></textarea>
+        <button type="submit" class="primary">보내기</button>
+      </form>
+    </section>
+
+    <!-- 일반 채팅 -->
+    <section id="view-chat" class="view chat" hidden>
+      <header class="chat-bar">
+        <div class="chat-pick">
+          <select id="c-agent" title="AI">
+            <option value="claude">Claude</option>
+            <option value="codex">ChatGPT</option>
+          </select>
+          <select id="c-model" title="모델"></select>
+          <select id="c-effort" title="추론 강도"></select>
+        </div>
+        <button type="button" id="c-title" class="chat-title" title="눌러서 이름 바꾸기"></button>
+        <div class="actions">
+          <span id="c-state" class="pill"></span>
+          <button id="c-stop" class="ghost sm">중지</button>
+          <button id="c-new" class="ghost sm">새 채팅</button>
+          <button id="c-popout" class="ghost sm" title="이 채팅을 별도 창으로 엽니다">새 창으로</button>
+          <button id="c-delete" class="ghost sm danger">삭제</button>
+        </div>
+      </header>
+      <div class="chat-body">
+        <div id="c-empty" class="chat-empty">
+          <h2>무엇을 도와드릴까요?</h2>
+          <p class="hint">위에서 AI·모델·추론 강도를 고르고 바로 물어보세요. 파일 수정이나 명령 실행 없이 대화만 하며, 설치된 CLI의 로그인(구독)을 씁니다.</p>
+        </div>
+        <ol id="c-events" class="events chat-events"></ol>
+      </div>
+      <form id="c-form" class="composer chat-composer">
+        <textarea id="c-prompt" rows="2" placeholder="메시지를 입력하세요 · Enter 보내기, Shift+Enter 줄바꿈"></textarea>
         <button type="submit" class="primary">보내기</button>
       </form>
     </section>
