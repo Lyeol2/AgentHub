@@ -18,9 +18,14 @@ if (app.isPackaged && !process.env.AGENTHUB_DATA) {
 if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
+  // 다시 실행하면 기존 창을 앞으로 가져온다. 창이 숨은 채 남아 있거나 없으면 보이게/새로 만든다.
   app.on("second-instance", () => {
-    if (!win) return;
+    if (!win) {
+      if (server?.port) createWindow(`http://127.0.0.1:${server.port}/`);
+      return;
+    }
     if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
     win.focus();
   });
   app.whenReady().then(start);
@@ -62,6 +67,10 @@ function createWindow(url) {
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   win.once("ready-to-show", () => win.show());
+  // 업데이트 직후 등 ready-to-show가 오지 않는 경우가 있어, 잠시 뒤에는 그냥 보여 준다.
+  setTimeout(() => {
+    if (win && !win.isDestroyed() && !win.isVisible()) win.show();
+  }, 5000);
 
   // 앱 밖으로 나가는 링크는 기본 브라우저에서 연다.
   const isLocal = (target) => target.startsWith(url);
