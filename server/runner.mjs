@@ -30,13 +30,14 @@ export class Runner extends EventEmitter {
     return this.running.has(id);
   }
 
-  send(session, prompt, cliPath) {
+  // input은 CLI에 실제로 넘길 내용이다. 화면에는 prompt만 남긴다. meta는 요청 이벤트에 덧붙인다(넘어온 세션 등).
+  send(session, prompt, cliPath, input = prompt, meta = {}) {
     if (this.running.has(session.id)) throw new Error("이 세션은 이미 실행 중입니다.");
     if (!cliPath) throw new Error(`${session.agent} CLI를 찾지 못했습니다. 설정에서 경로를 지정하세요.`);
 
     const agent = AGENTS[session.agent];
     const args = agent.buildArgs(session);
-    this.append(session, { kind: "user", text: prompt });
+    this.append(session, { kind: "user", text: prompt, ...meta });
     this.setState(session, "running");
 
     const child = spawnCli(cliPath, args, {
@@ -106,6 +107,7 @@ export class Runner extends EventEmitter {
         delete session.stopRequested;
         this.append(session, { kind: "status", text: "사용자가 중지했습니다." });
         this.setState(session, "idle");
+        this.emit("turnEnd", session, null);
         return;
       }
       if (code !== 0 && !sawError) {
@@ -114,10 +116,12 @@ export class Runner extends EventEmitter {
       } else if (stderrTail.length) {
         this.append(session, { kind: "log", text: stderrTail.join("").trim().slice(-4000) });
       }
-      this.setState(session, code === 0 && !sawError ? "idle" : "error");
+      const ok = code === 0 && !sawError;
+      this.setState(session, ok ? "idle" : "error");
+      this.emit("turnEnd", session, ok);
     });
 
-    child.stdin.end(prompt);
+    child.stdin.end(input);
   }
 
   stop(session) {

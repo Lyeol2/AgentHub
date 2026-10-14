@@ -46,3 +46,14 @@ export async function diffSince(dir, base) {
   ]);
   return { status, diff };
 }
+
+// 기준 커밋 이후 바뀐 파일(커밋한 것 + 커밋하지 않은 것 + 새 파일)
+export async function changedFiles(dir, base) {
+  const [tracked, untracked] = await Promise.all([
+    git(dir, ["diff", "--name-status", base]),
+    git(dir, ["ls-files", "--others", "--exclude-standard"]),
+  ]);
+  const lines = [...tracked.trim().split(/\r?\n/), ...untracked.trim().split(/\r?\n/).map((f) => f && `A\t${f}`)]
+    .filter(Boolean);
+  return lines.length > 80 ? `${lines.slice(0, 80).join("\n")}\n… 외 ${lines.length - 80}개` : lines.join("\n");
+}

@@ -9,11 +9,15 @@ import { Runner, AGENTS } from "./runner.mjs";
 import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince } from "./git.mjs";
 import { discoverProjects, discoverSessions, loadHistory } from "./discover.mjs";
 import { readLimits, recordClaudeLimit } from "./limits.mjs";
+import { ROLE_MAX, withRole } from "./role.mjs";
+import { LinkStore } from "./links.mjs";
+import { Chain, CONDITIONS } from "./chain.mjs";
 
 const config = loadConfig();
 const port = Number(process.env.PORT ?? config.port);
 const store = new SessionStore();
 const runner = new Runner(store);
+const links = new LinkStore();
 const PUBLIC_DIR = path.join(ROOT, "public");
 const VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
 const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
@@ -22,6 +26,7 @@ const cliPaths = () => ({
   claude: locateCli("claude", config.cli.claude),
   codex: locateCli("codex", config.cli.codex),
 });
+const chain = new Chain({ store, runner, links, cliPaths });
 
 // ── 보안: 로컬 전용 ─────────────────────────────────────────────
 // 127.0.0.1에만 열고, Host 헤더와 사용자 정의 헤더를 확인해 다른 사이트의 요청(DNS 리바인딩, CSRF)을 막는다.
@@ -101,6 +106,26 @@ function getSession(id) {
 
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
+function getLink(id) {
+  const link = links.get(id);
+  if (!link) throw new HttpError(404, "연결이 없습니다.");
+  return link;
+}
+
+// 연결 조건 입력을 검사해 저장할 값만 돌려준다.
+function linkFields(body, current = {}) {
+  const when = body.when ?? current.when ?? "success";
+  if (!CONDITIONS.includes(when)) throw new HttpError(400, "연결 조건이 올바르지 않습니다.");
+  const keyword = String(body.keyword ?? current.keyword ?? "").trim().slice(0, 100);
+  if (when === "keyword" && !keyword) throw new HttpError(400, "키워드를 입력하세요.");
+  return {
+    when,
+    keyword,
+    note: String(body.note ?? current.note ?? "").trim().slice(0, ROLE_MAX),
+    enabled: body.enabled ?? current.enabled ?? true,
+  };
+}
+
 // 등록된 프로젝트를 찾고, 없으면(자동 감지된 프로젝트) 그 자리에서 등록한다.
 function ensureProject(projectPath) {
   if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
@@ -131,8 +156,9 @@ async function handleApi(req, res, url) {
     const [claudeVersion, codexVersion] = await Promise.all([cliVersion(paths.claude), cliVersion(paths.codex)]);
     return send(res, 200, {
       agents: {
-        claude: { path: paths.claude, version: claudeVersion, permissions: AGENTS.claude.PERMISSION_MODES },
-        codex: { path: paths.codex, version: codexVersion, permissions: AGENTS.codex.PERMISSION_MODES },
+        // autoPath: 직접 지정한 경로와 상관없이 자동으로 찾은 경로(설정 화면에 읽기 전용으로 보여 준다)
+        claude: { path: paths.claude, autoPath: locateCli("claude", ""), version: claudeVersion, permissions: AGENTS.claude.PERMISSION_MODES },
+        codex: { path: paths.codex, autoPath: locateCli("codex", ""), version: codexVersion, permissions: AGENTS.codex.PERMISSION_MODES },
       },
       cliOverrides: config.cli,
       projects: config.projects,
@@ -206,6 +232,40 @@ async function handleApi(req, res, url) {
     }
   }
 
+  if (parts[0] === "links") {
+    if (parts.length === 1 && method === "GET") return send(res, 200, links.list());
+
+    if (parts.length === 1 && method === "POST") {
+      const body = await readJson(req);
+      const from = getSession(body.from);
+      const to = getSession(body.to);
+      if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");
+      if (!samePath(from.projectPath, to.projectPath)) throw new HttpError(400, "같은 프로젝트의 세션끼리만 연결할 수 있습니다.");
+      if (links.list().some((l) => l.from === from.id && l.to === to.id)) throw new HttpError(409, "이미 연결되어 있습니다.");
+      const link = { id: randomBytes(4).toString("hex"), from: from.id, to: to.id, ...linkFields(body) };
+      links.add(link);
+      broadcast("links", {});
+      return send(res, 200, link);
+    }
+
+    const link = getLink(parts[1]);
+    if (parts.length === 2 && method === "PUT") {
+      links.update(link, linkFields(await readJson(req), link));
+      broadcast("links", {});
+      return send(res, 200, link);
+    }
+    if (parts.length === 2 && method === "DELETE") {
+      links.remove(link.id);
+      broadcast("links", {});
+      return send(res, 200, { ok: true });
+    }
+    // 조건과 상관없이 지금 넘긴다.
+    if (parts[2] === "run" && method === "POST") {
+      await chain.deliver(link, 0);
+      return send(res, 200, { ok: true });
+    }
+  }
+
   if (parts[0] === "sessions") {
     if (parts.length === 1 && method === "GET") return send(res, 200, store.list().map(summary));
 
@@ -233,6 +293,7 @@ async function handleApi(req, res, url) {
       const session = {
         id,
         title: String(body.title ?? "").trim() || `${agent} 세션`,
+        role: String(body.role ?? "").trim().slice(0, ROLE_MAX),
         agent,
         model,
         permission,
@@ -295,12 +356,31 @@ async function handleApi(req, res, url) {
       const body = await readJson(req);
       const prompt = String(body.prompt ?? "").trim();
       if (!prompt) throw new HttpError(400, "내용을 입력하세요.");
+      if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
+      session.chainDepth = 0; // 사용자가 직접 보낸 요청은 새 흐름이다.
       try {
-        runner.send(session, prompt, cliPaths()[session.agent]);
+        runner.send(session, prompt, cliPaths()[session.agent], withRole(session, prompt));
       } catch (err) {
         throw new HttpError(409, err.message);
       }
       return send(res, 200, { ok: true });
+    }
+
+    if (parts.length === 2 && method === "PUT") {
+      const body = await readJson(req);
+      if (body.title !== undefined) session.title = String(body.title).trim() || session.title;
+      if (body.role !== undefined) {
+        const role = String(body.role).trim().slice(0, ROLE_MAX);
+        if (role !== (session.role ?? "") && session.agentSessionId) session.roleChanged = true;
+        session.role = role;
+      }
+      if (body.graphPos !== undefined) {
+        const { x, y } = body.graphPos ?? {};
+        session.graphPos = Number.isFinite(x) && Number.isFinite(y) ? { x: Math.max(0, x), y: Math.max(0, y) } : null;
+      }
+      store.touch(session);
+      broadcast("sessions", {});
+      return send(res, 200, summary(session));
     }
 
     if (parts[2] === "stop" && method === "POST") return send(res, 200, { stopped: runner.stop(session) });
@@ -320,7 +400,9 @@ async function handleApi(req, res, url) {
         }
       }
       store.remove(session.id);
+      links.removeForSession(session.id);
       broadcast("sessions", {});
+      broadcast("links", {});
       return send(res, 200, { ok: true });
     }
   }
