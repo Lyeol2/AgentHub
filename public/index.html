@@ -95,8 +95,12 @@
         <div class="card">
           <div class="card-head">
             <h3>세션 흐름 <span class="muted">카드를 눌러 열고, 끌어서 옮기고, ● 손잡이를 다른 카드로 끌어 연결합니다</span></h3>
-            <button class="ghost sm" id="p-relayout" title="옮긴 위치를 지우고 연결 순서대로 다시 배치">자동 배치</button>
+            <div class="actions">
+              <button class="ghost sm" id="p-orchestrator" title="목표를 작업으로 나누고 세션을 만들어 지휘하는 세션">오케스트레이터 만들기</button>
+              <button class="ghost sm" id="p-relayout" title="옮긴 위치를 지우고 연결 순서대로 다시 배치">자동 배치</button>
+            </div>
           </div>
+          <div class="hub-bar" id="p-hub"></div>
           <div class="graph" id="p-graph"></div>
         </div>
         <div class="card">
@@ -117,6 +121,7 @@
           <div class="title-row">
             <span id="s-agent" class="badge"></span>
             <h2 id="s-title"></h2>
+            <span id="s-kind" class="pill orch" hidden>오케스트레이터</span>
             <span id="s-state" class="pill"></span>
           </div>
           <div class="sub" id="s-meta"></div>
@@ -158,6 +163,10 @@
       <label class="for-project">프로젝트
         <select name="projectPath" id="new-project" required></select>
       </label>
+      <label id="new-template-row">역할 템플릿 <span class="muted">AGENTHUB.md</span>
+        <select id="new-template"></select>
+      </label>
+      <input type="hidden" name="roleName" id="new-role-name">
       <label>제목 <input name="title" id="new-title" placeholder="예: 가방 UI 버그 수정"></label>
       <label>역할 <textarea name="role" id="new-role" rows="3" placeholder="예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 '검토 요청'이라고 쓴다."></textarea></label>
       <div class="two">
@@ -166,7 +175,10 @@
       </div>
       <datalist id="new-models"></datalist>
       <label class="for-project">권한 <select name="permission" id="new-permission"></select></label>
-      <label class="check for-project"><input type="checkbox" name="isolate" checked>
+      <label class="check for-project"><input type="checkbox" name="orchestrator" id="new-orchestrator">
+        오케스트레이터 세션 (코드를 고치지 않고 다른 세션을 만들어 지휘)
+      </label>
+      <label class="check for-project"><input type="checkbox" name="isolate" id="new-isolate" checked>
         별도 작업 폴더(git worktree)에서 실행
       </label>
       <p class="hint for-project">작업 폴더는 현재 커밋(HEAD) 기준으로 만들어집니다. 커밋하지 않은 수정은 포함되지 않습니다. Unity 프로젝트는 작업 폴더에서 열면 Library를 다시 만듭니다.</p>
@@ -206,6 +218,21 @@
       <menu>
         <button value="cancel" formnovalidate class="ghost">닫기</button>
         <button value="ok" class="primary">저장</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="flow-dialog">
+    <form method="dialog" id="flow-form" class="dialog-form">
+      <h3>흐름 시작 <small>AGENTHUB.md의 흐름 템플릿으로 세션을 만들고 연결합니다</small></h3>
+      <label>흐름 <select id="flow-name"></select></label>
+      <div class="flow-preview" id="flow-preview"></div>
+      <label>작업 이름 <input id="flow-label" placeholder="예: 가방 UI 개편 (세션 제목 앞에 붙습니다)"></label>
+      <label>첫 요청 <textarea id="flow-prompt" rows="4" placeholder="비워 두면 세션만 만들고 기다립니다. 적으면 받는 연결이 없는 역할에 바로 보냅니다."></textarea></label>
+      <p class="error" id="flow-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate class="ghost">취소</button>
+        <button value="ok" class="primary">시작</button>
       </menu>
     </form>
   </dialog>

@@ -375,3 +375,34 @@ dialog::backdrop { background: rgb(4 6 10 / .65); backdrop-filter: blur(2px); }
 .handoff-body { margin-top: 8px; font-size: 12.5px; }
 .dialog-form menu .spacer { flex: 1; }
 .dialog-form textarea { resize: vertical; }
+
+/* ── AGENTHUB.md ──────────────────────────────────────────── */
+.hub-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.hub-bar:empty { display: none; }
+.hub-bar .spacer { flex: 1; }
+.hub-bar .hub-file { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+.hub-warnings { flex-basis: 100%; margin: 2px 0 0; padding-left: 18px; color: var(--warn); font-size: 12px; }
+.flow-preview { display: grid; gap: 8px; }
+.flow-roles { display: flex; flex-wrap: wrap; gap: 6px; }
+.flow-role-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel-2); font-size: 12.5px; }
+.flow-role-chip.missing { color: var(--danger); border-color: rgb(240 100 100 / .4); }
+.flow-steps { margin: 0; padding-left: 18px; font-size: 12.5px; }
+
+/* ── 오케스트레이터 ───────────────────────────────────────── */
+.pill.orch { color: #c9a3ff; border-color: rgb(170 120 255 / .45); background: rgb(170 120 255 / .12); }
+.gcard.orchestrator { border-color: rgb(170 120 255 / .55); background: linear-gradient(180deg, rgb(170 120 255 / .08), var(--panel-2) 60%); }
+.gcard-top .pill.orch { margin-right: auto; margin-left: 6px; }
+.ev.plan { width: 100%; max-width: 920px; display: grid; gap: 8px; padding: 12px 14px; border-radius: 8px; border: 1px solid rgb(170 120 255 / .45); background: rgb(170 120 255 / .06); }
+.ev.plan.applied { border-color: rgb(76 194 138 / .4); background: rgb(76 194 138 / .05); }
+.ev.plan.rejected { opacity: .65; }
+.ev.plan.invalid { border-color: rgb(240 100 100 / .4); background: rgb(240 100 100 / .05); }
+.plan-head { display: flex; gap: 8px; align-items: center; }
+.pill.plan-pending { color: #c9a3ff; border-color: rgb(170 120 255 / .45); }
+.pill.plan-applied { color: var(--ok); border-color: rgb(76 194 138 / .4); }
+.pill.plan-invalid { color: var(--danger); border-color: rgb(240 100 100 / .4); }
+.plan-section ul { margin: 2px 0 0; padding-left: 18px; display: grid; gap: 3px; font-size: 12.5px; }
+.plan-label { font-size: 11.5px; color: var(--faint); }
+.plan-error { color: var(--danger); font-size: 12.5px; }
+.plan-result { color: var(--ok); font-size: 12.5px; }
+.plan-actions { display: flex; gap: 6px; }
+.graph-edges path.edge.command { stroke: rgb(170 120 255 / .55); stroke-dasharray: 2 5; stroke-width: 1.4; }
