@@ -3,12 +3,47 @@
   "version": "0.1.0",
   "private": true,
   "description": "Local web app that runs Claude Code and Codex CLI sessions side by side.",
+  "author": "Lyeol2",
   "type": "module",
+  "main": "electron/main.mjs",
   "scripts": {
     "start": "node server/index.mjs",
+    "app": "electron .",
+    "dist": "electron-builder --win",
     "test": "node --test"
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "electron": "44.7.2",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.lyeol2.agenthub",
+    "productName": "AgentHub",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "server/**",
+      "public/**",
+      "build/icon.ico",
+      "package.json"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": ["nsis", "portable"]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "AgentHub"
+    },
+    "portable": {
+      "artifactName": "AgentHub-${version}-portable.exe"
+    }
   }
 }

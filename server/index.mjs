@@ -7,6 +7,8 @@ import { locateCli, cliVersion } from "./cli.mjs";
 import { SessionStore, summary } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
 import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince } from "./git.mjs";
+import { discoverSessions, loadHistory } from "./discover.mjs";
+import { readLimits, recordClaudeLimit } from "./limits.mjs";
 
 const config = loadConfig();
 const port = Number(process.env.PORT ?? config.port);
@@ -76,6 +78,10 @@ function broadcast(type, data) {
 }
 runner.on("event", (sessionId, event) => broadcast("event", { sessionId, event }));
 runner.on("state", (sessionId, state) => broadcast("state", { sessionId, state }));
+runner.on("limit", (agent, info) => {
+  if (agent === "claude") recordClaudeLimit(info);
+  broadcast("limits", {});
+});
 setInterval(() => broadcast("ping", {}), 25000).unref();
 
 // ── API ─────────────────────────────────────────────────────────
@@ -83,6 +89,12 @@ function getSession(id) {
   const session = store.get(id);
   if (!session) throw new HttpError(404, "세션이 없습니다.");
   return session;
+}
+
+function findProject(projectPath) {
+  const project = config.projects.find((p) => p.path === projectPath);
+  if (!project) throw new HttpError(400, "등록된 프로젝트를 선택하세요.");
+  return project;
 }
 
 async function handleApi(req, res, url) {
@@ -110,6 +122,8 @@ async function handleApi(req, res, url) {
     });
   }
 
+  if (parts[0] === "limits" && method === "GET") return send(res, 200, readLimits());
+
   if (parts[0] === "settings" && method === "PUT") {
     const body = await readJson(req);
     for (const agent of ["claude", "codex"]) {
@@ -130,6 +144,15 @@ async function handleApi(req, res, url) {
       config.projects.push({ name: String(body.name ?? "").trim() || path.basename(dir), path: dir });
       saveConfig(config);
       return send(res, 200, config.projects);
+    }
+    // AgentHub 밖에서 만든 Claude Code·Codex 세션 목록. 이미 가져온 것은 linkedId로 표시한다.
+    if (parts[1] === "discover" && method === "GET") {
+      const project = findProject(url.searchParams.get("path"));
+      const linked = new Map(store.list().filter((s) => s.agentSessionId).map((s) => [s.agentSessionId, s.id]));
+      return send(res, 200, discoverSessions(project.path).map(({ file, ...found }) => ({
+        ...found,
+        linkedId: linked.get(found.agentSessionId) ?? null,
+      })));
     }
     if (method === "DELETE" && parts[1] !== undefined) {
       config.projects.splice(Number(parts[1]), 1);
@@ -179,6 +202,41 @@ async function handleApi(req, res, url) {
         createdAt: now,
         updatedAt: now,
         events: [],
+      };
+      store.add(session);
+      broadcast("sessions", {});
+      return send(res, 200, summary(session));
+    }
+
+    if (parts[1] === "import" && method === "POST") {
+      const body = await readJson(req);
+      const project = findProject(body.projectPath);
+      const existing = store.list().find((s) => s.agentSessionId && s.agentSessionId === body.agentSessionId);
+      if (existing) return send(res, 200, summary(existing));
+      const found = discoverSessions(project.path)
+        .find((s) => s.agent === body.agent && s.agentSessionId === body.agentSessionId);
+      if (!found) throw new HttpError(404, "세션 기록을 찾지 못했습니다.");
+
+      const cwd = found.cwd && fs.existsSync(found.cwd) ? found.cwd : project.path;
+      const git = await isGitRepo(cwd);
+      const now = new Date().toISOString();
+      const session = {
+        id: `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`,
+        title: found.title || `${found.agent} 세션`,
+        agent: found.agent,
+        model: "",
+        permission: found.agent === "claude" ? "acceptEdits" : "workspace-write",
+        projectName: project.name,
+        projectPath: project.path,
+        cwd,
+        worktree: null,
+        baseCommit: git ? await headCommit(cwd) : null,
+        agentSessionId: found.agentSessionId,
+        imported: true,
+        state: "idle",
+        createdAt: now,
+        updatedAt: now,
+        events: loadHistory(found),
       };
       store.add(session);
       broadcast("sessions", {});
@@ -240,22 +298,27 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(port, "127.0.0.1", () => {
-  console.log(`AgentHub: http://127.0.0.1:${port}`);
+export { port };
+
+// 서버가 열리면 resolve, 포트가 이미 쓰이고 있으면 reject된다(Electron 앱이 기다린다).
+export const listening = new Promise((resolve, reject) => {
+  server.once("error", reject);
+  server.listen(port, "127.0.0.1", () => {
+    console.log(`AgentHub: http://127.0.0.1:${port}`);
+    resolve();
+  });
 });
+
+// 실행 중인 에이전트를 멈추고 세션을 저장한다.
+export function shutdown() {
+  runner.stopAll();
+  store.flushAll();
+  server.close();
+}
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    store.flushAll();
+    shutdown();
     process.exit(0);
   });
-}
-
-// Windows 런처(AgentHub.exe)는 신호를 보낼 수 없으므로 stdin을 닫아 종료를 알린다.
-if (process.env.AGENTHUB_LAUNCHER === "1") {
-  process.stdin.on("end", () => {
-    store.flushAll();
-    process.exit(0);
-  });
-  process.stdin.resume();
 }

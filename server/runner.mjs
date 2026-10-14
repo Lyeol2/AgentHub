@@ -60,6 +60,10 @@ export class Runner extends EventEmitter {
           session.agentSessionId = event.agentSessionId;
           delete event.agentSessionId;
         }
+        if (event.rateLimit) {
+          this.emit("limit", session.agent, event.rateLimit);
+          continue;
+        }
         if (event.kind === "error") {
           // Codex는 같은 오류를 error와 turn.failed로 두 번 보낸다.
           if (event.text === lastErrorText) continue;
@@ -127,5 +131,9 @@ export class Runner extends EventEmitter {
       child.kill("SIGINT");
     }
     return true;
+  }
+
+  stopAll() {
+    for (const id of this.running.keys()) this.stop(this.store.get(id));
   }
 }

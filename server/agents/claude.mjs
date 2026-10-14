@@ -74,6 +74,9 @@ export function parseLine(line) {
       }
       return events;
     }
+    case "rate_limit_event":
+      // 화면에 남기지 않고 사용 한도 표시에만 쓴다.
+      return msg.rate_limit_info ? [{ kind: "limit", rateLimit: msg.rate_limit_info }] : [];
     case "result": {
       const cost = typeof msg.total_cost_usd === "number" ? ` · 환산 비용 $${msg.total_cost_usd.toFixed(4)}` : "";
       const seconds = msg.duration_ms ? ` · ${(msg.duration_ms / 1000).toFixed(1)}초` : "";

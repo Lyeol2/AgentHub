@@ -1,6 +1,6 @@
-﻿# AgentHub 아이콘(launcher/agenthub.ico)을 만든다. 외부 도구 없이 System.Drawing으로 그린다.
+﻿# AgentHub 아이콘(build/icon.ico)을 만든다. 외부 도구 없이 System.Drawing으로 그린다.
 # 16/32/48 크기는 BMP 프레임으로, 256 크기는 PNG 프레임으로 넣는다.
-param([string]$Out = (Join-Path $PSScriptRoot "agenthub.ico"))
+param([string]$Out = (Join-Path $PSScriptRoot "icon.ico"))
 
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
 using System;

@@ -1,0 +1,257 @@
+// AgentHub 밖에서 만든 Claude Code·Codex 세션을 디스크 기록에서 찾아 가져온다.
+// Claude: ~/.claude/projects/<인코딩된 경로>/<세션 ID>.jsonl
+// Codex:  ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl (첫 줄 session_meta에 작업 폴더가 있다)
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import * as claude from "./agents/claude.mjs";
+
+const HOME = os.homedir();
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(HOME, ".claude");
+const CODEX_DIR = process.env.CODEX_HOME ?? path.join(HOME, ".codex");
+const MAX_EVENTS = 400;
+
+// 프로젝트 폴더 자체이거나 그 아래, 또는 AgentHub 작업 폴더(<저장소>.agenthub/...)인지.
+function belongsTo(cwd, projectPath) {
+  if (!cwd) return false;
+  const c = path.resolve(cwd).toLowerCase();
+  const p = path.resolve(projectPath).toLowerCase();
+  return c === p || c.startsWith(p + path.sep) || c.startsWith(`${p}.agenthub${path.sep}`);
+}
+
+function readLines(file) {
+  return fs.readFileSync(file, "utf8").split("\n").filter(Boolean);
+}
+
+function parseJson(line) {
+  try {
+    return JSON.parse(line);
+  } catch {
+    return null;
+  }
+}
+
+function firstLine(file, max = 1 << 20) {
+  const fd = fs.openSync(file, "r");
+  try {
+    const buf = Buffer.alloc(Math.min(max, fs.fstatSync(fd).size));
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    const text = buf.toString("utf8", 0, n);
+    const end = text.indexOf("\n");
+    return end < 0 ? text : text.slice(0, end);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+const oneLine = (text, max = 80) => {
+  const s = String(text ?? "").replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max)}…` : s;
+};
+
+// CLI가 프롬프트 앞뒤에 붙이는 시스템 텍스트는 사용자 입력으로 보지 않는다.
+const isInjected = (text) => /^\s*<[\w-]+[\s>]/.test(text) || /^# AGENTS\.md/.test(text);
+
+// ── Claude ──────────────────────────────────────────────────────
+function claudeUserText(msg) {
+  const content = msg.message?.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) return content.filter((b) => b.type === "text").map((b) => b.text).join("\n");
+  return "";
+}
+
+function claudeProjectDirs(projectPath) {
+  const base = path.join(CLAUDE_DIR, "projects");
+  if (!fs.existsSync(base)) return [];
+  const encoded = path.resolve(projectPath).replace(/[^a-zA-Z0-9]/g, "-").toLowerCase();
+  return fs.readdirSync(base)
+    .filter((name) => name.toLowerCase() === encoded || name.toLowerCase().startsWith(`${encoded}-`))
+    .map((name) => path.join(base, name));
+}
+
+// 기록 파일 요약은 파일이 바뀌지 않았으면 다시 읽지 않는다.
+const summaryCache = new Map(); // 파일 경로 → { mtimeMs, size, value }
+function cached(file, summarize) {
+  const stat = fs.statSync(file);
+  const hit = summaryCache.get(file);
+  if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.value;
+  const value = summarize(file, stat);
+  summaryCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, value });
+  return value;
+}
+
+function summarizeClaude(file, stat) {
+  let cwd = null;
+  let title = null;
+  let firstPrompt = null;
+  let turns = 0;
+  for (const line of readLines(file)) {
+    const msg = parseJson(line);
+    if (!msg) continue;
+    if (msg.type === "custom-title" && msg.customTitle) title = msg.customTitle;
+    if (msg.type !== "user" || msg.isSidechain || msg.isMeta) continue;
+    cwd ??= msg.cwd;
+    const text = claudeUserText(msg);
+    if (!text || isInjected(text)) continue;
+    turns++;
+    firstPrompt ??= text;
+  }
+  if (!turns) return null;
+  return {
+    agent: "claude",
+    agentSessionId: path.basename(file, ".jsonl"),
+    title: oneLine(title ?? firstPrompt),
+    cwd,
+    turns,
+    updatedAt: stat.mtime.toISOString(),
+    file,
+  };
+}
+
+function scanClaude(projectPath) {
+  const found = [];
+  for (const dir of claudeProjectDirs(projectPath)) {
+    for (const name of fs.readdirSync(dir)) {
+      if (!name.endsWith(".jsonl")) continue;
+      const entry = cached(path.join(dir, name), summarizeClaude);
+      if (entry && belongsTo(entry.cwd, projectPath)) found.push(entry);
+    }
+  }
+  return found;
+}
+
+function claudeHistory(file) {
+  const events = [];
+  for (const line of readLines(file)) {
+    const msg = parseJson(line);
+    if (!msg || msg.isSidechain || msg.isMeta) continue;
+    if (msg.type === "user") {
+      const text = claudeUserText(msg);
+      if (text && !isInjected(text)) events.push({ kind: "user", text, ts: msg.timestamp });
+      else events.push(...claude.parseLine(line).map((e) => ({ ...e, ts: msg.timestamp })));
+    } else if (msg.type === "assistant") {
+      events.push(...claude.parseLine(line).map((e) => ({ ...e, ts: msg.timestamp })));
+    }
+  }
+  return events;
+}
+
+// ── Codex ───────────────────────────────────────────────────────
+const codexMetaCache = new Map(); // 파일 경로 → session_meta(바뀌지 않는다)
+
+function walk(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) walk(full, out);
+    else if (entry.name.endsWith(".jsonl")) out.push(full);
+  }
+  return out;
+}
+
+function codexMeta(file) {
+  if (!codexMetaCache.has(file)) {
+    const meta = parseJson(firstLine(file))?.payload ?? null;
+    codexMetaCache.set(file, meta && { id: meta.id ?? meta.session_id, cwd: meta.cwd, source: meta.source });
+  }
+  return codexMetaCache.get(file);
+}
+
+function codexThreadNames() {
+  const names = new Map();
+  const file = path.join(CODEX_DIR, "session_index.jsonl");
+  if (!fs.existsSync(file)) return names;
+  for (const line of readLines(file)) {
+    const entry = parseJson(line);
+    if (entry?.id && entry.thread_name) names.set(entry.id, entry.thread_name);
+  }
+  return names;
+}
+
+function codexText(content) {
+  return (content ?? []).map((c) => c.text ?? "").filter(Boolean).join("\n");
+}
+
+function truncate(text, max = 4000) {
+  if (typeof text !== "string") text = JSON.stringify(text);
+  return text.length > max ? `${text.slice(0, max)}\n… (${text.length - max}자 생략)` : text;
+}
+
+function codexHistory(file) {
+  const events = [];
+  for (const line of readLines(file)) {
+    const msg = parseJson(line);
+    if (msg?.type !== "response_item") continue;
+    const p = msg.payload ?? {};
+    const ts = msg.timestamp;
+    if (p.type === "message" && p.role === "user") {
+      const text = codexText(p.content);
+      if (text && !isInjected(text)) events.push({ kind: "user", text, ts });
+    } else if (p.type === "message" && p.role === "assistant") {
+      const text = codexText(p.content);
+      if (text) events.push({ kind: "text", text, ts });
+    } else if (p.type === "function_call" || p.type === "custom_tool_call") {
+      const input = p.arguments ?? p.input ?? "";
+      events.push({ kind: "tool", text: `${p.name}: ${oneLine(input, 160)}`, detail: truncate(input), ts });
+    } else if (p.type === "function_call_output" || p.type === "custom_tool_call_output") {
+      const out = typeof p.output === "string" ? p.output : JSON.stringify(p.output);
+      if (out) events.push({ kind: "tool_result", text: truncate(out), ts });
+    }
+  }
+  return events;
+}
+
+function scanCodex(projectPath) {
+  const names = codexThreadNames();
+  const found = [];
+  for (const file of walk(path.join(CODEX_DIR, "sessions"))) {
+    let meta;
+    try {
+      meta = codexMeta(file);
+    } catch {
+      continue;
+    }
+    // 하위 에이전트·검토용 스레드(source가 객체)는 빼고 사용자가 연 세션만 본다.
+    if (!meta?.id || typeof meta.source !== "string" || !belongsTo(meta.cwd, projectPath)) continue;
+    const entry = cached(file, (f, stat) => {
+      const prompts = codexHistory(f).filter((e) => e.kind === "user");
+      if (!prompts.length) return null;
+      return {
+        agent: "codex",
+        agentSessionId: meta.id,
+        firstPrompt: prompts[0].text,
+        cwd: meta.cwd,
+        turns: prompts.length,
+        updatedAt: stat.mtime.toISOString(),
+        file,
+      };
+    });
+    if (!entry) continue;
+    const { firstPrompt, ...rest } = entry;
+    found.push({ ...rest, title: oneLine(names.get(meta.id) ?? firstPrompt) });
+  }
+  return found;
+}
+
+// ── 공개 함수 ───────────────────────────────────────────────────
+export function discoverSessions(projectPath) {
+  const all = [];
+  for (const scan of [scanClaude, scanCodex]) {
+    try {
+      all.push(...scan(projectPath));
+    } catch (err) {
+      console.error(`세션 검색 실패: ${err.message}`);
+    }
+  }
+  return all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+export function loadHistory(found) {
+  const events = found.agent === "claude" ? claudeHistory(found.file) : codexHistory(found.file);
+  const skipped = Math.max(0, events.length - MAX_EVENTS);
+  const kept = events.slice(skipped);
+  const note = `${found.agent === "claude" ? "Claude Code" : "Codex"}에서 가져온 세션입니다.` +
+    (skipped ? ` 앞부분 ${skipped}개 항목은 생략했습니다.` : "");
+  return [{ kind: "status", text: note }, ...kept].map((e, seq) => ({ ...e, seq, ts: e.ts ?? new Date().toISOString() }));
+}
+

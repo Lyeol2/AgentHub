@@ -71,3 +71,10 @@ test("codex: 재개 인자에는 resume과 샌드박스 설정이 들어간다",
   assert.ok(args.includes("sandbox_mode=read-only"));
   assert.equal(args.at(-1), "-");
 });
+
+test("claude: rate_limit_event는 화면 이벤트가 아니라 한도 정보로 넘긴다", () => {
+  const info = { status: "allowed", resetsAt: 1792000000, rateLimitType: "five_hour" };
+  const [ev] = claude.parseLine(JSON.stringify({ type: "rate_limit_event", rate_limit_info: info, session_id: "s" }));
+  assert.equal(ev.kind, "limit");
+  assert.deepEqual(ev.rateLimit, info);
+});
