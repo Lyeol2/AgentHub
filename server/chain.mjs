@@ -51,11 +51,13 @@ export function handoffText(source, link, answer, files) {
 }
 
 export class Chain {
-  constructor({ store, runner, links, cliPaths }) {
+  // compose: CLI에 실제로 넘길 내용을 만든다(역할·공통 지침·오케스트레이터 맥락).
+  constructor({ store, runner, links, cliPaths, compose = withRole }) {
     this.store = store;
     this.runner = runner;
     this.links = links;
     this.cliPaths = cliPaths;
+    this.compose = compose;
     this.queue = new Map(); // 받는 세션 ID → 실행 중이라 밀린 작업
     runner.on("turnEnd", (session, ok) => this.onTurnEnd(session, ok).catch((err) => console.error(err)));
   }
@@ -86,17 +88,21 @@ export class Chain {
       this.runner.append(source, { kind: "status", text: `자동 연결이 ${MAX_HOPS}단계를 넘어 "${target.title}"(으)로 넘기지 않았습니다.` });
       return;
     }
+    // Claude는 작업 폴더 밖을 읽으려면 허락이 필요하므로 보낸 세션의 폴더를 실행 인자로 열어 준다.
+    if (target.agent === "claude" && source.cwd.toLowerCase() !== target.cwd.toLowerCase()) {
+      target.addDirs = [...new Set([...(target.addDirs ?? []), source.cwd])];
+    }
     const files = source.baseCommit ? await changedFiles(source.cwd, source.baseCommit).catch(() => "") : "";
-    const item = {
-      text: handoffText(source, link, lastAnswer(source), files),
-      meta: { from: source.id, fromTitle: source.title },
-      depth: depth + 1,
-    };
-    const queue = this.queue.get(target.id) ?? [];
-    queue.push(item);
-    this.queue.set(target.id, queue);
     const waiting = this.runner.isRunning(target.id);
     this.runner.append(source, { kind: "status", text: `"${target.title}"(으)로 넘김${waiting ? " · 실행이 끝나면 시작" : ""}` });
+    this.enqueue(target, handoffText(source, link, lastAnswer(source), files), { from: source.id, fromTitle: source.title }, depth + 1);
+  }
+
+  // 세션에 요청을 넣는다. 실행 중이면 끝난 뒤 차례로 보낸다.
+  enqueue(target, text, meta, depth) {
+    const queue = this.queue.get(target.id) ?? [];
+    queue.push({ text, meta, depth });
+    this.queue.set(target.id, queue);
     this.flush(target);
   }
 
@@ -107,7 +113,7 @@ export class Chain {
     if (!queue.length) this.queue.delete(session.id);
     session.chainDepth = item.depth;
     try {
-      this.runner.send(session, item.text, this.cliPaths()[session.agent], withRole(session, item.text), item.meta);
+      this.runner.send(session, item.text, this.cliPaths()[session.agent], this.compose(session, item.text), item.meta);
     } catch (err) {
       this.runner.append(session, { kind: "error", text: `넘어온 작업을 시작하지 못했습니다: ${err.message}` });
     }

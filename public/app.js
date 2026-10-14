@@ -8,6 +8,7 @@ const state = {
   current: null, // 선택한 세션의 전체 데이터
   filter: "",
   links: [], // 세션 사이 연결
+  hubs: new Map(), // 프로젝트 경로(소문자) → AGENTHUB.md 내용
 };
 
 async function api(method, url, body) {
@@ -378,6 +379,7 @@ async function renderProject() {
   $("p-path").textContent = p.path;
   $("p-registered").hidden = p.registered;
   renderProjectSessions();
+  renderHub();
   table("p-found", [["세션"], ["에이전트"], ["요청", "num"], ["마지막 사용", "num"], ["", "right"]], [],
     "기록을 찾는 중…");
   await renderFound(p);
@@ -499,7 +501,9 @@ function renderGraph() {
   }
   const ids = new Set(sessions.map((s) => s.id));
   const links = state.links.filter((l) => ids.has(l.from) && ids.has(l.to));
-  const pos = layoutGraph(sessions, links);
+  // 오케스트레이터가 만든 세션은 지휘선으로 잇고, 배치도 오케스트레이터를 앞에 둔다.
+  const commands = sessions.filter((s) => ids.has(s.createdBy)).map((s) => ({ from: s.createdBy, to: s.id }));
+  const pos = layoutGraph(sessions, [...commands, ...links]);
 
   const canvas = el("div", { class: "graph-canvas" });
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -509,9 +513,10 @@ function renderGraph() {
 
   const cards = new Map();
   for (const s of sessions) {
-    const role = firstLine(s.role);
-    const card = el("div", { class: `gcard ${s.state}`, "data-id": s.id, title: s.role || s.title },
-      el("div", { class: "gcard-top" }, badge(s.agent), pill(s.state)),
+    const role = [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ");
+    const orchestrator = s.kind === "orchestrator";
+    const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}`, "data-id": s.id, title: s.role || s.title },
+      el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null, pill(s.state)),
       el("div", { class: "gcard-title" }, s.title),
       el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
       el("div", { class: "gcard-foot" }, timeAgo(s.updatedAt)),
@@ -520,7 +525,7 @@ function renderGraph() {
     canvas.append(card);
   }
 
-  state.graph = { canvas, svg, cards, pos, links };
+  state.graph = { canvas, svg, cards, pos, links, commands };
   placeCards();
   box.replaceChildren(canvas);
   canvas.addEventListener("pointerdown", onGraphPointerDown);
@@ -564,6 +569,12 @@ function drawEdges() {
   const g = state.graph;
   g.svg.querySelectorAll("path.edge").forEach((n) => n.remove());
   g.canvas.querySelectorAll(".edge-label").forEach((n) => n.remove());
+  for (const command of g.commands) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", edgePath(g.pos.get(command.from), g.pos.get(command.to)).d);
+    path.setAttribute("class", "edge command");
+    g.svg.append(path);
+  }
   const placed = []; // 라벨이 겹치면 아래로 비킨다.
   for (const link of g.links) {
     const { d, mid } = edgePath(g.pos.get(link.from), g.pos.get(link.to));
@@ -721,6 +732,107 @@ $("link-form").addEventListener("submit", async (e) => {
   }
 });
 
+// ── AGENTHUB.md ─────────────────────────────────────────────────
+async function loadHub(projectPath) {
+  const hub = await api("GET", `/api/hub?path=${encodeURIComponent(projectPath)}`);
+  state.hubs.set(projectPath.toLowerCase(), hub);
+  return hub;
+}
+
+async function renderHub() {
+  const projectPath = state.project;
+  const bar = $("p-hub");
+  let hub;
+  try {
+    hub = await loadHub(projectPath);
+  } catch (err) {
+    bar.replaceChildren(el("span", { class: "error" }, err.message));
+    return;
+  }
+  if (!samePath(state.project, projectPath)) return; // 기다리는 사이 다른 화면으로 이동함
+  if (!hub.exists) {
+    bar.replaceChildren(
+      el("span", { class: "muted" }, "AGENTHUB.md가 없습니다. 만들면 공통 지침과 역할·흐름 템플릿을 쓸 수 있습니다."),
+      el("span", { class: "spacer" }),
+      el("button", { class: "sm", onclick: initHub }, "AGENTHUB.md 만들기"));
+    return;
+  }
+  const start = el("button", { class: "sm primary", onclick: () => openFlowDialog(hub) }, "흐름 시작");
+  start.disabled = !hub.flows.length;
+  bar.replaceChildren(
+    el("b", { class: "hub-file", title: hub.file }, "AGENTHUB.md"),
+    el("span", { class: "muted" },
+      `공통 지침 ${hub.common ? "있음" : "없음"} · 역할 ${hub.roles.length} · 흐름 ${hub.flows.length}`),
+    el("span", { class: "spacer" }),
+    el("button", { class: "ghost sm", onclick: openHubFile }, "열기"),
+    el("button", { class: "ghost sm", onclick: renderHub }, "다시 읽기"),
+    start);
+  if (hub.warnings.length) bar.append(el("ul", { class: "hub-warnings" }, ...hub.warnings.map((w) => el("li", {}, w))));
+}
+
+async function initHub() {
+  try {
+    await api("POST", "/api/hub/init", { path: state.project });
+    await loadProjects(); // 감지된 프로젝트는 이때 등록된다.
+    await renderHub();
+    openHubFile();
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function openHubFile() {
+  api("POST", "/api/hub/open", { path: state.project }).catch((err) => alert(err.message));
+}
+
+// ── 흐름 시작 ───────────────────────────────────────────────────
+function openFlowDialog(hub) {
+  state.flowHub = hub;
+  $("flow-name").replaceChildren(...hub.flows.map((f) => el("option", { value: f.name }, f.name)));
+  $("flow-label").value = "";
+  $("flow-prompt").value = "";
+  $("flow-error").textContent = "";
+  renderFlowPreview();
+  $("flow-dialog").showModal();
+}
+
+function renderFlowPreview() {
+  const hub = state.flowHub;
+  const flow = hub.flows.find((f) => f.name === $("flow-name").value);
+  if (!flow) return;
+  const names = [...new Set(flow.steps.flatMap((s) => [s.from, s.to]))];
+  const roles = names.map((n) => hub.roles.find((r) => r.name === n));
+  $("flow-preview").replaceChildren(
+    el("div", { class: "flow-roles" }, ...names.map((n, i) => roles[i]
+      ? el("span", { class: "flow-role-chip", title: roles[i].body }, badge(roles[i].agent), ` ${n} `,
+        el("span", { class: "muted" }, `${roles[i].permission} · ${roles[i].isolate ? "분리" : "원본"}`))
+      : el("span", { class: "flow-role-chip missing" }, `${n} (역할 없음)`))),
+    el("ul", { class: "flow-steps" }, ...flow.steps.map((s) =>
+      el("li", {}, `${s.from} → ${s.to}`, el("span", { class: "muted" }, ` · ${linkLabel(s)}${s.note ? ` · ${s.note}` : ""}`)))));
+}
+$("flow-name").addEventListener("change", renderFlowPreview);
+
+$("flow-form").addEventListener("submit", async (e) => {
+  if (e.submitter?.value !== "ok") return;
+  e.preventDefault();
+  const button = e.submitter;
+  button.disabled = true;
+  try {
+    await api("POST", "/api/hub/flows", {
+      projectPath: state.project,
+      flowName: $("flow-name").value,
+      name: $("flow-label").value,
+      prompt: $("flow-prompt").value,
+    });
+    $("flow-dialog").close();
+    await Promise.all([loadSessions(), loadLinks(), loadProjects()]);
+  } catch (err) {
+    $("flow-error").textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+});
+
 // ── 세션 화면 ───────────────────────────────────────────────────
 // 세션 제목 아래에 역할과 받는·넘기는 연결을 보여 준다.
 function renderFlow() {
@@ -735,7 +847,7 @@ function renderFlow() {
   const incoming = state.links.filter((l) => l.to === s.id && sessionById(l.from));
   const outgoing = state.links.filter((l) => l.from === s.id && sessionById(l.to));
   $("s-flow").replaceChildren(
-    s.role ? el("span", { class: "flow-role", title: s.role }, `역할 · ${firstLine(s.role)}`) : null,
+    ...(s.role ? [el("span", { class: "flow-role", title: s.role }, `${s.roleName || "역할"} · ${firstLine(s.role)}`)] : []),
     ...incoming.map((l) => chip(l.from, `← ${sessionById(l.from).title} · ${linkLabel(l)}`, l)),
     ...outgoing.map((l) => chip(l.to, `→ ${sessionById(l.to).title} · ${linkLabel(l)}`, l)),
   );
@@ -749,6 +861,7 @@ function renderSession() {
   $("s-agent").className = `badge ${s.agent}`;
   $("s-agent").textContent = AGENT_LABEL[s.agent];
   $("s-title").textContent = s.title;
+  $("s-kind").hidden = s.kind !== "orchestrator";
   renderState();
 
   const meta = [
@@ -777,8 +890,59 @@ function renderState() {
   $("s-form").querySelector("button").disabled = running;
 }
 
+const PLAN_STATUS = { pending: "승인 대기", applied: "실행함", rejected: "거절함", invalid: "형식 오류" };
+
+// 오케스트레이터가 쓴 계획. 승인하면 세션·연결·요청을 만든다.
+function renderPlan(ev) {
+  const s = state.current;
+  const plan = ev.plan;
+  const name = (ref) => {
+    if (ref === s.id) return "오케스트레이터";
+    return plan?.sessions.find((x) => x.key === ref)?.title ?? sessionById(ref)?.title ?? ref;
+  };
+  const section = (title, items) => items.length
+    ? el("div", { class: "plan-section" }, el("div", { class: "plan-label" }, title), el("ul", {}, ...items))
+    : null;
+  const node = el("li", { class: `ev plan ${ev.status}` },
+    el("div", { class: "plan-head" }, el("b", {}, "계획"), el("span", { class: `pill plan-${ev.status}` }, PLAN_STATUS[ev.status] ?? ev.status)),
+    ev.error ? el("div", { class: "plan-error" }, ev.error) : null);
+  if (plan) {
+    node.append(
+      section("세션", plan.sessions.map((x) => x.id
+        ? el("li", {}, el("span", { class: "muted" }, "기존 "), x.title)
+        : el("li", { title: x.roleText }, badge(x.agent), ` ${x.title} `,
+          el("span", { class: "muted" }, [x.roleName && `역할 ${x.roleName}`, x.permission, x.isolate ? "분리" : "원본"].filter(Boolean).join(" · "))))),
+      section("연결", plan.links.map((l) => el("li", {}, `${name(l.from)} → ${name(l.to)}`, el("span", { class: "muted" }, ` · ${linkLabel(l)}`)))),
+      section("요청", plan.send.map((m) => el("li", { title: m.prompt }, el("b", {}, name(m.to)), ` ${firstLine(m.prompt)}`))));
+  }
+  const decide = async (action, reason) => {
+    try {
+      await api("POST", `/api/sessions/${s.id}/plans/${ev.planId}`, { action, reason });
+    } catch (err) {
+      alert(err.message);
+    }
+  };
+  if (ev.status === "pending") {
+    node.append(el("div", { class: "plan-actions" },
+      el("button", { class: "primary sm", onclick: () => decide("approve") }, "승인하고 실행"),
+      el("button", { class: "ghost sm", onclick: () => {
+        const reason = prompt("거절 이유 (적으면 오케스트레이터가 계획을 고칩니다)");
+        if (reason !== null) decide("reject", reason);
+      } }, "거절")));
+  } else if (ev.status === "invalid") {
+    node.append(el("div", { class: "plan-actions" },
+      el("button", { class: "ghost sm", onclick: () => api("POST", `/api/sessions/${s.id}/messages`, {
+        prompt: `[계획 오류] ${ev.error}\n계획 블록을 고쳐 다시 제안하라.`,
+      }).catch((err) => alert(err.message)) }, "오케스트레이터에게 오류 알리기")));
+  } else if (ev.result) {
+    node.append(el("div", { class: "plan-result" }, ev.result));
+  }
+  return node;
+}
+
 function renderEvent(ev) {
   const cls = `ev ${ev.kind}${ev.isError ? " is-error" : ""}`;
+  if (ev.kind === "plan") return renderPlan(ev);
   if (ev.kind === "user" && ev.from) {
     // 연결된 세션에서 넘어온 요청은 접어서 보여 준다.
     const open = (e) => {
@@ -901,7 +1065,48 @@ function fillPermissions() {
   if (agent === "claude") $("new-permission").value = "acceptEdits";
 }
 
-async function openNew(projectPath) {
+// 고른 프로젝트의 AGENTHUB.md 역할 템플릿을 채운다.
+async function fillTemplates() {
+  const projectPath = $("new-project").value;
+  let roles = [];
+  try {
+    roles = (await loadHub(projectPath)).roles ?? [];
+  } catch {
+    // 템플릿 없이도 세션은 만들 수 있다.
+  }
+  if ($("new-project").value !== projectPath) return;
+  state.templateRoles = roles;
+  $("new-template").replaceChildren(el("option", { value: "" }, "직접 입력"),
+    ...roles.map((r) => el("option", { value: r.name }, `${r.name} · ${AGENT_LABEL[r.agent]} · ${r.permission}`)));
+  $("new-template-row").hidden = !roles.length;
+  applyTemplate();
+}
+
+function applyTemplate() {
+  const role = state.templateRoles?.find((r) => r.name === $("new-template").value);
+  $("new-role-name").value = role?.name ?? "";
+  if (!role) return;
+  $("new-orchestrator").checked = false;
+  $("new-agent").value = role.agent;
+  fillPermissions();
+  $("new-permission").value = role.permission;
+  $("new-model").value = role.model;
+  $("new-isolate").checked = role.isolate;
+  $("new-role").value = role.body;
+  if (!$("new-title").value.trim()) $("new-title").value = role.name;
+}
+
+// 오케스트레이터는 원본 폴더에서 읽기만 한다.
+function syncOrchestrator() {
+  if (!$("new-orchestrator").checked) return;
+  $("new-permission").value = $("new-agent").value === "claude" ? "default" : "read-only";
+  $("new-isolate").checked = false;
+  $("new-template").value = "";
+  $("new-role-name").value = "";
+  if (!$("new-title").value.trim()) $("new-title").value = "오케스트레이터";
+}
+
+async function openNew(projectPath, { orchestrator = false } = {}) {
   await loadStatus();
   const projects = sortedProjects();
   if (!projects.length) {
@@ -914,13 +1119,25 @@ async function openNew(projectPath) {
   const match = projectPath && projects.find((p) => samePath(p.path, projectPath));
   if (match) $("new-project").value = match.path;
   fillPermissions();
+  $("new-template").replaceChildren();
+  $("new-template-row").hidden = true;
   $("new-error").textContent = "";
+  $("new-orchestrator").checked = orchestrator;
+  syncOrchestrator();
   $("new-dialog").showModal();
+  fillTemplates();
 }
 
 $("open-new").addEventListener("click", () => openNew(state.project ?? state.current?.projectPath));
 $("open-new-top").addEventListener("click", () => openNew());
-$("new-agent").addEventListener("change", fillPermissions);
+$("new-agent").addEventListener("change", () => {
+  fillPermissions();
+  syncOrchestrator();
+});
+$("new-orchestrator").addEventListener("change", syncOrchestrator);
+$("p-orchestrator").addEventListener("click", () => openNew(state.project, { orchestrator: true }));
+$("new-project").addEventListener("change", fillTemplates);
+$("new-template").addEventListener("change", applyTemplate);
 
 $("new-form").addEventListener("submit", async (e) => {
   if (e.submitter?.value !== "ok") return;
@@ -928,6 +1145,7 @@ $("new-form").addEventListener("submit", async (e) => {
   const form = new FormData(e.target);
   const body = Object.fromEntries(form);
   body.isolate = form.has("isolate");
+  body.orchestrator = form.has("orchestrator");
   try {
     const created = await api("POST", "/api/sessions", body);
     $("new-dialog").close();
@@ -1075,6 +1293,10 @@ function connectStream() {
   });
   source.addEventListener("sessions", loadSessions);
   source.addEventListener("links", loadLinks);
+  source.addEventListener("session", (e) => {
+    const { sessionId } = JSON.parse(e.data);
+    if (state.current?.id === sessionId) selectSession(sessionId);
+  });
   source.addEventListener("limits", loadLimits);
   source.addEventListener("update", (e) => {
     state.update = JSON.parse(e.data);

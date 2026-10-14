@@ -1,12 +1,14 @@
 // Claude Code CLI(`claude -p --output-format stream-json`) 연결.
 import { randomUUID } from "node:crypto";
 
-export const PERMISSION_MODES = ["plan", "acceptEdits", "bypassPermissions"];
+// default: 비대화 실행이라 허락이 필요한 도구(수정, 명령)는 거절되고 읽기만 된다.
+export const PERMISSION_MODES = ["default", "plan", "acceptEdits", "bypassPermissions"];
 
 export function buildArgs(session) {
   const args = ["-p", "--output-format", "stream-json", "--verbose"];
   args.push("--permission-mode", session.permission ?? "acceptEdits");
   if (session.model) args.push("--model", session.model);
+  for (const dir of session.addDirs ?? []) args.push("--add-dir", dir);
   if (session.agentSessionId) {
     args.push("--resume", session.agentSessionId);
   } else {

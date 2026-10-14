@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
 import { ROOT, loadConfig, saveConfig } from "./config.mjs";
 import { locateCli, cliVersion } from "./cli.mjs";
 import { SessionStore, summary } from "./store.mjs";
@@ -11,7 +12,9 @@ import { discoverProjects, discoverSessions, loadHistory } from "./discover.mjs"
 import { readLimits, recordClaudeLimit } from "./limits.mjs";
 import { ROLE_MAX, withRole } from "./role.mjs";
 import { LinkStore } from "./links.mjs";
-import { Chain, CONDITIONS } from "./chain.mjs";
+import { Chain, CONDITIONS, lastAnswer } from "./chain.mjs";
+import { orchestratorInput, extractPlan, normalizePlan } from "./orchestrator.mjs";
+import { HUB_FILE, HUB_TEMPLATE, hubFilePath, readHubFile } from "./hubfile.mjs";
 
 const config = loadConfig();
 const port = Number(process.env.PORT ?? config.port);
@@ -26,7 +29,7 @@ const cliPaths = () => ({
   claude: locateCli("claude", config.cli.claude),
   codex: locateCli("codex", config.cli.codex),
 });
-const chain = new Chain({ store, runner, links, cliPaths });
+const chain = new Chain({ store, runner, links, cliPaths, compose: composeInput });
 
 // ── 보안: 로컬 전용 ─────────────────────────────────────────────
 // 127.0.0.1에만 열고, Host 헤더와 사용자 정의 헤더를 확인해 다른 사이트의 요청(DNS 리바인딩, CSRF)을 막는다.
@@ -139,6 +142,195 @@ function ensureProject(projectPath) {
   return project;
 }
 
+const projectSessions = (projectPath) => store.list().filter((s) => samePath(s.projectPath, projectPath));
+
+// CLI에 실제로 넘길 내용. 오케스트레이터에는 지휘 규칙과 세션 상태를 함께 넣는다.
+function composeInput(session, prompt) {
+  if (session.kind !== "orchestrator") return withRole(session, prompt);
+  return orchestratorInput(session, prompt, {
+    hub: readHubFile(session.projectPath),
+    sessions: projectSessions(session.projectPath),
+  });
+}
+
+function checkSessionOptions({ agent, model = "", permission }) {
+  if (!AGENTS[agent]) throw new HttpError(400, "agent는 claude 또는 codex입니다.");
+  model = String(model ?? "").trim();
+  if (model && !MODEL_PATTERN.test(model)) throw new HttpError(400, "모델 이름 형식이 올바르지 않습니다.");
+  permission ??= AGENTS[agent].PERMISSION_MODES.at(-1);
+  if (!AGENTS[agent].PERMISSION_MODES.includes(permission)) throw new HttpError(400, "권한 모드가 올바르지 않습니다.");
+  return { agent, model, permission };
+}
+
+async function createSession({ project, isolate, title, role, roleName, orchestrator, createdBy, ...options }) {
+  const { agent, model, permission } = checkSessionOptions(options);
+  const id = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
+  const git = await isGitRepo(project.path);
+  let cwd = project.path;
+  let worktree = null;
+  if (isolate) {
+    if (!git) throw new HttpError(400, "git 저장소가 아니어서 작업 폴더를 분리할 수 없습니다.");
+    worktree = await createWorktree(project.path, id);
+    cwd = worktree.dir;
+  }
+
+  const now = new Date().toISOString();
+  const session = {
+    id,
+    title: String(title ?? "").trim() || `${agent} 세션`,
+    role: String(role ?? "").trim().slice(0, ROLE_MAX),
+    roleName: String(roleName ?? "").trim().slice(0, 100),
+    kind: orchestrator ? "orchestrator" : "worker",
+    createdBy: createdBy ?? null, // 이 세션을 만든 오케스트레이터
+    agent,
+    model,
+    permission,
+    projectName: project.name,
+    projectPath: project.path,
+    cwd,
+    worktree,
+    baseCommit: git ? await headCommit(cwd) : null,
+    agentSessionId: null,
+    state: "idle",
+    createdAt: now,
+    updatedAt: now,
+    events: [],
+  };
+  store.add(session);
+  return session;
+}
+
+// 사용자가 직접 보낸 요청은 새 흐름이다.
+function startTurn(session, prompt) {
+  if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
+  session.chainDepth = 0;
+  try {
+    runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, prompt));
+  } catch (err) {
+    throw new HttpError(409, err.message);
+  }
+}
+
+// ── 오케스트레이터 계획 ─────────────────────────────────────────
+// 오케스트레이터의 턴이 끝나면 답변의 계획 블록을 꺼내 승인 대기로 올린다.
+// 연결 체인이 밀린 요청을 먼저 시작하면 마지막 답변을 못 읽으므로 체인보다 먼저 듣는다.
+runner.prependListener("turnEnd", (session, ok) => {
+  if (session.kind !== "orchestrator" || !ok) return;
+  const found = extractPlan(lastAnswer(session));
+  if (!found) return;
+  const event = { kind: "plan", planId: randomBytes(4).toString("hex"), status: "pending", text: "계획" };
+  try {
+    if (found.error) throw new Error(found.error);
+    event.raw = found.plan; // 승인할 때 이 원본으로 다시 검사한다.
+    event.plan = normalizePlan(found.plan, planContext(session));
+  } catch (err) {
+    event.status = "invalid";
+    event.error = err.message;
+  }
+  runner.append(session, event);
+});
+
+function planContext(session) {
+  return {
+    hub: readHubFile(session.projectPath),
+    sessions: projectSessions(session.projectPath),
+    orchestratorId: session.id,
+  };
+}
+
+// 승인한 계획을 실행한다. 사용자가 승인한 것이므로 요청은 새 흐름(0단계)으로 보낸다.
+async function applyPlan(orchestrator, raw) {
+  // 승인을 기다리는 사이 세션이 지워졌을 수 있으므로 다시 검사한다.
+  const plan = normalizePlan(raw, planContext(orchestrator));
+  const project = ensureProject(orchestrator.projectPath);
+  const git = await isGitRepo(project.path);
+  const ids = new Map();
+  let created = 0;
+  for (const item of plan.sessions) {
+    if (item.id) {
+      ids.set(item.key, item.id);
+      continue;
+    }
+    const session = await createSession({
+      project,
+      agent: item.agent,
+      model: item.model,
+      permission: item.permission,
+      isolate: item.isolate && git,
+      title: item.title,
+      role: item.roleText,
+      roleName: item.roleName,
+      createdBy: orchestrator.id,
+    });
+    ids.set(item.key, session.id);
+    created++;
+  }
+  const id = (name) => ids.get(name) ?? name;
+  let linked = 0;
+  for (const item of plan.links) {
+    const from = id(item.from);
+    const to = id(item.to);
+    if (links.list().some((l) => l.from === from && l.to === to)) continue;
+    links.add({ id: randomBytes(4).toString("hex"), from, to, when: item.when, keyword: item.keyword, note: item.note, enabled: true });
+    linked++;
+  }
+  broadcast("sessions", {});
+  broadcast("links", {});
+  for (const item of plan.send) {
+    const target = store.get(id(item.to));
+    if (target) chain.enqueue(target, item.prompt, { from: orchestrator.id, fromTitle: orchestrator.title }, 0);
+  }
+  return `세션 ${created}개 만듦 · 연결 ${linked}개 · 요청 ${plan.send.length}건`;
+}
+
+// AGENTHUB.md의 흐름 템플릿으로 역할마다 세션을 만들고 연결한다. prompt가 있으면 받는 연결이 없는 역할에 보낸다.
+async function startFlow({ project, flowName, name, prompt }) {
+  const hub = readHubFile(project.path);
+  if (!hub) throw new HttpError(404, `${HUB_FILE}이 없습니다.`);
+  const flow = hub.flows.find((f) => f.name === flowName);
+  if (!flow) throw new HttpError(404, `흐름 "${flowName}"이 없습니다.`);
+  const roleNames = [...new Set(flow.steps.flatMap((s) => [s.from, s.to]))];
+  const roles = new Map(roleNames.map((n) => [n, hub.roles.find((r) => r.name === n)]));
+  const missing = roleNames.filter((n) => !roles.get(n));
+  if (missing.length) throw new HttpError(400, `${HUB_FILE}에 없는 역할입니다: ${missing.join(", ")}`);
+  for (const role of roles.values()) checkSessionOptions(role);
+
+  const git = await isGitRepo(project.path);
+  const label = String(name ?? "").trim().slice(0, 100);
+  const sessions = new Map();
+  for (const [roleName, role] of roles) {
+    sessions.set(roleName, await createSession({
+      project,
+      agent: role.agent,
+      model: role.model,
+      permission: role.permission,
+      isolate: role.isolate && git,
+      title: label ? `${label} · ${roleName}` : roleName,
+      role: role.body,
+      roleName,
+    }));
+  }
+  for (const step of flow.steps) {
+    links.add({
+      id: randomBytes(4).toString("hex"),
+      from: sessions.get(step.from).id,
+      to: sessions.get(step.to).id,
+      when: step.when,
+      keyword: step.keyword,
+      note: step.note,
+      enabled: true,
+    });
+  }
+
+  const text = String(prompt ?? "").trim();
+  if (text) {
+    const targets = new Set(flow.steps.map((s) => s.to));
+    const roots = roleNames.filter((n) => !targets.has(n));
+    for (const n of roots.length ? roots : roleNames.slice(0, 1)) startTurn(sessions.get(n), text);
+  }
+  return [...sessions.values()];
+}
+
 async function handleApi(req, res, url) {
   const parts = url.pathname.split("/").filter(Boolean).slice(1); // "api" 제외
   const method = req.method;
@@ -232,6 +424,38 @@ async function handleApi(req, res, url) {
     }
   }
 
+  // 프로젝트의 AGENTHUB.md
+  if (parts[0] === "hub") {
+    if (method === "GET") {
+      const projectPath = url.searchParams.get("path");
+      if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+      const hub = readHubFile(projectPath);
+      return send(res, 200, { file: hubFilePath(path.resolve(projectPath)), exists: !!hub, ...hub });
+    }
+    if (method === "POST" && parts[1] === "init") {
+      const project = ensureProject((await readJson(req)).path);
+      const file = hubFilePath(project.path);
+      if (fs.existsSync(file)) throw new HttpError(409, `${HUB_FILE}이 이미 있습니다.`);
+      fs.writeFileSync(file, HUB_TEMPLATE);
+      return send(res, 200, { file, exists: true, ...readHubFile(project.path) });
+    }
+    // 이 PC의 기본 편집기로 연다(서버는 로컬에서만 열린다).
+    if (method === "POST" && parts[1] === "open") {
+      const file = hubFilePath(ensureProject((await readJson(req)).path).path);
+      if (!fs.existsSync(file)) throw new HttpError(404, `${HUB_FILE}이 없습니다.`);
+      const opener = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
+      spawn(opener, [file], { detached: true, stdio: "ignore", windowsHide: true }).on("error", () => {}).unref();
+      return send(res, 200, { ok: true });
+    }
+    if (method === "POST" && parts[1] === "flows") {
+      const body = await readJson(req);
+      const created = await startFlow({ ...body, project: ensureProject(body.projectPath) });
+      broadcast("sessions", {});
+      broadcast("links", {});
+      return send(res, 200, created.map(summary));
+    }
+  }
+
   if (parts[0] === "links") {
     if (parts.length === 1 && method === "GET") return send(res, 200, links.list());
 
@@ -271,44 +495,7 @@ async function handleApi(req, res, url) {
 
     if (parts.length === 1 && method === "POST") {
       const body = await readJson(req);
-      const agent = body.agent;
-      if (!AGENTS[agent]) throw new HttpError(400, "agent는 claude 또는 codex입니다.");
-      const project = ensureProject(body.projectPath);
-      const model = String(body.model ?? "").trim();
-      if (model && !MODEL_PATTERN.test(model)) throw new HttpError(400, "모델 이름 형식이 올바르지 않습니다.");
-      const permission = body.permission ?? AGENTS[agent].PERMISSION_MODES.at(-1);
-      if (!AGENTS[agent].PERMISSION_MODES.includes(permission)) throw new HttpError(400, "권한 모드가 올바르지 않습니다.");
-
-      const id = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
-      const git = await isGitRepo(project.path);
-      let cwd = project.path;
-      let worktree = null;
-      if (body.isolate) {
-        if (!git) throw new HttpError(400, "git 저장소가 아니어서 작업 폴더를 분리할 수 없습니다.");
-        worktree = await createWorktree(project.path, id);
-        cwd = worktree.dir;
-      }
-
-      const now = new Date().toISOString();
-      const session = {
-        id,
-        title: String(body.title ?? "").trim() || `${agent} 세션`,
-        role: String(body.role ?? "").trim().slice(0, ROLE_MAX),
-        agent,
-        model,
-        permission,
-        projectName: project.name,
-        projectPath: project.path,
-        cwd,
-        worktree,
-        baseCommit: git ? await headCommit(cwd) : null,
-        agentSessionId: null,
-        state: "idle",
-        createdAt: now,
-        updatedAt: now,
-        events: [],
-      };
-      store.add(session);
+      const session = await createSession({ ...body, project: ensureProject(body.projectPath) });
       broadcast("sessions", {});
       return send(res, 200, summary(session));
     }
@@ -356,13 +543,7 @@ async function handleApi(req, res, url) {
       const body = await readJson(req);
       const prompt = String(body.prompt ?? "").trim();
       if (!prompt) throw new HttpError(400, "내용을 입력하세요.");
-      if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
-      session.chainDepth = 0; // 사용자가 직접 보낸 요청은 새 흐름이다.
-      try {
-        runner.send(session, prompt, cliPaths()[session.agent], withRole(session, prompt));
-      } catch (err) {
-        throw new HttpError(409, err.message);
-      }
+      startTurn(session, prompt);
       return send(res, 200, { ok: true });
     }
 
@@ -381,6 +562,31 @@ async function handleApi(req, res, url) {
       store.touch(session);
       broadcast("sessions", {});
       return send(res, 200, summary(session));
+    }
+
+    if (parts[2] === "plans" && parts[3] && method === "POST") {
+      const event = session.events.find((e) => e.kind === "plan" && e.planId === parts[3]);
+      if (!event) throw new HttpError(404, "계획이 없습니다.");
+      if (event.status !== "pending") throw new HttpError(409, "이미 처리한 계획입니다.");
+      const body = await readJson(req);
+      if (body.action === "approve") {
+        try {
+          event.result = await applyPlan(session, event.raw);
+          event.status = "applied";
+        } catch (err) {
+          throw new HttpError(400, `계획을 실행하지 못했습니다: ${err.message}`);
+        }
+      } else if (body.action === "reject") {
+        event.status = "rejected";
+        const reason = String(body.reason ?? "").trim();
+        // 이유를 적으면 오케스트레이터가 계획을 고치도록 알려 준다.
+        if (reason) chain.enqueue(session, `[계획 거절] ${reason}\n계획을 고쳐 다시 제안하라.`, {}, 0);
+      } else {
+        throw new HttpError(400, "action은 approve 또는 reject입니다.");
+      }
+      store.touch(session);
+      broadcast("session", { sessionId: session.id });
+      return send(res, 200, event);
     }
 
     if (parts[2] === "stop" && method === "POST") return send(res, 200, { stopped: runner.stop(session) });
