@@ -4,7 +4,9 @@ import { execFile } from "node:child_process";
 
 export function git(cwd, args, { maxBuffer = 20 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
-    execFile("git", ["-C", cwd, ...args], { maxBuffer, windowsHide: true }, (err, stdout, stderr) => {
+    // status의 선택적 갱신과 diff의 stat 캐시 갱신을 모두 끄고 index 읽기 경쟁을 막는다.
+    // add·commit 등 명시적으로 요청한 쓰기의 필수 잠금은 그대로 유지한다.
+    execFile("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-C", cwd, ...args], { maxBuffer, windowsHide: true }, (err, stdout, stderr) => {
       if (err) reject(new Error(stderr.trim() || err.message));
       else resolve(stdout);
     });
@@ -109,7 +111,7 @@ export async function diffSince(dir, base) {
   const [status, diff, untracked] = await Promise.all([
     git(dir, ["status", "--porcelain=v1", "--untracked-files=all"]),
     git(dir, ["diff", base ?? "HEAD", "--stat", "--patch", "--no-color"]),
-    untrackedDiff(dir).catch(() => ""),
+    untrackedDiff(dir),
   ]);
   return { status, diff: [diff.trimEnd(), untracked].filter(Boolean).join("\n") };
 }
@@ -117,10 +119,29 @@ export async function diffSince(dir, base) {
 // 기준 커밋 이후 바뀐 파일(커밋한 것 + 커밋하지 않은 것 + 새 파일)
 export async function changedFiles(dir, base) {
   // 한글 같은 파일 이름이 "\355\225..."로 바뀌지 않게 그대로 받는다(사람과 에이전트가 읽는 목록이다).
-  const [tracked, untracked] = await Promise.all([
-    git(dir, ["-c", "core.quotePath=false", "diff", "--name-status", base]),
+  const [tracked, stats, untracked] = await Promise.all([
+    git(dir, ["diff", "--name-status", "-z", base]),
+    git(dir, ["diff", "--numstat", "-z", base]),
     untrackedFiles(dir),
   ]);
-  const lines = [...tracked.trim().split(/\r?\n/), ...untracked.map((f) => `A\t${f}`)].filter(Boolean);
+  // autoRefreshIndex=false인 구버전 Git은 name-status에 stat만 바뀐 파일도 넣는다.
+  // numstat은 실제 내용·모드·이름 변경을 검사하므로 인덱스를 쓰지 않고 걸러 낸다.
+  const actualPaths = new Set();
+  const counts = stats.split("\0");
+  for (let i = 0; i < counts.length; i++) {
+    const entry = counts[i].match(/^[^\t]+\t[^\t]+\t([\s\S]*)$/);
+    if (!entry) continue;
+    if (entry[1]) actualPaths.add(entry[1]);
+    else { i++; actualPaths.add(counts[++i]); } // 이름 변경·복사는 이전 이름 다음에 새 이름이 온다.
+  }
+  const names = tracked.split("\0");
+  const lines = [];
+  for (let i = 0; i < names.length && names[i];) {
+    const status = names[i++];
+    const from = names[i++];
+    const to = /^[RC]/.test(status) ? names[i++] : null;
+    if (actualPaths.has(to ?? from)) lines.push([status, from, ...(to ? [to] : [])].join("\t"));
+  }
+  lines.push(...untracked.map((file) => `A\t${file}`));
   return lines.length > 80 ? `${lines.slice(0, 80).join("\n")}\n… 외 ${lines.length - 80}개` : lines.join("\n");
 }

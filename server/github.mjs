@@ -146,7 +146,8 @@ export class GitHubPulls {
     this.run = run;
   }
 
-  git = (dir, args, options = {}) => this.run("git", ["-C", dir, ...args], { cwd: dir, timeout: 15_000, ...options });
+  // PR 조회도 다른 Git 화면과 동시에 실행되므로 선택적 index 갱신을 하지 않는다.
+  git = (dir, args, options = {}) => this.run("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-C", dir, ...args], { cwd: dir, timeout: 15_000, ...options });
 
   failure(error, write = false) {
     if (error instanceof GitHubError) return error;
