@@ -1,6 +1,6 @@
 {
   "name": "agenthub",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "private": true,
   "description": "Local web app that runs Claude Code and Codex CLI sessions side by side.",
   "author": "Lyeol2",
