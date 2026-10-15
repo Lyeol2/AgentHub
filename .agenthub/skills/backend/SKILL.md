@@ -27,6 +27,7 @@ AgentHub 서버는 `server/`의 ES 모듈(`.mjs`)이다. `node server/index.mjs`
 
 ## 프론트엔드와 맞물리는 부분
 화면(`public/app.js`)과 서버는 같은 저장소에서 함께 바뀐다. 한쪽만 고치면 깨지므로 아래 약속을 지키고, 약속을 바꾸면 양쪽을 한 번에 고친다.
+**이 절이 화면·서버 약속의 기준이다.** `frontend-api` 스킬은 이 약속을 화면 쪽에서 처리하는 방법만 다룬다. 약속을 바꾸면 이 절을 고치고, 화면 처리 방법이 달라지면 `frontend-api`도 맞춘다.
 
 ### 요청과 응답
 - 화면은 `api(method, url, body)` 하나로만 서버를 부른다. JSON 본문 + `X-AgentHub: 1` 헤더를 보낸다. 서버는 JSON만 돌려준다(`send`).
@@ -51,7 +52,7 @@ AgentHub 서버는 `server/`의 ES 모듈(`.mjs`)이다. `node server/index.mjs`
 ### 고칠 때 확인
 - `grep`으로 `app.js`에서 해당 경로(`/api/...`)와 이벤트 이름을 찾아 화면이 무엇을 기대하는지 먼저 본다.
 - 응답 모양을 바꿨으면 `test/api.test.mjs`에 그 모양을 확인하는 단언을 넣는다.
-- 화면 쪽 수정이 필요하면 `frontend` 스킬의 관례를 따른다.
+- 화면 쪽 수정이 필요하면 `frontend` 스킬의 관례를, 화면의 API 호출·오류 표시·SSE 처리기는 `frontend-api` 스킬을 따른다.
 
 ## 테스트
 - `test/*.test.mjs`, `node:test` + `node:assert/strict`. `npm test`로 모두 돈다.
