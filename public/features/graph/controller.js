@@ -247,8 +247,6 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     g.canvas.style.transform = g.zoom === 1 ? "" : `scale(${g.zoom})`;
     g.canvas.style.left = `${g.pan.x}px`;
     g.canvas.style.top = `${g.pan.y}px`;
-    g.sizer.style.width = `${g.size.width * g.zoom}px`;
-    g.sizer.style.height = `${g.size.height * g.zoom}px`;
   }
 
   function renderZoomLabel() {
@@ -282,8 +280,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const g = ui.graph;
     if (!g?.size) return;
     const box = $("p-graph");
-    const maxHeight = parseFloat(getComputedStyle(box).maxHeight) || box.clientHeight;
-    const fit = Math.min(1, box.clientWidth / g.size.width, maxHeight / g.size.height);
+    const fit = Math.floor(Math.min(1, box.clientWidth / g.size.width, box.clientHeight / g.size.height) * 100) / 100;
     setGraphZoom(fit);
     g.pan = { x: 0, y: 0 };
     applyGraphZoom();

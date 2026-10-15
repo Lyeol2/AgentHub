@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { AttachmentStore, MAX_IMAGE_BYTES } from "../server/attachments.mjs";
+import { AttachmentStore, MAX_IMAGE_BYTES, safeAttachmentName } from "../server/attachments.mjs";
 
 export const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aAZ0AAAAASUVORK5CYII=";
 
@@ -38,7 +38,7 @@ test("attachments: session-owned images survive a new store without exposing cli
 test("attachments: invalid bytes, MIME mismatches and oversize data create no files", (t) => {
   const { dir, storage } = fixture(t);
   for (const body of [
-    { mimeType: "image/svg+xml", data: Buffer.from("<svg/>").toString("base64") },
+    { mimeType: "text/html\r\nX-Test: unsafe", data: Buffer.from("text").toString("base64") },
     { mimeType: "image/jpeg", data: PNG },
     { mimeType: "image/png", data: "not base64" },
     { mimeType: "image/png", data: "AAAA" },
@@ -47,6 +47,29 @@ test("attachments: invalid bytes, MIME mismatches and oversize data create no fi
   const bytes = Buffer.alloc(MAX_IMAGE_BYTES + 1);
   assert.throws(() => storage.save("session-a", { mimeType: "image/png", data: bytes.toString("base64") }), { status: 413 });
   assert.equal(fs.existsSync(path.join(dir, "attachments")), false);
+});
+
+test("attachments: arbitrary files keep safe names, empty content and distinct JSON data", (t) => {
+  const { dir, storage } = fixture(t);
+  for (const [name, mimeType, content] of [["../../CON.json", "application/json", '{"hello":"한글"}'], ["C:\\private\\data.csv", "text/csv", "a,b\n1,2"], ["active.svg", "image/svg+xml", "<svg/>"], ["empty.txt", "text/plain", ""], ["archive.zip", "application/zip", "binary\u0000data"]]) {
+    const file = storage.save("session-a", { name, mimeType, data: Buffer.from(content).toString("base64"), path: "C:/secret" });
+    const restored = new AttachmentStore({ dataDir: dir }).resolve("session-a", file.id);
+    assert.doesNotMatch(file.name, /[\\/:]/);
+    assert.notEqual(restored.path, path.join(dir, "attachments", "session-a", file.id + ".json"));
+    assert.equal(fs.readFileSync(restored.path, "utf8"), content);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(path.dirname(restored.path), file.id + ".json"), "utf8")).id, file.id);
+  }
+});
+
+test("attachments: legacy image descriptors still resolve their original data filename", (t) => {
+  const { storage } = fixture(t);
+  const image = storage.save("session-a", { name: "image.png", mimeType: "image/png", data: PNG });
+  const resolved = storage.resolve("session-a", image.id);
+  assert.equal(path.basename(resolved.path), image.id + ".png");
+});
+
+test("attachments: malformed Unicode names are valid downloadable filenames", () => {
+  for (const name of ["bad\ud800.txt", "a".repeat(179) + "😀.txt"]) assert.doesNotThrow(() => encodeURIComponent(safeAttachmentName(name)));
 });
 
 test("attachments: directory links cannot redirect uploads or delete outside files", (t) => {

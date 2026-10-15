@@ -13,7 +13,8 @@ import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
 import { HttpError } from "./errors.mjs";
-import { AttachmentStore } from "../attachments.mjs";
+import { AttachmentStore, isImageAttachment } from "../attachments.mjs";
+import { unsupportedChatAttachment } from "../attachment-input.mjs";
 import { exportSession } from "../session-export.mjs";
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
@@ -297,7 +298,7 @@ export function createSessionService({
       if (deleteRecords) records = deleteSessionRecords(ids);
       hideRecords(ids);
     }
-    try { attachments.remove(session.id); } catch (err) { records.errors.push(`첨부 이미지 정리 실패: ${err.message}`); }
+    try { attachments.remove(session.id); } catch (err) { records.errors.push(`첨부 파일 정리 실패: ${err.message}`); }
     return records;
   }
 
@@ -342,10 +343,11 @@ export function createSessionService({
 
   function sendMessage(id, body) {
     const session = getSession(id);
-    const images = attachments.resolveAll(id, body.attachments);
-    const prompt = String(body.prompt ?? "").trim() || (images.length ? "첨부한 이미지를 확인해 주세요." : "");
-    if (!prompt) throw new HttpError(400, "내용이나 이미지를 입력하세요.");
-    const meta = images.length ? { attachments: images } : {};
+    const files = attachments.resolveAll(id, body.attachments);
+    if (session.chat && files.some(unsupportedChatAttachment)) throw new HttpError(400, "일반 채팅은 이미지와 64 KiB 이하의 UTF-8 텍스트 파일을 지원합니다. 더 큰 텍스트나 PDF·압축 파일 등 바이너리 파일은 파일 읽기가 가능한 프로젝트 세션에 첨부하세요.");
+    const prompt = String(body.prompt ?? "").trim() || (files.length ? (files.every(isImageAttachment) ? "첨부한 이미지를 확인해 주세요." : "첨부한 파일을 확인해 주세요.") : "");
+    if (!prompt) throw new HttpError(400, "내용이나 파일을 입력하세요.");
+    const meta = files.length ? { attachments: files } : {};
     if (runner.isRunning(session.id)) {
       if (body.mode === "steer" && runner.canInject(session)) {
         runner.inject(session, prompt, meta);
@@ -366,7 +368,7 @@ export function createSessionService({
   function attachmentContent(id, imageId) {
     getSession(id);
     const image = attachments.resolve(id, imageId);
-    return { bytes: fs.readFileSync(image.path), mimeType: image.mimeType };
+    return { bytes: fs.readFileSync(image.path), mimeType: image.mimeType, name: image.name };
   }
 
   async function exportRecord(id) {
@@ -550,7 +552,7 @@ export function createSessionService({
       store.touch(other);
     }
     store.remove(id);
-    try { attachments.remove(id); } catch (err) { runner.append(created, { kind: "log", text: `이전 첨부 이미지 정리 실패: ${err.message}` }); }
+    try { attachments.remove(id); } catch (err) { runner.append(created, { kind: "log", text: `이전 첨부 파일 정리 실패: ${err.message}` }); }
     if (!session.chat) hideRecords(cliSessionIds(session));
     broadcast("sessions", {});
     broadcast("links", {});

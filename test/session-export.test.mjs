@@ -155,7 +155,7 @@ test("내보내기: 프로젝트 없는 채팅은 파일 생성을 거절하고 
   await assert.rejects(exportSession(session("relative/project")), { code: "EXPORT_UNSAFE_PATH" });
 });
 
-test("내보내기: 이미지 저장소 누락·비이미지·파일 아닌 첨부는 실패로 돌려준다", async (t) => {
+test("내보내기: 첨부 저장소 누락·파일 아닌 첨부는 실패로 돌려준다", async (t) => {
   const dir = await fixture(t);
   const image = { id: "img", name: "image.png", mimeType: "image/png" };
   const s = session(dir, { events: [{ kind: "user", attachments: [image] }] });
@@ -163,6 +163,27 @@ test("내보내기: 이미지 저장소 누락·비이미지·파일 아닌 첨�
   await assert.rejects(exportSession(s, { resolveAttachment: () => dir }), { code: "EXPORT_ATTACHMENT_INVALID" });
   await assert.rejects(exportSession({ ...s, events: [{ kind: "user", attachments: [{ ...image, mimeType: "image/svg+xml" }] }] }, { resolveAttachment: () => dir }), { code: "EXPORT_ATTACHMENT_INVALID" });
   assert.deepEqual(await fs.readdir(path.join(dir, "docs", "agenthub")), []);
+});
+
+test("내보내기: 문서·SVG 첨부는 독립 복사하고 이미지 대신 다운로드 링크를 남긴다", async (t) => {
+  const dir = await fixture(t);
+  const sources = new Map();
+  const attachments = [];
+  for (const [id, name, mimeType, content] of [["json", "../data.json", "application/json", '{"name":"문서"}'], ["svg", "active.svg", "image/svg+xml", "<svg><script>example</script></svg>"]]) {
+    const source = path.join(dir, id + ".source");
+    await fs.writeFile(source, content);
+    sources.set(id, source);
+    attachments.push({ id, name, mimeType });
+  }
+  const result = await exportSession(session(dir, { events: [{ kind: "user", attachments }] }), { now: NOW, resolveAttachment: (file) => sources.get(file.id) });
+  assert.equal(result.attachments.length, 2);
+  assert.doesNotMatch(result.markdown, /!\[/);
+  for (const file of result.attachments) {
+    const copy = path.join(path.dirname(result.path), file.relativePath);
+    assert.deepEqual(await fs.readFile(copy), await fs.readFile(sources.get(file.id)));
+  }
+  assert.match(result.markdown, /\.json\)/);
+  assert.match(result.markdown, /\.svg\)/);
 });
 
 test("내보내기: docs·agenthub·cwd의 심볼릭 링크나 junction을 통한 외부 쓰기를 막는다", async (t) => {

@@ -13,9 +13,18 @@
     const firstCard = canvas.querySelector('.gcard[data-id="s1"]');
     const command = canvas.querySelector(".gcmd");
     check(canvas.querySelectorAll("path.edge").length === 1, "graph links rendered");
+    const graphRect = $("p-graph").getBoundingClientRect();
+    const projectContent = document.querySelector("#view-project > .content");
+    const contentBottom = projectContent.getBoundingClientRect().bottom - parseFloat(getComputedStyle(projectContent).paddingBottom);
+    check(Math.abs(graphRect.bottom - contentBottom + 1) <= 2 && graphRect.height > 300, "graph fills the available panel height");
+    const graphStaysFixed = () => {
+      const rect = $("p-graph").getBoundingClientRect();
+      return Math.abs(rect.width - graphRect.width) < 1 && Math.abs(rect.height - graphRect.height) < 1 && Math.abs(rect.bottom - graphRect.bottom) < 1;
+    };
     const beforeZoom = canvas.style.transform;
     $("p-graph").dispatchEvent(new WheelEvent("wheel", { bubbles: true, cancelable: true, deltaY: -120, clientX: 450, clientY: 300 }));
     check(canvas.style.transform !== beforeZoom && canvas.style.transform.includes("1.2"), "wheel zoom");
+    check(graphStaysFixed(), "zoom does not resize the graph panel");
     const panX = parseFloat(canvas.style.left), panY = parseFloat(canvas.style.top);
     pointer($("p-graph"), "pointerdown", { button: 1 });
     pointer(window, "pointermove", { clientX: 390, clientY: 380 });
@@ -24,6 +33,19 @@
     const canceledX = canvas.style.left;
     pointer(window, "pointermove", { clientX: 500, clientY: 450 });
     check(canvas.style.left === canceledX && !$("p-graph").classList.contains("panning"), "canceled pan removes gesture listeners");
+    check(graphStaysFixed(), "pan does not resize the graph panel");
+    const cardRect = firstCard.getBoundingClientRect();
+    pointer(firstCard, "pointerdown", { clientX: cardRect.left + 15, clientY: cardRect.top + 15 });
+    pointer(window, "pointermove", { clientX: cardRect.left + 15, clientY: graphRect.bottom - cardRect.height + 5 });
+    const lowerCard = firstCard.getBoundingClientRect();
+    check(document.elementFromPoint(lowerCard.left + 20, lowerCard.bottom - 10)?.closest(".gcard") === firstCard, "nodes remain visible and interactive at the bottom of the graph");
+    check(graphStaysFixed(), "moving nodes does not resize the graph panel");
+    pointer(window, "pointercancel");
+    $("p-zoom-fit").click();
+    check(graphStaysFixed() && [...canvas.querySelectorAll(".gcard, .gcmd")].every((node) => {
+      const rect = node.getBoundingClientRect();
+      return rect.left >= graphRect.left && rect.top >= graphRect.top && rect.right <= graphRect.right + 1 && rect.bottom <= graphRect.bottom + 1;
+    }), "fit uses the visible graph viewport");
     pointer(firstCard, "pointerdown"); pointer(window, "pointerup");
     pointer(command, "pointerdown", { ctrlKey: true }); pointer(window, "pointerup");
     check(firstCard.classList.contains("selected") && command.classList.contains("selected"), "mixed session and command selection");
@@ -61,6 +83,7 @@
     $("session-list").querySelector("button").click();
     await until(() => !$("view-session").hidden && $("s-title").textContent === "First");
     check($("s-events").querySelector(".md")?.textContent.includes("Hello"), "session conversation rendering");
+    check($("s-form").getBoundingClientRect().bottom <= innerHeight && getComputedStyle($("s-prompt")).resize === "none", "session composer remains inside the window without manual resizing");
     $("s-diff").click();
     await until(() => $("diff-dialog").open);
     check($("diff-status").textContent.includes("fixture.txt") && $("diff-body").textContent.includes("fixture change"), "session diff loads through controller");

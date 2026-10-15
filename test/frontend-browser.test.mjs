@@ -46,6 +46,18 @@ async function runBrowser(temp, url) {
     const expression = await fs.readFile(new URL("./fixtures/frontend-browser.js.txt", import.meta.url), "utf8");
     const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
     if (result.exceptionDetails) throw Error((result.exceptionDetails.exception?.description ?? result.exceptionDetails.text) + "\nBrowser errors:\n" + errors.join("\n"));
+    for (const [width, height] of [[900, 600], [1400, 900]]) {
+      await command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
+      const layout = await command("Runtime.evaluate", { expression: `new Promise(resolve => requestAnimationFrame(() => {
+        const graph = document.getElementById("p-graph").getBoundingClientRect();
+        const content = document.querySelector("#view-project > .content");
+        const bottom = content.getBoundingClientRect().bottom - parseFloat(getComputedStyle(content).paddingBottom);
+        resolve({ height: graph.height, bottom: graph.bottom, expectedBottom: bottom - 1, right: graph.right, documentWidth: document.documentElement.scrollWidth, documentHeight: document.documentElement.scrollHeight });
+      }))`, awaitPromise: true, returnByValue: true });
+      const bounds = layout.result.value;
+      assert.ok(bounds.height > 100 && Math.abs(bounds.bottom - bounds.expectedBottom) < 2, "Graph fills resized window: " + JSON.stringify({ width, height, ...bounds }));
+      assert.ok(bounds.right <= width && bounds.documentWidth <= width && bounds.documentHeight <= height, "Panels stay inside resized window");
+    }
     if (process.env.AGENTHUB_UI_SCREENSHOT) {
       const { data } = await command("Page.captureScreenshot", { format: "png" });
       await fs.writeFile(process.env.AGENTHUB_UI_SCREENSHOT, Buffer.from(data, "base64"));

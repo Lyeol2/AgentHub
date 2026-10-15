@@ -1,12 +1,16 @@
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import * as codex from "./agents/codex.mjs";
+import { isImageAttachment } from "./attachments.mjs";
+import { attachmentInputText } from "./attachment-input.mjs";
 
 const ACTIVE_WRITER = /\bthread\b[^\r\n]*\balready has an active writer\b/i;
 const MISSING_THREAD = /no (?:conversation|thread|rollout)(?: found)?|thread[^\r\n]*(?:not found|does not exist)|unable to (?:find|load)[^\r\n]*(?:thread|rollout)/i;
 const APPROVALS = new Set(["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "item/tool/requestUserInput"]);
 const snippet = (value, max = 4000) => { const text = typeof value === "string" ? value : JSON.stringify(value ?? ""); return text.length > max ? text.slice(0, max) + "\n…" : text; };
-export const codexInput = (text, attachments = []) => [{ type: "text", text }, ...attachments.map(({ path }) => ({ type: "localImage", path }))];
+export const codexInput = (text, attachments = []) => [{ type: "text", text }, ...attachments.map((attachment) => isImageAttachment(attachment)
+  ? { type: "localImage", path: attachment.path }
+  : { type: "text", text: attachmentInputText(attachment) })];
 
 // 한 CLI 프로세스의 요청·응답·승인 수명만 담당한다. 세션 상태와 기록은 Runner가 관리한다.
 export class CodexAppServer extends EventEmitter {
