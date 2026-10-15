@@ -7,7 +7,8 @@ import { ROOT, CHAT_DIR, DATA_DIR, loadConfig, saveConfig } from "./config.mjs";
 import { locateCli, cliVersion, cliAuth, openLogin, spawnCli } from "./cli.mjs";
 import { SessionStore, summary } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
-import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince } from "./git.mjs";
+import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince, changedFiles } from "./git.mjs";
+import { AGENT_NAME, handoverText, mapPermission } from "./handover.mjs";
 import { discoverProjects, discoverSessions, loadHistory, deleteSessionRecords } from "./discover.mjs";
 import { readLimits, recordClaudeLimit, refreshClaudeUsage } from "./limits.mjs";
 import { ROLE_MAX, withRole } from "./role.mjs";
@@ -344,6 +345,11 @@ function linkFields(body, current = {}) {
   };
 }
 
+// 제거해서 숨긴 프로젝트를 다시 보이게 한다(저장은 부르는 쪽에서).
+function unhideProject(dir) {
+  config.hiddenProjects = config.hiddenProjects.filter((p) => !samePath(p, dir));
+}
+
 // 등록된 프로젝트를 찾고, 없으면(자동 감지된 프로젝트) 그 자리에서 등록한다.
 function ensureProject(projectPath) {
   if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
@@ -353,11 +359,66 @@ function ensureProject(projectPath) {
   if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
   const project = { name: path.basename(dir), path: dir };
   config.projects.push(project);
+  unhideProject(dir); // 제거했던 프로젝트에서 다시 세션을 만들면 다시 보인다.
   saveConfig(config);
   return project;
 }
 
 const projectSessions = (projectPath) => store.list().filter((s) => samePath(s.projectPath, projectPath));
+
+// 지운 세션에 딸린 것(연결, 대기열, 메시지, MCP 토큰)을 정리한다.
+// 지운 세션의 Claude Code·Codex 기록이 프로젝트 화면에 "가져오기"로 다시 뜨지 않게 숨기고, deleteRecords면 기록 파일까지 지운다.
+function cleanupSession(session, { deleteRecords = false } = {}) {
+  links.removeForSession(session.id);
+  chain.queue.delete(session.id);
+  mailbox.removeForSession(session.id);
+  mcpTokens.forget(session.id);
+  fs.rmSync(path.join(MCP_DIR, `${session.id}.json`), { force: true });
+  let records = { deleted: 0, errors: [] };
+  if (!session.chat) {
+    const ids = cliSessionIds(session);
+    if (deleteRecords) records = deleteSessionRecords(ids);
+    hideRecords(ids);
+  }
+  return records;
+}
+
+// 프로젝트를 AgentHub에서 뺀다. 프로젝트 폴더·파일·AGENTHUB.md·CLI 기록 파일은 건드리지 않는다.
+// 이 프로젝트의 AgentHub 세션·명령 노드·연결·공유 노트·메시지 기록은 지우고, 자동 감지로 다시 뜨지 않게 숨긴다.
+// removeWorktrees: 세션마다 분리한 작업 폴더도 지운다(커밋하지 않은 변경이 있으면 남기고 알린다).
+async function removeProject(projectPath, { force = false, removeWorktrees = false } = {}) {
+  const dir = path.resolve(projectPath);
+  const sessions = projectSessions(dir).filter((s) => !s.chat);
+  const running = sessions.filter((s) => runner.isRunning(s.id));
+  if (running.length && !force) {
+    throw new HttpError(409, `실행 중인 세션이 ${running.length}개 있습니다: ${running.map((s) => s.title).join(", ")}`, "running");
+  }
+  const worktreeErrors = [];
+  for (const s of sessions) {
+    if (runner.isRunning(s.id)) runner.stop(s);
+    if (removeWorktrees && s.worktree) {
+      try {
+        await removeWorktree(s.projectPath, s.worktree.dir);
+      } catch (err) {
+        worktreeErrors.push(`${s.title}: ${err.message}`);
+      }
+    }
+    store.remove(s.id);
+    cleanupSession(s);
+  }
+  const cmds = commands.list(dir);
+  for (const c of cmds) {
+    chain.stopCommand(c);
+    commands.remove(c.id);
+    links.removeForSession(c.id);
+  }
+  clearBoard(dir);
+  delete config.skillLayout?.[dir.toLowerCase()];
+  config.projects = config.projects.filter((p) => !samePath(p.path, dir));
+  if (!config.hiddenProjects.some((p) => samePath(p, dir))) config.hiddenProjects.push(dir);
+  saveConfig(config);
+  return { sessions: sessions.length, commands: cmds.length, worktreeErrors };
+}
 
 // 이 세션이 쓴 Claude Code·Codex 대화 ID 전부(다시 시작하기 전 것 포함)
 const cliSessionIds = (session) => [...new Set([...(session.cliSessionIds ?? []), session.agentSessionId].filter(Boolean))];
@@ -371,7 +432,43 @@ function hideRecords(ids) {
 }
 
 // CLI에 실제로 넘길 내용. 오케스트레이터에는 지휘 규칙과 세션 상태를 함께 넣는다.
+// AI를 바꾼 뒤 새 대화의 첫 요청에는 이전 AI의 진행 상황을 붙인다. 새 대화가 시작되면(아래 turnEnd) 지운다.
 function composeInput(session, prompt) {
+  const input = composeBase(session, prompt);
+  return session.handover && !session.agentSessionId ? `${session.handover}\n\n${input}` : input;
+}
+runner.on("turnEnd", (session) => {
+  if (session.handover && session.agentSessionId) delete session.handover;
+});
+
+// 세션의 AI를 바꾼다. CLI가 다르므로 새 대화로 시작하고, carry면 지금까지의 기록을 정리해 다음 요청에 넘긴다.
+// 작업 폴더·역할·연결·스킬·화면 기록은 그대로 둔다.
+async function switchAgent(session, body) {
+  const agent = String(body.agent);
+  if (!AGENTS[agent]) throw new HttpError(400, "agent는 claude 또는 codex입니다.");
+  if (runner.isRunning(session.id)) throw new HttpError(409, "실행 중에는 AI를 바꿀 수 없습니다. 끝나거나 일시중지한 뒤 바꾸세요.");
+  const permission = body.permission ?? mapPermission(session.permission, agent, { orchestrator: session.kind === "orchestrator" }) ?? undefined;
+  const options = checkSessionOptions({ agent, model: body.model ?? "", effort: body.effort ?? "", permission, chat: session.chat });
+  const carry = body.carry !== false && session.events.some((e) => e.kind === "user");
+  if (carry) {
+    const files = session.baseCommit ? await changedFiles(session.cwd, session.baseCommit).catch(() => "") : "";
+    session.handover = handoverText(session, files); // 바꾸기 전 AI 이름·모델로 적는다.
+  } else {
+    delete session.handover;
+  }
+  const from = AGENT_NAME[session.agent];
+  Object.assign(session, options);
+  session.agentSessionId = null;
+  session.compactions = 0;
+  session.context = null;
+  delete session.roleChanged; // 새 대화의 첫 요청에 역할을 통째로 붙인다.
+  runner.append(session, {
+    kind: "status",
+    text: `AI를 ${from}에서 ${AGENT_NAME[agent]}(으)로 바꿨습니다. ${carry ? "지금까지의 진행 상황을 다음 요청에 함께 넘깁니다." : "이전 대화는 넘기지 않고 새로 시작합니다."}`,
+  });
+}
+
+function composeBase(session, prompt) {
   if (session.chat) {
     // 일반 채팅의 안내 문구는 새 대화의 첫 요청에만 붙인다(Codex는 시스템 프롬프트를 바꿀 수 없다).
     const input = withRole(session, prompt);
@@ -809,8 +906,24 @@ async function handleApi(req, res, url) {
       if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new HttpError(400, "폴더가 없습니다.");
       if (config.projects.some((p) => p.path === dir)) throw new HttpError(400, "이미 등록된 프로젝트입니다.");
       config.projects.push({ name: String(body.name ?? "").trim() || path.basename(dir), path: dir });
+      unhideProject(dir);
       saveConfig(config);
+      broadcast("projects", {});
       return send(res, 200, config.projects);
+    }
+    // 프로젝트 제거. force=1: 실행 중인 세션을 멈추고 제거, removeWorktrees=1: 분리한 작업 폴더도 지운다.
+    if (method === "DELETE" && parts.length === 1) {
+      const projectPath = url.searchParams.get("path");
+      if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+      const result = await removeProject(projectPath, {
+        force: url.searchParams.get("force") === "1",
+        removeWorktrees: url.searchParams.get("removeWorktrees") === "1",
+      });
+      broadcast("projects", {});
+      broadcast("sessions", {});
+      broadcast("links", {});
+      broadcast("commands", {});
+      return send(res, 200, result);
     }
     // 등록한 프로젝트와 Claude Code·Codex 기록에서 감지한 프로젝트를 합친 목록.
     if (parts[1] === "all" && method === "GET") {
@@ -819,8 +932,10 @@ async function handleApi(req, res, url) {
         const d = detected.find((x) => samePath(x.path, p.path));
         return { name: p.name, path: p.path, registered: true, claude: d?.claude ?? 0, codex: d?.codex ?? 0, lastActive: d?.lastActive ?? null };
       });
+      // 제거한 프로젝트는 기록에서 다시 감지돼도 보이지 않는다.
       for (const d of detected) {
-        if (!merged.some((p) => samePath(p.path, d.path))) merged.push({ ...d, registered: false });
+        if (merged.some((p) => samePath(p.path, d.path)) || config.hiddenProjects.some((h) => samePath(h, d.path))) continue;
+        merged.push({ ...d, registered: false });
       }
       return send(res, 200, merged);
     }
@@ -1198,6 +1313,7 @@ async function handleApi(req, res, url) {
 
     if (parts.length === 2 && method === "PUT") {
       const body = await readJson(req);
+      if (body.agent !== undefined && body.agent !== session.agent) await switchAgent(session, body);
       if (body.title !== undefined) session.title = String(body.title).trim() || session.title;
       // 모델·추론 강도·권한은 다음 요청부터 적용된다.
       if (body.model !== undefined) session.model = checkModel(body.model);
@@ -1387,18 +1503,7 @@ async function handleApi(req, res, url) {
       } catch (err) {
         throw new HttpError(500, `세션 파일을 지우지 못했습니다: ${err.message}`);
       }
-      links.removeForSession(session.id);
-      mailbox.removeForSession(session.id);
-      mcpTokens.forget(session.id);
-      fs.rmSync(path.join(MCP_DIR, `${session.id}.json`), { force: true });
-      // 지운 세션의 Claude Code·Codex 기록이 프로젝트 화면에 "가져오기"로 다시 뜨지 않게 한다.
-      // records=delete면 기록 파일까지 지우고, 아니면 목록에서 숨기기만 한다.
-      let records = { deleted: 0, errors: [] };
-      if (!session.chat) {
-        const ids = cliSessionIds(session);
-        if (url.searchParams.get("records") === "delete") records = deleteSessionRecords(ids);
-        hideRecords(ids);
-      }
+      const records = cleanupSession(session, { deleteRecords: url.searchParams.get("records") === "delete" });
       broadcast("sessions", {});
       broadcast("links", {});
       return send(res, 200, { ok: true, records });

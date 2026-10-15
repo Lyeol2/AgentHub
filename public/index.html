@@ -97,6 +97,7 @@
           <div class="sub mono" id="p-path"></div>
         </div>
         <div class="actions">
+          <button class="ghost danger" id="p-remove" title="AgentHub 목록에서 이 프로젝트를 뺍니다. 프로젝트 폴더와 파일은 그대로 둡니다.">프로젝트 제거</button>
           <button class="ghost" id="p-rescan">다시 찾기</button>
           <button class="primary" id="p-new">새 세션</button>
         </div>
@@ -105,7 +106,7 @@
         <p class="notice" id="p-registered">Claude Code·Codex 기록에서 자동으로 찾은 프로젝트입니다. 세션을 가져오거나 새로 만들면 AgentHub 프로젝트로 등록됩니다.</p>
         <div class="card">
           <div class="card-head">
-            <h3>세션 흐름 <span class="muted">카드를 눌러 열고(가운데 버튼·Ctrl+클릭은 새 창), 끌어서 옮기고, ● 손잡이를 다른 카드로 끌어 연결합니다</span></h3>
+            <h3>세션 흐름 <span class="muted">카드를 눌러 고르고 두 번 눌러 엽니다(가운데 버튼·Ctrl+두 번 누르기는 새 창). 빈 곳을 끌면 여러 개를 고르고, 고른 카드는 함께 옮겨집니다. ● 손잡이를 끌어 다른 카드에 연결합니다</span></h3>
             <div class="actions">
               <button class="ghost sm" id="p-orchestrator" title="목표를 작업으로 나누고 세션을 만들어 지휘하는 세션">오케스트레이터 만들기</button>
               <button class="ghost sm" id="p-skills" title="스킬 만들기·편집·옮기기. 세션 카드의 스킬 칩을 눌러 장착합니다">스킬</button>
@@ -441,17 +442,43 @@
     <form method="dialog" id="config-form" class="dialog-form">
       <h3>세션 설정</h3>
       <label>제목 <input id="config-title"></label>
+      <label>AI <select id="config-agent"></select></label>
+      <div id="config-switch" class="config-switch" hidden>
+        <label class="check"><input type="checkbox" id="config-carry" checked> 진행 상황 이어받기</label>
+        <p class="hint">AI를 바꾸면 CLI 대화는 새로 시작합니다. 이어받기를 켜면 지금까지의 요청·답변·도구 사용·바뀐 파일을 정리해 다음 요청에 함께 넘깁니다. 작업 폴더·역할·연결·기록은 그대로입니다.</p>
+      </div>
       <div class="two">
         <label>모델 <input id="config-model" list="config-models" placeholder="CLI 기본값" spellcheck="false" autocomplete="off"></label>
         <label>추론 강도 <select id="config-effort"></select></label>
       </div>
       <datalist id="config-models"></datalist>
       <label id="config-permission-row">권한 <select id="config-permission"></select></label>
-      <p class="hint">바꾼 설정은 다음 요청부터 적용되고, 대화는 그대로 이어집니다.</p>
+      <p class="hint">모델·추론 강도·권한은 다음 요청부터 적용되고, 같은 AI면 대화는 그대로 이어집니다.</p>
       <p class="error" id="config-error"></p>
       <menu>
         <button value="cancel" formnovalidate class="ghost">취소</button>
         <button value="ok" class="primary">저장</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="project-remove-dialog">
+    <form method="dialog" id="project-remove-form" class="dialog-form">
+      <h3>프로젝트 제거 <small id="project-remove-name"></small></h3>
+      <p id="project-remove-summary"></p>
+      <ul class="project-remove-keep">
+        <li>프로젝트 폴더와 파일, AGENTHUB.md, 스킬 파일은 <b>그대로 둡니다</b>.</li>
+        <li>Claude Code·Codex의 대화 기록 파일도 그대로 두고, 목록에서만 숨깁니다.</li>
+        <li>나중에 같은 폴더를 다시 추가하거나 거기서 세션을 만들면 다시 보입니다.</li>
+      </ul>
+      <label class="check" id="project-remove-worktrees-row"><input type="checkbox" id="project-remove-worktrees">
+        <span>분리한 작업 폴더(<span id="project-remove-worktree-count"></span>개)도 지우기 · 커밋하지 않은 변경이 있으면 남기고 알립니다</span></label>
+      <label class="check" id="project-remove-force-row"><input type="checkbox" id="project-remove-force">
+        <span>실행 중인 세션(<span id="project-remove-running-count"></span>개)을 멈추고 제거</span></label>
+      <p class="error" id="project-remove-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate class="ghost">취소</button>
+        <button value="ok" class="primary danger">제거</button>
       </menu>
     </form>
   </dialog>

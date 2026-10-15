@@ -160,3 +160,44 @@ test("api: 쉬고 있는 세션을 일시중지·재개·중지한다", async ()
   assert.match(after.events.at(-1).text, /중지했습니다/);
   await api("DELETE", `/sessions/${s.id}`);
 });
+
+test("api: 세션의 AI를 바꾸고 진행 상황을 넘긴다", async () => {
+  const s = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "S", permission: "acceptEdits", model: "opus" })).body;
+  // 기록이 없으면 넘길 것도 없다.
+  const plain = (await api("PUT", `/sessions/${s.id}`, { agent: "codex" })).body;
+  assert.deepEqual([plain.agent, plain.model, plain.permission, plain.handoverPending], ["codex", "", "workspace-write", false]);
+  assert.equal((await api("PUT", `/sessions/${s.id}`, { agent: "gemini" })).status, 400);
+  assert.equal((await api("PUT", `/sessions/${s.id}`, { agent: "claude", permission: "read-only" })).status, 400); // Codex 권한은 Claude에 없다.
+
+  const back = (await api("PUT", `/sessions/${s.id}`, { agent: "claude", permission: "plan" })).body;
+  assert.deepEqual([back.agent, back.permission, back.agentSessionId], ["claude", "plan", null]);
+  const full = (await api("GET", `/sessions/${s.id}`)).body;
+  assert.match(full.events.at(-1).text, /Codex에서 Claude\(으\)로 바꿨습니다/);
+  await api("DELETE", `/sessions/${s.id}`);
+});
+
+test("api: 프로젝트를 제거하면 AgentHub 세션·연결은 지우고 폴더는 남기며, 다시 쓰면 다시 보인다", async () => {
+  const make = (title) => api("POST", "/sessions", { agent: "claude", projectPath: repo, title, permission: "acceptEdits" });
+  const a = (await make("A")).body;
+  const b = (await make("B")).body;
+  await api("POST", "/links", { from: a.id, to: b.id });
+  await api("PUT", "/board", { path: repo, text: "메모" });
+  assert.ok((await api("GET", "/projects/all")).body.some((p) => p.path.toLowerCase() === path.resolve(repo).toLowerCase()));
+
+  assert.equal((await api("DELETE", "/projects")).status, 400);
+  const removed = await api("DELETE", `/projects?path=${encodeURIComponent(repo)}`);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.sessions, 2);
+  assert.deepEqual(removed.body.worktreeErrors, []);
+  assert.ok(fs.existsSync(path.join(repo, "README.md"))); // 프로젝트 파일은 그대로다.
+  const sessions = (await api("GET", "/sessions")).body;
+  assert.ok(!sessions.some((s) => s.id === a.id || s.id === b.id));
+  assert.equal((await api("GET", "/links")).body.length, 0);
+  assert.equal((await api("GET", `/board?path=${encodeURIComponent(repo)}`)).body.text, "");
+  assert.ok(!(await api("GET", "/projects/all")).body.some((p) => p.path.toLowerCase() === path.resolve(repo).toLowerCase()));
+
+  // 같은 폴더에서 다시 세션을 만들면 다시 등록된다.
+  const again = (await make("C")).body;
+  assert.ok((await api("GET", "/projects/all")).body.some((p) => p.registered && p.path.toLowerCase() === path.resolve(repo).toLowerCase()));
+  await api("DELETE", `/sessions/${again.id}`);
+});

@@ -13,7 +13,7 @@ AgentHub 서버는 `server/`의 ES 모듈(`.mjs`)이다. `node server/index.mjs`
 - `store.mjs`(세션), `links.mjs`(연결), `commands.mjs`(명령 노드): 메모리에 두고 바뀔 때 `data/` 아래 JSON 파일로 저장한다.
 - `runner.mjs` + `agents/claude.mjs`, `agents/codex.mjs`: CLI 실행과 출력 해석. 두 에이전트는 같은 모양(`PERMISSION_MODES`, `models()`, `efforts()`, `buildArgs` …)을 내보내고 `AGENTS[agent]`로 고른다. 한쪽에 기능을 넣으면 다른 쪽도 맞춘다.
 - `cli.mjs`: CLI 찾기·실행(`locateCli`, `spawnCli`), 버전·로그인 확인. `git.mjs`: worktree와 diff. `discover.mjs`: 디스크의 Claude·Codex 기록 읽기.
-- `chain.mjs`, `orchestrator.mjs`, `hubfile.mjs`, `role.mjs`, `skills.mjs`, `question.mjs`, `messages.mjs`(세션 메시지·공유 노트), `mcp.mjs`(에이전트 CLI가 부르는 MCP 서버, `/mcp/<토큰>`), `limits.mjs`, `setup.mjs`: 기능별 모듈. 순수 함수로 둘 수 있는 것은 순수 함수로 두어 테스트하기 쉽게 한다.
+- `chain.mjs`, `orchestrator.mjs`, `hubfile.mjs`, `role.mjs`, `skills.mjs`, `question.mjs`, `handover.mjs`(AI를 바꿀 때 넘길 진행 상황), `messages.mjs`(세션 메시지·공유 노트), `mcp.mjs`(에이전트 CLI가 부르는 MCP 서버, `/mcp/<토큰>`), `limits.mjs`, `setup.mjs`: 기능별 모듈. 순수 함수로 둘 수 있는 것은 순수 함수로 두어 테스트하기 쉽게 한다.
 
 ## 관례
 - API는 `handleApi`에서 `parts`(경로 조각)와 `method`로 가른다. 비슷한 기존 경로 옆에 같은 모양으로 넣는다. 응답은 `send(res, status, body)`, 본문은 `await readJson(req)`.
@@ -46,7 +46,7 @@ AgentHub 서버는 `server/`의 ES 모듈(`.mjs`)이다. `node server/index.mjs`
 - 지금 있는 이름과 화면 반응:
   - `sessions` → 세션 목록 다시 받기, `session` `{ sessionId }` → 보고 있는 세션이면 다시 받기
   - `event` `{ sessionId, event }` → 보고 있는 세션에 덧붙이기(`event.seq`는 `session.events` 안의 위치다. 화면은 이 값으로 중복을 거르므로 이벤트는 runner를 거쳐 덧붙이고 중간에 끼우거나 지우지 않는다), `state` → 실행 상태 표시
-  - `links`, `commands`, `skills` `{ projectPath }`, `messages`·`board` `{ projectPath }`(세션 메시지·공유 노트), `queue` `{ sessionId }`, `limits`, `cli`, `setup`, `update`, `ping`(연결 유지)
+  - `links`, `commands`, `skills` `{ projectPath }`, `messages`·`board` `{ projectPath }`(세션 메시지·공유 노트), `projects`(프로젝트 추가·제거), `queue` `{ sessionId }`, `limits`, `cli`, `setup`, `update`, `ping`(연결 유지)
 - 데이터를 바꾸는 API는 그 변화를 보는 화면이 있으면 알맞은 이벤트를 보낸다. 다른 창(별도 창 `?session=`, 여러 탭)도 같은 이벤트로 갱신되기 때문이다. 요청한 창은 응답으로, 나머지 창은 이벤트로 바뀐다.
 - 연결이 끊겼다 이어지면 화면이 목록과 현재 세션을 처음부터 다시 받는다. 그러니 이벤트를 놓쳐도 GET API만으로 같은 상태가 나와야 한다. 이벤트에만 있고 API로 얻을 수 없는 상태를 만들지 않는다.
 - 새 이벤트 이름을 만들면 `connectStream`에 처리기를 넣는다. 처리기가 없으면 화면은 조용히 무시한다.

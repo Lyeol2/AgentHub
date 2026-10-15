@@ -27,6 +27,9 @@ function percent(value) {
 
 const toIso = (sec) => (typeof sec === "number" ? new Date(sec * 1000).toISOString() : null);
 
+// 초기화 시각이 같은 기간인지. 실행 중 이벤트는 초 단위, 사용량 조회는 밀리초까지 주므로 조금 달라도 같은 기간으로 본다.
+export const sameWindow = (a, b) => !!a && !!b && Math.abs(Date.parse(a) - Date.parse(b)) < 10 * 60_000;
+
 function save(saved) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
   fs.writeFileSync(LIMITS_PATH, JSON.stringify(saved, null, 2));
@@ -40,7 +43,7 @@ export function recordClaudeLimit(info) {
   const resetsAt = toIso(info.resetsAt);
   let usedPercent = percent(info.utilization ?? info.usedPercent);
   // 실행 중 이벤트는 한도에 가까울 때만 사용률을 싣는다. 같은 기간이면 사용량 조회로 받은 값을 지우지 않는다.
-  if (usedPercent === null && prev?.resetsAt === resetsAt) usedPercent = prev.usedPercent ?? null;
+  if (usedPercent === null && sameWindow(prev?.resetsAt, resetsAt)) usedPercent = prev.usedPercent ?? null;
   saved.claude[type] = {
     status: info.status ?? null,
     usedPercent,
@@ -56,10 +59,14 @@ export function recordClaudeLimit(info) {
 const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const USAGE_TTL = 60_000;
+const USAGE_BACKOFF = 5 * 60_000; // 너무 자주 물어 거절(429)되면 이만큼 쉰다.
 let usageCheckedAt = 0;
+let usageBlockedUntil = 0;
 let usageError = null;
 
 export async function refreshClaudeUsage({ fresh = false } = {}) {
+  // 거절된 뒤에는 새로고침 버튼으로도 묻지 않는다. 계속 물으면 더 오래 막힌다.
+  if (Date.now() < usageBlockedUntil) return;
   if (!fresh && Date.now() - usageCheckedAt < USAGE_TTL) return;
   usageCheckedAt = Date.now();
   let oauth;
@@ -79,6 +86,12 @@ export async function refreshClaudeUsage({ fresh = false } = {}) {
       headers: { Authorization: `Bearer ${oauth.accessToken}`, "anthropic-beta": "oauth-2025-04-20" },
       signal: AbortSignal.timeout(10_000),
     });
+    if (res.status === 429) {
+      const retry = Number(res.headers.get("retry-after"));
+      const wait = Number.isFinite(retry) && retry > 0 ? Math.max(retry * 1000, USAGE_TTL) : USAGE_BACKOFF;
+      usageBlockedUntil = Date.now() + wait;
+      throw new Error(`사용률 조회가 잠시 막혔습니다(요청이 많음). ${Math.ceil(wait / 60_000)}분 뒤에 다시 읽습니다.`);
+    }
     if (!res.ok) throw new Error(`사용률 조회 실패 (HTTP ${res.status})`);
     const usage = await res.json();
     const saved = loadSaved();

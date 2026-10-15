@@ -15,6 +15,8 @@ const DEFAULTS = {
   projects: [],
   // 프로젝트 화면의 Claude Code·Codex 기록 목록에서 숨긴 세션 ID. 기록 파일은 지우지 않는다.
   hiddenSessions: [],
+  // 제거한 프로젝트 경로. Claude Code·Codex 기록에서 다시 감지돼도 목록에 보이지 않는다(다시 추가하면 빠진다).
+  hiddenProjects: [],
   // 흐름 그래프에서 옮긴 스킬 노드 위치. 프로젝트 경로(소문자) → 스킬 이름 → { x, y }
   skillLayout: {},
 };

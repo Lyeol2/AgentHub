@@ -58,7 +58,8 @@ export class SessionStore {
   }
 }
 
+// 목록에 쓰는 요약. 이벤트와 AI를 바꿀 때 넘길 긴 기록(handover)은 빼고, 넘길 것이 있는지만 알린다.
 export function summary(session) {
-  const { events, ...rest } = session;
-  return { ...rest, eventCount: events.length };
+  const { events, handover, ...rest } = session;
+  return { ...rest, eventCount: events.length, handoverPending: !!handover };
 }

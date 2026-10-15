@@ -720,3 +720,21 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 /* ── 일시중지 ────────────────────────────────────────────── */
 .pill.paused { color: var(--warn); border-color: var(--warn); }
 .gcard.paused { border-color: var(--warn); border-style: dashed; }
+
+/* ── 그래프 선택 ─────────────────────────────────────────── */
+.gcard.selected, .gcmd.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent), 0 0 0 5px var(--accent-soft); }
+.graph-canvas { min-height: 180px; }
+.graph-canvas.selecting { user-select: none; cursor: crosshair; }
+.graph-select-box {
+  position: absolute; z-index: 4; pointer-events: none;
+  border: 1px dashed var(--accent); background: var(--accent-soft); border-radius: 3px;
+}
+.limit-mini .item .reset { font-size: 10.5px; color: var(--faint); text-align: right; }
+
+/* ── AI 바꾸기 ───────────────────────────────────────────── */
+.config-switch { display: grid; gap: 4px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: 6px; }
+
+/* ── 프로젝트 제거 ───────────────────────────────────────── */
+button.primary.danger { background: var(--danger); border-color: var(--danger); color: var(--bg); }
+button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: brightness(1.1); }
+.project-remove-keep { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); display: grid; gap: 3px; }

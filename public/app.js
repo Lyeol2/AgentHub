@@ -10,6 +10,7 @@ const state = {
   current: null, // 선택한 세션의 전체 데이터
   filter: "",
   links: [], // 세션 사이 연결
+  graphSelected: new Set(), // 그래프에서 고른 카드(세션·명령 노드) ID
   messages: [], // 보고 있는 프로젝트에서 세션끼리 주고받은 메시지(그래프의 대화선)
   hubs: new Map(), // 프로젝트 경로(소문자) → AGENTHUB.md 내용
 };
@@ -335,17 +336,47 @@ function renderLimits() {
       ...(info.windows.length ? info.windows.map(limitRow) : [el("div", { class: "limit-empty" }, info.error ?? LIMIT_EMPTY[agent])]));
   }));
 
-  // 사이드바에는 에이전트마다 가장 많이 쓴 기간 하나만 보여 준다.
+  // 사이드바에는 에이전트마다 가장 많이 쓴 기간 하나를 보여 준다.
+  // Claude는 시간제(5시간) 한도를 늘 함께 보여 주고, 초기화까지 남은 시간도 붙인다.
   $("limit-mini").replaceChildren(...["claude", "codex"].flatMap((agent) => {
-    const windows = (limits[agent]?.windows ?? []).filter((w) => !isExpired(w) && typeof w.usedPercent === "number");
-    if (!windows.length) return [];
-    const w = windows.reduce((a, b) => (b.usedPercent > a.usedPercent ? b : a));
-    return [el("div", { class: "item", title: w.resetsAt ? `초기화 ${fmtDate(w.resetsAt)}` : "" },
-      el("div", { class: "line" },
-        el("span", {}, `${AGENT_LABEL[agent]} ${w.label}`),
-        el("span", {}, `${Math.max(0, 100 - w.usedPercent).toFixed(0)}% 남음`)),
-      el("div", { class: "bar" }, el("span", { class: barLevel(w.usedPercent), style: `width:${Math.min(100, w.usedPercent)}%` })))];
+    const all = limits[agent]?.windows ?? [];
+    const live = all.filter((w) => !isExpired(w) && typeof w.usedPercent === "number");
+    const shown = [];
+    const hourly = agent === "claude" ? all.find((w) => w.id === "five_hour") : null;
+    if (hourly) shown.push(hourly);
+    const rest = live.filter((w) => w !== hourly);
+    if (rest.length) shown.push(rest.reduce((a, b) => (b.usedPercent > a.usedPercent ? b : a)));
+    return shown.map((w) => limitMini(agent, w));
   }));
+}
+
+const LIMIT_STATUS = { allowed: "사용 가능", allowed_warning: "한도 임박", rejected: "한도 도달" };
+
+// 사이드바의 한도 한 줄. 초기화 시각이 지났으면 다 남은 것으로 본다.
+function limitMini(agent, w) {
+  const expired = isExpired(w);
+  const used = expired ? 0 : w.usedPercent;
+  const known = typeof used === "number";
+  const reset = !expired && w.resetsAt ? untilText(w.resetsAt) : null;
+  return el("div", { class: "item", title: w.resetsAt ? `초기화 ${fmtDate(w.resetsAt)}` : "" },
+    el("div", { class: "line" },
+      el("span", {}, `${AGENT_LABEL[agent]} ${w.label}`),
+      // 사용률을 모르면(실행 중 이벤트만 받은 경우) 상태만 보인다.
+      el("span", {}, known ? `${Math.max(0, 100 - used).toFixed(0)}% 남음` : LIMIT_STATUS[w.status] ?? "사용률 모름")),
+    el("div", { class: "bar" }, el("span", {
+      class: known ? barLevel(used) : w.status === "rejected" ? "danger" : w.status === "allowed_warning" ? "warn" : "",
+      style: `width:${known ? Math.min(100, used) : w.status === "rejected" ? 100 : 0}%`,
+    })),
+    reset || expired ? el("div", { class: "reset" }, expired ? "초기화됨" : `${reset} 뒤 초기화`) : null);
+}
+
+// 지금부터 그 시각까지 남은 시간("2시간 13분", "40분", "3일 4시간")
+function untilText(iso) {
+  const minutes = Math.max(0, Math.round((new Date(iso).getTime() - Date.now()) / 60000));
+  if (minutes < 60) return `${minutes}분`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}시간${minutes % 60 ? ` ${minutes % 60}분` : ""}`;
+  return `${Math.floor(hours / 24)}일${hours % 24 ? ` ${hours % 24}시간` : ""}`;
 }
 
 $("refresh-limits").addEventListener("click", () => loadLimits(true));
@@ -461,6 +492,11 @@ function renderProjectNav() {
         title: `${p.path}
 Claude Code ${p.claude} · Codex ${p.codex} · AgentHub ${hubSessions(p).length}`,
         onclick: () => goProject(p.path),
+        oncontextmenu: (e) => openContextMenu(e, p.name, [
+          ["열기", () => goProject(p.path)],
+          null,
+          ["프로젝트 제거", () => openRemoveProject(p), { danger: true }],
+        ]),
       },
       el("span", { class: `dot${running ? " running" : ""}` }),
       el("span", { class: "nav-name" }, p.name),
@@ -547,6 +583,57 @@ function sessionRow(s, withProject) {
 function currentProject() {
   return state.projects?.find((p) => samePath(p.path, state.project));
 }
+
+// ── 프로젝트 제거 ───────────────────────────────────────────────
+// AgentHub 목록에서만 뺀다. 이 프로젝트의 AgentHub 세션·명령 노드·연결·공유 노트는 지우고, 폴더와 파일은 그대로 둔다.
+function openRemoveProject(p) {
+  const sessions = hubSessions(p).filter((s) => !s.chat);
+  const running = sessions.filter((s) => s.state === "running").length;
+  const worktrees = sessions.filter((s) => s.worktree).length;
+  const commandCount = state.commandsProject && samePath(state.commandsProject, p.path) ? (state.commands ?? []).length : 0;
+  state.removingProject = p;
+  $("project-remove-name").textContent = p.name;
+  $("project-remove-summary").textContent = sessions.length || commandCount
+    ? `AgentHub 세션 ${sessions.length}개${commandCount ? `, 명령 노드 ${commandCount}개` : ""}와 그 연결·공유 노트·메시지 기록을 지웁니다.`
+    : "이 프로젝트에는 AgentHub 세션이 없습니다. 목록에서만 뺍니다.";
+  $("project-remove-worktrees-row").hidden = !worktrees;
+  $("project-remove-worktree-count").textContent = String(worktrees);
+  $("project-remove-worktrees").checked = false;
+  $("project-remove-force-row").hidden = !running;
+  $("project-remove-running-count").textContent = String(running);
+  $("project-remove-force").checked = false;
+  $("project-remove-error").textContent = "";
+  $("project-remove-dialog").showModal();
+}
+
+$("p-remove").addEventListener("click", () => {
+  const p = currentProject();
+  if (p) openRemoveProject(p);
+});
+
+$("project-remove-form").addEventListener("submit", async (e) => {
+  if (e.submitter?.value !== "ok") return;
+  e.preventDefault();
+  const p = state.removingProject;
+  const query = new URLSearchParams({ path: p.path });
+  if ($("project-remove-force").checked) query.set("force", "1");
+  if ($("project-remove-worktrees").checked) query.set("removeWorktrees", "1");
+  const button = e.submitter;
+  button.disabled = true;
+  try {
+    const result = await api("DELETE", `/api/projects?${query}`);
+    $("project-remove-dialog").close();
+    if (result.worktreeErrors.length) alert(`제거했지만 지우지 못한 작업 폴더가 있습니다(커밋하지 않은 변경이 있을 수 있음):\n\n${result.worktreeErrors.join("\n")}`);
+    if (state.view === "project" && samePath(state.project, p.path)) goDashboard();
+    await Promise.all([loadProjects(), loadSessions(), loadLinks()]);
+  } catch (err) {
+    // 실행 중인 세션이 있으면 멈추고 제거할지 고르게 한다.
+    if (err.reason === "running") $("project-remove-force-row").hidden = false;
+    $("project-remove-error").textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+});
 
 function renderProjectSessions() {
   renderGraph();
@@ -761,9 +848,11 @@ function renderGraph() {
 
   state.graph = { canvas, svg, cards, pos, links, commands };
   placeCards();
+  syncGraphSelection();
   box.replaceChildren(canvas);
-  canvas.addEventListener("pointerdown", onGraphPointerDown);
 }
+// 카드 끌기·연결·선택 상자. 캔버스 밖 여백에서도 선택 상자를 시작할 수 있게 그래프 칸에 한 번만 단다.
+$("p-graph").addEventListener("pointerdown", onGraphPointerDown);
 
 // 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 명령 노드는 명령 메뉴, 빈 곳은 그 자리에 새 세션·명령을 만든다.
 $("p-graph").addEventListener("contextmenu", (e) => {
@@ -1402,6 +1491,7 @@ function onGraphPointerDown(e) {
   }
   if (e.button !== 0) return;
   const g = state.graph;
+  if (!g?.canvas.isConnected) return; // 카드가 없어 안내 문구만 있는 그래프
   const label = e.target.closest(".edge-label");
   if (label && e.target.closest(".gate-btn")) return; // 승인·거절 버튼은 자기 onclick으로 처리한다.
   if (label) {
@@ -1409,14 +1499,21 @@ function onGraphPointerDown(e) {
     return;
   }
   const card = e.target.closest(".gcard, .gcmd");
-  // 카드 안의 버튼(다시 시작, 스킬 칩, 명령 실행·중지)은 카드 열기·끌기와 따로 동작한다.
-  if (!card || e.target.closest(".gcard-restart, .gcard-skills, .gcmd-btn")) return;
+  // 빈 곳을 끌면 선택 상자로 여러 카드를 고른다.
+  if (!card) {
+    if (!e.target.closest("button, a, input, select, textarea")) startBoxSelect(e);
+    return;
+  }
+  // 카드 안의 버튼(다시 시작, 스킬 칩, 명령 실행·중지)은 카드 선택·끌기와 따로 동작한다.
+  if (e.target.closest(".gcard-restart, .gcard-skills, .gcmd-btn")) return;
   e.preventDefault();
   const id = card.dataset.id;
-  const cmd = commandById(id);
   const start = canvasPoint(e);
-  const origin = { ...g.pos.get(id) };
   const connecting = e.target.classList.contains("gcard-handle");
+  const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+  // 선택한 카드를 끌면 선택한 카드를 모두 함께 옮긴다.
+  const group = !connecting && state.graphSelected.has(id) ? [...state.graphSelected].filter((n) => g.pos.has(n)) : [id];
+  const origins = new Map(group.map((n) => [n, { ...g.pos.get(n) }]));
   let moved = false;
   let temp = null;
 
@@ -1439,8 +1536,13 @@ function onGraphPointerDown(e) {
       const dx = Math.max(40, Math.abs(p.x - x1) / 2);
       temp.setAttribute("d", `M${x1},${y1} C${x1 + dx},${y1} ${p.x - dx},${p.y} ${p.x},${p.y}`);
     } else {
-      g.pos.set(id, { x: Math.max(0, origin.x + p.x - start.x), y: Math.max(0, origin.y + p.y - start.y) });
-      card.classList.add("dragging");
+      // 묶음이 왼쪽·위 끝을 넘지 않게 함께 멈춘다.
+      const dx = Math.max(p.x - start.x, -Math.min(...[...origins.values()].map((o) => o.x)));
+      const dy = Math.max(p.y - start.y, -Math.min(...[...origins.values()].map((o) => o.y)));
+      for (const [n, o] of origins) {
+        g.pos.set(n, { x: o.x + dx, y: o.y + dy });
+        g.cards.get(n)?.classList.add("dragging");
+      }
       placeCards();
     }
   };
@@ -1449,13 +1551,19 @@ function onGraphPointerDown(e) {
     window.removeEventListener("pointermove", onMove);
     window.removeEventListener("pointerup", onUp);
     g.dragging = false;
-    card.classList.remove("dragging");
+    for (const n of group) g.cards.get(n)?.classList.remove("dragging");
     g.canvas.classList.remove("connecting");
     temp?.remove();
     if (!moved) {
+      // 누르면 선택만 한다(열기는 두 번 누르기). Ctrl·Shift를 누르고 누르면 선택에 더하거나 뺀다.
       if (connecting) return;
-      if (cmd) openCommandDialog(cmd);
-      else sessionOpener(id)(ev);
+      if (additive) {
+        if (state.graphSelected.has(id)) state.graphSelected.delete(id);
+        else state.graphSelected.add(id);
+      } else {
+        state.graphSelected = new Set([id]);
+      }
+      syncGraphSelection();
       return;
     }
     if (connecting) {
@@ -1464,24 +1572,98 @@ function onGraphPointerDown(e) {
       if (targetId && targetId !== id) openLinkDialog(null, id, targetId);
       return;
     }
-    const p = g.pos.get(id);
-    if (cmd) {
-      cmd.pos = { x: Math.round(p.x), y: Math.round(p.y) };
-      api("PUT", `/api/commands/${cmd.id}`, { pos: cmd.pos }).catch((err) => alert(err.message));
-      return;
-    }
-    const s = sessionById(id);
-    if (s) s.graphPos = { x: Math.round(p.x), y: Math.round(p.y) };
-    try {
-      await api("PUT", `/api/sessions/${id}`, { graphPos: s?.graphPos });
-    } catch (err) {
-      alert(err.message);
-    }
+    await Promise.all(group.map(saveNodePos));
   };
 
   window.addEventListener("pointermove", onMove);
   window.addEventListener("pointerup", onUp);
 }
+
+// 옮긴 카드의 위치를 저장한다.
+async function saveNodePos(id) {
+  const p = state.graph.pos.get(id);
+  const pos = { x: Math.round(p.x), y: Math.round(p.y) };
+  const cmd = commandById(id);
+  try {
+    if (cmd) {
+      cmd.pos = pos;
+      await api("PUT", `/api/commands/${cmd.id}`, { pos });
+      return;
+    }
+    const s = sessionById(id);
+    if (s) s.graphPos = pos;
+    await api("PUT", `/api/sessions/${id}`, { graphPos: pos });
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+// ── 그래프 선택 ─────────────────────────────────────────────────
+// 선택은 화면에만 둔다. 다시 그려도 남아 있는 카드의 선택은 유지한다.
+function syncGraphSelection() {
+  const g = state.graph;
+  if (!g) return;
+  for (const id of state.graphSelected) if (!g.cards.has(id)) state.graphSelected.delete(id);
+  for (const [id, card] of g.cards) card.classList.toggle("selected", state.graphSelected.has(id));
+}
+
+// 빈 곳에서 끌면 상자 안에 걸친 카드를 고른다. Ctrl·Shift를 누르고 끌면 지금 선택에 더한다.
+// 끌지 않고 빈 곳을 누르기만 하면 선택을 푼다.
+function startBoxSelect(e) {
+  const g = state.graph;
+  if (!g) return;
+  e.preventDefault();
+  const start = canvasPoint(e);
+  const base = e.ctrlKey || e.metaKey || e.shiftKey ? new Set(state.graphSelected) : new Set();
+  let box = null;
+
+  const onMove = (ev) => {
+    const p = canvasPoint(ev);
+    if (!box && Math.hypot(p.x - start.x, p.y - start.y) < 4) return;
+    if (!box) {
+      box = el("div", { class: "graph-select-box" });
+      g.canvas.append(box);
+      g.canvas.classList.add("selecting");
+    }
+    const x1 = Math.min(start.x, p.x);
+    const y1 = Math.min(start.y, p.y);
+    const x2 = Math.max(start.x, p.x);
+    const y2 = Math.max(start.y, p.y);
+    Object.assign(box.style, { left: `${x1}px`, top: `${y1}px`, width: `${x2 - x1}px`, height: `${y2 - y1}px` });
+    const picked = new Set(base);
+    for (const [id, pos] of g.pos) {
+      const size = nodeSize(id);
+      if (pos.x < x2 && pos.x + size.w > x1 && pos.y < y2 && pos.y + size.h > y1) picked.add(id);
+    }
+    state.graphSelected = picked;
+    syncGraphSelection();
+  };
+
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+    g.canvas.classList.remove("selecting");
+    if (box) {
+      box.remove();
+      return;
+    }
+    state.graphSelected = base;
+    syncGraphSelection();
+  };
+
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
+
+// 카드를 두 번 누르면 연다. Ctrl·Shift를 누르고 두 번 누르면 세션을 새 창으로 연다.
+$("p-graph").addEventListener("dblclick", (e) => {
+  const card = e.target.closest(".gcard, .gcmd");
+  if (!card || e.target.closest(".gcard-restart, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
+  const cmd = commandById(card.dataset.id);
+  if (cmd) openCommandDialog(cmd);
+  else if (e.ctrlKey || e.metaKey || e.shiftKey) openSessionWindow(card.dataset.id);
+  else selectSession(card.dataset.id);
+});
 
 $("p-relayout").addEventListener("click", async () => {
   const placed = state.sessions.filter((s) => samePath(s.projectPath, state.project) && s.graphPos);
@@ -2237,6 +2419,11 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     togglePause();
   }
+  // 프로젝트 화면에서는 그래프 선택을 푼다.
+  if (state.view === "project" && state.graphSelected.size) {
+    state.graphSelected = new Set();
+    syncGraphSelection();
+  }
 });
 window.addEventListener("blur", closeContextMenu);
 window.addEventListener("resize", closeContextMenu);
@@ -2351,19 +2538,46 @@ $("s-config").addEventListener("click", async () => {
   if (!s) return;
   await loadStatus();
   $("config-title").value = s.title;
+  $("config-agent").replaceChildren(...Object.keys(state.status.agents).map((a) => el("option", { value: a }, AGENT_LABEL[a] ?? a)));
+  $("config-agent").value = s.agent;
+  $("config-carry").checked = true;
   $("config-model").value = s.model ?? "";
-  fillModels("config-models", s.agent);
-  fillEfforts("config-effort", s.agent, s.model ?? "", s.effort ?? "");
+  fillConfigAgent(s.agent, s.effort ?? "", s.permission);
   $("config-permission-row").hidden = !!s.chat;
-  $("config-permission").replaceChildren(
-    ...state.status.agents[s.agent].permissions.map((m) => el("option", { value: m }, m)));
-  $("config-permission").value = s.permission;
   $("config-error").textContent = "";
   $("config-dialog").showModal();
 });
 
+// 고른 AI에 맞춰 모델 후보·추론 강도·권한 목록을 채운다. AI를 바꾸면 이어받기 선택을 보인다.
+// 권한은 비슷한 것으로 옮긴다(읽기만 ↔ 읽기만, 수정 허용 ↔ 수정 허용). 서버의 handover.mjs와 같다.
+const PERMISSION_MAP = {
+  claude: { "read-only": "plan", "workspace-write": "acceptEdits" },
+  codex: { default: "read-only", plan: "read-only", acceptEdits: "workspace-write", bypassPermissions: "workspace-write" },
+};
+
+function fillConfigAgent(agent, effort = $("config-effort").value, permission = $("config-permission").value) {
+  const s = state.current;
+  const switching = agent !== s.agent;
+  $("config-switch").hidden = !switching;
+  fillModels("config-models", agent);
+  fillEfforts("config-effort", agent, $("config-model").value.trim(), effort);
+  const modes = state.status.agents[agent].permissions;
+  $("config-permission").replaceChildren(...modes.map((m) => el("option", { value: m }, m)));
+  const mapped = modes.includes(permission) ? permission : PERMISSION_MAP[agent]?.[permission];
+  $("config-permission").value = mapped && modes.includes(mapped) ? mapped : modes.at(-1);
+}
+
+$("config-agent").addEventListener("change", () => {
+  const s = state.current;
+  if (!s) return;
+  const agent = $("config-agent").value;
+  // 모델 이름은 AI마다 다르므로 바꾸면 비우고(CLI 기본값), 돌아오면 원래 값을 되살린다.
+  $("config-model").value = agent === s.agent ? s.model ?? "" : "";
+  fillConfigAgent(agent, agent === s.agent ? s.effort ?? "" : "", agent === s.agent ? s.permission : $("config-permission").value);
+});
+
 $("config-model").addEventListener("input", () => {
-  if (state.current) fillEfforts("config-effort", state.current.agent, $("config-model").value.trim());
+  if (state.current) fillEfforts("config-effort", $("config-agent").value, $("config-model").value.trim());
 });
 
 $("config-form").addEventListener("submit", async (e) => {
@@ -2372,11 +2586,17 @@ $("config-form").addEventListener("submit", async (e) => {
   const s = state.current;
   const body = { title: $("config-title").value, model: $("config-model").value.trim(), effort: $("config-effort").value };
   if (!s.chat) body.permission = $("config-permission").value;
+  const agent = $("config-agent").value;
+  if (agent !== s.agent) Object.assign(body, { agent, carry: $("config-carry").checked });
   try {
     const updated = await api("PUT", `/api/sessions/${s.id}`, body);
-    Object.assign(state.current, { title: updated.title, model: updated.model, effort: updated.effort, permission: updated.permission });
     $("config-dialog").close();
-    renderSession();
+    // AI를 바꾸면 기록에 상태 줄이 붙고 CLI 대화 ID도 바뀌므로 세션을 통째로 다시 받는다.
+    if (updated.agent !== s.agent) await selectSession(s.id);
+    else {
+      Object.assign(state.current, { title: updated.title, model: updated.model, effort: updated.effort, permission: updated.permission });
+      renderSession();
+    }
     loadSessions();
   } catch (err) {
     $("config-error").textContent = err.message;
@@ -2850,6 +3070,11 @@ function connectStream() {
     }
   });
   source.addEventListener("sessions", loadSessions);
+  // 프로젝트를 더하거나 뺐다. 보고 있던 프로젝트가 빠졌으면 대시보드로 돌아간다.
+  source.addEventListener("projects", async () => {
+    await loadProjects();
+    if (state.view === "project" && !currentProject()) goDashboard();
+  });
   source.addEventListener("links", loadLinks);
   source.addEventListener("messages", (e) => {
     if (samePath(JSON.parse(e.data).projectPath, state.project)) loadMessages();
