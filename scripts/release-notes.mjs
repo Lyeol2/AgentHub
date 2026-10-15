@@ -67,30 +67,39 @@ export function releaseNotes(from, to = "HEAD") {
 
 // ── 사용자용 초안 ────────────────────────────────────────────────
 // 릴리스 준비 세션이 커밋 노트를 사용자 말투로 다시 쓴 초안(git 제외). 첫 줄에 쓴 시점의 커밋을 적는다.
-//   <!-- agenthub-release-draft base=<git rev-parse HEAD> -->
+//   <!-- agenthub-release-draft base=<git rev-parse HEAD> bump=minor -->
+// bump는 선택 사항이며 없으면 기존 릴리스 기본값을 쓴다.
 // 그 뒤로 커밋이 더 생겼으면 초안에 빠진 내용이 있으므로 쓰지 않는다.
 export const DRAFT_FILE = path.join(ROOT, "release-notes.draft.md");
-const DRAFT_HEAD = /^<!--\s*agenthub-release-draft\s+base=([0-9a-f]{7,40})\s*-->\s*\r?\n?/i;
+const DRAFT_HEAD = /^<!--\s*agenthub-release-draft\s+base=([0-9a-f]{7,40})(?:\s+bump=([^\s<>]+))?\s*-->\s*\r?\n?/i;
 
-// text: 초안 파일 내용, head: 지금 HEAD 커밋. 쓸 수 있으면 { notes }, 아니면 { reason }
+// text: 초안 파일 내용, head: 지금 HEAD 커밋. 쓸 수 있으면 { notes, bump? }, 아니면 { reason }
 export function parseDraft(text, head) {
-  const m = String(text ?? "").match(DRAFT_HEAD);
+  const source = String(text ?? "");
+  const m = source.match(DRAFT_HEAD);
   if (!m) return { reason: "초안 첫 줄에 기준 커밋 표시(<!-- agenthub-release-draft base=... -->)가 없습니다." };
   if (!head.startsWith(m[1]) && !m[1].startsWith(head)) return { reason: `초안을 쓴 뒤(${m[1].slice(0, 8)}) 커밋이 더 생겼습니다.` };
-  const notes = text.slice(m[0].length).trim();
+  const bump = m[2]?.toLowerCase();
+  if (bump && !["patch", "minor", "major"].includes(bump)) return { reason: "초안의 버전 단위는 patch, minor, major 중 하나여야 합니다." };
+  const notes = source.slice(m[0].length).trim();
   if (!notes) return { reason: "초안이 비어 있습니다." };
-  return { notes };
+  return bump ? { notes, bump } : { notes };
 }
 
 // 초안이 없으면 null. 있지만 쓸 수 없으면 이유를 알리고 null.
-export function readDraft(head = git("rev-parse", "HEAD")) {
+export function readPreparedRelease(head = git("rev-parse", "HEAD")) {
   if (!fs.existsSync(DRAFT_FILE)) return null;
   const draft = parseDraft(fs.readFileSync(DRAFT_FILE, "utf8"), head);
   if (draft.reason) {
     console.warn(`업데이트 내역 초안을 쓰지 않고 커밋 노트를 씁니다: ${draft.reason}`);
     return null;
   }
-  return draft.notes;
+  return draft;
+}
+
+// 노트만 필요한 기존 호출자는 같은 문자열|null API를 유지한다.
+export function readDraft(head = git("rev-parse", "HEAD")) {
+  return readPreparedRelease(head)?.notes ?? null;
 }
 
 export function webhookUrl() {
