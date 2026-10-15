@@ -169,12 +169,15 @@ const tasks = createTasksController({
   reloadData: () => Promise.all([loadSessions(), loadProjects()]),
 });
 
+// 첫 로딩 중에 목록이 먼저 그려지면 사용자가 프로젝트·세션을 누를 수 있다. 그랬으면 대시보드로 되돌리지 않는다.
+const bootView = navigation.viewRevision;
+const bootSelection = sessionSelectionRevision;
 await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate(), loadProjects(), loadLinks()]);
 if (POPUP) {
   document.body.classList.add("popup");
   if (POPUP === "new") openChat();
   else await selectSession(POPUP).catch(openChat);
-} else goDashboard();
+} else if (navigation.viewRevision === bootView && sessionSelectionRevision === bootSelection) goDashboard();
 
 const stream = connectLiveUpdates({
   data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate
