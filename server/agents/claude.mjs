@@ -151,7 +151,12 @@ export function parseLine(line) {
       }
       const events = [];
       for (const block of msg.message?.content ?? []) {
-        if (block.type === "text" && block.text) events.push({ kind: "text", text: block.text });
+        if (block.type === "text" && block.text) {
+          // 하나의 답변에 속한 연속 텍스트 블록은 함께 보여 준다.
+          const previous = events.at(-1);
+          if (previous?.kind === "text") previous.text += "\n\n" + block.text;
+          else events.push({ kind: "text", text: block.text });
+        }
         else if (block.type === "thinking" && block.thinking) events.push({ kind: "thinking", text: block.thinking });
         else if (block.type === "tool_use") {
           events.push({ kind: "tool", text: toolSummary(block.name, block.input), detail: truncate(block.input) });

@@ -306,6 +306,12 @@ main { display: flex; min-width: 0; min-height: 0; height: 100vh; }
 .ev.error { color: var(--danger); background: rgb(240 100 100 / .08); border: 1px solid rgb(240 100 100 / .3); padding: 7px 10px; border-radius: 6px; }
 .events:not(.show-log) .ev.log { display: none; }
 
+/* 완료한 요청은 결과 답변을 남기고 작업 중 출력을 접는다. */
+.ev.work { width: 100%; white-space: normal; }
+.ev.work > details > summary { width: fit-content; cursor: pointer; color: var(--muted); font-size: 12px; padding: 4px 0; }
+.ev.work > details > summary:hover { color: var(--text); }
+.work-events { list-style: none; margin: 8px 0 0; padding: 0 0 0 12px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+
 .composer { display: flex; gap: 10px; padding: 14px 24px 18px; border-top: 1px solid var(--line); background: var(--bg); }
 .composer textarea { flex: 1; min-width: 0; resize: vertical; background: var(--panel); min-height: 64px; }
 .composer button { align-self: flex-end; white-space: nowrap; padding: 10px 14px; min-height: 44px; }
@@ -725,7 +731,7 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .ev.tool.failed .tool-state { color: var(--danger); }
 .ev.tool.failed > details > summary::before { color: var(--danger); }
 /* 턴이 도는 동안 결과가 아직 없는 도구 호출은 실행 중으로 보인다. */
-.events.running .ev.tool.pending .tool-state::after { content: "실행 중…"; color: var(--accent); animation: tool-blink 1.2s ease-in-out infinite; }
+.events.running > .ev.tool.pending .tool-state::after { content: "실행 중…"; color: var(--accent); animation: tool-blink 1.2s ease-in-out infinite; }
 @keyframes tool-blink { 50% { opacity: .35; } }
 .ev.tool .tool-body { display: grid; gap: 4px; margin: 4px 0 6px 16px; }
 .ev.tool .tool-label { font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .4px; }

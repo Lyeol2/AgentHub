@@ -12,7 +12,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   const ui = {
     "chatDraft": null
   };
-  const { renderEvents, appendEvent } = createConversationView({
+  const { renderEvents, appendEvent, settleEvents } = createConversationView({
     getSession: () => data.current, sessionById, selectSession,
     onPlanDecision: (id, plan, body) => api("POST", `/api/sessions/${id}/plans/${plan}`, body),
     onPlanError: (id, error) => api("POST", `/api/sessions/${id}/messages`, { prompt: `[계획 오류] ${error}\n계획 블록을 고쳐 다시 제안하라.` }),
@@ -85,6 +85,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("s-stop").disabled = !running && s.state !== "paused";
     // 도구 호출의 "실행 중" 표시는 턴이 도는 동안에만 보인다.
     $("s-events").classList.toggle("running", running);
+    settleEvents($("s-events"));
     $("s-restart").disabled = running || !s.agentSessionId;
     renderLife("s-life", s);
     renderComposer("s", s);
@@ -626,6 +627,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("c-restart").disabled = running;
     renderComposer("c", s);
     $("c-events").classList.toggle("running", running);
+    settleEvents($("c-events"));
     if (running) $("c-empty").hidden = true;
   }
 

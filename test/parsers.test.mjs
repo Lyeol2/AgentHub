@@ -25,6 +25,14 @@ test("claude: 텍스트와 도구 호출, 도구 결과를 구분한다", () => 
   assert.equal(result.isError, true);
 });
 
+test("claude: 최종 답변이 여러 텍스트 블록이어도 하나의 본문으로 보존한다", () => {
+  const events = claude.parseLine(JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: "수정 내용" }, { type: "text", text: "검증 결과" }] },
+  }));
+  assert.deepEqual(events, [{ kind: "text", text: "수정 내용\n\n검증 결과" }]);
+});
+
 test("claude: 로그인 실패 결과를 오류로 표시한다", () => {
   const [ev] = claude.parseLine(JSON.stringify({ type: "result", is_error: false, result: "x", duration_ms: 1200 }));
   assert.equal(ev.kind, "result");

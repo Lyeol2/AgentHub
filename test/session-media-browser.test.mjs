@@ -65,7 +65,7 @@ async function runBrowser(temp, url) {
 
 
 // Fixture-only session media flows: no CLI processes or application data store.
-test("browser: session images, draft isolation, export, and runtime permission decisions", { timeout: 45000 }, async (t) => {
+test("browser: session images, draft isolation, export, permissions, and completed conversation folding", { timeout: 45000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(browserExecutable).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required for browser integration");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-media-browser-"));
   const streams = new Set(), requests = [], uploads = new Map();

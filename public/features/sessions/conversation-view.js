@@ -186,9 +186,9 @@ export function createConversationView({ getSession, sessionById, selectSession,
     return el("li", { class: `${cls} pending`, title: ev.text ?? "" }, details);
   }
 
-  // 결과를 붙일 도구 호출이 있으면 붙이고 true
-  function attachToolResult(list, ev) {
-    const tool = list.querySelector("li.ev.tool.pending");
+  // 같은 실행에서 아직 결과를 받지 않은 도구에만 출력을 붙인다.
+  function attachToolResult(pendingTools, ev) {
+    const tool = pendingTools.shift();
     if (!tool) return false;
     tool.classList.remove("pending");
     tool.classList.add(ev.isError ? "failed" : "done");
@@ -200,14 +200,99 @@ export function createConversationView({ getSession, sessionById, selectSession,
     return true;
   }
 
+  const histories = new WeakMap();
+  const answerText = (ev) => (ev.text ?? "").replace(QUESTION_BLOCK, "").replace(MESSAGE_BLOCK, "").trim();
+  const isSettled = () => !["running", "paused"].includes(getSession()?.state);
+
+  function appendRendered(list, ev, pendingTools) {
+    if (ev.kind === "tool_result" && attachToolResult(pendingTools, ev)) return;
+    const node = renderEvent(ev);
+    if (ev.kind === "tool") pendingTools.push(node);
+    list.append(node);
+    return node;
+  }
+
+  // 가져온 기록에는 완료 이벤트가 없을 수 있어 다음 독립 요청도 경계로 쓴다.
+  // 실행 중에 붙인 요청은 같은 작업이며, 완료 뒤의 로그·질문은 그 결과에 속한다.
+  function turns(events, settled) {
+    const result = [];
+    let current = { events: [], complete: false };
+    for (const ev of events) {
+      const nextRequest = ev.kind === "user" && !ev.injected;
+      const nextOutput = current.complete && ["user", "text", "thinking", "tool"].includes(ev.kind);
+      if (current.events.length && (nextRequest || nextOutput)) {
+        result.push({ ...current, complete: true });
+        current = { events: [], complete: false };
+      }
+      current.events.push(ev);
+      if (ev.kind === "result") current.complete = true;
+    }
+    if (current.events.length) result.push({ ...current, complete: current.complete || settled });
+    return result;
+  }
+
+  function renderTurn(list, turn, pendingTools) {
+    if (!turn.complete) {
+      for (const ev of turn.events) appendRendered(list, ev, pendingTools);
+      return;
+    }
+    const failed = turn.events.some((ev) => ev.kind === "error") && !turn.events.some((ev) => ev.kind === "result");
+    const answer = failed ? null : turn.events.findLast((ev) => ev.kind === "text" && answerText(ev));
+    let work = null;
+    for (const ev of turn.events) {
+      if (ev.kind === "tool_result" && attachToolResult(pendingTools, ev)) continue;
+      // 사용자 결정과 오류는 접힌 작업 과정 안에 감추지 않는다.
+      const visible = ev === answer || ["user", "error", "question", "permission", "plan"].includes(ev.kind) || (ev.kind === "result" && !answer);
+      if (visible) {
+        appendRendered(list, ev, pendingTools);
+        if (ev !== answer) work = null;
+        continue;
+      }
+      // 중간 출력 없이 답변만 한 경우 완료 통계만 따로 접는 묶음은 만들지 않는다.
+      if (ev.kind === "result" && !work) continue;
+      if (ev.kind === "text" && !answerText(ev)) continue;
+      if (!work) {
+        const body = el("ol", { class: "work-events" });
+        const summary = el("summary", {}, "작업 과정");
+        list.append(el("li", { class: "ev work" }, el("details", {}, summary, body)));
+        work = { body, summary, count: 0 };
+      }
+      const node = appendRendered(work.body, ev, pendingTools);
+      if (node) {
+        for (const details of node.querySelectorAll("details")) details.open = false;
+        work.summary.textContent = `작업 과정 · ${++work.count}개`;
+      }
+    }
+  }
+
   function appendEvent(list, ev) {
-    if (ev.kind === "tool_result" && attachToolResult(list, ev)) return;
-    list.append(renderEvent(ev));
+    const history = histories.get(list);
+    if (!history) return renderEvents(list, [ev]);
+    history.events.push(ev);
+    if (ev.kind === "result" || (ev.kind === "user" && !ev.injected) || history.complete) {
+      renderEvents(list, history.events);
+      return;
+    }
+    history.settled = false;
+    appendRendered(list, ev, history.pendingTools);
   }
 
   function renderEvents(list, events) {
+    const history = { events: [...events], pendingTools: [], settled: isSettled(), sessionId: getSession()?.id };
+    const groups = turns(history.events, history.settled);
+    history.complete = groups.at(-1)?.complete ?? false;
+    histories.set(list, history);
     list.replaceChildren();
-    for (const ev of events) appendEvent(list, ev);
+    for (const turn of groups) {
+      history.pendingTools = [];
+      renderTurn(list, turn, history.pendingTools);
+    }
+  }
+
+  // 실패·중단은 result가 없으므로 실제 실행 상태가 끝났을 때 마지막 과정도 접는다.
+  function settleEvents(list) {
+    const history = histories.get(list);
+    if (history && history.sessionId === getSession()?.id && !history.settled && isSettled()) renderEvents(list, history.events);
   }
 
   $("s-expand-tools").checked = expandTools();
@@ -225,7 +310,7 @@ export function createConversationView({ getSession, sessionById, selectSession,
     // 질문 블록은 아래 질문 카드로 보여 주므로 답변 본문에서는 뺀다.
     if (ev.kind === "text") {
       // 에이전트 답변은 마크다운으로 보여 준다(renderMarkdown이 원문을 이스케이프한다).
-      const text = (ev.text ?? "").replace(QUESTION_BLOCK, "").replace(MESSAGE_BLOCK, "").trim();
+      const text = answerText(ev);
       if (!text) return el("li", { class: "ev hidden-empty", hidden: true });
       const node = el("li", { class: `${cls} md` });
       node.innerHTML = renderMarkdown(text);
@@ -257,5 +342,5 @@ export function createConversationView({ getSession, sessionById, selectSession,
     return node;
   }
 
-  return { renderEvents, appendEvent };
+  return { renderEvents, appendEvent, settleEvents };
 }
