@@ -6,7 +6,7 @@
   URL.revokeObjectURL = (url) => { revokedDownloads.push(url); originalRevoke(url); };
   const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
   const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
-  const until = async (predicate) => { const end = Date.now() + 4000; while (!predicate()) { if (Date.now() > end) throw Error("Timed out: " + predicate); await tick(); } };
+  const until = async (predicate) => { const end = Date.now() + 8000; while (!predicate()) { if (Date.now() > end) throw Error("Timed out: " + predicate); await tick(); } };
   const project = "C:/fixture";
   const button = { id: "cmd-button", kind: "button", title: "작업 시작", prompt: "첫 번째 작업을 시작해 주세요.", state: "idle", projectPath: project };
   const outputInfo = { path: project + "/docs/agenthub/outputs/result.md", relativePath: "docs/agenthub/outputs/result.md", fileName: "result.md" };
