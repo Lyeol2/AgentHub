@@ -9,7 +9,7 @@
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <aside class="sidebar">
+  <aside id="sidebar" class="sidebar">
     <header class="brand">
       <img src="/favicon.svg" alt="" width="26" height="26">
       <span>AgentHub</span>
@@ -51,6 +51,8 @@
       </button>
     </footer>
   </aside>
+
+  <div id="sidebar-resizer" class="sidebar-resizer" role="separator" tabindex="0" aria-label="사이드바 너비 조절" aria-orientation="vertical" aria-controls="sidebar main" aria-valuemin="180" aria-valuemax="520" aria-valuenow="260" title="끌어서 너비 조절 · 방향키로 조절 · 두 번 클릭해 초기화"></div>
 
   <main id="main">
     <!-- 대시보드 -->
@@ -636,6 +638,7 @@
     </form>
   </dialog>
 
+  <script type="module" src="/layout.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>
