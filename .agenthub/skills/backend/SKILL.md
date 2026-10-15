@@ -31,9 +31,11 @@ AgentHub 서버는 `server/`의 ES 모듈(`.mjs`)이다. `node server/index.mjs`
 
 ### 요청과 응답
 - 화면은 `api(method, url, body)` 하나로만 서버를 부른다. JSON 본문 + `X-AgentHub: 1` 헤더를 보낸다. 서버는 JSON만 돌려준다(`send`).
-- 경로는 `/api/<자원>[/<id>[/<동작>]]`. 조회 GET, 만들기 POST, 고치기 PUT, 지우기 DELETE, 동작은 `POST /api/<자원>/<id>/<동작>`(예: `/sessions/:id/stop`). 선택 옵션은 쿼리(`?force=1`, `?fresh=1`).
+- 경로는 `/api/<자원>[/<id>[/<동작>]]`. 조회 GET, 만들기 POST, 고치기 PUT, 지우기 DELETE, 동작은 `POST /api/<자원>/<id>/<동작>`(예: `/sessions/:id/stop`). 선택 옵션은 쿼리(`?force=1`, `?fresh=1`). 새 경로는 `handleApi`에서 비슷한 자원 옆에 넣고 위에 한 줄 한국어 주석을 단다.
+- `isTrustedRequest`는 GET이 아닌 요청에만 `X-AgentHub` 헤더를 확인한다. 그러니 **데이터를 바꾸는 일을 GET 경로에 두지 않는다.**
+- 본문은 `readJson(req)`로 읽는다(1MB를 넘으면 413). 화면에서 검사했더라도 서버에서 다시 검사한다.
 - 성공 응답은 화면이 바로 쓸 수 있는 객체를 준다. 만들기·고치기는 바뀐 객체 전체를, 값을 돌려줄 것이 없으면 `{ ok: true }`를 준다. 목록의 세션은 `summary()`(이벤트 빼고 `eventCount`만)로, 세션 하나는 이벤트까지 준다.
-- 실패 응답은 `{ error, reason }`. 화면은 `error`를 그대로 사용자에게 보여 주므로(대화상자의 `…-error` 칸, `alert`) **한국어 문장**으로 쓴다. 상태 코드만 보고 분기하지 않는다.
+- 실패 응답은 `{ error, reason }`. 화면은 `error`를 그대로 사용자에게 보여 주므로(대화상자의 `…-error` 칸, `alert`) **한국어 문장**으로 쓴다. 스택이나 내부 정보를 그대로 내보내지 않는다. 화면은 상태 코드로 분기하지 않으므로, 화면이 구분해야 하는 실패는 `reason`으로 나눈다.
 - 화면이 실패 종류에 따라 다음 선택지를 물어야 하면 `HttpError`의 세 번째 인자 `reason`에 짧은 영문 값을 붙인다(예: 세션 삭제의 `"running"` → 멈추고 삭제할지, `"worktree"` → 작업 폴더를 남기고 삭제할지). 새 `reason`을 만들면 `app.js`에서 그 값을 처리하는 곳도 같이 만든다.
 - 필드 이름은 camelCase(`projectPath`, `sessionId`, `graphPos`). 기존 필드의 이름·의미·형식을 바꾸지 않는다. 바꿔야 하면 `app.js`에서 그 필드를 쓰는 곳을 모두 찾아 고친다. 필드를 더하는 것은 괜찮다.
 - 화면에서 고를 수 있는 값(권한 모드, 모델, 추론 강도, 연결 조건 등)은 서버가 목록으로 내려 주고(`/api/status`의 `permissions`·`models`·`efforts`) 같은 목록으로 검사한다. 화면에 값을 따로 박아 두게 만들지 않는다.
@@ -53,6 +55,7 @@ AgentHub 서버는 `server/`의 ES 모듈(`.mjs`)이다. `node server/index.mjs`
 - `grep`으로 `app.js`에서 해당 경로(`/api/...`)와 이벤트 이름을 찾아 화면이 무엇을 기대하는지 먼저 본다.
 - 응답 모양을 바꿨으면 `test/api.test.mjs`에 그 모양을 확인하는 단언을 넣는다.
 - 화면 쪽 수정이 필요하면 `frontend` 스킬의 관례를, 화면의 API 호출·오류 표시·SSE 처리기는 `frontend-api` 스킬을 따른다.
+- 이벤트를 더하거나 바꿨으면 `npm start`로 띄워 창 두 개를 열고, 한쪽에서 바꾼 것이 다른 쪽에도 반영되는지 본다. 직접 확인하지 못했으면 그렇다고 알린다.
 
 ## 테스트
 - `test/*.test.mjs`, `node:test` + `node:assert/strict`. `npm test`로 모두 돈다.
