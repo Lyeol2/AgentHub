@@ -6,7 +6,62 @@ import path from "node:path";
 export const PERMISSION_MODES = ["read-only", "workspace-write"];
 export const CHAT_PERMISSION = "read-only";
 const DEFAULT_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
-const MODELS_CACHE = path.join(process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex"), "models_cache.json");
+const CODEX_HOME = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+const MODELS_CACHE = path.join(CODEX_HOME, "models_cache.json");
+const CONFIG_TOML = path.join(CODEX_HOME, "config.toml");
+
+// ~/.codex/config.toml 맨 위(첫 [표] 앞)의 기본 모델과 추론 강도. 파일이 없거나 값이 없으면 null.
+export function configDefaults() {
+  let text;
+  try {
+    text = fs.readFileSync(CONFIG_TOML, "utf8");
+  } catch {
+    return { model: null, effort: null };
+  }
+  const top = text.split(/^\s*\[/m)[0];
+  const get = (key) => top.match(new RegExp(`^\\s*${key}\\s*=\\s*["']([^"']*)["']`, "m"))?.[1] ?? null;
+  return { model: get("model"), effort: get("model_reasoning_effort") };
+}
+
+// Codex가 아는 모든 모델 ID(목록에 보이지 않는 모델 포함). 캐시가 없으면 빈 목록.
+export function knownModels() {
+  try {
+    return (JSON.parse(fs.readFileSync(MODELS_CACHE, "utf8")).models ?? []).map((m) => m.slug).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+// 세션이 실제로 쓸 모델과 추론 강도. 결과의 model·effort가 null이면 CLI(config.toml)에 맡긴다.
+// 세션에서 고른 모델이나 config.toml의 기본 모델이 Codex 모델 목록(숨은 모델 포함)에 아예 없으면
+// 지금 계정에서 쓸 수 없는 모델이라 CLI가 "model is not supported" 오류로 바로 실패한다.
+// 그때는 목록의 첫 모델로 바꿔 실행하고, 바꾼 모델이 그 추론 강도를 지원하지 않으면 그 모델의 기본 강도를 쓴다.
+export function resolveModel(session = {}, list = models(), config = configDefaults(), known = knownModels()) {
+  const source = session.model ? "session" : "config";
+  const requested = session.model || config.model;
+  const keep = { model: session.model || null, effort: session.effort || null, unavailable: false, configured: requested ?? null, source };
+  if (!requested || !list.length || !known.length || known.includes(requested)) return keep;
+  const fallback = list[0];
+  const wanted = session.effort || (source === "config" ? config.effort : null);
+  const fits = !wanted || !fallback.efforts.length || fallback.efforts.includes(wanted);
+  // 설정의 강도가 맞으면 CLI가 알아서 쓰므로 세션에서 고른 강도만 넘긴다.
+  const effort = fits ? session.effort || null : fallback.defaultEffort ?? null;
+  return { model: fallback.id, effort, unavailable: true, configured: requested, source };
+}
+
+// 화면에 보일 "모델을 고르지 않았을 때 쓸 모델"
+export const defaultModel = () => resolveModel({});
+
+// 새 대화를 시작할 때 기록에 남길 안내(쓸 수 없는 모델을 바꿔 실행할 때만)
+// 모델 목록은 그 목록을 받은 Codex 버전이 아는 모델만 담는다. Codex 앱(새 버전)과 오래된 CLI가 같은 목록 파일을 번갈아 쓰므로,
+// 새 모델이 빠져 보이면 CLI가 오래된 것일 수 있다고 함께 알린다.
+export function modelNote(session, resolved = resolveModel(session)) {
+  if (!resolved.unavailable) return null;
+  const why = `${resolved.configured}은(는) 지금 Codex CLI가 모르는 모델이라 ${resolved.model}(으)로 실행합니다. CLI가 오래되면 새 모델을 모릅니다(업데이트: npm i -g @openai/codex@latest).`;
+  return resolved.source === "session"
+    ? `이 세션의 모델 ${why} 또는 세션 설정에서 모델을 바꾸세요.`
+    : `Codex 설정의 기본 모델 ${why} 또는 ~/.codex/config.toml의 model을 바꾸세요.`;
+}
 
 // Codex CLI가 받아 둔 모델 목록(~/.codex/models_cache.json)과 모델마다 지원하는 추론 강도.
 export function models() {
@@ -37,7 +92,8 @@ export const CHAT_INTRO = "[일반 대화] 코딩 작업이 아니라 사용자�
   "파일을 읽거나 명령을 실행하지 말고 바로 답한다. 사용자가 쓴 언어로 답한다.";
 
 // mcp: AgentHub MCP 서버(세션끼리 소통하는 도구). ask_session은 답을 몇 분까지 기다리므로 도구 제한 시간을 늘린다.
-export function buildArgs(session, { mcp = null } = {}) {
+// resolved: 실제로 쓸 모델과 추론 강도(resolveModel). 테스트에서 넘겨 사용자 설정 파일을 읽지 않게 한다.
+export function buildArgs(session, { mcp = null, resolved = resolveModel(session) } = {}) {
   const sandbox = session.permission ?? "workspace-write";
   const args = ["exec"];
   if (session.agentSessionId) {
@@ -46,8 +102,9 @@ export function buildArgs(session, { mcp = null } = {}) {
   } else {
     args.push("--json", "--sandbox", sandbox, "--cd", session.cwd);
   }
-  if (session.model) args.push("--model", session.model);
-  if (session.effort) args.push("-c", `model_reasoning_effort=${session.effort}`);
+  const { model, effort } = resolved;
+  if (model) args.push("--model", model);
+  if (effort) args.push("-c", `model_reasoning_effort=${effort}`);
   // exec는 승인을 물을 수 없어 승인이 필요한 MCP 도구를 거절하므로, AgentHub 도구는 묻지 않고 쓰게 한다.
   if (mcp) {
     args.push("-c", `mcp_servers.agenthub.url=${mcp.url}`, "-c", "mcp_servers.agenthub.tool_timeout_sec=660",

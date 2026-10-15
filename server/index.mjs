@@ -47,7 +47,8 @@ function checkEffort(agent, effort) {
 function agentStatus(agent, cliPath, version) {
   const a = AGENTS[agent];
   // autoPath: 직접 지정한 경로와 상관없이 자동으로 찾은 경로(설정 화면에 읽기 전용으로 보여 준다)
-  return { path: cliPath, autoPath: locateCli(agent, ""), version, permissions: a.PERMISSION_MODES, models: a.models(), efforts: a.efforts() };
+  // defaultModel: 모델을 고르지 않았을 때 실제로 쓸 모델(Codex는 설정의 기본 모델을 쓸 수 없으면 바꿔 실행한다)
+  return { path: cliPath, autoPath: locateCli(agent, ""), version, permissions: a.PERMISSION_MODES, models: a.models(), efforts: a.efforts(), defaultModel: a.defaultModel?.() ?? null };
 }
 
 const cliPaths = () => ({

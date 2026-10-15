@@ -125,6 +125,9 @@ export class Runner extends EventEmitter {
       for (const e of session.events) if (e.kind === "question" && e.status === "pending") e.status = "skipped";
       session.waiting = false;
       this.append(session, { kind: "user", text: prompt, ...meta });
+      // 설정의 기본 모델을 쓸 수 없어 다른 모델로 실행하면 새 대화를 시작할 때 한 번 알린다.
+      const note = !session.agentSessionId && agent.modelNote?.(session);
+      if (note) this.append(session, { kind: "status", text: note });
     }
     this.setState(session, "running");
 

@@ -181,3 +181,36 @@ test("claude: 일시중지는 Esc처럼 interrupt 요청을 보낸다", () => {
   assert.match(msg.request_id, /^interrupt-/);
   assert.equal(codex.interruptLine, undefined); // Codex는 프로세스를 멈추고 다음 턴에 같은 스레드로 이어 간다.
 });
+
+test("codex: 쓸 수 없는 모델(설정의 기본값이나 세션에 고른 것)은 목록의 첫 모델로 바꿔 실행한다", () => {
+  const list = [
+    { id: "gpt-6-astra", efforts: ["low", "medium", "ultra"], defaultEffort: "medium" },
+    { id: "gpt-6-luna", efforts: ["low", "medium"], defaultEffort: "medium" },
+  ];
+  const known = ["gpt-6-astra", "gpt-6-luna", "gpt-reserve"]; // 목록에 안 보이는 숨은 모델도 Codex가 아는 모델이다.
+  const config = { model: "gpt-6.1-sol", effort: "ultra" };
+
+  // 모델을 고르지 않음 + 설정의 기본 모델을 쓸 수 없음 → 첫 모델, 강도는 지원하면 설정 것(CLI가 씀)
+  const gone = codex.resolveModel({}, list, config, known);
+  assert.deepEqual(gone, { model: "gpt-6-astra", effort: null, unavailable: true, configured: "gpt-6.1-sol", source: "config" });
+  // 바꾼 모델이 설정의 강도를 지원하지 않으면 그 모델의 기본 강도를 넘긴다.
+  assert.equal(codex.resolveModel({}, [list[1]], config, known).effort, "medium");
+  // 세션에 저장한 모델을 쓸 수 없을 때도 바꾼다(예전 목록에서 고른 gpt-6.1-sol).
+  const saved = codex.resolveModel({ model: "gpt-6.1-sol", effort: "ultra" }, list, { model: null, effort: null }, known);
+  assert.deepEqual(saved, { model: "gpt-6-astra", effort: "ultra", unavailable: true, configured: "gpt-6.1-sol", source: "session" });
+  assert.equal(codex.resolveModel({ model: "gone", effort: "ultra" }, [list[1]], config, known).effort, "medium");
+  // 쓸 수 있는 모델(숨은 모델 포함), 설정 없음, 목록을 모름 → 그대로
+  assert.deepEqual(codex.resolveModel({ model: "gpt-reserve", effort: "low" }, list, config, known), { model: "gpt-reserve", effort: "low", unavailable: false, configured: "gpt-reserve", source: "session" });
+  assert.equal(codex.resolveModel({}, list, { model: "gpt-6-luna", effort: null }, known).model, null);
+  assert.equal(codex.resolveModel({}, list, { model: null, effort: null }, known).model, null);
+  assert.equal(codex.resolveModel({}, [], config, []).model, null);
+
+  const args = codex.buildArgs({ permission: "read-only", cwd: "C:/x" }, { resolved: { model: "gpt-6-astra", effort: "medium" } });
+  assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), ["--model", "gpt-6-astra"]);
+  assert.ok(args.includes("model_reasoning_effort=medium"));
+  const none = codex.buildArgs({ permission: "read-only", cwd: "C:/x" }, { resolved: { model: null, effort: null } });
+  assert.ok(!none.includes("--model")); // CLI 설정에 맡긴다.
+  assert.match(codex.modelNote({}, gone), /Codex 설정의 기본 모델 gpt-6\.1-sol.*gpt-6-astra/);
+  assert.match(codex.modelNote({ model: "gpt-6.1-sol" }, saved), /이 세션의 모델 gpt-6\.1-sol.*gpt-6-astra/);
+  assert.equal(codex.modelNote({}, codex.resolveModel({}, list, { model: null, effort: null }, known)), null);
+});

@@ -198,6 +198,7 @@ Claude Code·Codex 기록에 남은 작업 폴더를 모아 프로젝트 목록�
 | Codex | `codex exec --json --sandbox <모드> --cd <폴더> -` | `codex exec resume <스레드 ID> --json -` |
 
 - 프롬프트는 명령줄 인자가 아니라 stdin으로 넘긴다.
+- 모델을 고르지 않은 Codex 세션은 `~/.codex/config.toml`의 기본 모델을 쓴다. 이 기본 모델이나 세션에 저장한 모델이 Codex 모델 목록(`~/.codex/models_cache.json`, 숨은 모델 포함)에 아예 없으면 지금 계정에서 쓸 수 없는 모델이다(예: "model is not supported when using Codex with a ChatGPT account"). 그때는 목록의 첫 모델로 바꿔 실행하고, 세션 기록과 모델 입력칸에 그 사실을 알린다. 추론 강도를 바꾼 모델이 지원하지 않으면 그 모델의 기본 강도를 쓴다. 이 목록은 마지막으로 받아 온 Codex 버전이 아는 모델만 담으므로, Codex 앱에는 있는 새 모델이 빠져 보이면 CLI를 업데이트한다(`npm i -g @openai/codex@latest`).
 - **별도 작업 폴더**를 켜면 저장소 옆 `<저장소>.agenthub/<세션 ID>`에 현재 커밋(HEAD) 기준 git worktree와 `agenthub/<세션 ID>` 브랜치를 만든다. 커밋하지 않은 수정은 포함되지 않는다.
 - **변경 보기**는 세션을 만들 때의 커밋과 현재 작업 폴더의 차이를 보여 준다.
 - 세션 기록은 데이터 폴더의 `sessions/`에, 설정은 `config.json`에 저장된다. 저장소의 `data/`는 git에 올리지 않는다.
