@@ -2,6 +2,12 @@ import { permissionLabel } from '../../shared/permissions.js';
 
 const TASK_STATES = { working: '작업 중', review: '리뷰 대기', merged: '병합 완료', cleaned: '정리 완료' };
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
+const DEFAULT_GITFLOW = { main: 'main', develop: 'develop', featurePrefix: 'feature/', hotfixPrefix: 'hotfix/', releasePrefix: 'release/' };
+const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
+
+function gitflowSettings(value) {
+  return Object.fromEntries(GITFLOW_FIELDS.map(key => [key, typeof value?.[key] === 'string' ? value[key] : DEFAULT_GITFLOW[key]]));
+}
 
 export function describeTaskFreshness(freshness) {
   if (!freshness) return '최신 상태 확인 전';
@@ -12,10 +18,12 @@ export function describeTaskFreshness(freshness) {
   return '최신 상태 확인 필요';
 }
 
-export function taskBranchPreview(type, version = '') {
-  const base = type === 'hotfix' ? 'main' : 'develop';
-  const target = type === 'feature' ? 'develop' : 'main';
-  const branch = type === 'release' ? `release/${version || '<버전>'}` : `${type}/<작업ID>-<이름>`;
+export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW) {
+  const flow = gitflowSettings(settings);
+  const base = type === 'hotfix' ? flow.main : flow.develop;
+  const target = type === 'feature' ? flow.develop : flow.main;
+  const prefix = flow[`${type}Prefix`] ?? `${type}/`;
+  const branch = type === 'release' ? `${prefix}${version || '<버전>'}` : `${prefix}<작업ID>-<이름>`;
   return `${base}에서 ${branch} 생성 → ${target}으로 PR`;
 }
 
@@ -30,6 +38,8 @@ export function createTasksController({
   const createForm = $('new-task-form');
   const finishDialog = $('finish-task-dialog');
   const finishForm = $('finish-task-form');
+  const settingsDialog = $('task-settings-dialog');
+  const settingsForm = $('task-settings-form');
   const taskErrors = new Map();
   const uncertainTasks = new Map();
   const uncertainCreates = new Set();
@@ -45,6 +55,12 @@ export function createTasksController({
   let createProject = null;
   let finishProject = null;
   let finishTaskId = null;
+  let settings = gitflowSettings();
+  let settingsProject = null;
+  let settingsGeneration = 0;
+  let settingsBusy = false;
+  let settingsLoading = false;
+  let settingsReadFailed = false;
 
   function node(tag, className, value) {
     const el = document.createElement(tag);
@@ -84,9 +100,12 @@ export function createTasksController({
   }
 
   function updateToolbar() {
-    if ($('tasks-new')) $('tasks-new').disabled = !projectPath || loading || createBusy || uncertainCreates.has(projectPath);
+    if ($('tasks-new')) $('tasks-new').disabled = !projectPath || loading || createBusy || settingsBusy || uncertainCreates.has(projectPath);
     if ($('tasks-refresh')) $('tasks-refresh').disabled = !projectPath || loading;
     if ($('tasks-refresh')) $('tasks-refresh').textContent = loading ? '확인 중…' : '최신 확인';
+    for (const id of ['tasks-settings', 'task-create-settings']) {
+      if ($(id)) $(id).disabled = !projectPath || loading || createBusy || settingsBusy || settingsLoading;
+    }
   }
 
   function renderContext() {
@@ -95,17 +114,17 @@ export function createTasksController({
     el.replaceChildren();
     el.dataset.state = 'unknown';
     if (!context) {
-      el.append(node('span', '', loading ? 'main과 개발 기준을 확인하고 있습니다…' : 'main과 개발 기준 확인 전'));
+      el.append(node('span', '', loading ? `${settings.main}과 ${settings.develop} 기준을 확인하고 있습니다…` : `${settings.main}과 ${settings.develop} 기준 확인 전`));
       return;
     }
     const freshness = context.freshness || {};
     const failed = context.error || context.state === 'error' || ['error', 'failed'].includes(freshness.state);
     const mainMissing = context.mainInDevelop === false;
     el.dataset.state = failed ? 'error' : mainMissing ? 'stale' : freshness.state || 'current';
-    el.append(node('strong', '', failed ? 'main 최신 확인 실패' : mainMissing ? 'main 변경을 develop에 반영해야 합니다' : 'main 최신 확인 완료'));
+    el.append(node('strong', '', failed ? `${settings.main} 최신 확인 실패` : mainMissing ? `${settings.main} 변경을 ${settings.develop}에 반영해야 합니다` : `${settings.main} 최신 확인 완료`));
     if (failed) el.append(node('span', '', typeof context.error === 'string' ? context.error : context.error?.message || freshness.error || '원격 저장소 연결을 확인해 주세요.'));
     else if (context.needsSetup || context.needsDevelop || context.developExists === false) {
-      el.append(node('span', '', '첫 기능 작업을 만들 때 최신 main을 기준으로 develop을 준비합니다.'));
+      el.append(node('span', '', `첫 기능 작업을 만들 때 최신 ${settings.main}을 기준으로 ${settings.develop}을 준비합니다.`));
     } else if (!mainMissing) {
       el.append(node('span', '', 'GitFlow 기준으로 작업을 시작할 수 있습니다.'));
     }
@@ -137,6 +156,7 @@ export function createTasksController({
       return;
     }
     for (const task of tasks) {
+      const flow = gitflowSettings({ ...task.gitflow, main: task.gitflow?.main ?? task.freshness?.main?.branch ?? DEFAULT_GITFLOW.main, develop: task.gitflow?.develop ?? task.freshness?.develop?.branch ?? DEFAULT_GITFLOW.develop });
       const card = node('article', 'task-card');
       card.dataset.taskId = task.id;
       card.setAttribute('aria-label', task.title || '작업');
@@ -148,7 +168,7 @@ export function createTasksController({
       card.append(header);
       const meta = node('div', 'task-meta');
       meta.append(node('span', '', TASK_TYPES[task.type] || task.type || '작업'));
-      meta.append(node('span', 'task-branch', `${task.branch || '브랜치 준비 중'} → ${task.targetBranch || (task.type === 'feature' ? 'develop' : 'main')}`));
+      meta.append(node('span', 'task-branch', `${task.branch || '브랜치 준비 중'} → ${task.targetBranch || (task.type === 'feature' ? flow.develop : flow.main)}`));
       card.append(meta);
       if (task.state !== 'cleaned') {
         const freshness = node('div', 'task-freshness', describeTaskFreshness(task.freshness));
@@ -189,7 +209,7 @@ export function createTasksController({
       }
       if (task.state === 'merged') actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
       card.append(actions);
-      if (task.state === 'merged' && task.type !== 'feature') card.append(node('p', 'task-note', 'develop에도 반영되어야 작업 폴더를 정리할 수 있습니다.'));
+      if (task.state === 'merged' && task.type !== 'feature') card.append(node('p', 'task-note', `${flow.develop}에도 반영되어야 작업 폴더를 정리할 수 있습니다.`));
       if (task.state === 'cleaned') card.append(node('p', 'task-note', task.localBranchRemoved === false
         ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
         : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
@@ -210,6 +230,7 @@ export function createTasksController({
     projectPath = null;
     tasks = [];
     context = null;
+    resetSettings();
     loading = false;
     if (createDialog?.open) createDialog.close();
     if (finishDialog?.open) finishDialog.close();
@@ -225,6 +246,7 @@ export function createTasksController({
       projectEpoch++;
       tasks = [];
       context = null;
+      resetSettings();
       if (createDialog?.open) createDialog.close();
       if (finishDialog?.open) finishDialog.close();
     }
@@ -245,12 +267,110 @@ export function createTasksController({
         showError('tasks-error', '작업 목록을 확인했습니다. 이미 생성된 작업이 없는지 확인한 뒤 새 작업을 만들어 주세요.');
       }
     } else showError('tasks-error', requestError(taskResult.reason));
-    if (contextResult?.status === 'fulfilled') context = contextResult.value?.context || contextResult.value;
+    if (contextResult?.status === 'fulfilled') {
+      context = contextResult.value?.context || contextResult.value;
+      settings = gitflowSettings(contextResult.value?.settings || context?.settings);
+    }
     else if (contextResult) context = { error: requestError(contextResult.reason), freshness: { state: 'error' } };
     loading = false;
     updateToolbar();
     renderTasks();
     renderContext();
+    updateCreatePreview();
+  }
+
+  function resetSettings() {
+    settingsGeneration++;
+    settings = gitflowSettings();
+    settingsProject = null;
+    settingsBusy = false;
+    settingsLoading = false;
+    settingsReadFailed = false;
+    if (settingsDialog?.open) settingsDialog.close();
+  }
+
+  function updateSettingsControls() {
+    for (const key of GITFLOW_FIELDS) if ($(`task-settings-${key}`)) $(`task-settings-${key}`).disabled = settingsBusy || settingsLoading || settingsReadFailed;
+    if ($('task-settings-save')) {
+      $('task-settings-save').disabled = settingsBusy || settingsLoading || settingsReadFailed;
+      $('task-settings-save').textContent = settingsBusy ? '저장 중…' : '저장';
+    }
+    if ($('task-settings-cancel')) $('task-settings-cancel').disabled = settingsBusy;
+    if ($('task-settings-status')) $('task-settings-status').textContent = settingsLoading ? '프로젝트 설정을 불러오고 있습니다…' : '';
+    updateToolbar();
+  }
+
+  function fillSettingsForm() {
+    for (const key of GITFLOW_FIELDS) if ($(`task-settings-${key}`)) $(`task-settings-${key}`).value = settings[key];
+  }
+
+  async function openSettings() {
+    const path = getProjectPath();
+    if (!sameProject(path) || loading || createBusy || settingsBusy || settingsLoading) return;
+    const epoch = projectEpoch;
+    const request = ++settingsGeneration;
+    settingsProject = path;
+    settingsLoading = true;
+    settingsReadFailed = false;
+    showError('task-settings-error');
+    fillSettingsForm();
+    updateSettingsControls();
+    settingsDialog?.showModal();
+    try {
+      const result = await api('GET', `/api/tasks/settings?path=${encodeURIComponent(path)}`);
+      if (request !== settingsGeneration || !sameProject(path, epoch) || !settingsDialog?.open) return;
+      settings = gitflowSettings(result.settings);
+      fillSettingsForm();
+      renderContext();
+      updateCreatePreview();
+    } catch (error) {
+      if (request === settingsGeneration && sameProject(path, epoch)) {
+        settingsReadFailed = true;
+        showError('task-settings-error', requestError(error));
+      }
+    } finally {
+      if (request === settingsGeneration && sameProject(path, epoch)) {
+        settingsLoading = false;
+        updateSettingsControls();
+        if (!settingsReadFailed) $('task-settings-main')?.focus();
+      }
+    }
+  }
+
+  function closeSettings() {
+    if (settingsBusy) return;
+    settingsGeneration++;
+    settingsLoading = false;
+    settingsDialog?.close();
+    updateToolbar();
+  }
+
+  async function saveSettings(event) {
+    event.preventDefault();
+    if (settingsBusy || settingsLoading || settingsReadFailed || !sameProject(settingsProject)) return;
+    if (settingsForm && !settingsForm.reportValidity()) return;
+    const path = settingsProject;
+    const epoch = projectEpoch;
+    const request = ++settingsGeneration;
+    const value = Object.fromEntries(GITFLOW_FIELDS.map(key => [key, $(`task-settings-${key}`)?.value.trim() ?? '']));
+    settingsBusy = true;
+    showError('task-settings-error');
+    updateSettingsControls();
+    try {
+      const result = await api('PUT', `/api/tasks/settings?path=${encodeURIComponent(path)}`, { settings: value });
+      if (request !== settingsGeneration || !sameProject(path, epoch)) return;
+      settings = gitflowSettings(result.settings);
+      settingsDialog?.close();
+      updateCreatePreview();
+      await loadTasks(path);
+    } catch (error) {
+      if (request === settingsGeneration && sameProject(path, epoch)) showError('task-settings-error', requestError(error));
+    } finally {
+      if (request === settingsGeneration && sameProject(path, epoch)) {
+        settingsBusy = false;
+        updateSettingsControls();
+      }
+    }
   }
 
   function getTask(id) { return tasks.find(task => task.id === id); }
@@ -275,7 +395,9 @@ export function createTasksController({
       $('task-version').required = isRelease;
       $('task-version').disabled = !isRelease;
     }
-    if ($('task-branch-preview')) $('task-branch-preview').textContent = taskBranchPreview(type, $('task-version')?.value.trim());
+    if ($('task-branch-preview')) $('task-branch-preview').textContent = taskBranchPreview(type, $('task-version')?.value.trim(), settings);
+    if ($('task-gitflow-summary')) $('task-gitflow-summary').textContent = `기준: ${settings.main} / ${settings.develop}`;
+    if ($('task-create-hint')) $('task-create-hint').textContent = `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 전용 브랜치·폴더·세션을 만듭니다.`;
   }
 
   function updateAgentControls() {
@@ -303,7 +425,7 @@ export function createTasksController({
 
   function openNewTask() {
     const path = getProjectPath();
-    if (!path || path !== projectPath || createBusy || uncertainCreates.has(path)) return;
+    if (!path || path !== projectPath || createBusy || settingsBusy || uncertainCreates.has(path)) return;
     createProject = path;
     createForm?.reset();
     showError('task-create-error');
@@ -316,7 +438,7 @@ export function createTasksController({
 
   async function createTask(event) {
     event.preventDefault();
-    if (createBusy || !sameProject(createProject) || uncertainCreates.has(createProject)) return;
+    if (createBusy || settingsBusy || !sameProject(createProject) || uncertainCreates.has(createProject)) return;
     if (createForm && !createForm.reportValidity()) return;
     const path = createProject;
     const epoch = projectEpoch;
@@ -475,6 +597,11 @@ export function createTasksController({
   }
 
   $('tasks-new')?.addEventListener('click', openNewTask);
+  $('tasks-settings')?.addEventListener('click', () => { void openSettings(); });
+  $('task-create-settings')?.addEventListener('click', () => { void openSettings(); });
+  settingsForm?.addEventListener('submit', saveSettings);
+  $('task-settings-cancel')?.addEventListener('click', closeSettings);
+  settingsDialog?.addEventListener('cancel', event => { event.preventDefault(); closeSettings(); });
   $('tasks-refresh')?.addEventListener('click', () => { void loadTasks(getProjectPath(), { manual: true }); });
   $('task-type')?.addEventListener('change', updateCreatePreview);
   $('task-version')?.addEventListener('input', updateCreatePreview);

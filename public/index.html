@@ -133,7 +133,7 @@
           <div class="card tasks-card">
             <div class="card-head">
               <div><h3>작업</h3><p class="hint">작업마다 브랜치와 폴더를 만들고, 마무리하면 Pull Request로 연결합니다.</p></div>
-              <div class="actions"><button type="button" class="ghost sm" id="tasks-refresh">최신 상태 확인</button><button type="button" class="primary sm" id="tasks-new">새 작업</button></div>
+              <div class="actions"><button type="button" class="ghost sm" id="tasks-settings">GitFlow 설정</button><button type="button" class="ghost sm" id="tasks-refresh">최신 상태 확인</button><button type="button" class="primary sm" id="tasks-new">새 작업</button></div>
             </div>
             <div id="tasks-context" class="tasks-context" role="status"></div>
             <p class="error" id="tasks-error" role="alert"></p>
@@ -682,15 +682,34 @@
       <label>작업 유형 <select id="task-type"><option value="feature">기능 개발 · 일반 수정</option><option value="hotfix">긴급 수정</option><option value="release">배포 준비</option></select></label>
       <label id="task-version-row" hidden>배포 버전 <input id="task-version" maxlength="64" placeholder="예: 0.4.0" disabled></label>
       <p class="hint task-branch-preview" id="task-branch-preview"></p>
+      <div class="task-gitflow-controls"><span class="hint" id="task-gitflow-summary"></span><button type="button" class="ghost sm" id="task-create-settings">GitFlow 설정</button></div>
       <div class="task-form-grid">
         <label>담당 AI <select id="task-agent"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
         <label>권한 <select id="task-permission"></select></label>
       </div>
       <label>모델 <input id="task-model" list="task-models" placeholder="CLI 기본값"><datalist id="task-models"></datalist></label>
       <label>작업 지침 <textarea id="task-role" rows="3" maxlength="12000" placeholder="맡길 범위와 완료 기준을 적어 주세요"></textarea></label>
-      <p class="hint">원격 main과 기준 브랜치를 확인한 뒤 전용 브랜치·폴더·세션을 만듭니다.</p>
+      <p class="hint" id="task-create-hint">원격 main과 기준 브랜치를 확인한 뒤 전용 브랜치·폴더·세션을 만듭니다.</p>
       <p class="error" id="task-create-error" role="alert"></p>
       <menu><button type="button" class="ghost" id="task-create-cancel">취소</button><button type="submit" class="primary" id="task-create-submit">작업 만들기</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="task-settings-dialog" class="task-dialog" aria-labelledby="task-settings-heading">
+    <form id="task-settings-form" class="dialog-form">
+      <h3 id="task-settings-heading">GitFlow 브랜치 설정</h3>
+      <p class="hint">이 프로젝트에서 새 작업을 만들 때 사용할 이름입니다. 대소문자를 구분하므로 실제 브랜치 이름과 같게 입력해 주세요.</p>
+      <div class="task-form-grid">
+        <label>배포 기준 브랜치 <input id="task-settings-main" maxlength="200" required placeholder="예: main 또는 Main" autocomplete="off" spellcheck="false"></label>
+        <label>개발 기준 브랜치 <input id="task-settings-develop" maxlength="200" required placeholder="예: develop 또는 Develop" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <label>기능 작업 접두어 <input id="task-settings-featurePrefix" maxlength="200" required placeholder="예: feature/" autocomplete="off" spellcheck="false"></label>
+      <label>긴급 수정 접두어 <input id="task-settings-hotfixPrefix" maxlength="200" required placeholder="예: hotfix/" autocomplete="off" spellcheck="false"></label>
+      <label>배포 준비 접두어 <input id="task-settings-releasePrefix" maxlength="200" required placeholder="예: release/" autocomplete="off" spellcheck="false"></label>
+      <p class="hint">저장해도 Git 브랜치 이름을 바꾸지는 않습니다. 기존 작업은 생성할 때의 설정을 유지합니다.</p>
+      <p class="hint" id="task-settings-status" role="status"></p>
+      <p class="error" id="task-settings-error" role="alert" hidden></p>
+      <menu><button type="button" class="ghost" id="task-settings-cancel">취소</button><button type="submit" class="primary" id="task-settings-save">저장</button></menu>
     </form>
   </dialog>
 

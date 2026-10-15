@@ -6,13 +6,15 @@ import { summary } from "../store.mjs";
 import { HttpError } from "./errors.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
   taskDirty, taskWorktreeLocation, sameTaskPath, assertTaskGitIdle } from "../tasks.mjs";
+import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey } from "../gitflow-settings.mjs";
 
 const clone = (value) => structuredClone(value);
 const now = () => new Date().toISOString();
 const remoteFingerprint = (value) => createHash("sha256").update(value).digest("hex");
 const failure = (error) => error instanceof HttpError ? error : new HttpError(error.status ?? 409, error.message, error.reason ?? "task-error", { outcomeUnknown: !!error.outcomeUnknown });
 
-export function createTaskService({ dataDir, store, runner, sessions, projects, notify = () => {}, github = githubPulls }) {
+export function createTaskService({ dataDir, store, runner, sessions, projects, notify = () => {}, github = githubPulls,
+  config = {}, saveConfig = () => {} }) {
   const directory = path.join(dataDir, "tasks");
   fs.mkdirSync(directory, { recursive: true });
   const records = new Map();
@@ -70,23 +72,63 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     return { tasks: [...records.values()].filter((task) => !projectPath || sameTaskPath(task.projectPath, projectPath))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(clone) };
   }
+  const taskSettings = (task) => normalizeGitflowSettings(task.gitflow);
+  async function settings(projectPath) {
+    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+    const repo = await taskRepo(projectPath);
+    return { projectPath: repo.top, settings: projectGitflowSettings(config, repo.top) };
+  }
+  async function updateSettings(projectPath, body = {}) {
+    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+    if (!body?.settings || typeof body.settings !== "object" || Array.isArray(body.settings))
+      throw new HttpError(400, "GitFlow 설정을 입력하세요.", "gitflow-settings");
+    const value = normalizeGitflowSettings(body.settings);
+    const repo = await taskRepo(projectPath);
+    for (const branch of [value.main, value.develop, ...[value.featurePrefix, value.hotfixPrefix, value.releasePrefix].map((prefix) => `${prefix}agenthub-check`)]) {
+      try {
+        await taskGit(repo.top, ["check-ref-format", "--branch", branch]);
+        // --branch expands checkout shorthands such as @{-1}; settings must name
+        // literal refs, so validate the full ref as well.
+        await taskGit(repo.top, ["check-ref-format", `refs/heads/${branch}`]);
+      }
+      catch (error) {
+        if (error.reason === "git-timeout") throw error;
+        throw new HttpError(400, `Git 브랜치 이름이 올바르지 않습니다: ${branch}`, "gitflow-settings");
+      }
+    }
+    return locked("gitflow-settings", async () => {
+      const previous = config.gitflow;
+      config.gitflow = { ...previous, [gitflowSettingsKey(repo.top)]: value };
+      try { await saveConfig(config); }
+      catch (error) {
+        if (previous === undefined) delete config.gitflow;
+        else config.gitflow = previous;
+        throw error;
+      }
+      notify("tasks", { projectPath: repo.top });
+      return { projectPath: repo.top, settings: clone(value) };
+    });
+  }
   async function context(projectPath) {
     if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
-    await taskRepo(projectPath);
+    let valueSettings = projectGitflowSettings(config, projectPath);
     try {
-      const value = await gitflowContext(projectPath);
-      return { ...value, mainInDevelop: !value.mainMissing, freshness: { state: value.state, checkedAt: value.checkedAt } };
+      const repo = await taskRepo(projectPath);
+      valueSettings = projectGitflowSettings(config, repo.top);
+      const value = await gitflowContext(repo.top, undefined, valueSettings);
+      return { ...value, settings: valueSettings, mainInDevelop: !value.mainMissing, freshness: { state: value.state, checkedAt: value.checkedAt } };
     } catch (error) {
       return { state: "error", checkedAt: now(), mainSha: null, developSha: null, warnings: [error.message],
-        freshness: { state: "error", checkedAt: now(), message: error.message }, error: error.message, reason: error.reason };
+        settings: valueSettings, freshness: { state: "error", checkedAt: now(), message: error.message }, error: error.message, reason: error.reason };
     }
   }
   async function freshness(task) {
     try {
-      const value = await gitflowContext(task.projectPath, task.remote);
+      const gitflow = taskSettings(task);
+      const value = await gitflowContext(task.projectPath, task.remote, gitflow);
       const url = (await taskGit(task.projectPath, ["remote", "get-url", task.remote])).trim();
       if (remoteFingerprint(url) !== task.remoteFingerprint) throw new HttpError(409, "작업 생성 후 원격 주소가 바뀌었습니다. 기존 원격을 복원하세요.", "task-remote");
-      const targetSha = task.targetBranch === "main" ? value.mainSha : value.developSha ?? value.mainSha;
+      const targetSha = task.targetBranch === gitflow.main ? value.mainSha : value.developSha ?? value.mainSha;
       const head = task.state === "cleaned" ? task.publishedHead : await assertTaskWorktree(task);
       const behind = !!head && !await taskAncestor(task.projectPath, targetSha, head);
       task.freshness = { ...value, targetSha, behind, state: behind || (task.type !== "hotfix" && value.mainMissing) ? "needs-update" : "current" };
@@ -101,8 +143,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     }
   }
   function requireFresh(task) {
-    if (task.type !== "hotfix" && task.freshness.mainMissing)
-      throw new HttpError(409, "main의 변경을 develop에 먼저 반영하세요. 기능 브랜치에 main을 직접 병합하지 않습니다.", "gitflow-develop-behind");
+    if (task.type !== "hotfix" && task.freshness.mainMissing) {
+      const { main, develop } = taskSettings(task);
+      throw new HttpError(409, `${main}의 변경을 ${develop}에 먼저 반영하세요. 기능 브랜치에 ${main}을 직접 병합하지 않습니다.`, "gitflow-develop-behind");
+    }
     if (task.freshness.behind) throw new HttpError(409, "기준 브랜치가 변경됐습니다. 최신화 버튼으로 반영한 뒤 작업을 마무리하세요.", "task-behind");
   }
   async function attach(task, body) {
@@ -138,20 +182,21 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const project = projectService().ensureProject(body.projectPath);
     const repo = await taskRepo(project.path);
     return locked(repo.common, async () => {
-      const current = await gitflowContext(project.path);
-      if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, "새 작업을 만들기 전에 main의 변경을 develop에 반영하세요.", "gitflow-develop-behind");
+      const gitflow = projectGitflowSettings(config, repo.top);
+      const current = await gitflowContext(project.path, undefined, gitflow);
+      if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, `새 작업을 만들기 전에 ${gitflow.main}의 변경을 ${gitflow.develop}에 반영하세요.`, "gitflow-develop-behind");
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
       const slug = title.normalize("NFKC").replace(/[^A-Za-z0-9가-힣_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "work";
-      const branch = type === "release" ? `release/${version}` : `${type}/${id}-${slug}`;
+      const branch = `${gitflow[`${type}Prefix`]}${type === "release" ? version : `${id}-${slug}`}`;
       await taskGit(project.path, ["check-ref-format", "--branch", branch]);
       if (await taskRef(project.path, `refs/heads/${branch}`) || await taskRef(project.path, `refs/remotes/${current.remote}/${branch}`))
         throw new HttpError(409, "해당 작업 브랜치가 이미 있습니다.", "task-branch-exists");
-      const baseBranch = type === "hotfix" ? "main" : "develop";
-      const baseCommit = baseBranch === "main" ? current.mainSha : current.developSha ?? current.mainSha;
+      const baseBranch = type === "hotfix" ? gitflow.main : gitflow.develop;
+      const baseCommit = type === "hotfix" ? current.mainSha : current.developSha ?? current.mainSha;
       const location = taskWorktreeLocation(repo, id);
       const task = { id, projectPath: project.path, title, type, version: type === "release" ? version : undefined,
         agent: body.agent ?? "claude", model: body.model, effort: body.effort, permission: body.permission, role: body.role,
-        branch, baseBranch, targetBranch: type === "feature" ? "develop" : "main", baseCommit,
+        branch, baseBranch, targetBranch: type === "feature" ? gitflow.develop : gitflow.main, baseCommit, gitflow: clone(gitflow),
         cwd: location.cwd, worktreeRoot: location.root, gitCommonDir: repo.common,
         remote: current.remote, remoteFingerprint: remoteFingerprint((await taskGit(project.path, ["remote", "get-url", current.remote])).trim()),
         sessionIds: [], state: "working", pull: null, createdAt: now(), updatedAt: now(),
@@ -224,11 +269,11 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const sha = task.freshness.mainSha;
     try {
       await externalWrite(task, "develop", sha, () => github.api(target, "POST", `repos/${target.repo}/git/refs`,
-        { ref: "refs/heads/develop", sha }, { write: true }));
+        { ref: `refs/heads/${taskSettings(task).develop}`, sha }, { write: true }));
     } catch (error) {
       if (error.outcomeUnknown) throw error;
       // Another client may have created develop. Fetch and validate it; never update an existing ref.
-      const current = await gitflowContext(task.projectPath, task.remote);
+      const current = await gitflowContext(task.projectPath, task.remote, taskSettings(task));
       if (!current.developSha) throw error;
     }
     await freshness(task);
@@ -365,7 +410,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (remoteHead && remoteHead !== head) throw new HttpError(409, "원격 작업 브랜치가 달라졌습니다. 추가 변경을 먼저 확인하세요.", "task-unpushed");
       if (["release", "hotfix"].includes(task.type) && (!task.freshness.developSha || task.freshness.mainMissing)) {
         task.developPending = true;
-        throw new HttpError(409, "main의 배포·긴급 수정을 develop에도 반영한 뒤 정리하세요.", "gitflow-develop-pending");
+        const { main, develop } = taskSettings(task);
+        throw new HttpError(409, `${main}의 배포·긴급 수정을 ${develop}에도 반영한 뒤 정리하세요.`, "gitflow-develop-pending");
       }
       const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id);
       if (!sameTaskPath(expected.cwd, task.cwd) || !sameTaskPath(path.dirname(task.cwd), expected.root))
@@ -399,6 +445,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, context, create, finish, refresh, sync, cleanup, assertSession, replaceSession, detachSession,
+  return { list, context, settings, updateSettings, create, finish, refresh, sync, cleanup, assertSession, replaceSession, detachSession,
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }

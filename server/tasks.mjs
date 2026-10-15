@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { runGitHubCommand } from "./github.mjs";
 import { HttpError } from "./application/errors.mjs";
+import { normalizeGitflowSettings } from "./gitflow-settings.mjs";
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const clean = (value) => String(value ?? "").replace(/https?:\/\/[^/\s@]+@/g, "https://[credentials]@").slice(0, 1600);
@@ -38,10 +39,10 @@ export async function taskAncestor(dir, ancestor, descendant) {
   catch (error) { if (error.reason === "git-timeout") throw error; return false; }
 }
 
-export async function taskRemote(dir, selected) {
+export async function taskRemote(dir, selected, main = "main") {
   const names = (await taskGit(dir, ["remote"])).trim().split(/\r?\n/).filter(Boolean);
   const remote = selected ?? (names.includes("origin") ? "origin" : names.length === 1 ? names[0] : null);
-  if (!remote || !names.includes(remote)) throw new HttpError(409, "최신 main을 확인할 원격 저장소를 연결하세요. 여러 원격이 있으면 origin을 지정하세요.", "gitflow-remote");
+  if (!remote || !names.includes(remote)) throw new HttpError(409, `최신 ${main}을 확인할 원격 저장소를 연결하세요. 여러 원격이 있으면 origin을 지정하세요.`, "gitflow-remote");
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(remote)) throw new HttpError(409, "원격 저장소 이름을 확인하세요.", "gitflow-remote");
   return remote;
 }
@@ -60,19 +61,24 @@ async function mainChangesMissing(dir, mainSha, developSha) {
   } catch (error) { if (error.reason === "git-timeout") throw error; return true; }
 }
 
-export async function gitflowContext(dir, selected) {
-  const remote = await taskRemote(dir, selected);
+export async function gitflowContext(dir, selected, value) {
+  const settings = normalizeGitflowSettings(value);
+  const { main, develop } = settings;
+  const remote = await taskRemote(dir, selected, main);
   // Explicit refspec ignores narrow fetch configuration; prune removes deleted remote branches.
   await taskGit(dir, ["fetch", "--prune", "--no-tags", "--", remote, `+refs/heads/*:refs/remotes/${remote}/*`]);
-  const [mainSha, developSha] = await Promise.all([
-    taskRef(dir, `refs/remotes/${remote}/main`), taskRef(dir, `refs/remotes/${remote}/develop`),
-  ]);
-  if (!mainSha) throw new HttpError(409, "원격 main 브랜치가 없습니다. GitFlow 기준 브랜치를 먼저 준비하세요.", "gitflow-main");
+  // rev-parse can resolve the wrong case on Windows filesystems. Enumerate refs
+  // and compare their literal names so Main/Develop settings stay exact.
+  const refs = new Map((await taskGit(dir, ["for-each-ref", "--format=%(refname) %(objectname)", `refs/remotes/${remote}/`]))
+    .trim().split(/\r?\n/).filter(Boolean).map((line) => line.split(" ")));
+  const mainSha = refs.get(`refs/remotes/${remote}/${main}`) ?? null;
+  const developSha = refs.get(`refs/remotes/${remote}/${develop}`) ?? null;
+  if (!mainSha) throw new HttpError(409, `원격 ${main} 브랜치가 없습니다. GitFlow 설정에서 기준 브랜치 이름을 확인하세요.`, "gitflow-main");
   const mainMissing = !!developSha && await mainChangesMissing(dir, mainSha, developSha);
-  const warnings = !developSha ? ["develop 브랜치가 없어 최신 main에서 시작합니다. 첫 PR 준비 시 develop을 생성합니다."]
-    : mainMissing ? ["main의 변경이 develop에 반영되지 않았습니다. develop에 먼저 반영하세요."] : [];
+  const warnings = !developSha ? [`${develop} 브랜치가 없어 최신 ${main}에서 시작합니다. 첫 PR 준비 시 ${develop}을 생성합니다.`]
+    : mainMissing ? [`${main}의 변경이 ${develop}에 반영되지 않았습니다. ${develop}에 먼저 반영하세요.`] : [];
   return { state: mainMissing ? "needs-update" : "current", checkedAt: new Date().toISOString(), remote,
-    main: { branch: "main", sha: mainSha }, develop: { branch: "develop", sha: developSha }, mainSha, developSha,
+    main: { branch: main, sha: mainSha }, develop: { branch: develop, sha: developSha }, mainSha, developSha, settings,
     mainMissing, needsSetup: !developSha, warnings };
 }
 

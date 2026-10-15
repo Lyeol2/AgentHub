@@ -6,22 +6,24 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createTaskService } from "../server/application/tasks.mjs";
 import { GitHubError, normalizePull } from "../server/github.mjs";
+import { DEFAULT_GITFLOW_SETTINGS, gitflowSettingsKey } from "../server/gitflow-settings.mjs";
 
-function fixture(t, { develop = true } = {}) {
+function fixture(t, { develop = true, main = "main", developBranch = "develop", settings } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-tasks-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
   const repo = path.join(root, "repo"), remote = path.join(root, "origin.git"), dataDir = path.join(root, "data");
   fs.mkdirSync(repo);
   const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
   git(root, "init", "--bare", "-q", remote);
-  git(repo, "init", "-q", "-b", "main");
+  git(repo, "init", "-q", "-b", main);
   git(repo, "config", "user.name", "Task Test"); git(repo, "config", "user.email", "task@example.invalid");
   git(repo, "config", "commit.gpgsign", "false");
   fs.writeFileSync(path.join(repo, "base.txt"), "base\n");
   git(repo, "add", "."); git(repo, "commit", "-qm", "base");
-  git(repo, "remote", "add", "origin", remote); git(repo, "push", "-q", "origin", "main");
-  if (develop) { git(repo, "branch", "develop"); git(repo, "push", "-q", "origin", "develop"); }
-  const state = { pulls: [], writes: [], running: new Set(), timeout: null };
+  git(repo, "remote", "add", "origin", remote); git(repo, "push", "-q", "origin", main);
+  if (develop) { git(repo, "branch", developBranch); git(repo, "push", "-q", "origin", developBranch); }
+  const state = { pulls: [], writes: [], refs: [], running: new Set(), timeout: null, saves: 0, saveError: null };
+  const config = settings ? { gitflow: { [gitflowSettingsKey(repo)]: settings } } : {};
   const stored = new Map(); let serial = 0;
   const store = { list: () => [...stored.values()], get: (id) => stored.get(id) };
   const sessions = { checkSessionOptions() {}, async createSession(body, internal) {
@@ -38,7 +40,8 @@ function fixture(t, { develop = true } = {}) {
         && endpoint.includes(`base=${encodeURIComponent(pull.base.ref)}`));
       if (method === "POST" && endpoint.endsWith("/git/refs")) {
         state.writes.push("develop");
-        if (remoteSha("develop")) throw new GitHubError("HTTP 422 exists");
+        state.refs.push(body.ref);
+        if (remoteSha(body.ref.replace(/^refs\/heads\//, ""))) throw new GitHubError("HTTP 422 exists");
         git(repo, "push", "-q", remote, `${body.sha}:${body.ref}`); return { ref: body.ref };
       }
       throw Error(`Unexpected GitHub call: ${method} ${endpoint}`);
@@ -62,13 +65,13 @@ function fixture(t, { develop = true } = {}) {
     async detail(dir, number) { return { pull: normalizePull(state.pulls.find((pull) => pull.number === number), "acme/widget") }; },
     async remoteHead(target, branch) { return remoteSha(branch); },
   };
-  const options = { dataDir, store, runner: { isRunning: (id) => state.running.has(id) }, sessions,
+  const options = { dataDir, store, config, saveConfig: (value) => { assert.equal(value, config); state.saves++; if (state.saveError) throw state.saveError; }, runner: { isRunning: (id) => state.running.has(id) }, sessions,
     projects: { ensureProject: (projectPath) => ({ name: "repo", path: projectPath }) }, github };
   let service = createTaskService(options);
   const create = (type = "feature", extra = {}) => service.create({ projectPath: repo, title: "새 작업", type, agent: "codex", ...extra });
   function change(dir, filename = "change.txt", text = "change\n") { fs.writeFileSync(path.join(dir, filename), text); }
   function commit(dir, filename = "remote-change.txt") { change(dir, filename); git(dir, "add", "."); git(dir, "commit", "-qm", filename); }
-  return { repo, remote, state, git, create, change, commit, stored, get service() { return service; }, restart() { service = createTaskService(options); return service; } };
+  return { repo, remote, dataDir, config, state, git, create, change, commit, stored, get service() { return service; }, restart() { service = createTaskService(options); return service; } };
 }
 
 test("tasks: missing develop starts from latest main without modifying the source worktree", async (t) => {
@@ -263,4 +266,126 @@ test("tasks: a failed worktree hook preserves provisioning records and session c
   assert.equal(recovered.task.sessionIds.length, 1);
   assert.equal(recovered.session.cwd, task.cwd);
   assert.equal(f.git(task.cwd, "branch", "--show-current"), task.branch);
+});
+
+const customGitflow = { main: "Main", develop: "Develop", featurePrefix: "Feature/", hotfixPrefix: "Fix/", releasePrefix: "Release/" };
+
+test("tasks: project settings preserve case and normalize prefixes without changing Git branches", async (t) => {
+  const f = fixture(t);
+  assert.deepEqual((await f.service.settings(f.repo)).settings, DEFAULT_GITFLOW_SETTINGS);
+  const branches = f.git(f.repo, "show-ref");
+  const head = f.git(f.repo, "rev-parse", "HEAD");
+  const saved = await f.service.updateSettings(f.repo, { settings: {
+    main: " Main ", develop: " Develop ", featurePrefix: " Feature ", hotfixPrefix: " Fix/ ", releasePrefix: "Release",
+  } });
+  assert.deepEqual(saved, { projectPath: f.git(f.repo, "rev-parse", "--show-toplevel"), settings: customGitflow });
+  assert.deepEqual(f.config.gitflow[gitflowSettingsKey(f.repo)], customGitflow);
+  assert.equal(f.state.saves, 1);
+  assert.equal(f.git(f.repo, "show-ref"), branches);
+  assert.equal(f.git(f.repo, "rev-parse", "HEAD"), head);
+  assert.equal(f.state.writes.length, 0);
+  const context = await f.service.context(f.repo);
+  assert.equal(context.state, "error");
+  assert.deepEqual(context.settings, customGitflow);
+  assert.match(context.error, /Main/);
+  assert.equal((await f.service.context(path.join(f.repo, "not-a-repo"))).settings.main, "main");
+});
+
+test("tasks: invalid branch settings and failed persistence leave the prior settings intact", async (t) => {
+  const f = fixture(t);
+  f.git(f.repo, "switch", "-q", "develop"); f.git(f.repo, "switch", "-q", "main");
+  assert.equal(f.git(f.repo, "check-ref-format", "--branch", "@{-1}"), "develop");
+  for (const settings of [{ main: "same", develop: "same" }, { main: "bad..name" }, { main: "@{-1}" }, { featurePrefix: "bad[" }, { hotfixPrefix: "bad prefix" }]) {
+    await assert.rejects(f.service.updateSettings(f.repo, { settings }), (error) => error.status === 400 && error.reason === "gitflow-settings");
+  }
+  assert.equal(f.state.saves, 0);
+  assert.equal(f.config.gitflow, undefined);
+  f.state.saveError = Error("disk full");
+  await assert.rejects(f.service.updateSettings(f.repo, { settings: customGitflow }), /disk full/);
+  assert.equal(f.config.gitflow, undefined);
+  f.state.saveError = null;
+  await f.service.updateSettings(f.repo, { settings: customGitflow });
+  const previous = f.config.gitflow;
+  f.state.saveError = Error("disk full");
+  await assert.rejects(f.service.updateSettings(f.repo, { settings: { develop: "Next" } }), /disk full/);
+  assert.equal(f.config.gitflow, previous);
+  assert.deepEqual((await f.service.settings(f.repo)).settings, customGitflow);
+});
+
+test("tasks: custom GitFlow names drive context, all task prefixes and PR targets", async (t) => {
+  const f = fixture(t, { main: "Main", developBranch: "Develop", settings: customGitflow });
+  const context = await f.service.context(f.repo);
+  assert.equal(context.main.branch, "Main"); assert.equal(context.develop.branch, "Develop");
+  assert.deepEqual(context.settings, customGitflow);
+  for (const [type, prefix, base, target] of [
+    ["feature", "Feature/", "Develop", "Develop"], ["hotfix", "Fix/", "Main", "Main"], ["release", "Release/", "Develop", "Main"],
+  ]) {
+    const { task } = await f.create(type, { version: "1.2.0" });
+    assert.ok(task.branch.startsWith(prefix));
+    if (type === "release") assert.equal(task.branch, "Release/1.2.0");
+    assert.equal(task.baseBranch, base); assert.equal(task.targetBranch, target);
+    assert.deepEqual(task.gitflow, customGitflow);
+    f.change(task.cwd, `${type}.txt`);
+    const finished = await f.service.finish(task.id);
+    assert.equal(finished.pull.baseRefName, target);
+    assert.equal(finished.pull.headRefName, task.branch);
+  }
+});
+
+test("tasks: a missing custom development branch is created under its exact configured name", async (t) => {
+  const f = fixture(t, { main: "Main", develop: false, settings: customGitflow });
+  const { task } = await f.create();
+  assert.equal(task.needsDevelopSetup, true);
+  assert.equal(task.baseCommit, f.git(f.repo, "rev-parse", "Main"));
+  f.change(task.cwd);
+  const result = await f.service.finish(task.id);
+  assert.equal(result.pull.baseRefName, "Develop");
+  assert.deepEqual(f.state.refs, ["refs/heads/Develop"]);
+  assert.ok(f.git(f.repo, "ls-remote", f.remote, "refs/heads/Develop"));
+  assert.equal(f.git(f.repo, "ls-remote", f.remote, "refs/heads/develop"), "");
+});
+
+test("tasks: existing task snapshots survive settings changes through refresh, sync and finish", async (t) => {
+  const f = fixture(t, { main: "Main", developBranch: "Develop", settings: customGitflow });
+  const { task } = await f.create();
+  await f.service.updateSettings(f.repo, { settings: { main: "production", develop: "integration" } });
+  assert.equal((await f.service.context(f.repo)).state, "error");
+  f.git(f.repo, "switch", "-q", "Develop"); f.commit(f.repo); f.git(f.repo, "push", "-q", "origin", "Develop");
+  const refreshed = await f.restart().refresh(task.id);
+  assert.equal(refreshed.task.freshness.develop.branch, "Develop");
+  assert.equal(refreshed.task.freshness.behind, true);
+  const synced = await f.service.sync(task.id);
+  assert.equal(synced.task.freshness.state, "current");
+  assert.ok(fs.existsSync(path.join(task.cwd, "remote-change.txt")));
+  f.change(task.cwd);
+  const finished = await f.service.finish(task.id);
+  assert.equal(finished.pull.baseRefName, "Develop");
+  assert.deepEqual(finished.task.gitflow, customGitflow);
+});
+
+test("tasks: custom hotfix cleanup uses its original branches after settings change", async (t) => {
+  const f = fixture(t, { main: "Main", developBranch: "Develop", settings: customGitflow });
+  const { task } = await f.create("hotfix");
+  await f.service.updateSettings(f.repo, { settings: { main: "production", develop: "integration" } });
+  f.change(task.cwd); await f.service.finish(task.id);
+  assert.equal(f.state.pulls[0].base.ref, "Main");
+  f.state.pulls[0].merged = true; f.state.pulls[0].state = "closed";
+  f.git(f.repo, "merge", "--no-edit", task.branch); f.git(f.repo, "push", "-q", "origin", "Main");
+  await assert.rejects(f.service.cleanup(task.id), (error) => error.reason === "gitflow-develop-pending" && /Main.*Develop/.test(error.message));
+  f.git(f.repo, "switch", "-q", "Develop"); f.git(f.repo, "merge", "--no-edit", "Main"); f.git(f.repo, "push", "-q", "origin", "Develop");
+  assert.equal((await f.service.cleanup(task.id)).task.state, "cleaned");
+});
+
+test("tasks: records without GitFlow snapshots keep legacy branch names after project settings change", async (t) => {
+  const f = fixture(t);
+  const { task } = await f.create();
+  const file = path.join(f.dataDir, "tasks", `${task.id}.json`);
+  const persisted = JSON.parse(fs.readFileSync(file, "utf8"));
+  delete persisted.gitflow;
+  fs.writeFileSync(file, JSON.stringify(persisted));
+  await f.service.updateSettings(f.repo, { settings: customGitflow });
+  f.restart();
+  assert.equal((await f.service.refresh(task.id)).task.freshness.develop.branch, "develop");
+  f.change(task.cwd);
+  assert.equal((await f.service.finish(task.id)).pull.baseRefName, "develop");
 });

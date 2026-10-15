@@ -37,6 +37,7 @@ export function createHub(options = {}) {
   config.hiddenProjects ??= [];
   config.hiddenSessions ??= [];
   config.skillLayout ??= {};
+  config.gitflow ??= {};
 
   let port = Number(options.port ?? process.env.PORT ?? config.port ?? 4517);
   const deps = options.deps ?? {};
@@ -94,7 +95,7 @@ export function createHub(options = {}) {
     tasks: () => tasks,
   });
   workflows = createWorkflowService({ store, runner, links, commands, chain, projects, sessions, notify });
-  tasks = createTaskService({ dataDir, store, runner, sessions, projects, notify, github: deps.github });
+  tasks = createTaskService({ dataDir, config, saveConfig: persistConfig, store, runner, sessions, projects, notify, github: deps.github });
   const services = {
     sessions,
     projects,

@@ -23,7 +23,7 @@ function configureIdentity(cwd) {
   git(cwd, 'config', 'user.email', 'task-api-test@example.invalid');
 }
 
-async function fixture(t) {
+async function fixture(t, { mainBranch = 'main', developBranch = 'develop' } = {}) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'agenthub-task-api-'));
   const repo = path.join(root, 'repository');
   const origin = path.join(root, 'origin.git');
@@ -40,26 +40,26 @@ async function fixture(t) {
 
   await mkdir(repo);
   git(root, 'init', '--bare', origin);
-  git(repo, 'init', '-b', 'main');
+  git(repo, 'init', '-b', mainBranch);
   configureIdentity(repo);
   await writeFile(path.join(repo, 'README.md'), 'Task API fixture\n');
   git(repo, 'add', 'README.md');
   git(repo, 'commit', '-m', 'Initial fixture');
   git(repo, 'remote', 'add', 'origin', origin);
-  git(repo, 'push', '-u', 'origin', 'main');
-  git(repo, 'branch', 'develop');
-  git(repo, 'push', 'origin', 'develop');
+  git(repo, 'push', '-u', 'origin', mainBranch);
+  git(repo, 'branch', developBranch);
+  git(repo, 'push', 'origin', developBranch);
   const mainSha = git(repo, 'rev-parse', 'HEAD');
 
   // Advance the remote from another checkout, leaving the project's tracking ref stale.
-  git(root, 'clone', '--branch', 'develop', origin, writer);
+  git(root, 'clone', '--branch', developBranch, origin, writer);
   configureIdentity(writer);
   await writeFile(path.join(writer, 'remote-development.txt'), 'Latest development change\n');
   git(writer, 'add', 'remote-development.txt');
   git(writer, 'commit', '-m', 'Advance remote development');
-  git(writer, 'push', 'origin', 'develop');
+  git(writer, 'push', 'origin', developBranch);
   const developSha = git(writer, 'rev-parse', 'HEAD');
-  assert.notEqual(git(repo, 'rev-parse', 'origin/develop'), developSha);
+  assert.notEqual(git(repo, 'rev-parse', `origin/${developBranch}`), developSha);
 
   async function start() {
     hub = createHub({ dataDir, port: 0, warmup: false });
@@ -102,7 +102,7 @@ async function fixture(t) {
     return result.tasks;
   }
   return {
-    repo, origin, mainSha, developSha, request, success, createTask, tasks,
+    root, repo, origin, mainSha, developSha, request, success, createTask, tasks,
     async restart() {
       await hub.shutdown();
       hub = undefined;
@@ -136,6 +136,121 @@ test('task API creates GitFlow branches from the latest remote bases', async t =
   assert.deepEqual((await f.tasks()).map(task => task.id).sort(), ids.sort());
   assert.equal(git(f.repo, 'branch', '--show-current'), 'main');
   assert.equal(await readFile(path.join(f.repo, 'README.md'), 'utf8'), 'Task API fixture\n');
+});
+
+const defaultGitflowSettings = {
+  main: 'main', develop: 'develop',
+  featurePrefix: 'feature/', hotfixPrefix: 'hotfix/', releasePrefix: 'release/',
+};
+const customGitflowSettings = {
+  main: 'Main', develop: 'Develop',
+  featurePrefix: 'Feature/', hotfixPrefix: 'Hotfix/', releasePrefix: 'Release/',
+};
+const settingsPath = repo => `/tasks/settings?path=${encodeURIComponent(repo)}`;
+const gitRefs = repo => git(repo, 'for-each-ref', '--format=%(refname) %(objectname)');
+
+test('GitFlow settings preserve case, persist per project, and do not change Git branches', async t => {
+  const f = await fixture(t, { mainBranch: 'Main', developBranch: 'Develop' });
+  const initial = await f.success('GET', settingsPath(f.repo));
+  assert.equal(path.resolve(initial.projectPath), path.resolve(f.repo));
+  assert.deepEqual(initial.settings, defaultGitflowSettings);
+  const localRefs = gitRefs(f.repo);
+  const remoteRefs = gitRefs(f.origin);
+  const localConfig = git(f.repo, 'config', '--local', '--list');
+
+  const saved = await f.success('PUT', settingsPath(f.repo), { settings: customGitflowSettings });
+  assert.equal(path.resolve(saved.projectPath), path.resolve(f.repo));
+  assert.deepEqual(saved.settings, customGitflowSettings);
+  assert.equal(gitRefs(f.repo), localRefs);
+  assert.equal(gitRefs(f.origin), remoteRefs);
+  assert.equal(git(f.repo, 'config', '--local', '--list'), localConfig);
+  assert.equal(git(f.repo, 'branch', '--show-current'), 'Main');
+
+  const otherRepo = path.join(f.root, 'other-repository');
+  await mkdir(otherRepo);
+  git(otherRepo, 'init', '-b', 'main');
+  configureIdentity(otherRepo);
+  await writeFile(path.join(otherRepo, 'README.md'), 'Other project\n');
+  git(otherRepo, 'add', 'README.md');
+  git(otherRepo, 'commit', '-m', 'Other fixture');
+  const other = await f.success('GET', settingsPath(otherRepo));
+  assert.equal(path.resolve(other.projectPath), path.resolve(otherRepo));
+  assert.deepEqual(other.settings, defaultGitflowSettings);
+
+  await f.restart();
+  assert.deepEqual((await f.success('GET', settingsPath(f.repo))).settings, customGitflowSettings);
+  assert.deepEqual((await f.success('GET', settingsPath(otherRepo))).settings, defaultGitflowSettings);
+  assert.equal(gitRefs(f.repo), localRefs);
+  assert.equal(gitRefs(f.origin), remoteRefs);
+});
+
+test('custom GitFlow branch names guide context and all new task types without rewriting existing tasks', async t => {
+  const f = await fixture(t, { mainBranch: 'Main', developBranch: 'Develop' });
+  await f.success('PUT', settingsPath(f.repo), { settings: customGitflowSettings });
+  const context = await f.success('GET', `/tasks/context?path=${encodeURIComponent(f.repo)}`);
+  assert.equal(context.mainSha, f.mainSha);
+  assert.equal(context.developSha, f.developSha);
+  assert.equal(context.mainInDevelop, true);
+  const definitions = [
+    { type: 'feature', title: 'Custom feature', base: 'Develop', target: 'Develop', prefix: 'Feature/', sha: f.developSha },
+    { type: 'hotfix', title: 'Custom fix', base: 'Main', target: 'Main', prefix: 'Hotfix/', sha: f.mainSha },
+    { type: 'release', title: '2.3.4', base: 'Develop', target: 'Main', prefix: 'Release/', sha: f.developSha },
+  ];
+  const snapshots = [];
+  for (const definition of definitions) {
+    const { task, session } = await f.createTask(definition.type, definition.title);
+    assert.equal(task.baseBranch, definition.base);
+    assert.equal(task.targetBranch, definition.target);
+    assert.ok(task.branch.startsWith(definition.prefix), task.branch);
+    if (definition.type === 'release') assert.equal(task.branch, 'Release/2.3.4');
+    assert.equal(task.baseCommit, definition.sha);
+    assert.equal(git(task.cwd, 'rev-parse', 'HEAD'), definition.sha);
+    assert.equal(git(task.cwd, 'branch', '--show-current'), task.branch);
+    assert.equal(path.resolve(session.cwd), path.resolve(task.cwd));
+    snapshots.push({ id: task.id, branch: task.branch, baseBranch: task.baseBranch, targetBranch: task.targetBranch, baseCommit: task.baseCommit });
+  }
+  const changed = {
+    main: 'NextMain', develop: 'NextDevelop',
+    featurePrefix: 'NextFeature/', hotfixPrefix: 'NextHotfix/', releasePrefix: 'NextRelease/',
+  };
+  await f.success('PUT', settingsPath(f.repo), { settings: changed });
+  await f.restart();
+  assert.deepEqual((await f.success('GET', settingsPath(f.repo))).settings, changed);
+  const tasks = await f.tasks();
+  for (const snapshot of snapshots) {
+    const task = tasks.find(item => item.id === snapshot.id);
+    assert.ok(task);
+    assert.deepEqual(Object.fromEntries(Object.keys(snapshot).map(key => [key, task[key]])), snapshot);
+    assert.equal(git(task.cwd, 'branch', '--show-current'), snapshot.branch);
+  }
+  assert.equal(git(f.repo, 'branch', '--show-current'), 'Main');
+  assert.equal(await readFile(path.join(f.repo, 'README.md'), 'utf8'), 'Task API fixture\n');
+});
+
+test('invalid GitFlow settings return 400 without changing saved settings or Git refs', async t => {
+  const f = await fixture(t);
+  const settings = { ...defaultGitflowSettings, featurePrefix: 'Feature/' };
+  await f.success('PUT', settingsPath(f.repo), { settings });
+  const localRefs = gitRefs(f.repo);
+  const remoteRefs = gitRefs(f.origin);
+  const invalid = [
+    { ...settings, main: '../bad' },
+    { ...settings, main: '' },
+    { ...settings, develop: '' },
+    { ...settings, main: settings.develop },
+    { ...settings, featurePrefix: '../bad/' },
+    { ...settings, hotfixPrefix: '' },
+    { ...settings, releasePrefix: 'bad prefix/' },
+  ];
+  for (const value of invalid) {
+    const response = await f.request('PUT', settingsPath(f.repo), { settings: value });
+    assert.equal(response.status, 400, JSON.stringify({ value, response }));
+    assert.deepEqual((await f.success('GET', settingsPath(f.repo))).settings, settings);
+  }
+  assert.equal(gitRefs(f.repo), localRefs);
+  assert.equal(gitRefs(f.origin), remoteRefs);
+  await f.restart();
+  assert.deepEqual((await f.success('GET', settingsPath(f.repo))).settings, settings);
 });
 
 test('task sessions can be recreated and detached without deleting their worktree', async t => {
