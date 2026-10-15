@@ -308,6 +308,30 @@ export function discoverSessions(projectPath) {
   return projectSessions().filter((s) => s.cwd && (samePath(projectRoot(s.cwd), projectPath) || isInside(s.cwd, projectPath)));
 }
 
+// Claude Code·Codex의 기록 파일을 지운다. Claude는 같은 이름의 폴더(하위 에이전트·도구 결과)도 함께 지운다.
+// 지운 파일 수를 돌려준다. 못 지운 파일(다른 프로그램이 쓰는 중 등)은 errors에 모은다.
+export function deleteSessionRecords(ids) {
+  const wanted = new Set(ids.filter(Boolean));
+  const result = { deleted: 0, errors: [] };
+  if (!wanted.size) return result;
+  for (const s of allSessions()) {
+    if (!wanted.has(s.agentSessionId)) continue;
+    const targets = [s.file];
+    if (s.agent === "claude") targets.push(path.join(path.dirname(s.file), s.agentSessionId));
+    for (const target of targets) {
+      if (!fs.existsSync(target)) continue;
+      try {
+        fs.rmSync(target, { recursive: true, force: true, maxRetries: 3 });
+        summaryCache.delete(target);
+        if (target === s.file) result.deleted++;
+      } catch (err) {
+        result.errors.push(`${target}: ${err.message}`);
+      }
+    }
+  }
+  return result;
+}
+
 // 세션 기록에 나온 작업 폴더를 프로젝트 단위로 묶는다.
 export function discoverProjects() {
   const projects = new Map();

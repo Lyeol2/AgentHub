@@ -27,19 +27,81 @@ function percent(value) {
 
 const toIso = (sec) => (typeof sec === "number" ? new Date(sec * 1000).toISOString() : null);
 
+function save(saved) {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.writeFileSync(LIMITS_PATH, JSON.stringify(saved, null, 2));
+}
+
 export function recordClaudeLimit(info) {
   const saved = loadSaved();
   const type = info.rateLimitType ?? "unknown";
   saved.claude ??= {};
+  const prev = saved.claude[type];
+  const resetsAt = toIso(info.resetsAt);
+  let usedPercent = percent(info.utilization ?? info.usedPercent);
+  // 실행 중 이벤트는 한도에 가까울 때만 사용률을 싣는다. 같은 기간이면 사용량 조회로 받은 값을 지우지 않는다.
+  if (usedPercent === null && prev?.resetsAt === resetsAt) usedPercent = prev.usedPercent ?? null;
   saved.claude[type] = {
     status: info.status ?? null,
-    usedPercent: percent(info.utilization ?? info.usedPercent),
-    resetsAt: toIso(info.resetsAt),
+    usedPercent,
+    resetsAt,
     isUsingOverage: !!info.isUsingOverage,
     observedAt: new Date().toISOString(),
   };
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(LIMITS_PATH, JSON.stringify(saved, null, 2));
+  save(saved);
+}
+
+// 로그인한 Claude 계정의 사용률. Claude Code의 /usage와 같은 곳(OAuth 사용량 API)에서 읽는다.
+// 공개 문서가 없는 API라 실패하면 실행 중에 받은 값만 보여 준다. 토큰 갱신은 CLI가 하므로 만료된 토큰으로는 묻지 않는다.
+const CLAUDE_DIR = process.env.CLAUDE_CONFIG_DIR ?? path.join(os.homedir(), ".claude");
+const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
+const USAGE_TTL = 60_000;
+let usageCheckedAt = 0;
+let usageError = null;
+
+export async function refreshClaudeUsage({ fresh = false } = {}) {
+  if (!fresh && Date.now() - usageCheckedAt < USAGE_TTL) return;
+  usageCheckedAt = Date.now();
+  let oauth;
+  try {
+    oauth = JSON.parse(fs.readFileSync(path.join(CLAUDE_DIR, ".credentials.json"), "utf8")).claudeAiOauth;
+  } catch {
+    usageError = null; // 로그인하지 않았거나 API 키를 쓰는 경우
+    return;
+  }
+  if (!oauth?.accessToken) return;
+  if (oauth.expiresAt && oauth.expiresAt < Date.now()) {
+    usageError = "로그인 토큰이 만료되어 사용률을 읽지 못했습니다. Claude 세션을 한 번 실행하면 갱신됩니다.";
+    return;
+  }
+  try {
+    const res = await fetch(USAGE_URL, {
+      headers: { Authorization: `Bearer ${oauth.accessToken}`, "anthropic-beta": "oauth-2025-04-20" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) throw new Error(`사용률 조회 실패 (HTTP ${res.status})`);
+    const usage = await res.json();
+    const saved = loadSaved();
+    saved.claude ??= {};
+    const now = new Date().toISOString();
+    for (const type of Object.keys(CLAUDE_LABEL)) {
+      const w = usage[type];
+      if (typeof w?.utilization !== "number") continue;
+      const usedPercent = Math.round(w.utilization * 10) / 10; // 이 API는 항상 퍼센트로 준다
+      saved.claude[type] = {
+        ...saved.claude[type],
+        status: usedPercent >= 100 ? "rejected" : saved.claude[type]?.status ?? "allowed",
+        usedPercent,
+        resetsAt: w.resets_at ? new Date(w.resets_at).toISOString() : null,
+        observedAt: now,
+      };
+    }
+    saved.claudePlan = oauth.subscriptionType ?? saved.claudePlan ?? null;
+    save(saved);
+    usageError = null;
+  } catch (err) {
+    usageError = err.message;
+  }
 }
 
 const CLAUDE_LABEL = {
@@ -51,10 +113,16 @@ const CLAUDE_LABEL = {
 };
 
 function claudeLimits() {
-  const saved = loadSaved().claude ?? {};
-  const windows = Object.entries(saved).map(([type, w]) => ({ id: type, label: CLAUDE_LABEL[type] ?? type, ...w }));
+  const all = loadSaved();
+  const saved = all.claude ?? {};
+  // 5시간 → 주간 → 나머지 순서로 보여 준다.
+  const order = Object.keys(CLAUDE_LABEL);
+  const rank = (type) => (order.includes(type) ? order.indexOf(type) : order.length);
+  const windows = Object.entries(saved)
+    .sort(([a], [b]) => rank(a) - rank(b))
+    .map(([type, w]) => ({ id: type, label: CLAUDE_LABEL[type] ?? type, ...w }));
   const observedAt = windows.map((w) => w.observedAt).sort().at(-1) ?? null;
-  return { windows, observedAt };
+  return { windows, observedAt, plan: all.claudePlan ?? null, error: usageError };
 }
 
 // ── Codex ───────────────────────────────────────────────────────

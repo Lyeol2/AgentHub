@@ -157,6 +157,8 @@ export class Runner extends EventEmitter {
       for (const event of agent.parseLine(line)) {
         if (event.agentSessionId) {
           session.agentSessionId = event.agentSessionId;
+          // 다시 시작하거나 새 대화로 바뀌어도 이 세션이 쓴 CLI 대화를 모두 기억한다(기록 목록 연결·삭제에 쓴다).
+          session.cliSessionIds = [...new Set([...(session.cliSessionIds ?? []), event.agentSessionId])];
           delete event.agentSessionId;
         }
         if (event.rateLimit) {
@@ -166,6 +168,8 @@ export class Runner extends EventEmitter {
         // 세션 수명: 컨텍스트 압축 횟수와 지금 컨텍스트 크기
         if (event.compact) {
           session.compactions = (session.compactions ?? 0) + 1;
+          // 첫 요청에 붙인 스킬 안내가 요약되며 빠질 수 있으므로 다음 요청에 다시 붙인다.
+          if (session.skills?.length) session.skillsChanged = true;
           delete event.compact;
         }
         if (event.context) {

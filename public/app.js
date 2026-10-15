@@ -224,13 +224,14 @@ function limitRow(w) {
 }
 
 const LIMIT_EMPTY = {
-  claude: "AgentHub에서 Claude 세션을 실행하면 표시됩니다. Claude CLI는 실행 중에만 한도 정보를 알려 줍니다.",
+  claude: "Claude CLI에 로그인하면 사용률이 표시됩니다.",
   codex: "Codex 세션 기록에서 한도 정보를 찾지 못했습니다. Codex를 한 번 실행하면 표시됩니다.",
 };
 
-async function loadLimits() {
+// fresh: 새로고침 버튼처럼 서버의 캐시를 쓰지 않고 다시 묻는다.
+async function loadLimits(fresh = false) {
   try {
-    state.limits = await api("GET", "/api/limits");
+    state.limits = await api("GET", `/api/limits${fresh === true ? "?fresh=1" : ""}`);
   } catch {
     return;
   }
@@ -262,7 +263,7 @@ function renderLimits() {
   }));
 }
 
-$("refresh-limits").addEventListener("click", loadLimits);
+$("refresh-limits").addEventListener("click", () => loadLimits(true));
 setInterval(loadLimits, 60_000);
 setInterval(() => loadProjects(), 120_000); // 다른 앱에서 새로 연 프로젝트도 잡는다.
 
@@ -474,6 +475,7 @@ async function renderProject() {
   $("p-registered").hidden = p.registered;
   renderProjectSessions();
   loadSkills(p.path);
+  loadCommands(p.path);
   renderHub();
   table("p-found", [["세션"], ["에이전트"], ["요청", "num"], ["마지막 사용", "num"], ["", "right"]], [],
     "기록을 찾는 중…");
@@ -557,6 +559,8 @@ const CARD_SIZE = { w: CARD_W, h: CARD_H };
 const SKILL_SIZE = { w: 200, h: 64 };
 const SKILL_PREFIX = "skill:";
 const isSkillNode = (id) => id.startsWith(SKILL_PREFIX);
+// 명령 노드는 id가 "cmd-"로 시작한다(서버의 commands.mjs와 같다).
+const isCommandNode = (id) => id.startsWith("cmd-");
 const nodeSize = (id) => (isSkillNode(id) ? SKILL_SIZE : CARD_SIZE);
 const WHEN_LABEL = { success: "성공 시", error: "실패 시", always: "항상", manual: "수동" };
 const linkLabel = (l) => `${l.when === "keyword" ? `"${l.keyword}" 있으면` : WHEN_LABEL[l.when]}${l.approve ? " · 승인 후" : ""}`;
@@ -608,7 +612,8 @@ function layoutGraph(sessions, links) {
     const lv = depth(s.id);
     const row = rows.get(lv) ?? 0;
     rows.set(lv, row + 1);
-    pos.set(s.id, s.graphPos ?? { x: PAD + lv * (CARD_W + GAP_X), y: PAD + row * (CARD_H + GAP_Y) });
+    // graphPos: 옮긴 세션 카드 위치, pos: 옮긴 명령 노드 위치
+    pos.set(s.id, s.graphPos ?? s.pos ?? { x: PAD + lv * (CARD_W + GAP_X), y: PAD + row * (CARD_H + GAP_Y) });
   }
   return pos;
 }
@@ -620,17 +625,19 @@ function renderGraph() {
     .filter((s) => samePath(s.projectPath, state.project))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
   const skills = samePath(state.skillsProject, state.project) ? state.skills ?? [] : [];
-  if (!sessions.length && !skills.length) {
+  const cmdNodes = samePath(state.commandsProject, state.project) ? state.commands ?? [] : [];
+  if (!sessions.length && !skills.length && !cmdNodes.length) {
     state.graph = null;
     box.replaceChildren(el("div", { class: "graph-empty" },
       "이 프로젝트에서 만든 세션이 없습니다. 여기서 우클릭하거나 새 세션을 만들면 카드로 보입니다."));
     return;
   }
-  const ids = new Set(sessions.map((s) => s.id));
+  // 명령 노드는 세션과 같은 흐름 안에 놓인다(세션 → 명령 → 세션).
+  const ids = new Set([...sessions, ...cmdNodes].map((s) => s.id));
   const links = state.links.filter((l) => ids.has(l.from) && ids.has(l.to));
   // 오케스트레이터가 만든 세션은 지휘선으로 잇고, 배치도 오케스트레이터를 앞에 둔다.
   const commands = sessions.filter((s) => ids.has(s.createdBy)).map((s) => ({ from: s.createdBy, to: s.id }));
-  const pos = layoutGraph(sessions, [...commands, ...links]);
+  const pos = layoutGraph([...sessions, ...cmdNodes], [...commands, ...links]);
   // 옮기지 않은 스킬 노드는 세션 카드 아래에 한 줄로 놓는다.
   const bottom = Math.max(0, ...[...pos.values()].map((p) => p.y + CARD_H + GAP_Y * 2));
   skills.filter((k) => !k.pos).forEach((k, i) => pos.set(`${SKILL_PREFIX}${k.name}`, { x: PAD + i * (SKILL_SIZE.w + GAP_Y), y: bottom || PAD }));
@@ -676,6 +683,12 @@ function renderGraph() {
     canvas.append(node);
   }
 
+  for (const c of cmdNodes) {
+    const node = commandNode(c);
+    cards.set(c.id, node);
+    canvas.append(node);
+  }
+
   state.graph = { canvas, svg, cards, pos, links, commands, skillEdges };
   placeCards();
   box.replaceChildren(canvas);
@@ -685,7 +698,18 @@ function renderGraph() {
 // 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 스킬 노드는 스킬 메뉴, 빈 곳은 그 자리에 새 세션·새 스킬을 만든다.
 $("p-graph").addEventListener("contextmenu", (e) => {
   if (e.target.closest(".edge-label")) return;
-  const card = e.target.closest(".gcard, .gskill");
+  const card = e.target.closest(".gcard, .gskill, .gcmd");
+  const cmd = card && commandById(card.dataset.id);
+  if (cmd) {
+    const running = cmd.state === "running";
+    openContextMenu(e, `명령 ${cmd.title}`, [
+      running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
+      ["편집", () => openCommandDialog(cmd)],
+      null,
+      ["삭제", () => removeCommand(cmd), { danger: true }],
+    ]);
+    return;
+  }
   if (card && !isSkillNode(card.dataset.id)) {
     const s = sessionById(card.dataset.id);
     if (s) openSessionMenu(e, s);
@@ -706,6 +730,7 @@ $("p-graph").addEventListener("contextmenu", (e) => {
   openContextMenu(e, "여기에 만들기", [
     ["새 세션", () => openNew(state.project, { pos })],
     ["새 스킬", () => openSkillDialog(null, pos)],
+    ["새 명령", () => openCommandDialog(null, pos)],
   ]);
 });
 
@@ -733,6 +758,170 @@ function openContextMenu(e, title, entries) {
   menu.style.left = `${Math.min(e.clientX, innerWidth - width - 8)}px`;
   menu.style.top = `${Math.min(e.clientY, innerHeight - height - 8)}px`;
 }
+
+// ── 명령 노드 ───────────────────────────────────────────────────
+const commandById = (id) => (state.commands ?? []).find((c) => c.id === id);
+const nodeTitle = (id) => (sessionById(id) ?? commandById(id))?.title ?? "?";
+const COMMAND_STATE = { idle: "대기", running: "실행 중", success: "성공", error: "실패" };
+const shellLabel = (id) => (state.shells ?? []).find((s) => s.id === id)?.label ?? id;
+const seconds = (ms) => `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}초`;
+
+async function loadCommands(projectPath = state.project) {
+  if (!projectPath) return;
+  try {
+    const { shells, commands } = await api("GET", `/api/commands?path=${encodeURIComponent(projectPath)}`);
+    if (!samePath(projectPath, state.project)) return;
+    state.shells = shells;
+    state.commands = commands;
+    state.commandsProject = projectPath;
+  } catch {
+    return;
+  }
+  if (state.view === "project") renderGraph();
+  if ($("command-dialog").open) renderCommandRun();
+}
+
+function commandNode(c) {
+  const running = c.state === "running";
+  const run = c.lastRun;
+  const foot = running ? `실행 중 · ${firstLine(c.live?.tail?.split(/\r?\n/).at(-1) ?? "") || "출력 기다리는 중"}`
+    : run ? `종료 ${run.exitCode}${run.timedOut ? " (시간 초과)" : ""} · ${seconds(run.durationMs)} · ${timeAgo(run.startedAt)}` : "아직 실행하지 않음";
+  return el("div", { class: `gcmd ${c.state}`, "data-id": c.id, title: `${c.title}\n${c.command}\n\n누르면 편집, ● 손잡이를 끌어 다음 세션·명령에 잇습니다.` },
+    el("div", { class: "gcard-top" },
+      el("span", { class: "pill cmd" }, "명령"),
+      el("span", { class: "gcmd-shell" }, shellLabel(c.shell)),
+      el("span", { class: `pill cmd-${c.state}` }, COMMAND_STATE[c.state] ?? c.state)),
+    el("div", { class: "gcard-title" }, c.title),
+    el("div", { class: "gcmd-code mono" }, firstLine(c.command)),
+    el("div", { class: "gcmd-foot" },
+      el("span", { class: "gcmd-result" }, foot),
+      el("button", {
+        type: "button",
+        class: `gcmd-btn${running ? " stop" : ""}`,
+        title: running ? "중지" : "지금 실행",
+        onclick: () => (running ? stopCommand(c) : runCommand(c)),
+      }, running ? "■" : "▶")),
+    el("span", { class: "gcard-handle", title: "끌어서 다음 세션이나 명령에 연결" }));
+}
+
+async function runCommand(c) {
+  try {
+    await api("POST", `/api/commands/${c.id}/run`);
+  } catch (err) {
+    alert(err.message);
+  }
+  loadCommands();
+}
+
+async function stopCommand(c) {
+  await api("POST", `/api/commands/${c.id}/stop`).catch((err) => alert(err.message));
+  loadCommands();
+}
+
+async function removeCommand(c) {
+  if (!confirm(`명령 노드 "${c.title}"을(를) 삭제할까요? 이 노드에 이어진 연결도 지웁니다.`)) return;
+  try {
+    await api("DELETE", `/api/commands/${c.id}`);
+  } catch (err) {
+    alert(err.message);
+  }
+  await Promise.all([loadCommands(), loadLinks()]);
+}
+
+// cmd가 없으면 새로 만든다. pos는 새 노드를 놓을 자리.
+function openCommandDialog(cmd, pos = null) {
+  state.editingCommand = { id: cmd?.id ?? null, pos };
+  const shells = state.shells ?? [{ id: "powershell", label: "PowerShell" }];
+  $("command-heading").textContent = cmd ? `명령 ${cmd.title}` : "새 명령";
+  $("command-title").value = cmd?.title ?? "";
+  $("command-shell").replaceChildren(...shells.map((s) => el("option", { value: s.id }, s.label)));
+  $("command-shell").value = cmd?.shell ?? shells[0].id;
+  $("command-cwd").value = cmd?.cwdMode ?? "source";
+  $("command-timeout").value = cmd?.timeoutSec ?? 600;
+  $("command-text").value = cmd?.command ?? "";
+  $("command-prompt").value = "";
+  $("command-explain").textContent = "";
+  $("command-error").textContent = "";
+  $("command-delete").hidden = !cmd;
+  $("command-run").hidden = !cmd;
+  renderCommandRun();
+  $("command-dialog").showModal();
+}
+
+// 편집 창 아래쪽의 실행 결과(실행 중이면 지금까지의 출력)
+function renderCommandRun() {
+  const cmd = commandById(state.editingCommand?.id);
+  const run = cmd?.lastRun;
+  const box = $("command-last");
+  if (!cmd || (!run && cmd.state !== "running")) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+  const running = cmd.state === "running";
+  $("command-last-meta").textContent = running
+    ? `실행 중 · ${cmd.live?.cwd ?? ""}`
+    : `${run.ok ? "성공" : "실패"} · 종료 코드 ${run.exitCode}${run.timedOut ? " (시간 초과)" : ""}${run.stopped ? " (중지함)" : ""} · ${seconds(run.durationMs)} · ${timeAgo(run.startedAt)}${run.originTitle ? ` · ${run.originTitle}에서` : ""}\n${run.cwd}`;
+  $("command-last-meta").className = `hint ${running ? "" : run.ok ? "ok-text" : "error"}`;
+  $("command-output").textContent = (running ? cmd.live?.tail : run.tail) || "(출력 없음)";
+  $("command-run").textContent = running ? "중지" : "지금 실행";
+}
+
+// 적은 설명으로 명령을 만든다. 제목이 비어 있으면 제목도 채운다.
+$("command-generate").addEventListener("click", async () => {
+  const prompt = $("command-prompt").value.trim();
+  if (!prompt) return $("command-prompt").focus();
+  const button = $("command-generate");
+  button.disabled = true;
+  button.textContent = "만드는 중…";
+  $("command-error").textContent = "";
+  $("command-explain").textContent = "";
+  try {
+    const made = await api("POST", "/api/commands/generate", { projectPath: state.project, prompt, shell: $("command-shell").value });
+    $("command-text").value = made.command;
+    if (!$("command-title").value.trim()) $("command-title").value = made.title;
+    $("command-explain").textContent = made.explanation ? `만든 명령: ${made.explanation} · 실행하기 전에 한번 확인하세요.` : "실행하기 전에 한번 확인하세요.";
+  } catch (err) {
+    $("command-error").textContent = err.message;
+  } finally {
+    button.disabled = false;
+    button.textContent = "명령 만들기";
+  }
+});
+$("command-prompt").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.isComposing) {
+    e.preventDefault();
+    $("command-generate").click();
+  }
+});
+
+$("command-form").addEventListener("submit", async (e) => {
+  const action = e.submitter?.value;
+  if (action === "cancel") return;
+  e.preventDefault();
+  const { id, pos } = state.editingCommand;
+  const cmd = commandById(id);
+  if (action === "delete") {
+    $("command-dialog").close();
+    return removeCommand(cmd);
+  }
+  if (action === "run") return cmd.state === "running" ? stopCommand(cmd) : runCommand(cmd);
+  const body = {
+    title: $("command-title").value,
+    command: $("command-text").value,
+    shell: $("command-shell").value,
+    cwdMode: $("command-cwd").value,
+    timeoutSec: Number($("command-timeout").value),
+  };
+  try {
+    if (cmd) await api("PUT", `/api/commands/${cmd.id}`, body);
+    else await api("POST", "/api/commands", { ...body, projectPath: state.project, pos });
+    $("command-dialog").close();
+    await loadCommands();
+  } catch (err) {
+    $("command-error").textContent = err.message;
+  }
+});
 
 // ── 스킬 ────────────────────────────────────────────────────────
 const skillByName = (name) => (state.skills ?? []).find((k) => k.name === name);
@@ -883,7 +1072,7 @@ function drawEdges() {
     while (placed.some((p) => Math.abs(p.x - mid.x) < p.halfWidth + halfWidth && Math.abs(p.y - mid.y) < 22)) mid.y += 22;
     placed.push({ ...mid, halfWidth });
     const path = document.createElementNS(SVG_NS, "path");
-    const live = sessionById(link.from)?.state === "running";
+    const live = (sessionById(link.from) ?? commandById(link.from))?.state === "running";
     path.setAttribute("d", d);
     path.setAttribute("class", `edge${link.enabled ? "" : " off"}${live ? " live" : ""}${link.pending ? " gated" : ""}`);
     path.setAttribute("marker-end", "url(#arrow)");
@@ -914,8 +1103,8 @@ function gateLabel(link) {
     }
     loadLinks();
   };
-  const from = sessionById(link.from)?.title ?? "?";
-  const to = sessionById(link.to)?.title ?? "?";
+  const from = nodeTitle(link.from);
+  const to = nodeTitle(link.to);
   return el("div", { class: "edge-label gate-pending", "data-link": link.id, title: `${from} → ${to}\n${link.pending.preview || "(답변 없음)"}` },
     el("span", { class: "gate-text" }, "승인 대기"),
     el("button", { type: "button", class: "gate-btn ok", title: "승인하고 넘기기", onclick: (e) => decide(e, "approve") }, "✓"),
@@ -925,10 +1114,10 @@ function gateLabel(link) {
 function notifyGate(link) {
   if (!("Notification" in window) || Notification.permission !== "granted" || document.hasFocus()) return;
   const n = new Notification("넘기기 승인을 기다립니다", {
-    body: `${sessionById(link.from)?.title ?? "?"} → ${sessionById(link.to)?.title ?? "?"}`,
+    body: `${nodeTitle(link.from)} → ${nodeTitle(link.to)}`,
     tag: `gate-${link.id}`,
   });
-  const s = sessionById(link.from);
+  const s = sessionById(link.from) ?? commandById(link.from);
   n.onclick = () => {
     window.focus();
     if (s?.projectPath) goProject(s.projectPath);
@@ -955,11 +1144,13 @@ function onGraphPointerDown(e) {
     openLinkDialog(state.links.find((l) => l.id === label.dataset.link));
     return;
   }
-  const card = e.target.closest(".gcard, .gskill");
-  if (!card || e.target.closest(".gcard-restart")) return; // 다시 시작 버튼은 카드 열기·끌기와 따로 동작한다.
+  const card = e.target.closest(".gcard, .gskill, .gcmd");
+  // 카드 안의 버튼(다시 시작, 명령 실행·중지)은 카드 열기·끌기와 따로 동작한다.
+  if (!card || e.target.closest(".gcard-restart, .gcmd-btn")) return;
   e.preventDefault();
   const id = card.dataset.id;
   const skill = isSkillNode(id) ? skillByName(id.slice(SKILL_PREFIX.length)) : null;
+  const cmd = commandById(id);
   const start = canvasPoint(e);
   const origin = { ...g.pos.get(id) };
   const connecting = e.target.classList.contains("gcard-handle");
@@ -999,19 +1190,28 @@ function onGraphPointerDown(e) {
     g.canvas.classList.remove("connecting");
     temp?.remove();
     if (!moved) {
-      if (!connecting) skill ? openSkillDialog(skill) : sessionOpener(id)(ev);
+      if (connecting) return;
+      if (skill) openSkillDialog(skill);
+      else if (cmd) openCommandDialog(cmd);
+      else sessionOpener(id)(ev);
       return;
     }
     if (connecting) {
-      // 스킬과 세션을 이으면 그 세션이 스킬을 쓴다. 세션끼리 이으면 넘기기 연결을 만든다.
-      const targetId = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".gcard, .gskill")?.dataset.id;
+      // 스킬과 세션을 이으면 그 세션이 스킬을 쓴다. 세션·명령 노드끼리 이으면 넘기기 연결을 만든다.
+      const targetId = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".gcard, .gskill, .gcmd")?.dataset.id;
       if (!targetId || targetId === id) return;
-      if (isSkillNode(id) && !isSkillNode(targetId)) attachSkill(targetId, id.slice(SKILL_PREFIX.length));
-      else if (!isSkillNode(id) && isSkillNode(targetId)) attachSkill(id, targetId.slice(SKILL_PREFIX.length));
-      else if (!isSkillNode(id)) openLinkDialog(null, id, targetId);
+      const isSession = (x) => !isSkillNode(x) && !isCommandNode(x);
+      if (isSkillNode(id) && isSession(targetId)) attachSkill(targetId, id.slice(SKILL_PREFIX.length));
+      else if (isSession(id) && isSkillNode(targetId)) attachSkill(id, targetId.slice(SKILL_PREFIX.length));
+      else if (!isSkillNode(id) && !isSkillNode(targetId)) openLinkDialog(null, id, targetId);
       return;
     }
     const p = g.pos.get(id);
+    if (cmd) {
+      cmd.pos = { x: Math.round(p.x), y: Math.round(p.y) };
+      api("PUT", `/api/commands/${cmd.id}`, { pos: cmd.pos }).catch((err) => alert(err.message));
+      return;
+    }
     if (skill) {
       skill.pos = { x: Math.round(p.x), y: Math.round(p.y) };
       api("PUT", `/api/skills/${skill.name}`, { projectPath: state.project, pos: skill.pos }).catch((err) => alert(err.message));
@@ -1035,10 +1235,13 @@ $("p-relayout").addEventListener("click", async () => {
   for (const s of placed) s.graphPos = null;
   const placedSkills = (state.skills ?? []).filter((k) => k.pos);
   for (const k of placedSkills) k.pos = null;
+  const placedCommands = (state.commands ?? []).filter((c) => c.pos);
+  for (const c of placedCommands) c.pos = null;
   renderGraph();
   await Promise.all([
     ...placed.map((s) => api("PUT", `/api/sessions/${s.id}`, { graphPos: null }).catch(() => {})),
     ...placedSkills.map((k) => api("PUT", `/api/skills/${k.name}`, { projectPath: state.project, pos: null }).catch(() => {})),
+    ...placedCommands.map((c) => api("PUT", `/api/commands/${c.id}`, { pos: null }).catch(() => {})),
   ]);
 });
 
@@ -1046,7 +1249,7 @@ $("p-relayout").addEventListener("click", async () => {
 // link가 없으면 from → to 새 연결을 만든다.
 function openLinkDialog(link, from = link?.from, to = link?.to) {
   state.editingLink = { link, from, to };
-  $("link-names").textContent = `${sessionById(from)?.title ?? "?"} → ${sessionById(to)?.title ?? "?"}`;
+  $("link-names").textContent = `${nodeTitle(from)} → ${nodeTitle(to)}`;
   $("link-when").value = link?.when ?? "success";
   $("link-keyword").value = link?.keyword ?? "";
   $("link-note").value = link?.note ?? "";
@@ -1261,24 +1464,22 @@ function renderState() {
 }
 
 // ── 실행 중에 보내기 ────────────────────────────────────────────
-// Claude는 Enter로 지금 작업에 붙이고(CLI가 다음 도구 실행 사이에 읽는다), Tab이나 "대기열에 추가"로 끝난 뒤 보낸다.
-// 실행 중인 작업에 붙일 수 없는 Codex는 대기열에만 넣는다.
-function composerMode(s, submitter) {
-  if (s?.state !== "running") return "send";
-  return submitter === "queue" || !s.canInject ? "queue" : "steer";
+// 실행 중에 보낸 요청은 항상 대기열에 넣고, 끝나면 차례로 보낸다.
+// Claude는 대기열 항목의 "붙이기"로 지금 작업에 끼워 넣을 수 있다(CLI가 다음 도구 실행 사이에 읽는다).
+function composerMode(s) {
+  return s?.state === "running" ? "queue" : "send";
 }
 
 function renderComposer(prefix, s) {
   const running = s?.state === "running";
-  const steer = running && s.canInject;
   const send = $(`${prefix}-send`);
   send.disabled = false;
-  send.textContent = !running ? "보내기" : steer ? "지금 붙이기" : "대기열에 추가";
-  send.title = !running ? "" : steer ? "지금 하는 작업에 이 요청을 붙입니다 (Enter)" : "지금 작업이 끝나면 보냅니다 (Enter)";
-  $(`${prefix}-queue-btn`).hidden = !steer;
+  send.textContent = running ? "대기열에 추가" : "보내기";
+  send.title = running ? "지금 작업이 끝나면 보냅니다 (Enter)" : "";
+  $(`${prefix}-queue-btn`).hidden = true;
   $(`${prefix}-prompt`).placeholder = !running
     ? (prefix === "c" ? "메시지를 입력하세요" : "요청을 입력하세요") + " · Enter 보내기, Shift+Enter 줄바꿈"
-    : steer ? "작업 중 · Enter 지금 작업에 붙이기, Tab 대기열에 추가" : "작업 중 · Enter 대기열에 추가 (끝나면 차례로 보냅니다)";
+    : `작업 중 · Enter 대기열에 추가${s.canInject ? " (대기열에서 '붙이기'로 지금 작업에 넣을 수 있습니다)" : " (끝나면 차례로 보냅니다)"}`;
   renderQueue(prefix, s);
 }
 
@@ -1299,7 +1500,7 @@ function renderQueue(prefix, s) {
   $(`${prefix}-queue`).replaceChildren(...items.map((item) => el("li", { class: "queue-item" },
     el("span", { class: "queue-tag" }, item.user ? "대기" : `↳ ${item.fromTitle ?? "넘어온 작업"}`),
     el("span", { class: "queue-text", title: item.text }, firstLine(item.text)),
-    running && s.canInject && item.user ? el("button", { type: "button", class: "ghost sm", onclick: () => act(item, "steer") }, "지금 붙이기") : null,
+    running && s.canInject && item.user ? el("button", { type: "button", class: "ghost sm", title: "지금 하는 작업에 이 요청을 붙입니다", onclick: () => act(item, "steer") }, "붙이기") : null,
     running ? null : el("button", { type: "button", class: "ghost sm", onclick: () => act(item, "send") }, "보내기"),
     el("button", { type: "button", class: "ghost sm danger", title: "대기열에서 지우기", onclick: () => act(item, "delete") }, "×"))));
 }
@@ -1316,16 +1517,13 @@ async function refreshQueue(sessionId) {
   renderComposer(state.view === "chat" ? "c" : "s", state.current);
 }
 
-// Enter: 보내기(실행 중이면 붙이기 또는 대기열), Tab: 실행 중이면 대기열에 추가, Shift+Enter: 줄바꿈. 한글 조합 중인 키는 무시한다.
+// Enter: 보내기(실행 중이면 대기열에 추가), Shift+Enter: 줄바꿈. 한글 조합 중인 키는 무시한다.
 function composerKeys(prefix) {
   $(`${prefix}-prompt`).addEventListener("keydown", (e) => {
     if (e.isComposing) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       $(`${prefix}-form`).requestSubmit($(`${prefix}-send`));
-    } else if (e.key === "Tab" && !e.shiftKey && state.current?.state === "running" && e.target.value.trim()) {
-      e.preventDefault();
-      $(`${prefix}-form`).requestSubmit($(`${prefix}-queue-btn`).hidden ? $(`${prefix}-send`) : $(`${prefix}-queue-btn`));
     }
   });
 }
@@ -1393,6 +1591,17 @@ function renderQuestion(ev) {
     el("div", { class: "plan-head" }, el("b", {}, "질문"), el("span", { class: `pill q-${ev.status}` }, QUESTION_STATUS[ev.status] ?? ev.status)),
     ev.error ? el("div", { class: "plan-error" }, ev.error) : null);
   if (!ev.questions) return node;
+  // 답했거나 지나간 질문은 버튼 없이 질문과 고른 답만 글로 남긴다.
+  if (!pending) {
+    ev.questions.forEach((q, i) => {
+      const a = ev.answers?.[i];
+      const answer = [...(a?.selected ?? []), a?.text].filter(Boolean).join(", ");
+      node.append(el("div", { class: "q-item done" },
+        el("div", { class: "q-question" }, q.header ? el("span", { class: "q-header" }, q.header) : null, q.question),
+        el("div", { class: "q-answer" }, answer ? `→ ${answer}` : el("span", { class: "muted" }, "답하지 않음"))));
+    });
+    return node;
+  }
 
   const picks = ev.questions.map((_, i) => new Set(ev.answers?.[i]?.selected ?? []));
   const texts = [];
@@ -1543,7 +1752,7 @@ $("s-form").addEventListener("submit", async (e) => {
   const s = state.current;
   if (!prompt || !s) return;
   try {
-    const result = await api("POST", `/api/sessions/${s.id}/messages`, { prompt, mode: composerMode(s, e.submitter?.value) });
+    const result = await api("POST", `/api/sessions/${s.id}/messages`, { prompt, mode: composerMode(s) });
     $("s-prompt").value = "";
     if (result.queued) refreshQueue(s.id);
   } catch (err) {
@@ -1599,14 +1808,8 @@ $("s-restart").addEventListener("click", () => restartSession());
 
 $("s-delete").addEventListener("click", async () => {
   const s = state.current;
-  const note = s.imported ? "\n\n원래 Claude Code·Codex 기록은 지워지지 않습니다." : "";
-  if (!confirm(`"${s.title}" 세션 기록을 삭제할까요?${note}`)) return;
-  let removeWorktree = false;
-  if (s.worktree) {
-    removeWorktree = confirm(
-      `작업 폴더도 지울까요?\n${s.cwd}\n\n커밋하지 않은 변경이 있으면 지우지 않고 중단합니다. 브랜치 ${s.worktree.branch}는 남습니다.`);
-  }
-  if (!(await deleteSession(s, { removeWorktree }))) return;
+  const options = askDeleteOptions(s);
+  if (!options || !(await deleteSession(s, options))) return;
   if (POPUP) return window.close(); // 별도 창은 보여 줄 세션이 없어졌으니 닫는다.
   await loadSessions();
   if (s.projectPath) await goProject(s.projectPath);
@@ -1675,14 +1878,8 @@ async function recreateSession(s) {
 
 // 확인을 받고 지운다. 보고 있던 세션이면 프로젝트(또는 채팅·대시보드) 화면으로 돌아간다.
 async function confirmDeleteSession(s) {
-  const note = s.imported ? "\n\n원래 Claude Code·Codex 기록은 지워지지 않습니다." : "";
-  if (!confirm(`"${s.title}" ${s.chat ? "채팅" : "세션 기록"}을 삭제할까요?${note}`)) return;
-  let removeWorktree = false;
-  if (s.worktree) {
-    removeWorktree = confirm(
-      `작업 폴더도 지울까요?\n${s.cwd}\n\n커밋하지 않은 변경이 있으면 지우지 않고 중단합니다. 브랜치 ${s.worktree.branch}는 남습니다.`);
-  }
-  if (!(await deleteSession(s, { removeWorktree }))) return;
+  const options = askDeleteOptions(s);
+  if (!options || !(await deleteSession(s, options))) return;
   await loadSessions();
   if (state.current?.id !== s.id) return;
   if (s.chat) openChat();
@@ -1690,20 +1887,40 @@ async function confirmDeleteSession(s) {
   else goDashboard();
 }
 
+// 삭제 확인과 함께 작업 폴더·CLI 기록 파일을 어떻게 할지 묻는다. 취소하면 null.
+// CLI 기록은 지우지 않아도 프로젝트 화면 목록에서 숨겨지므로 "가져오기"로 다시 뜨지 않는다.
+function askDeleteOptions(s) {
+  if (!confirm(`"${s.title}" ${s.chat ? "채팅" : "세션"}을 삭제할까요?`)) return null;
+  let removeWorktree = false;
+  if (s.worktree) {
+    removeWorktree = confirm(
+      `작업 폴더도 지울까요?\n${s.cwd}\n\n커밋하지 않은 변경이 있으면 지우지 않고 중단합니다. 브랜치 ${s.worktree.branch}는 남습니다.`);
+  }
+  let deleteRecords = false;
+  if (!s.chat && (s.agentSessionId || s.cliSessionIds?.length)) {
+    const origin = s.imported ? "\n이 세션은 Claude Code·Codex에서 가져온 것이라, 지우면 그쪽에서도 대화를 이어 갈 수 없습니다." : "";
+    deleteRecords = confirm(
+      `Claude Code·Codex에 남은 대화 기록 파일도 지울까요?${origin}\n\n확인: 기록 파일까지 지웁니다(되돌릴 수 없음).\n취소: 파일은 남기고 프로젝트 화면의 기록 목록에서만 숨깁니다.`);
+  }
+  return { removeWorktree, deleteRecords };
+}
+
 // 세션을 지운다. 실행 중으로 멈춰 있거나 작업 폴더를 못 지우면 그 자리에서 어떻게 할지 묻는다. 지웠으면 true.
-async function deleteSession(s, { removeWorktree = false, force = false } = {}) {
+async function deleteSession(s, { removeWorktree = false, deleteRecords = false, force = false } = {}) {
   const query = new URLSearchParams();
   if (removeWorktree) query.set("removeWorktree", "1");
+  if (deleteRecords) query.set("records", "delete");
   if (force) query.set("force", "1");
   try {
-    await api("DELETE", `/api/sessions/${s.id}?${query}`);
+    const { records } = await api("DELETE", `/api/sessions/${s.id}?${query}`);
+    if (records?.errors.length) alert(`세션은 지웠지만 일부 기록 파일을 지우지 못했습니다(목록에서는 숨겼습니다).\n\n${records.errors.join("\n")}`);
     return true;
   } catch (err) {
     if (err.reason === "running" && confirm("실행 중인 세션입니다. 실행을 멈추고 삭제할까요?")) {
-      return deleteSession(s, { removeWorktree, force: true });
+      return deleteSession(s, { removeWorktree, deleteRecords, force: true });
     }
-    if (err.reason === "worktree" && confirm(`${err.message}\n\n작업 폴더는 남겨 두고 세션 기록만 삭제할까요?`)) {
-      return deleteSession(s, { force });
+    if (err.reason === "worktree" && confirm(`${err.message}\n\n작업 폴더는 남겨 두고 세션만 삭제할까요?`)) {
+      return deleteSession(s, { deleteRecords, force });
     }
     if (!["running", "worktree"].includes(err.reason)) alert(err.message);
     return false;
@@ -1919,7 +2136,7 @@ $("c-form").addEventListener("submit", async (e) => {
       const { agent, model, effort } = state.chatDraft;
       s = await api("POST", "/api/sessions", { chat: true, agent, model, effort, title: chatTitle(prompt) });
     }
-    const result = await api("POST", `/api/sessions/${s.id}/messages`, { prompt, mode: composerMode(state.current, e.submitter?.value) });
+    const result = await api("POST", `/api/sessions/${s.id}/messages`, { prompt, mode: composerMode(state.current) });
     $("c-prompt").value = "";
     if (result.queued) refreshQueue(s.id);
     if (!state.current) {
@@ -2259,6 +2476,7 @@ function connectStream() {
   });
   source.addEventListener("sessions", loadSessions);
   source.addEventListener("links", loadLinks);
+  source.addEventListener("commands", () => state.view === "project" && loadCommands());
   source.addEventListener("skills", (e) => {
     if (samePath(JSON.parse(e.data).projectPath, state.project)) loadSkills();
   });

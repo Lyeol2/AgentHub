@@ -81,5 +81,10 @@ export function withSkills(session, input, skills = listSkills(session.projectPa
   const attached = (session.skills ?? []).map((name) => skills.find((s) => s.name === name)).filter(Boolean);
   if (!attached.length) return changed ? `[이 세션에 이은 스킬이 모두 해제되었다]\n\n${input}` : input;
   const lines = attached.map((s) => `- ${s.name}: ${s.description} (파일: ${s.file})`);
-  return `[이 세션에 이은 스킬]\n아래 작업을 할 때는 먼저 해당 SKILL.md를 읽고 그 지침을 따른다. 관련 없는 작업에는 읽지 않아도 된다.\n${lines.join("\n")}\n\n${input}`;
+  // Claude는 .claude/skills를 Skill 도구로 불러올 수 있다. 작업 폴더를 분리한 세션에서 커밋 전 스킬처럼
+  // Skill 도구에 없을 때만 파일을 읽게 한다. Codex는 자체 스킬도 SKILL.md를 파일로 읽는 방식이라 경로만 준다.
+  const how = session.agent === "claude"
+    ? "아래 작업을 할 때는 먼저 Skill 도구로 해당 스킬을 불러 그 지침을 따른다. Skill 도구에 없으면 적힌 SKILL.md 파일을 읽는다."
+    : "아래 작업을 할 때는 먼저 해당 SKILL.md를 읽고 그 지침을 따른다.";
+  return `[이 세션에 이은 스킬]\n${how} 관련 없는 작업에는 쓰지 않아도 된다.\n${lines.join("\n")}\n\n${input}`;
 }

@@ -614,3 +614,40 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .edge-label.skill-label { color: var(--ok); border-color: rgb(76 194 138 / .45); }
 .edge-label.skill-label:hover { color: var(--danger); border-color: var(--danger); text-decoration: line-through; }
 #skill-body { font-family: var(--mono); font-size: 12.5px; }
+
+/* 답했거나 지나간 질문: 버튼 없이 고른 답만 */
+.q-item.done { gap: 2px; }
+.q-answer { font-size: 12.5px; color: var(--text); }
+
+/* ── 흐름 그래프의 명령 노드 ──────────────────────────────── */
+.gcmd {
+  position: absolute; width: 230px; height: 108px; z-index: 1;
+  display: grid; grid-template-rows: auto auto auto 1fr; gap: 3px;
+  padding: 9px 12px; border-radius: var(--radius); cursor: pointer; user-select: none; touch-action: none;
+  background: var(--code-bg); border: 1px solid rgb(229 180 75 / .5);
+  box-shadow: 0 4px 14px rgb(0 0 0 / .25); transition: border-color .12s, box-shadow .12s;
+}
+.gcmd:hover { border-color: var(--warn); }
+.gcmd.dragging { cursor: grabbing; z-index: 3; }
+.gcmd.running { box-shadow: 0 0 0 3px rgb(229 180 75 / .2); }
+.gcmd.success { border-color: rgb(76 194 138 / .6); }
+.gcmd.error { border-color: rgb(240 100 100 / .6); }
+.gcmd .gcard-handle { border-color: var(--warn); }
+.gcmd .gcard-handle:hover { background: var(--warn); }
+.gcmd-shell { margin-right: auto; margin-left: 6px; font-size: 10.5px; color: var(--faint); }
+.gcmd-code { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gcmd-foot { display: flex; align-items: center; gap: 6px; min-width: 0; align-self: end; }
+.gcmd-result { flex: 1; min-width: 0; font-size: 11px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gcmd-btn { flex: none; padding: 0 8px; font-size: 11px; line-height: 20px; color: var(--ok); border-color: rgb(76 194 138 / .45); }
+.gcmd-btn.stop { color: var(--danger); border-color: rgb(240 100 100 / .45); }
+.pill.cmd { color: var(--warn); border-color: rgb(229 180 75 / .5); background: rgb(229 180 75 / .1); font-size: 10px; padding: 0 6px; }
+.pill.cmd-running { color: var(--warn); border-color: rgb(229 180 75 / .5); }
+.pill.cmd-success { color: var(--ok); border-color: rgb(76 194 138 / .45); }
+.pill.cmd-error { color: var(--danger); border-color: rgb(240 100 100 / .45); }
+.graph-canvas.connecting .gcmd:hover, .graph-canvas.connecting .gskill:hover { box-shadow: 0 0 0 3px rgb(76 194 138 / .2); }
+.command-gen { display: flex; gap: 8px; }
+.command-gen button { flex: none; }
+.three { display: grid; grid-template-columns: 1fr 1.3fr 0.8fr; gap: 10px; }
+#command-text { font-family: var(--mono); font-size: 12.5px; }
+.command-last pre { max-height: 260px; margin: 0; }
+.ok-text { color: var(--ok); }

@@ -4,12 +4,12 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { ROOT, CHAT_DIR, loadConfig, saveConfig } from "./config.mjs";
-import { locateCli, cliVersion, cliAuth, openLogin } from "./cli.mjs";
+import { locateCli, cliVersion, cliAuth, openLogin, spawnCli } from "./cli.mjs";
 import { SessionStore, summary } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
 import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince } from "./git.mjs";
-import { discoverProjects, discoverSessions, loadHistory } from "./discover.mjs";
-import { readLimits, recordClaudeLimit } from "./limits.mjs";
+import { discoverProjects, discoverSessions, loadHistory, deleteSessionRecords } from "./discover.mjs";
+import { readLimits, recordClaudeLimit, refreshClaudeUsage } from "./limits.mjs";
 import { ROLE_MAX, withRole } from "./role.mjs";
 import { LinkStore } from "./links.mjs";
 import { Chain, CONDITIONS, lastAnswer } from "./chain.mjs";
@@ -17,6 +17,7 @@ import { orchestratorInput, extractPlan, normalizePlan } from "./orchestrator.mj
 import { HUB_FILE, HUB_TEMPLATE, hubFilePath, readHubFile } from "./hubfile.mjs";
 import { QUESTION_GUIDE, extractQuestions, answerPrompt, hasAnswer } from "./question.mjs";
 import { listSkills, checkSkill, writeSkill, deleteSkill, withSkills, skillsDir } from "./skills.mjs";
+import { CommandStore, isCommandId, newCommandId, checkCommand, shells, generatePrompt, parseGenerated } from "./commands.mjs";
 
 const config = loadConfig();
 const port = Number(process.env.PORT ?? config.port);
@@ -49,10 +50,58 @@ const cliPaths = () => ({
   claude: locateCli("claude", config.cli.claude),
   codex: locateCli("codex", config.cli.codex),
 });
+const commands = new CommandStore();
 const chain = new Chain({
-  store, runner, links, cliPaths, compose: composeInput,
-  notify: (kind, sessionId) => (kind === "links" ? broadcast("links", {}) : broadcast("queue", { sessionId })),
+  store, runner, links, cliPaths, compose: composeInput, commands,
+  notify: (kind, sessionId) => {
+    if (kind === "links") broadcast("links", {});
+    else if (kind === "commands") broadcast("commands", {});
+    else broadcast("queue", { sessionId });
+  },
 });
+
+function getCommand(id) {
+  const command = commands.get(id);
+  if (!command) throw new HttpError(404, "명령 노드가 없습니다.");
+  return command;
+}
+
+// 하고 싶은 일을 받아 Claude CLI(없으면 Codex)로 셸 명령을 만든다. 파일은 읽기만 하고, 기록은 남기지 않는다.
+function generateCommand({ prompt, shell, projectPath }) {
+  const paths = cliPaths();
+  const agent = paths.claude ? "claude" : paths.codex ? "codex" : null;
+  if (!agent) throw new HttpError(400, "명령을 만들 Claude나 Codex CLI를 찾지 못했습니다.");
+  const args = agent === "claude"
+    ? ["-p", "--output-format", "json", "--model", "haiku", "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep",
+      "--permission-mode", "default", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
+    : ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--cd", projectPath, "-"];
+  return new Promise((resolve, reject) => {
+    const child = spawnCli(paths[agent], args, { cwd: projectPath, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env, NO_COLOR: "1" } });
+    let out = "";
+    let err = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
+    const timer = setTimeout(() => child.kill(), 120_000);
+    child.on("error", (e) => reject(new HttpError(500, `명령 만들기 실패: ${e.message}`)));
+    child.on("close", () => {
+      clearTimeout(timer);
+      try {
+        // Claude: { result }, Codex: 줄마다 이벤트(마지막 agent_message)
+        const text = agent === "claude"
+          ? JSON.parse(out).result ?? ""
+          : out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
+            .filter((m) => m?.item?.type === "agent_message").map((m) => m.item.text).at(-1) ?? "";
+        resolve(parseGenerated(text));
+      } catch (e) {
+        reject(new HttpError(500, e instanceof SyntaxError ? `명령 만들기 실패: ${err.trim().slice(-300) || "CLI 응답을 읽지 못했습니다."}` : e.message));
+      }
+    });
+    child.stdin.on("error", () => {});
+    child.stdin.end(generatePrompt({ prompt, shell, projectPath }));
+  });
+}
 
 // ── 보안: 로컬 전용 ─────────────────────────────────────────────
 // 127.0.0.1에만 열고, Host 헤더와 사용자 정의 헤더를 확인해 다른 사이트의 요청(DNS 리바인딩, CSRF)을 막는다.
@@ -183,6 +232,17 @@ function ensureProject(projectPath) {
 }
 
 const projectSessions = (projectPath) => store.list().filter((s) => samePath(s.projectPath, projectPath));
+
+// 이 세션이 쓴 Claude Code·Codex 대화 ID 전부(다시 시작하기 전 것 포함)
+const cliSessionIds = (session) => [...new Set([...(session.cliSessionIds ?? []), session.agentSessionId].filter(Boolean))];
+
+// 프로젝트 화면의 기록 목록에서 숨긴다. 기록 파일은 그대로 둔다.
+function hideRecords(ids) {
+  const fresh = ids.filter((id) => !config.hiddenSessions.includes(id));
+  if (!fresh.length) return;
+  config.hiddenSessions.push(...fresh);
+  saveConfig(config);
+}
 
 // CLI에 실제로 넘길 내용. 오케스트레이터에는 지휘 규칙과 세션 상태를 함께 넣는다.
 function composeInput(session, prompt) {
@@ -469,7 +529,10 @@ async function handleApi(req, res, url) {
     return send(res, 200, { ok: true });
   }
 
-  if (parts[0] === "limits" && method === "GET") return send(res, 200, readLimits());
+  if (parts[0] === "limits" && method === "GET") {
+    await refreshClaudeUsage({ fresh: url.searchParams.get("fresh") === "1" });
+    return send(res, 200, readLimits());
+  }
 
   if (parts[0] === "update") {
     if (method === "GET" && parts.length === 1) {
@@ -523,7 +586,8 @@ async function handleApi(req, res, url) {
       const projectPath = url.searchParams.get("path");
       if (!projectPath || !fs.existsSync(projectPath)) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
       const project = { path: path.resolve(projectPath) };
-      const linked = new Map(store.list().filter((s) => s.agentSessionId).map((s) => [s.agentSessionId, s.id]));
+      // 다시 시작하기 전의 CLI 대화도 그 세션에 연결된 것으로 본다.
+      const linked = new Map(store.list().flatMap((s) => cliSessionIds(s).map((id) => [id, s.id])));
       const hidden = new Set(config.hiddenSessions);
       return send(res, 200, discoverSessions(project.path).map(({ file, ...found }) => ({
         ...found,
@@ -550,6 +614,69 @@ async function handleApi(req, res, url) {
 
   // 프로젝트의 AGENTHUB.md
   // 프로젝트 스킬(.claude/skills/<이름>/SKILL.md). 흐름 그래프의 스킬 노드 위치는 설정에 둔다.
+  // 명령 노드. 연결로 넘어오면 실행하고, 결과(종료 코드)에 따라 다음 연결로 넘긴다.
+  if (parts[0] === "commands") {
+    if (method === "GET" && parts.length === 1) {
+      const projectPath = url.searchParams.get("path");
+      return send(res, 200, { shells: shells(), commands: projectPath ? commands.list(projectPath) : [] });
+    }
+    const body = method === "DELETE" ? {} : await readJson(req);
+    const savePos = (cmd, pos) => {
+      if (pos === undefined) return;
+      cmd.pos = pos && Number.isFinite(pos.x) && Number.isFinite(pos.y) ? { x: Math.max(0, Math.round(pos.x)), y: Math.max(0, Math.round(pos.y)) } : null;
+    };
+    if (method === "POST" && parts[1] === "generate") {
+      const prompt = String(body.prompt ?? "").trim();
+      if (!prompt) throw new HttpError(400, "어떤 명령이 필요한지 적으세요.");
+      const project = ensureProject(body.projectPath);
+      return send(res, 200, await generateCommand({ prompt: prompt.slice(0, 4000), shell: body.shell ?? shells()[0].id, projectPath: project.path }));
+    }
+    if (method === "POST" && parts.length === 1) {
+      const project = ensureProject(body.projectPath);
+      let fields;
+      try {
+        fields = checkCommand(body);
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+      const cmd = { id: newCommandId(), projectPath: project.path, ...fields, state: "idle", lastRun: null, createdAt: new Date().toISOString() };
+      savePos(cmd, body.pos);
+      commands.add(cmd);
+      broadcast("commands", {});
+      return send(res, 200, cmd);
+    }
+    const cmd = getCommand(parts[1]);
+    if (method === "PUT" && parts.length === 2) {
+      // 위치만 옮길 때는 명령을 다시 검사하지 않는다.
+      const editing = ["title", "command", "shell", "cwdMode", "timeoutSec"].some((k) => body[k] !== undefined);
+      try {
+        if (editing) Object.assign(cmd, checkCommand(body, cmd));
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+      savePos(cmd, body.pos);
+      commands.update(cmd, {});
+      broadcast("commands", {});
+      return send(res, 200, cmd);
+    }
+    if (method === "DELETE" && parts.length === 2) {
+      chain.stopCommand(cmd);
+      commands.remove(cmd.id);
+      links.removeForSession(cmd.id);
+      broadcast("commands", {});
+      broadcast("links", {});
+      return send(res, 200, { ok: true });
+    }
+    // 직접 실행. 실행 폴더가 "보낸 세션"이면 이 노드로 들어오는 연결의 첫 세션 폴더를 쓴다.
+    if (method === "POST" && parts[2] === "run") {
+      if (chain.runs.has(cmd.id)) throw new HttpError(409, "이미 실행 중입니다.");
+      const origin = links.list().filter((l) => l.to === cmd.id).map((l) => store.get(l.from)).find(Boolean) ?? null;
+      chain.runCommand(cmd, { origin, depth: 0 });
+      return send(res, 200, cmd);
+    }
+    if (method === "POST" && parts[2] === "stop") return send(res, 200, { stopped: chain.stopCommand(cmd) });
+  }
+
   if (parts[0] === "skills") {
     const body = method === "GET" || method === "DELETE" ? {} : await readJson(req);
     const projectPath = url.searchParams.get("path") ?? body.projectPath;
@@ -647,8 +774,10 @@ async function handleApi(req, res, url) {
 
     if (parts.length === 1 && method === "POST") {
       const body = await readJson(req);
-      const from = getSession(body.from);
-      const to = getSession(body.to);
+      // 연결 끝은 세션이나 명령 노드다.
+      const endpoint = (id) => (isCommandId(id) ? getCommand(id) : getSession(id));
+      const from = endpoint(body.from);
+      const to = endpoint(body.to);
       if (from.chat || to.chat) throw new HttpError(400, "일반 채팅 세션은 연결할 수 없습니다.");
       if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");
       if (!samePath(from.projectPath, to.projectPath)) throw new HttpError(400, "같은 프로젝트의 세션끼리만 연결할 수 있습니다.");
@@ -723,6 +852,7 @@ async function handleApi(req, res, url) {
         worktree: null,
         baseCommit: git ? await headCommit(cwd) : null,
         agentSessionId: found.agentSessionId,
+        cliSessionIds: [found.agentSessionId],
         imported: true,
         state: "idle",
         createdAt: now,
@@ -926,6 +1056,7 @@ async function handleApi(req, res, url) {
         store.touch(other);
       }
       store.remove(session.id);
+      if (!session.chat) hideRecords(cliSessionIds(session)); // 지운 쪽의 CLI 대화가 "가져오기"로 다시 뜨지 않게
       broadcast("sessions", {});
       broadcast("links", {});
       return send(res, 200, summary(created));
@@ -955,9 +1086,17 @@ async function handleApi(req, res, url) {
         throw new HttpError(500, `세션 파일을 지우지 못했습니다: ${err.message}`);
       }
       links.removeForSession(session.id);
+      // 지운 세션의 Claude Code·Codex 기록이 프로젝트 화면에 "가져오기"로 다시 뜨지 않게 한다.
+      // records=delete면 기록 파일까지 지우고, 아니면 목록에서 숨기기만 한다.
+      let records = { deleted: 0, errors: [] };
+      if (!session.chat) {
+        const ids = cliSessionIds(session);
+        if (url.searchParams.get("records") === "delete") records = deleteSessionRecords(ids);
+        hideRecords(ids);
+      }
       broadcast("sessions", {});
       broadcast("links", {});
-      return send(res, 200, { ok: true });
+      return send(res, 200, { ok: true, records });
     }
   }
 

@@ -40,3 +40,11 @@ test("skills: 이은 스킬 안내는 새 대화와 바뀐 직후에만 붙인�
   assert.match(withSkills(s, "해", skills), /모두 해제/);
   assert.equal(withSkills(s, "해", skills), "해");
 });
+
+test("skills: Claude에는 Skill 도구로, Codex에는 파일로 읽게 안내한다", () => {
+  const skills = [{ name: "deploy", description: "배포할 때", file: "C:/p/.claude/skills/deploy/SKILL.md" }];
+  assert.match(withSkills({ agent: "claude", skills: ["deploy"] }, "해", skills), /Skill 도구로 해당 스킬을 불러/);
+  const codex = withSkills({ agent: "codex", skills: ["deploy"] }, "해", skills);
+  assert.match(codex, /SKILL\.md를 읽고/);
+  assert.doesNotMatch(codex, /Skill 도구/);
+});

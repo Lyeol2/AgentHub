@@ -324,6 +324,42 @@
     </form>
   </dialog>
 
+  <dialog id="command-dialog" class="wide">
+    <form method="dialog" id="command-form" class="dialog-form">
+      <h3 id="command-heading">새 명령</h3>
+      <div class="command-gen">
+        <input id="command-prompt" placeholder="하고 싶은 일을 적고 '명령 만들기' (예: 테스트 돌리고 실패하면 멈추기)">
+        <button type="button" id="command-generate" class="ghost">명령 만들기</button>
+      </div>
+      <p class="hint" id="command-explain"></p>
+      <label>이름 <input id="command-title" placeholder="비워 두면 명령 첫 줄로 정합니다"></label>
+      <div class="three">
+        <label>셸 <select id="command-shell"></select></label>
+        <label>실행 폴더
+          <select id="command-cwd">
+            <option value="source">보낸 세션의 작업 폴더</option>
+            <option value="project">프로젝트 폴더</option>
+          </select>
+        </label>
+        <label>시간 제한(초) <input id="command-timeout" type="number" min="1" max="3600" value="600"></label>
+      </div>
+      <label>명령 <textarea id="command-text" rows="8" spellcheck="false" placeholder="npm test"></textarea></label>
+      <p class="hint">연결로 넘어오면 실행합니다. 종료 코드 0이면 "성공 시", 아니면 "실패 시" 연결로 넘어가고, 받는 세션에는 출력 마지막 부분이 함께 갑니다. 실행 전에 확인하려면 들어오는 연결에 "넘기기 전에 승인 받기"를 켜세요.</p>
+      <div id="command-last" class="command-last" hidden>
+        <p id="command-last-meta" class="hint"></p>
+        <pre id="command-output" class="diff"></pre>
+      </div>
+      <p class="error" id="command-error"></p>
+      <menu>
+        <button value="delete" formnovalidate class="ghost danger" id="command-delete">삭제</button>
+        <button value="run" formnovalidate class="ghost" id="command-run">지금 실행</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate class="ghost">취소</button>
+        <button value="ok" class="primary">저장</button>
+      </menu>
+    </form>
+  </dialog>
+
   <dialog id="skill-dialog" class="wide">
     <form method="dialog" id="skill-form" class="dialog-form">
       <h3 id="skill-heading">새 스킬</h3>
