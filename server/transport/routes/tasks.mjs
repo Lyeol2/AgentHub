@@ -3,6 +3,7 @@ export function taskRoutes(s) {
     ["GET", "tasks", ({ query }) => s.list(query.get("path"))],
     ["GET", "tasks/context", ({ query }) => s.context(query.get("path"))],
     ["POST", "tasks", ({ body }) => s.create(body)],
+    ["DELETE", "tasks/:id", ({ params }) => s.remove(params.id)],
     ["POST", "tasks/:id/finish", ({ params, body }) => s.finish(params.id, body)],
     ["POST", "tasks/:id/refresh", ({ params }) => s.refresh(params.id)],
     ["POST", "tasks/:id/sync", ({ params }) => s.sync(params.id)],

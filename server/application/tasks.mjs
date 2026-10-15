@@ -47,7 +47,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     finally { if (queue.get(key) === current) queue.delete(key); }
   }
   function taskSessions(task) {
-    return store.list().filter((session) => session.taskId === task.id || sameTaskPath(session.cwd, task.cwd));
+    return store.list().filter((session) => session.taskId === task.id || task.sessionIds.includes(session.id) || sameTaskPath(session.cwd, task.cwd));
   }
   function assertIdle(task, except) {
     if (taskSessions(task).some((session) => session.id !== except && runner.isRunning(session.id)))
@@ -175,11 +175,25 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   function mutate(id, action) {
     const task = get(id);
     return locked(task.gitCommonDir, async () => {
+      get(id); // A preceding queued deletion may have removed this task.
       assertIdle(task);
       busy.add(id);
       try { return await action(task); }
       catch (error) { task.error = error.message; save(task); throw failure(error); }
       finally { busy.delete(id); }
+    });
+  }
+  async function remove(id) {
+    return mutate(id, async (task) => {
+      if (task.pendingAction) throw new HttpError(409, "이전 요청의 완료 여부를 먼저 확인한 뒤 삭제하세요.", "task-outcome-unknown", { outcomeUnknown: true });
+      const connected = store.list().filter((session) => session.taskId === id || task.sessionIds.includes(session.id));
+      // Session removal preserves worktrees and original CLI records, and clears links and queues.
+      for (const session of connected) await sessionService().remove(session.id);
+      // Remove the persisted record first so a failed deletion stays visible and can be retried.
+      fs.rmSync(path.join(directory, `${task.id}.json`), { force: true });
+      records.delete(id);
+      notify("tasks", { projectPath: task.projectPath, taskId: id });
+      return { ok: true };
     });
   }
   async function githubTarget(task) {
@@ -399,6 +413,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, context, create, finish, refresh, sync, cleanup, assertSession, replaceSession, detachSession,
+  return { list, context, create, finish, refresh, sync, cleanup, remove, assertSession, replaceSession, detachSession,
+    withSessionLock: (id, action) => mutate(id, action),
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }
