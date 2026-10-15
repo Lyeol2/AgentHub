@@ -152,9 +152,13 @@
         </div>
       </header>
       <ol id="s-events" class="events"></ol>
+      <ul id="s-queue" class="queue" hidden></ul>
       <form id="s-form" class="composer">
         <textarea id="s-prompt" rows="3" placeholder="요청을 입력하세요 · Enter 보내기, Shift+Enter 줄바꿈"></textarea>
-        <button type="submit" class="primary">보내기</button>
+        <div class="composer-actions">
+          <button type="submit" value="queue" id="s-queue-btn" class="ghost" hidden title="지금 작업이 끝나면 보냅니다 (Tab)">대기열에 추가</button>
+          <button type="submit" value="send" id="s-send" class="primary">보내기</button>
+        </div>
       </form>
     </section>
 
@@ -187,9 +191,13 @@
         </div>
         <ol id="c-events" class="events chat-events"></ol>
       </div>
+      <ul id="c-queue" class="queue chat-queue" hidden></ul>
       <form id="c-form" class="composer chat-composer">
         <textarea id="c-prompt" rows="2" placeholder="메시지를 입력하세요 · Enter 보내기, Shift+Enter 줄바꿈"></textarea>
-        <button type="submit" class="primary">보내기</button>
+        <div class="composer-actions">
+          <button type="submit" value="queue" id="c-queue-btn" class="ghost" hidden title="지금 답이 끝나면 보냅니다 (Tab)">대기열에 추가</button>
+          <button type="submit" value="send" id="c-send" class="primary">보내기</button>
+        </div>
       </form>
     </section>
   </main>
@@ -300,12 +308,39 @@
       </label>
       <label id="link-keyword-row">키워드 <input name="keyword" id="link-keyword" placeholder="예: 검토 요청"></label>
       <label>받는 세션에 줄 지시 <textarea name="note" id="link-note" rows="3" placeholder="비워 두면 '이 결과를 이어받아 네 역할에 맞게 처리하라'로 보냅니다."></textarea></label>
+      <label class="check"><input type="checkbox" name="approve" id="link-approve">
+        넘기기 전에 승인 받기 (조건이 맞으면 연결선 위에 승인 대기로 멈춥니다)
+      </label>
       <label class="check"><input type="checkbox" name="enabled" id="link-enabled" checked> 사용</label>
       <p class="hint">보내는 세션의 마지막 답변, 바뀐 파일 목록, 작업 폴더 경로가 받는 세션의 요청으로 들어갑니다. 받는 세션이 실행 중이면 끝난 뒤 시작합니다. 자동 연결은 한 흐름에서 최대 8단계까지 이어집니다.</p>
       <p class="error" id="link-error"></p>
       <menu>
         <button value="delete" formnovalidate class="ghost danger" id="link-delete">연결 삭제</button>
         <button value="run" formnovalidate class="ghost" id="link-run">지금 넘기기</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate class="ghost">취소</button>
+        <button value="ok" class="primary">저장</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="skill-dialog" class="wide">
+    <form method="dialog" id="skill-form" class="dialog-form">
+      <h3 id="skill-heading">새 스킬</h3>
+      <label>이름 <span class="muted">영문 소문자·숫자·- (예: code-review)</span>
+        <input id="skill-name" spellcheck="false" autocomplete="off" placeholder="code-review">
+      </label>
+      <label>설명 <span class="muted">언제 이 스킬을 쓰는지. 에이전트가 이걸 보고 읽을지 정합니다.</span>
+        <input id="skill-description" placeholder="예: 변경 사항을 리뷰할 때 쓴다. 버그·보안·성능 순서로 본다.">
+      </label>
+      <label>지침 <span class="muted">SKILL.md 본문 (Markdown)</span>
+        <textarea id="skill-body" rows="14" spellcheck="false" placeholder="# 코드 리뷰&#10;&#10;1. git diff로 바뀐 곳을 본다.&#10;2. ..."></textarea>
+      </label>
+      <p class="hint mono" id="skill-file"></p>
+      <p class="hint">Claude Code 스킬 형식으로 프로젝트에 저장합니다. 흐름 그래프에서 스킬 노드의 ● 손잡이를 세션 카드에 끌어 놓으면 그 세션이 이 스킬을 씁니다(Claude·Codex 모두).</p>
+      <p class="error" id="skill-error"></p>
+      <menu>
+        <button value="delete" formnovalidate class="ghost danger" id="skill-delete">삭제</button>
         <span class="spacer"></span>
         <button value="cancel" formnovalidate class="ghost">취소</button>
         <button value="ok" class="primary">저장</button>

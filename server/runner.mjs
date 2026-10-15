@@ -6,6 +6,7 @@ import { spawnCli } from "./cli.mjs";
 export const AGENTS = { claude, codex };
 
 const MISSING_CONVERSATION = /No conversation found with session ID/i;
+const INJECT_GRACE_MS = 4000;
 
 // 세션 하나에 한 번에 한 턴만 실행한다. 다른 세션은 동시에 실행할 수 있다.
 export class Runner extends EventEmitter {
@@ -13,6 +14,81 @@ export class Runner extends EventEmitter {
     super();
     this.store = store;
     this.running = new Map();
+    this.prompts = new Map(); // CLI가 실행 중에 물은 요청 ID → { session, child, agent, control, event }
+  }
+
+  // ── 실행 중 질문·권한 요청 ──────────────────────────────────────
+  // CLI는 답을 받을 때까지 기다린다. 화면에는 질문 카드나 권한 요청 카드로 보인다.
+  ask(session, child, agent, msg) {
+    const control = agent.parseControl(msg);
+    if (!control) {
+      // 화면에 물을 필요가 없는 요청에는 빈 성공으로 답해 CLI가 멈추지 않게 한다.
+      child.stdin.write(`${agent.controlResponse(msg.request_id, {})}\n`);
+      return;
+    }
+    const id = msg.request_id;
+    const event = control.kind === "question"
+      ? { kind: "question", questionId: id, status: "pending", text: "질문", questions: control.questions, live: true }
+      : { kind: "permission", requestId: id, status: "pending", tool: control.tool, text: control.text, detail: control.detail, reason: control.reason, canRemember: control.suggestions.length > 0 };
+    this.prompts.set(id, { session, child, agent, control, event });
+    session.waiting = true;
+    this.append(session, event);
+  }
+
+  // 실행 중인 턴에 요청을 붙인다. CLI가 다음 도구 실행 사이에 읽어 같은 작업에 반영한다(Claude만).
+  canInject(session) {
+    return this.running.has(session.id) && !!AGENTS[session.agent].interactive;
+  }
+
+  inject(session, text) {
+    const child = this.running.get(session.id);
+    const agent = AGENTS[session.agent];
+    if (!child) throw new Error("실행 중이 아닙니다.");
+    if (!agent.interactive) throw new Error(`${session.agent}는 실행 중인 작업에 요청을 붙일 수 없습니다. 대기열에 넣으세요.`);
+    child.stdin.write(`${agent.userLine(text)}\n`);
+    child.injected = (child.injected ?? 0) + 1;
+    this.append(session, { kind: "user", text, injected: true });
+  }
+
+  hasPrompt(id, sessionId) {
+    return this.prompts.get(id)?.session.id === sessionId;
+  }
+
+  // 질문의 답(answers) 또는 권한 결정(decision)을 CLI에 돌려준다.
+  answer(id, { answers, decision, message }) {
+    const pending = this.prompts.get(id);
+    if (!pending) throw new Error("이미 답했거나 끝난 요청입니다.");
+    const { session, child, agent, control, event } = pending;
+    const response = control.kind === "question"
+      ? agent.questionResponse(control.input, answers)
+      : agent.permissionResponse(control, decision, message);
+    child.stdin.write(`${agent.controlResponse(id, response)}\n`);
+    this.prompts.delete(id);
+    if (control.kind === "question") {
+      event.status = "answered";
+      event.answers = answers;
+    } else {
+      event.status = decision === "deny" ? "denied" : "allowed";
+      event.decision = decision;
+    }
+    session.waiting = this.waitingFor(session.id);
+    this.store.touch(session);
+    return event;
+  }
+
+  waitingFor(sessionId) {
+    return [...this.prompts.values()].some((p) => p.session.id === sessionId);
+  }
+
+  // CLI가 끝나거나 요청을 거두면 답을 기다리던 카드를 지나간 것으로 바꾼다.
+  dropPrompts(sessionId, onlyId = null) {
+    for (const [id, p] of this.prompts) {
+      if (p.session.id !== sessionId || (onlyId && id !== onlyId)) continue;
+      p.event.status = "skipped";
+      this.prompts.delete(id);
+    }
+    const session = this.store.get(sessionId);
+    if (session) session.waiting = this.waitingFor(sessionId);
   }
 
   append(session, event) {
@@ -40,7 +116,12 @@ export class Runner extends EventEmitter {
 
     const agent = AGENTS[session.agent];
     const args = agent.buildArgs(session);
-    if (!retry) this.append(session, { kind: "user", text: prompt, ...meta });
+    if (!retry) {
+      // 답하지 않은 질문은 새 요청이 들어오면 지나간 것으로 본다.
+      for (const e of session.events) if (e.kind === "question" && e.status === "pending") e.status = "skipped";
+      session.waiting = false;
+      this.append(session, { kind: "user", text: prompt, ...meta });
+    }
     this.setState(session, "running");
 
     const child = spawnCli(cliPath, args, {
@@ -57,8 +138,22 @@ export class Runner extends EventEmitter {
     let sawError = false;
     let lastErrorText = null;
 
+    let endTimer = null;
     const handleLine = (line) => {
       if (!line.trim()) return;
+      // 턴이 끝난 뒤에도 붙인 요청으로 다음 출력이 오면 stdin을 닫지 않고 기다린다.
+      clearTimeout(endTimer);
+      if (agent.interactive && line.includes('"control_')) {
+        let msg = null;
+        try {
+          msg = JSON.parse(line);
+        } catch {
+          // 아래에서 일반 줄로 처리한다.
+        }
+        if (msg?.type === "control_request") return this.ask(session, child, agent, msg);
+        if (msg?.type === "control_cancel_request") return this.dropPrompts(session.id, msg.request_id);
+        if (msg?.type === "control_response") return; // initialize 응답
+      }
       for (const event of agent.parseLine(line)) {
         if (event.agentSessionId) {
           session.agentSessionId = event.agentSessionId;
@@ -85,7 +180,15 @@ export class Runner extends EventEmitter {
           sawError = true;
         }
         if (event.kind === "result") completedTurn = true;
+        // 턴의 마지막 줄(성공·실패 모두). 대화형 실행은 stdin을 닫아야 CLI가 끝난다.
+        const final = event.final;
+        delete event.final;
         this.append(session, event);
+        if (final && agent.interactive) {
+          // 실행 중에 붙인 요청이 있으면 CLI가 이어서 처리할 수 있으므로 잠시 기다렸다가 닫는다.
+          if (child.injected) endTimer = setTimeout(() => child.stdin.end(), INJECT_GRACE_MS);
+          else child.stdin.end();
+        }
       }
     };
 
@@ -114,6 +217,7 @@ export class Runner extends EventEmitter {
     child.on("close", (code, signal) => {
       if (buffer) handleLine(buffer);
       this.running.delete(session.id);
+      this.dropPrompts(session.id);
       // 첫 턴이 끝까지 가지 못했으면 CLI 쪽에 이어 갈 대화가 없을 수 있으므로 다음 턴은 새로 시작한다.
       if (!resuming && !completedTurn) session.agentSessionId = null;
       // CLI 쪽 대화가 지워졌으면(다른 앱에서 삭제 등) 이어 갈 수 없으므로 새 대화로 한 번 다시 보낸다.
@@ -146,13 +250,20 @@ export class Runner extends EventEmitter {
       this.emit("turnEnd", session, ok);
     });
 
-    child.stdin.end(input);
+    // stdin이 먼저 닫혀도(실행 실패 등) 서버가 죽지 않게 한다.
+    child.stdin.on("error", () => {});
+    if (agent.interactive) {
+      child.stdin.write(`${agent.initLine()}\n${agent.userLine(input)}\n`);
+    } else {
+      child.stdin.end(input);
+    }
   }
 
   // CLI 쪽 대화를 버리고 다음 요청부터 새 대화로 시작한다. AgentHub의 기록·역할·연결은 그대로 둔다.
   restart(session) {
     if (this.running.has(session.id)) throw new Error("실행 중인 세션은 다시 시작할 수 없습니다. 먼저 중지하세요.");
     session.agentSessionId = null;
+    session.waiting = false;
     session.compactions = 0;
     session.context = null;
     delete session.roleChanged; // 새 대화의 첫 요청에 역할을 통째로 다시 붙인다.

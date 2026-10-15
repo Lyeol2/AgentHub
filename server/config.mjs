@@ -13,6 +13,10 @@ const DEFAULTS = {
   // CLI 경로를 직접 지정할 때만 채운다. 비워 두면 자동 탐색한다.
   cli: { claude: "", codex: "" },
   projects: [],
+  // 프로젝트 화면의 Claude Code·Codex 기록 목록에서 숨긴 세션 ID. 기록 파일은 지우지 않는다.
+  hiddenSessions: [],
+  // 흐름 그래프에서 옮긴 스킬 노드 위치. 프로젝트 경로(소문자) → 스킬 이름 → { x, y }
+  skillLayout: {},
 };
 
 export function loadConfig() {

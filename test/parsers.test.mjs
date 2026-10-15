@@ -114,6 +114,29 @@ test("claude: 컨텍스트 압축과 컨텍스트 크기를 세션 수명 정보
   assert.deepEqual(result.context, { window: 1000000 });
 });
 
+test("claude: 실행 중 권한 요청과 질문을 control 프로토콜로 주고받는다", () => {
+  const args = claude.buildArgs({ permission: "default" });
+  assert.equal(args[args.indexOf("--input-format") + 1], "stream-json");
+  assert.equal(args[args.indexOf("--permission-prompt-tool") + 1], "stdio");
+  assert.equal(JSON.parse(claude.userLine("안녕")).message.content[0].text, "안녕");
+
+  const questions = [{ question: "어디에?", header: "저장", options: [{ label: "로컬" }, { label: "서버" }], multiSelect: false }];
+  const ask = claude.parseControl({ type: "control_request", request_id: "r1", request: { subtype: "can_use_tool", tool_name: "AskUserQuestion", input: { questions } } });
+  assert.equal(ask.kind, "question");
+  const answered = claude.questionResponse(ask.input, [{ selected: ["서버"], text: "" }]);
+  assert.deepEqual(answered, { behavior: "allow", updatedInput: { questions, answers: { "어디에?": "서버" } } });
+
+  const perm = claude.parseControl({ type: "control_request", request_id: "r2", request: { subtype: "can_use_tool", tool_name: "Bash", input: { command: "rm a" }, permission_suggestions: [{ type: "addRules" }] } });
+  assert.equal(perm.kind, "permission");
+  assert.equal(perm.text, "Bash: rm a");
+  assert.deepEqual(claude.permissionResponse(perm, "always").updatedPermissions, [{ type: "addRules" }]);
+  assert.equal(claude.permissionResponse(perm, "deny").behavior, "deny");
+
+  const line = JSON.parse(claude.controlResponse("r2", { behavior: "allow", updatedInput: {} }));
+  assert.equal(line.response.request_id, "r2");
+  assert.equal(claude.parseControl({ type: "control_request", request_id: "x", request: { subtype: "other" } }), null);
+});
+
 test("discover: AgentHub 작업 폴더와 하위 폴더는 원래 저장소로 묶는다", async () => {
   const path = await import("node:path");
   const { projectRoot } = await import("../server/discover.mjs");

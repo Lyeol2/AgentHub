@@ -61,6 +61,15 @@ test("api: 작업 폴더를 직접 지운 세션도 삭제된다", async () => {
   assert.equal((await api("GET", `/sessions/${s.id}`)).status, 404);
 });
 
+test("api: Claude Code·Codex 기록은 목록에서 숨기고 다시 보일 수 있다", async () => {
+  assert.equal((await api("POST", "/projects/hide", { agentSessionId: "abc" })).status, 200);
+  const config = JSON.parse(fs.readFileSync(path.join(tmp, "data", "config.json"), "utf8"));
+  assert.deepEqual(config.hiddenSessions, ["abc"]);
+  await api("POST", "/projects/hide", { agentSessionId: "abc", hidden: false });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmp, "data", "config.json"), "utf8")).hiddenSessions, []);
+  assert.equal((await api("POST", "/projects/hide", {})).status, 400);
+});
+
 test("api: 세션 다시 시작은 CLI 대화와 수명만 비운다", async () => {
   const s = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "R", permission: "acceptEdits" })).body;
   const restarted = await api("POST", `/sessions/${s.id}/restart`);
@@ -91,4 +100,20 @@ test("api: 오케스트레이터 세션과 계획 처리 경로", async () => {
   assert.equal(orc.permission, "default");
   assert.equal((await api("POST", `/sessions/${orc.id}/plans/nope`, { action: "approve" })).status, 404);
   await api("DELETE", `/sessions/${orc.id}`);
+});
+
+test("api: 스킬을 만들고 세션에 이은 뒤 지우면 세션에서도 빠진다", async () => {
+  const made = await api("POST", "/skills", { projectPath: repo, name: "review", description: "리뷰할 때", body: "# 리뷰", pos: { x: 10, y: 400 } });
+  assert.equal(made.status, 200);
+  assert.equal((await api("POST", "/skills", { projectPath: repo, name: "review", description: "x" })).status, 400);
+  const list = (await api("GET", `/skills?path=${encodeURIComponent(repo)}`)).body;
+  assert.deepEqual(list.map((k) => [k.name, k.pos]), [["review", { x: 10, y: 400 }]]);
+
+  const s = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "S", permission: "acceptEdits" })).body;
+  const edited = await api("PUT", `/sessions/${s.id}`, { skills: ["review", "없는스킬"] });
+  assert.deepEqual(edited.body.skills, ["review"]);
+
+  assert.equal((await api("DELETE", `/skills/review?path=${encodeURIComponent(repo)}`)).status, 200);
+  assert.deepEqual((await api("GET", `/sessions/${s.id}`)).body.skills, []);
+  await api("DELETE", `/sessions/${s.id}`);
 });

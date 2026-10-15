@@ -45,3 +45,58 @@ test("role: 새 대화와 역할을 바꾼 직후에만 붙인다", () => {
   assert.match(withRole(s, "해"), /역할이 바뀌었다/);
   assert.equal(withRole(s, "해"), "해");
 });
+
+test("chain: 승인 연결은 연결선 위에 멈췄다가 승인하면 넘긴다", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { Chain } = await import("../server/chain.mjs");
+  const sessions = new Map([["a", { id: "a", title: "A", agent: "claude", cwd: "C:/a", events: [{ kind: "text", text: "끝냈다" }] }],
+    ["b", { id: "b", title: "B", agent: "claude", cwd: "C:/a", events: [] }]]);
+  const runner = Object.assign(new EventEmitter(), {
+    sent: [], appended: [], running: new Set(),
+    isRunning(id) { return this.running.has(id); },
+    send(s, prompt) { this.sent.push([s.id, prompt]); this.running.add(s.id); },
+    append(s, e) { this.appended.push([s.id, e.text]); },
+  });
+  const theLink = { id: "l1", from: "a", to: "b", when: "success", keyword: "", enabled: true, approve: true };
+  const links = { list: () => [theLink], from: (id) => (id === "a" ? [theLink] : []), update: (l, c) => Object.assign(l, c) };
+  const notes = [];
+  const chain = new Chain({ store: { get: (id) => sessions.get(id) }, runner, links, cliPaths: () => ({ claude: "x" }), compose: (s, t) => t, notify: (k) => notes.push(k) });
+
+  await chain.onTurnEnd(sessions.get("a"), true);
+  assert.equal(runner.sent.length, 0); // 승인 전에는 넘기지 않는다.
+  assert.equal(theLink.pending.preview, "끝냈다");
+  assert.ok(notes.includes("links"));
+
+  await chain.decide(theLink, true);
+  assert.equal(theLink.pending, null);
+  assert.equal(runner.sent[0][0], "b");
+  await assert.rejects(chain.decide(theLink, true)); // 이미 처리했다.
+});
+
+test("chain: 사용자 대기열은 턴이 끝나면 보내고, 멈추면 남겨 둔다", async () => {
+  const { EventEmitter } = await import("node:events");
+  const { Chain } = await import("../server/chain.mjs");
+  const s = { id: "a", title: "A", agent: "claude", cwd: "C:/a", events: [] };
+  const runner = Object.assign(new EventEmitter(), {
+    sent: [], running: new Set(["a"]),
+    isRunning(id) { return this.running.has(id); },
+    send(x, prompt) { this.sent.push(prompt); this.running.add(x.id); },
+    append() {},
+  });
+  const chain = new Chain({ store: { get: () => s }, runner, links: { from: () => [] }, cliPaths: () => ({ claude: "x" }), compose: (x, t) => t });
+
+  const first = chain.enqueue(s, "하나", { user: true }, 0);
+  chain.enqueue(s, "둘", { user: true }, 0);
+  assert.deepEqual(chain.list("a").map((i) => i.text), ["하나", "둘"]);
+  assert.equal(runner.sent.length, 0); // 실행 중이면 기다린다.
+
+  runner.running.delete("a");
+  await chain.onTurnEnd(s, null); // 사용자가 멈춤: 대기열은 남기고 시작하지 않는다.
+  assert.equal(runner.sent.length, 0);
+  assert.equal(chain.list("a").length, 2);
+
+  assert.equal(chain.take("a", first.id).text, "하나");
+  await chain.onTurnEnd(s, true);
+  assert.deepEqual(runner.sent, ["둘"]);
+  assert.equal(chain.list("a").length, 0);
+});

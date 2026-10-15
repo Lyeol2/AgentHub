@@ -15,6 +15,8 @@ import { LinkStore } from "./links.mjs";
 import { Chain, CONDITIONS, lastAnswer } from "./chain.mjs";
 import { orchestratorInput, extractPlan, normalizePlan } from "./orchestrator.mjs";
 import { HUB_FILE, HUB_TEMPLATE, hubFilePath, readHubFile } from "./hubfile.mjs";
+import { QUESTION_GUIDE, extractQuestions, answerPrompt, hasAnswer } from "./question.mjs";
+import { listSkills, checkSkill, writeSkill, deleteSkill, withSkills, skillsDir } from "./skills.mjs";
 
 const config = loadConfig();
 const port = Number(process.env.PORT ?? config.port);
@@ -47,7 +49,10 @@ const cliPaths = () => ({
   claude: locateCli("claude", config.cli.claude),
   codex: locateCli("codex", config.cli.codex),
 });
-const chain = new Chain({ store, runner, links, cliPaths, compose: composeInput });
+const chain = new Chain({
+  store, runner, links, cliPaths, compose: composeInput,
+  notify: (kind, sessionId) => (kind === "links" ? broadcast("links", {}) : broadcast("queue", { sessionId })),
+});
 
 // ── 보안: 로컬 전용 ─────────────────────────────────────────────
 // 127.0.0.1에만 열고, Host 헤더와 사용자 정의 헤더를 확인해 다른 사이트의 요청(DNS 리바인딩, CSRF)을 막는다.
@@ -105,7 +110,11 @@ function broadcast(type, data) {
   const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const res of streams) res.write(payload);
 }
-runner.on("event", (sessionId, event) => broadcast("event", { sessionId, event }));
+runner.on("event", (sessionId, event) => {
+  broadcast("event", { sessionId, event });
+  // 질문·권한 요청이 오면 목록의 "답을 기다림" 표시도 바로 바꾼다.
+  if (event.status === "pending" && (event.kind === "question" || event.kind === "permission")) broadcast("sessions", {});
+});
 runner.on("state", (sessionId, state) => broadcast("state", { sessionId, state }));
 // 턴이 끝나면 목록의 세션 수명(압축 횟수, 컨텍스트 크기)도 새로 받게 한다.
 runner.on("turnEnd", () => broadcast("sessions", {}));
@@ -155,6 +164,8 @@ function linkFields(body, current = {}) {
     keyword,
     note: String(body.note ?? current.note ?? "").trim().slice(0, ROLE_MAX),
     enabled: body.enabled ?? current.enabled ?? true,
+    approve: !!(body.approve ?? current.approve ?? false), // 넘기기 전에 연결선 위에서 승인을 받는다
+    ...(body.approve === false ? { pending: null } : {}), // 승인을 끄면 기다리던 것도 거둔다
   };
 }
 
@@ -181,11 +192,30 @@ function composeInput(session, prompt) {
     const intro = AGENTS[session.agent].CHAT_INTRO;
     return intro && !session.agentSessionId ? `${intro}\n\n${input}` : input;
   }
-  if (session.kind !== "orchestrator") return withRole(session, prompt);
-  return orchestratorInput(session, prompt, {
+  const input = withSkills(session, session.kind !== "orchestrator" ? withRole(session, prompt) : orchestratorInput(session, prompt, {
     hub: readHubFile(session.projectPath),
     sessions: projectSessions(session.projectPath),
-  });
+  }));
+  // Claude는 실행 중에 질문 도구로 직접 묻는다. 질문 블록 규칙은 그런 통로가 없는 CLI(Codex)에만 붙인다.
+  if (AGENTS[session.agent].interactive) return input;
+  // CLI 대화마다 한 번 붙인다. 가져온 세션처럼 이미 대화가 있어도 아직 안 붙였으면 붙인다.
+  if (session.agentSessionId && session.askGuide) return input;
+  session.askGuide = true;
+  return `${QUESTION_GUIDE}\n\n${input}`;
+}
+
+// 세션에 이은 스킬을 바꾼다. 대화 중에 바꾸면 다음 요청에 바뀐 목록을 다시 알린다.
+// 작업 폴더를 분리한 세션은 원래 프로젝트의 스킬 폴더가 작업 폴더 밖이므로 읽을 수 있게 열어 준다.
+function setSessionSkills(session, names) {
+  const known = new Set(listSkills(session.projectPath).map((s) => s.name));
+  const next = [...new Set((Array.isArray(names) ? names : []).map(String))].filter((n) => known.has(n));
+  if (next.join() === (session.skills ?? []).join()) return;
+  if (session.agentSessionId) session.skillsChanged = true;
+  session.skills = next;
+  const dir = skillsDir(session.projectPath);
+  if (next.length && !samePath(session.cwd, session.projectPath) && session.agent === "claude") {
+    session.addDirs = [...new Set([...(session.addDirs ?? []), dir])];
+  }
 }
 
 function checkSessionOptions({ agent, model = "", effort = "", permission, chat = false }) {
@@ -271,6 +301,23 @@ runner.prependListener("turnEnd", (session, ok) => {
   } catch (err) {
     event.status = "invalid";
     event.error = err.message;
+  }
+  runner.append(session, event);
+});
+
+// ── 에이전트의 질문 ─────────────────────────────────────────────
+// 턴이 끝나면 답변의 질문 블록을 꺼내 답을 기다리는 질문으로 올린다. 답을 기다리는 동안 연결로 넘기지 않는다.
+runner.prependListener("turnEnd", (session, ok) => {
+  if (session.chat || !ok || AGENTS[session.agent].interactive) return;
+  const found = extractQuestions(lastAnswer(session));
+  if (!found) return;
+  const event = { kind: "question", questionId: randomBytes(4).toString("hex"), status: "pending", text: "질문" };
+  if (found.error) {
+    event.status = "invalid";
+    event.error = found.error;
+  } else {
+    event.questions = found.questions;
+    session.waiting = true;
   }
   runner.append(session, event);
 });
@@ -450,7 +497,7 @@ async function handleApi(req, res, url) {
   }
 
   if (parts[0] === "projects") {
-    if (method === "POST") {
+    if (method === "POST" && parts.length === 1) {
       const body = await readJson(req);
       const dir = path.resolve(String(body.path ?? "").trim());
       if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new HttpError(400, "폴더가 없습니다.");
@@ -477,10 +524,22 @@ async function handleApi(req, res, url) {
       if (!projectPath || !fs.existsSync(projectPath)) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
       const project = { path: path.resolve(projectPath) };
       const linked = new Map(store.list().filter((s) => s.agentSessionId).map((s) => [s.agentSessionId, s.id]));
+      const hidden = new Set(config.hiddenSessions);
       return send(res, 200, discoverSessions(project.path).map(({ file, ...found }) => ({
         ...found,
         linkedId: linked.get(found.agentSessionId) ?? null,
+        hidden: hidden.has(found.agentSessionId),
       })));
+    }
+    // 기록 목록에서 숨기거나 다시 보인다. Claude Code·Codex의 기록 파일은 그대로 둔다.
+    if (parts[1] === "hide" && method === "POST") {
+      const body = await readJson(req);
+      const id = String(body.agentSessionId ?? "").trim();
+      if (!id) throw new HttpError(400, "세션 ID가 없습니다.");
+      config.hiddenSessions = config.hiddenSessions.filter((x) => x !== id);
+      if (body.hidden !== false) config.hiddenSessions.push(id);
+      saveConfig(config);
+      return send(res, 200, { ok: true });
     }
     if (method === "DELETE" && parts[1] !== undefined) {
       config.projects.splice(Number(parts[1]), 1);
@@ -490,6 +549,68 @@ async function handleApi(req, res, url) {
   }
 
   // 프로젝트의 AGENTHUB.md
+  // 프로젝트 스킬(.claude/skills/<이름>/SKILL.md). 흐름 그래프의 스킬 노드 위치는 설정에 둔다.
+  if (parts[0] === "skills") {
+    const body = method === "GET" || method === "DELETE" ? {} : await readJson(req);
+    const projectPath = url.searchParams.get("path") ?? body.projectPath;
+    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+    const project = method === "GET" ? { path: path.resolve(projectPath) } : ensureProject(projectPath);
+    const key = project.path.toLowerCase();
+    const layout = (config.skillLayout ??= {});
+    const savePos = (name, pos) => {
+      if (pos === undefined) return;
+      layout[key] ??= {};
+      if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) layout[key][name] = { x: Math.max(0, Math.round(pos.x)), y: Math.max(0, Math.round(pos.y)) };
+      else delete layout[key][name];
+      saveConfig(config);
+    };
+
+    if (method === "GET" && parts.length === 1) {
+      return send(res, 200, listSkills(project.path).map((s) => ({ ...s, pos: layout[key]?.[s.name] ?? null })));
+    }
+    if (method === "POST" && parts.length === 1) {
+      let skill;
+      try {
+        skill = writeSkill(project.path, checkSkill(body), { create: true });
+      } catch (err) {
+        throw new HttpError(400, err.message);
+      }
+      savePos(skill.name, body.pos);
+      broadcast("skills", { projectPath: project.path });
+      return send(res, 200, skill);
+    }
+    const name = parts[1];
+    const existing = listSkills(project.path).find((s) => s.name === name);
+    if (!existing) throw new HttpError(404, "스킬이 없습니다.");
+    if (method === "PUT") {
+      // 위치만 옮길 때는 파일을 다시 쓰지 않는다.
+      if (body.description !== undefined || body.body !== undefined) {
+        try {
+          writeSkill(project.path, checkSkill({ ...existing, ...body, name }));
+        } catch (err) {
+          throw new HttpError(400, err.message);
+        }
+      }
+      savePos(name, body.pos);
+      broadcast("skills", { projectPath: project.path });
+      return send(res, 200, { ok: true });
+    }
+    if (method === "DELETE") {
+      deleteSkill(project.path, name);
+      savePos(name, null);
+      // 이 스킬을 이어 둔 세션에서도 뺀다.
+      for (const s of projectSessions(project.path)) {
+        if (s.skills?.includes(name)) {
+          setSessionSkills(s, s.skills.filter((n) => n !== name));
+          store.touch(s);
+        }
+      }
+      broadcast("skills", { projectPath: project.path });
+      broadcast("sessions", {});
+      return send(res, 200, { ok: true });
+    }
+  }
+
   if (parts[0] === "hub") {
     if (method === "GET") {
       const projectPath = url.searchParams.get("path");
@@ -549,6 +670,17 @@ async function handleApi(req, res, url) {
       broadcast("links", {});
       return send(res, 200, { ok: true });
     }
+    // 연결선 위에서 승인을 기다리는 넘기기를 승인하거나 거절한다.
+    if (parts[2] === "decide" && method === "POST") {
+      const { action } = await readJson(req);
+      if (!["approve", "reject"].includes(action)) throw new HttpError(400, "action은 approve 또는 reject입니다.");
+      try {
+        await chain.decide(link, action === "approve");
+      } catch (err) {
+        throw new HttpError(409, err.message);
+      }
+      return send(res, 200, link);
+    }
     // 조건과 상관없이 지금 넘긴다.
     if (parts[2] === "run" && method === "POST") {
       await chain.deliver(link, 0);
@@ -606,14 +738,51 @@ async function handleApi(req, res, url) {
 
     const session = getSession(parts[1]);
 
-    if (parts.length === 2 && method === "GET") return send(res, 200, settleState(session));
+    // queue: 실행이 끝나면 차례로 보낼 요청, canInject: 실행 중인 작업에 요청을 붙일 수 있는지
+    if (parts.length === 2 && method === "GET") {
+      return send(res, 200, { ...settleState(session), queue: chain.list(session.id), canInject: !!AGENTS[session.agent].interactive });
+    }
 
+    // 실행 중에 보내면 mode에 따라 지금 작업에 붙이거나(steer) 대기열에 넣는다(queue).
     if (parts[2] === "messages" && method === "POST") {
       const body = await readJson(req);
       const prompt = String(body.prompt ?? "").trim();
       if (!prompt) throw new HttpError(400, "내용을 입력하세요.");
+      if (runner.isRunning(session.id)) {
+        if (body.mode === "steer" && runner.canInject(session)) {
+          runner.inject(session, prompt);
+          return send(res, 200, { injected: true });
+        }
+        chain.enqueue(session, prompt, { user: true }, 0);
+        return send(res, 200, { queued: true });
+      }
       startTurn(session, prompt);
       return send(res, 200, { ok: true });
+    }
+
+    // 대기열의 요청: DELETE는 지우기, POST action=steer는 지금 작업에 붙이기, action=send는 실행 중이 아닐 때 바로 보내기
+    if (parts[2] === "queue" && parts[3]) {
+      const found = chain.list(session.id).find((item) => item.id === parts[3]);
+      if (!found) throw new HttpError(404, "대기열에 없는 요청입니다.");
+      if (method === "DELETE") {
+        chain.take(session.id, parts[3]);
+        return send(res, 200, { ok: true });
+      }
+      if (method === "POST") {
+        const { action } = await readJson(req);
+        if (action === "steer") {
+          if (!runner.canInject(session)) throw new HttpError(409, "실행 중인 Claude 세션에만 붙일 수 있습니다.");
+          runner.inject(session, chain.take(session.id, parts[3]).text);
+          return send(res, 200, { ok: true });
+        }
+        if (action === "send") {
+          if (runner.isRunning(session.id)) throw new HttpError(409, "실행 중입니다. 끝나면 차례로 보냅니다.");
+          const item = chain.take(session.id, parts[3]);
+          chain.enqueue(session, item.text, item.meta, item.depth); // 실행 중이 아니므로 바로 시작한다.
+          return send(res, 200, { ok: true });
+        }
+        throw new HttpError(400, "action은 steer 또는 send입니다.");
+      }
     }
 
     if (parts.length === 2 && method === "PUT") {
@@ -635,6 +804,7 @@ async function handleApi(req, res, url) {
         const { x, y } = body.graphPos ?? {};
         session.graphPos = Number.isFinite(x) && Number.isFinite(y) ? { x: Math.max(0, x), y: Math.max(0, y) } : null;
       }
+      if (body.skills !== undefined && !session.chat) setSessionSkills(session, body.skills);
       store.touch(session);
       broadcast("sessions", {});
       return send(res, 200, summary(session));
@@ -665,6 +835,48 @@ async function handleApi(req, res, url) {
       return send(res, 200, event);
     }
 
+    if (parts[2] === "questions" && parts[3] && method === "POST") {
+      const event = session.events.find((e) => e.kind === "question" && e.questionId === parts[3]);
+      if (!event) throw new HttpError(404, "질문이 없습니다.");
+      if (event.status !== "pending") throw new HttpError(409, "이미 답했거나 지나간 질문입니다.");
+      const { answers } = await readJson(req);
+      if (!hasAnswer(answers)) throw new HttpError(400, "답을 고르거나 적으세요.");
+      // 실행 중에 CLI가 물은 질문이면 답을 CLI에 바로 돌려주고, 같은 턴이 이어진다.
+      if (event.live) {
+        try {
+          runner.answer(event.questionId, { answers });
+        } catch (err) {
+          throw new HttpError(409, err.message);
+        }
+        broadcast("session", { sessionId: session.id });
+        broadcast("sessions", {});
+        return send(res, 200, event);
+      }
+      if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
+      event.status = "answered";
+      event.answers = answers;
+      try {
+        startTurn(session, answerPrompt(event.questions, answers));
+      } catch (err) {
+        event.status = "pending"; // 보내지 못했으면 다시 답할 수 있게 둔다.
+        delete event.answers;
+        throw err;
+      }
+      broadcast("session", { sessionId: session.id });
+      return send(res, 200, event);
+    }
+
+    // 실행 중에 CLI가 물은 권한 요청에 답한다. decision: allow | always(같은 종류는 다시 묻지 않음) | deny
+    if (parts[2] === "permissions" && parts[3] && method === "POST") {
+      const { decision, message } = await readJson(req);
+      if (!["allow", "always", "deny"].includes(decision)) throw new HttpError(400, "decision은 allow, always, deny 중 하나입니다.");
+      if (!runner.hasPrompt(parts[3], session.id)) throw new HttpError(409, "이미 답했거나 끝난 요청입니다.");
+      const event = runner.answer(parts[3], { decision, message: String(message ?? "").trim().slice(0, 2000) });
+      broadcast("session", { sessionId: session.id });
+      broadcast("sessions", {});
+      return send(res, 200, event);
+    }
+
     if (parts[2] === "stop" && method === "POST") return send(res, 200, { stopped: runner.stop(session) });
 
     if (parts[2] === "restart" && method === "POST") {
@@ -676,6 +888,47 @@ async function handleApi(req, res, url) {
       broadcast("sessions", {});
       broadcast("session", { sessionId: session.id });
       return send(res, 200, summary(session));
+    }
+
+    // 재생성: 같은 설정(제목·역할·모델·권한·연결·그래프 위치)으로 새 세션을 만들고 기존 세션은 지운다.
+    // 화면 기록과 CLI 대화는 새로 시작하고, 작업 폴더(worktree)는 고치던 파일이 남도록 그대로 이어받는다.
+    if (parts[2] === "recreate" && method === "POST") {
+      if (runner.isRunning(session.id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
+      const created = await createSession({
+        project: session.chat ? null : ensureProject(session.projectPath),
+        isolate: false,
+        title: session.title,
+        role: session.role,
+        roleName: session.roleName,
+        orchestrator: session.kind === "orchestrator",
+        createdBy: session.createdBy,
+        chat: session.chat,
+        agent: session.agent,
+        model: session.model,
+        effort: session.effort,
+        permission: session.permission,
+      });
+      Object.assign(created, {
+        cwd: session.cwd,
+        worktree: session.worktree ?? null,
+        baseCommit: session.baseCommit ?? created.baseCommit,
+        graphPos: session.graphPos ?? null,
+      });
+      store.touch(created);
+      for (const link of links.list()) {
+        if (link.from === session.id) links.update(link, { from: created.id, pending: null });
+        if (link.to === session.id) links.update(link, { to: created.id, pending: null });
+      }
+      // 오케스트레이터를 재생성하면 그가 만든 세션들의 지휘선도 새 세션으로 잇는다.
+      for (const other of store.list()) {
+        if (other.createdBy !== session.id) continue;
+        other.createdBy = created.id;
+        store.touch(other);
+      }
+      store.remove(session.id);
+      broadcast("sessions", {});
+      broadcast("links", {});
+      return send(res, 200, summary(created));
     }
 
     if (parts[2] === "diff" && method === "GET") {

@@ -1,4 +1,5 @@
 // 연결 조건에 따라 한 세션의 결과를 다음 세션의 요청으로 넘긴다.
+import { randomBytes } from "node:crypto";
 import { changedFiles } from "./git.mjs";
 import { withRole } from "./role.mjs";
 
@@ -52,13 +53,15 @@ export function handoffText(source, link, answer, files) {
 
 export class Chain {
   // compose: CLI에 실제로 넘길 내용을 만든다(역할·공통 지침·오케스트레이터 맥락).
-  constructor({ store, runner, links, cliPaths, compose = withRole }) {
+  // notify: 연결(승인 대기)이나 대기열이 바뀌면 화면에 알린다. (kind: "links" | "queue", sessionId)
+  constructor({ store, runner, links, cliPaths, compose = withRole, notify = () => {} }) {
     this.store = store;
     this.runner = runner;
     this.links = links;
     this.cliPaths = cliPaths;
     this.compose = compose;
-    this.queue = new Map(); // 받는 세션 ID → 실행 중이라 밀린 작업
+    this.notify = notify;
+    this.queue = new Map(); // 받는 세션 ID → 실행 중이라 밀린 작업(넘어온 작업과 사용자가 대기열에 넣은 요청)
     runner.on("turnEnd", (session, ok) => this.onTurnEnd(session, ok).catch((err) => console.error(err)));
   }
 
@@ -68,15 +71,45 @@ export class Chain {
 
   async onTurnEnd(session, ok) {
     if (ok === null) {
-      // 사용자가 멈춘 세션은 밀린 작업도 버린다.
-      this.queue.delete(session.id);
-    } else {
+      // 사용자가 멈춘 세션은 넘어온 작업을 버린다. 사용자가 대기열에 넣은 요청은 남겨 두고, 직접 보낼 때까지 시작하지 않는다.
+      const kept = (this.queue.get(session.id) ?? []).filter((item) => item.meta.user);
+      if (kept.length) this.queue.set(session.id, kept);
+      else this.queue.delete(session.id);
+      this.notify("queue", session.id);
+      return;
+    }
+    if (!session.waiting) {
+      // 사용자에게 질문하고 답을 기다리는 턴은 끝난 작업이 아니므로 넘기지 않는다.
       const answer = lastAnswer(session);
       for (const link of this.links.from(session.id)) {
-        if (matches(link, ok, answer)) await this.deliver(link, session.chainDepth ?? 0);
+        if (!matches(link, ok, answer)) continue;
+        if (link.approve) this.hold(link, session, answer, session.chainDepth ?? 0);
+        else await this.deliver(link, session.chainDepth ?? 0);
       }
     }
     this.flush(session);
+  }
+
+  // 승인을 받아야 넘기는 연결은 연결선 위에 승인 대기로 올려 둔다. 같은 연결에 다시 쌓이면 마지막 것만 남긴다.
+  hold(link, source, answer, depth) {
+    const target = this.store.get(link.to);
+    if (!target) return;
+    const preview = answer.split(/\r?\n/).find((l) => l.trim())?.slice(0, 200) ?? "";
+    this.links.update(link, { pending: { depth, preview, at: new Date().toISOString() } });
+    this.runner.append(source, { kind: "status", text: `"${target.title}"(으)로 넘기기 전에 승인을 기다립니다` });
+    this.notify("links");
+  }
+
+  // 승인 대기 중인 연결을 넘기거나 버린다.
+  async decide(link, approve) {
+    const pending = link.pending;
+    if (!pending) throw new Error("승인을 기다리는 넘기기가 없습니다.");
+    this.links.update(link, { pending: null });
+    this.notify("links");
+    const source = this.store.get(link.from);
+    const target = this.store.get(link.to);
+    if (approve) return this.deliver(link, pending.depth);
+    if (source && target) this.runner.append(source, { kind: "status", text: `"${target.title}"(으)로 넘기지 않았습니다(거절)` });
   }
 
   // depth: 보내는 세션이 흐름에서 몇 번째 단계인지
@@ -99,11 +132,31 @@ export class Chain {
   }
 
   // 세션에 요청을 넣는다. 실행 중이면 끝난 뒤 차례로 보낸다.
+  // meta.user: 사용자가 실행 중에 대기열에 넣은 요청
   enqueue(target, text, meta, depth) {
     const queue = this.queue.get(target.id) ?? [];
-    queue.push({ text, meta, depth });
+    const item = { id: randomBytes(4).toString("hex"), text, meta, depth };
+    queue.push(item);
     this.queue.set(target.id, queue);
     this.flush(target);
+    this.notify("queue", target.id);
+    return item;
+  }
+
+  // 화면에 보여 줄 대기열
+  list(sessionId) {
+    return (this.queue.get(sessionId) ?? []).map(({ id, text, meta }) => ({ id, text, user: !!meta.user, fromTitle: meta.fromTitle ?? null }));
+  }
+
+  // 대기열에서 꺼낸다(지우기, 지금 붙이기, 바로 보내기).
+  take(sessionId, id) {
+    const queue = this.queue.get(sessionId) ?? [];
+    const index = queue.findIndex((item) => item.id === id);
+    if (index < 0) return null;
+    const [item] = queue.splice(index, 1);
+    if (!queue.length) this.queue.delete(sessionId);
+    this.notify("queue", sessionId);
+    return item;
   }
 
   flush(session) {
@@ -111,6 +164,7 @@ export class Chain {
     if (!queue?.length || this.runner.isRunning(session.id)) return;
     const item = queue.shift();
     if (!queue.length) this.queue.delete(session.id);
+    this.notify("queue", session.id);
     session.chainDepth = item.depth;
     try {
       this.runner.send(session, item.text, this.cliPaths()[session.agent], this.compose(session, item.text), item.meta);

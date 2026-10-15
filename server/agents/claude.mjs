@@ -1,7 +1,9 @@
-// Claude Code CLI(`claude -p --output-format stream-json`) 연결.
+// Claude Code CLI(`claude -p --input-format stream-json --output-format stream-json`) 연결.
+// 요청을 stdin으로 한 줄씩 보내고, 실행 중에 CLI가 묻는 권한 요청·질문(AskUserQuestion)을 control_request로 받아
+// 화면에서 답을 받은 뒤 control_response로 돌려준다(Agent SDK가 쓰는 방식과 같다).
 import { randomUUID } from "node:crypto";
 
-// default: 비대화 실행이라 허락이 필요한 도구(수정, 명령)는 거절되고 읽기만 된다.
+// default: 허락이 필요한 도구(수정, 명령)를 쓸 때마다 화면에서 허용·거절을 묻는다.
 export const PERMISSION_MODES = ["default", "plan", "acceptEdits", "bypassPermissions"];
 export const CHAT_PERMISSION = "acceptEdits";
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
@@ -23,7 +25,7 @@ const CHAT_PROMPT = "You are Claude, a helpful AI assistant having a conversatio
   "Answer directly and conversationally, using Markdown where it helps. Reply in the language the user writes in.";
 
 export function buildArgs(session) {
-  const args = ["-p", "--output-format", "stream-json", "--verbose"];
+  const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio"];
   args.push("--permission-mode", session.permission ?? "acceptEdits");
   if (session.model) args.push("--model", session.model);
   if (session.effort) args.push("--effort", session.effort);
@@ -38,6 +40,63 @@ export function buildArgs(session) {
     args.push("--session-id", randomUUID());
   }
   return args;
+}
+
+// ── 실행 중 대화(control 프로토콜) ──────────────────────────────
+// stdin을 열어 둔 채 요청을 보낸다. 턴이 끝나면(result) stdin을 닫아 CLI를 끝낸다.
+export const interactive = true;
+
+export const initLine = () => JSON.stringify({ type: "control_request", request_id: `init-${randomUUID()}`, request: { subtype: "initialize" } });
+
+export const userLine = (text) => JSON.stringify({
+  type: "user",
+  message: { role: "user", content: [{ type: "text", text }] },
+  parent_tool_use_id: null,
+  session_id: "",
+});
+
+export const controlResponse = (requestId, response) => JSON.stringify({
+  type: "control_response",
+  response: { subtype: "success", request_id: requestId, response },
+});
+
+// CLI가 보낸 control_request를 화면에 띄울 요청으로 바꾼다. 화면에 물을 필요가 없는 요청이면 null.
+// { kind: "question" | "permission", ... }
+export function parseControl(msg) {
+  const req = msg.request ?? {};
+  if (req.subtype !== "can_use_tool") return null;
+  const input = req.input ?? {};
+  if (req.tool_name === "AskUserQuestion") {
+    return { kind: "question", questions: input.questions ?? [], input };
+  }
+  return {
+    kind: "permission",
+    tool: req.tool_name,
+    text: toolSummary(req.tool_name, input),
+    detail: truncate(input),
+    reason: req.decision_reason ?? null,
+    input,
+    suggestions: req.permission_suggestions ?? [],
+  };
+}
+
+// 사용자의 답을 AskUserQuestion 결과로 바꾼다. 키는 질문 문장, 값은 고른 선택지(여러 개면 ", "로 잇는다).
+export function questionResponse(input, answers) {
+  const result = {};
+  (input.questions ?? []).forEach((q, i) => {
+    const a = answers?.[i] ?? {};
+    const value = [...(a.selected ?? []), String(a.text ?? "").trim()].filter(Boolean).join(", ");
+    if (value) result[q.question] = value;
+  });
+  return { behavior: "allow", updatedInput: { questions: input.questions, answers: result } };
+}
+
+// decision: allow | always | deny
+export function permissionResponse(pending, decision, message) {
+  if (decision === "deny") return { behavior: "deny", message: message || "사용자가 거절했습니다." };
+  const response = { behavior: "allow", updatedInput: pending.input };
+  if (decision === "always" && pending.suggestions?.length) response.updatedPermissions = pending.suggestions;
+  return response;
 }
 
 function truncate(text, max = 4000) {
@@ -115,10 +174,11 @@ export function parseLine(line) {
     case "result": {
       const cost = typeof msg.total_cost_usd === "number" ? ` · 환산 비용 $${msg.total_cost_usd.toFixed(4)}` : "";
       const seconds = msg.duration_ms ? ` · ${(msg.duration_ms / 1000).toFixed(1)}초` : "";
-      if (msg.is_error) return [{ kind: "error", text: msg.result ?? "실행 실패" }];
+      // final: 턴이 끝났다는 표시(runner가 stdin을 닫는다)
+      if (msg.is_error) return [{ kind: "error", text: msg.result || (msg.errors ?? []).join("\n") || "실행 실패", final: true }];
       // 모델별 컨텍스트 창 크기. 하위 에이전트 모델이 섞여 있으면 가장 큰 값(주 모델)을 쓴다.
       const windows = Object.values(msg.modelUsage ?? {}).map((m) => m.contextWindow).filter(Number.isFinite);
-      const result = { kind: "result", text: `턴 완료${seconds}${cost}` };
+      const result = { kind: "result", text: `턴 완료${seconds}${cost}`, final: true };
       if (windows.length) result.context = { window: Math.max(...windows) };
       return [result];
     }

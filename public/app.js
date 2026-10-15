@@ -1,3 +1,5 @@
+import { renderMarkdown } from "./markdown.js";
+
 const $ = (id) => document.getElementById(id);
 
 const state = {
@@ -390,10 +392,12 @@ function renderSessionList() {
     class: `session-item${state.current?.id === s.id ? " active" : ""}`,
     onclick: sessionOpener(s.id),
     onauxclick: sessionOpener(s.id),
+    oncontextmenu: (e) => openSessionMenu(e, s),
   },
   el("span", { class: "top" },
     el("span", { class: `dot ${s.state}` }),
     el("span", { class: "name" }, s.title),
+    s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : null,
     s.compactions ? lifePill(s) : null),
   el("span", { class: "sub" }, sub));
   const chats = items.filter((s) => s.chat);
@@ -469,6 +473,7 @@ async function renderProject() {
   $("p-path").textContent = p.path;
   $("p-registered").hidden = p.registered;
   renderProjectSessions();
+  loadSkills(p.path);
   renderHub();
   table("p-found", [["세션"], ["에이전트"], ["요청", "num"], ["마지막 사용", "num"], ["", "right"]], [],
     "기록을 찾는 중…");
@@ -484,15 +489,37 @@ async function renderFound(p) {
     return;
   }
   if (state.project !== p.path) return; // 기다리는 사이 다른 화면으로 이동함
-  table("p-found", [["세션"], ["에이전트"], ["요청", "num"], ["마지막 사용", "num"], ["", "right"]],
-    found.map((f) => el("tr", {},
-      el("td", { class: "title-cell", title: `${f.title}\n${f.cwd}\n${f.agentSessionId}` }, f.title || "(제목 없음)"),
-      el("td", {}, badge(f.agent)),
-      el("td", { class: "num" }, String(f.turns)),
-      el("td", { class: "num" }, timeAgo(f.updatedAt)),
-      el("td", { class: "right" }, f.linkedId
+  // 숨긴 기록은 "숨긴 기록 보기"를 눌렀을 때만 보인다.
+  const hiddenCount = found.filter((f) => f.hidden).length;
+  const shown = found.filter((f) => state.showHiddenFound || !f.hidden);
+  const hide = async (f, hidden) => {
+    try {
+      await api("POST", "/api/projects/hide", { agentSessionId: f.agentSessionId, hidden });
+    } catch (err) {
+      return alert(err.message);
+    }
+    renderFound(p);
+  };
+  const rows = shown.map((f) => el("tr", { class: f.hidden ? "hidden-found" : "" },
+    el("td", { class: "title-cell", title: `${f.title}\n${f.cwd}\n${f.agentSessionId}` }, f.title || "(제목 없음)"),
+    el("td", {}, badge(f.agent)),
+    el("td", { class: "num" }, String(f.turns)),
+    el("td", { class: "num" }, timeAgo(f.updatedAt)),
+    el("td", { class: "right" },
+      f.linkedId
         ? el("button", { class: "ghost sm", onclick: () => selectSession(f.linkedId) }, "열기")
-        : el("button", { class: "sm", onclick: (e) => importSession(p, f, e.target) }, "가져오기")))),
+        : el("button", { class: "sm", onclick: (e) => importSession(p, f, e.target) }, "가져오기"),
+      " ",
+      el("button", { class: "ghost sm", title: f.hidden ? "목록에 다시 보입니다" : "이 목록에서만 숨깁니다. Claude Code·Codex 기록은 지우지 않습니다.", onclick: () => hide(f, !f.hidden) },
+        f.hidden ? "다시 보이기" : "숨기기"))));
+  if (hiddenCount) {
+    rows.push(el("tr", { class: "empty-row" }, el("td", { colspan: "5" },
+      el("button", { class: "ghost sm", onclick: () => {
+        state.showHiddenFound = !state.showHiddenFound;
+        renderFound(p);
+      } }, state.showHiddenFound ? "숨긴 기록 감추기" : `숨긴 기록 ${hiddenCount}개 보기`))));
+  }
+  table("p-found", [["세션"], ["에이전트"], ["요청", "num"], ["마지막 사용", "num"], ["", "right"]], rows,
     "Claude Code나 Codex에서 이 폴더로 만든 세션이 없습니다.");
 }
 
@@ -525,17 +552,26 @@ const GAP_X = 96;
 const GAP_Y = 24;
 const PAD = 20;
 const SVG_NS = "http://www.w3.org/2000/svg";
+const CARD_SIZE = { w: CARD_W, h: CARD_H };
+// 스킬 노드. 그래프 안에서는 "skill:<이름>"을 id로 쓴다.
+const SKILL_SIZE = { w: 200, h: 64 };
+const SKILL_PREFIX = "skill:";
+const isSkillNode = (id) => id.startsWith(SKILL_PREFIX);
+const nodeSize = (id) => (isSkillNode(id) ? SKILL_SIZE : CARD_SIZE);
 const WHEN_LABEL = { success: "성공 시", error: "실패 시", always: "항상", manual: "수동" };
-const linkLabel = (l) => (l.when === "keyword" ? `"${l.keyword}" 있으면` : WHEN_LABEL[l.when]);
+const linkLabel = (l) => `${l.when === "keyword" ? `"${l.keyword}" 있으면` : WHEN_LABEL[l.when]}${l.approve ? " · 승인 후" : ""}`;
 const sessionById = (id) => state.sessions.find((s) => s.id === id);
 const firstLine = (text) => text?.split(/\r?\n/)[0] ?? "";
 
 async function loadLinks() {
+  const before = new Set((state.links ?? []).filter((l) => l.pending).map((l) => l.id));
   try {
     state.links = await api("GET", "/api/links");
   } catch {
     return;
   }
+  // 새로 승인을 기다리는 넘기기가 생기면 알린다.
+  for (const link of state.links) if (link.pending && !before.has(link.id)) notifyGate(link);
   if (state.view === "project") renderGraph();
   if (state.view === "session") renderFlow();
 }
@@ -583,10 +619,11 @@ function renderGraph() {
   const sessions = state.sessions
     .filter((s) => samePath(s.projectPath, state.project))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  if (!sessions.length) {
+  const skills = samePath(state.skillsProject, state.project) ? state.skills ?? [] : [];
+  if (!sessions.length && !skills.length) {
     state.graph = null;
     box.replaceChildren(el("div", { class: "graph-empty" },
-      "이 프로젝트에서 만든 세션이 없습니다. 새 세션을 만들면 카드로 보입니다."));
+      "이 프로젝트에서 만든 세션이 없습니다. 여기서 우클릭하거나 새 세션을 만들면 카드로 보입니다."));
     return;
   }
   const ids = new Set(sessions.map((s) => s.id));
@@ -594,6 +631,12 @@ function renderGraph() {
   // 오케스트레이터가 만든 세션은 지휘선으로 잇고, 배치도 오케스트레이터를 앞에 둔다.
   const commands = sessions.filter((s) => ids.has(s.createdBy)).map((s) => ({ from: s.createdBy, to: s.id }));
   const pos = layoutGraph(sessions, [...commands, ...links]);
+  // 옮기지 않은 스킬 노드는 세션 카드 아래에 한 줄로 놓는다.
+  const bottom = Math.max(0, ...[...pos.values()].map((p) => p.y + CARD_H + GAP_Y * 2));
+  skills.filter((k) => !k.pos).forEach((k, i) => pos.set(`${SKILL_PREFIX}${k.name}`, { x: PAD + i * (SKILL_SIZE.w + GAP_Y), y: bottom || PAD }));
+  for (const k of skills) if (k.pos) pos.set(`${SKILL_PREFIX}${k.name}`, k.pos);
+  const skillNames = new Set(skills.map((k) => k.name));
+  const skillEdges = sessions.flatMap((s) => (s.skills ?? []).filter((n) => skillNames.has(n)).map((skill) => ({ skill, session: s.id })));
 
   const canvas = el("div", { class: "graph-canvas" });
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -606,19 +649,171 @@ function renderGraph() {
     const role = [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ");
     const orchestrator = s.kind === "orchestrator";
     const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}`, "data-id": s.id, title: s.role || s.title },
-      el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null, pill(s.state)),
+      el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null,
+        s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : pill(s.state)),
       el("div", { class: "gcard-title" }, s.title),
       el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
-      el("div", { class: "gcard-foot" }, el("span", {}, timeAgo(s.updatedAt)), lifePill(s)),
+      el("div", { class: "gcard-foot" }, el("span", {}, timeAgo(s.updatedAt)),
+        el("span", { class: "gcard-life" }, lifePill(s),
+          el("button", {
+            type: "button",
+            class: "gcard-restart",
+            title: "다시 시작: CLI 대화를 새로 시작해 컨텍스트를 비웁니다. 기록·역할·연결은 그대로 둡니다.",
+            onclick: () => restartSession(s),
+            ...(s.state === "running" ? { disabled: "" } : {}),
+          }, "↻"))),
       el("span", { class: "gcard-handle", title: "끌어서 다른 세션에 연결" }));
     cards.set(s.id, card);
     canvas.append(card);
   }
+  for (const k of skills) {
+    const id = `${SKILL_PREFIX}${k.name}`;
+    const node = el("div", { class: "gskill", "data-id": id, title: `${k.name}\n${k.description}\n\n누르면 편집, ● 손잡이를 세션에 끌어 놓으면 그 세션이 이 스킬을 씁니다.` },
+      el("div", { class: "gskill-top" }, el("span", { class: "pill skill" }, "스킬"), el("span", { class: "gskill-name" }, k.name)),
+      el("div", { class: "gskill-desc" }, k.description),
+      el("span", { class: "gcard-handle", title: "끌어서 세션에 이으면 그 세션이 이 스킬을 씁니다" }));
+    cards.set(id, node);
+    canvas.append(node);
+  }
 
-  state.graph = { canvas, svg, cards, pos, links, commands };
+  state.graph = { canvas, svg, cards, pos, links, commands, skillEdges };
   placeCards();
   box.replaceChildren(canvas);
   canvas.addEventListener("pointerdown", onGraphPointerDown);
+}
+
+// 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 스킬 노드는 스킬 메뉴, 빈 곳은 그 자리에 새 세션·새 스킬을 만든다.
+$("p-graph").addEventListener("contextmenu", (e) => {
+  if (e.target.closest(".edge-label")) return;
+  const card = e.target.closest(".gcard, .gskill");
+  if (card && !isSkillNode(card.dataset.id)) {
+    const s = sessionById(card.dataset.id);
+    if (s) openSessionMenu(e, s);
+    return;
+  }
+  if (card) {
+    const skill = skillByName(card.dataset.id.slice(SKILL_PREFIX.length));
+    if (skill) openContextMenu(e, `스킬 ${skill.name}`, [
+      ["편집", () => openSkillDialog(skill)],
+      ["세션 연결 모두 끊기", () => detachSkillEverywhere(skill.name)],
+      null,
+      ["삭제", () => removeSkill(skill), { danger: true }],
+    ]);
+    return;
+  }
+  const at = state.graph ? canvasPoint(e) : { x: PAD, y: PAD };
+  const pos = { x: Math.max(0, Math.round(at.x)), y: Math.max(0, Math.round(at.y)) };
+  openContextMenu(e, "여기에 만들기", [
+    ["새 세션", () => openNew(state.project, { pos })],
+    ["새 스킬", () => openSkillDialog(null, pos)],
+  ]);
+});
+
+// 우클릭 메뉴. entries: [이름, 동작, { danger, disabled, title }] 또는 구분선 null
+function openContextMenu(e, title, entries) {
+  e.preventDefault();
+  closeContextMenu();
+  const menu = el("div", { class: "context-menu", role: "menu" }, el("div", { class: "menu-title" }, title),
+    ...entries.map((entry) => {
+      if (!entry) return el("hr");
+      const [label, action, { danger = false, disabled = false, title: tip = "" } = {}] = entry;
+      return el("button", {
+        type: "button",
+        class: `menu-item${danger ? " danger" : ""}`,
+        title: tip,
+        ...(disabled ? { disabled: "" } : {}),
+        onclick: () => {
+          closeContextMenu();
+          action();
+        },
+      }, label);
+    }));
+  document.body.append(menu);
+  const { width, height } = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(e.clientX, innerWidth - width - 8)}px`;
+  menu.style.top = `${Math.min(e.clientY, innerHeight - height - 8)}px`;
+}
+
+// ── 스킬 ────────────────────────────────────────────────────────
+const skillByName = (name) => (state.skills ?? []).find((k) => k.name === name);
+
+async function loadSkills(projectPath = state.project) {
+  if (!projectPath) return;
+  try {
+    const skills = await api("GET", `/api/skills?path=${encodeURIComponent(projectPath)}`);
+    if (!samePath(projectPath, state.project)) return;
+    state.skills = skills;
+    state.skillsProject = projectPath;
+  } catch {
+    return;
+  }
+  if (state.view === "project") renderGraph();
+}
+
+// skill이 없으면 새로 만든다. pos는 새 스킬 노드를 놓을 자리.
+function openSkillDialog(skill, pos = null) {
+  state.editingSkill = { skill, pos };
+  $("skill-heading").textContent = skill ? `스킬 ${skill.name}` : "새 스킬";
+  $("skill-name").value = skill?.name ?? "";
+  $("skill-name").disabled = !!skill;
+  $("skill-description").value = skill?.description ?? "";
+  $("skill-body").value = skill?.body ?? "";
+  $("skill-file").textContent = skill ? skill.file : `${state.project}\\.claude\\skills\\<이름>\\SKILL.md 로 저장합니다.`;
+  $("skill-delete").hidden = !skill;
+  $("skill-error").textContent = "";
+  $("skill-dialog").showModal();
+}
+
+$("skill-form").addEventListener("submit", async (e) => {
+  const action = e.submitter?.value;
+  if (action === "cancel") return;
+  e.preventDefault();
+  const { skill, pos } = state.editingSkill;
+  if (action === "delete") {
+    $("skill-dialog").close();
+    return removeSkill(skill);
+  }
+  const body = { projectPath: state.project, description: $("skill-description").value, body: $("skill-body").value };
+  try {
+    if (skill) await api("PUT", `/api/skills/${skill.name}`, body);
+    else await api("POST", "/api/skills", { ...body, name: $("skill-name").value.trim(), pos });
+    $("skill-dialog").close();
+    await loadSkills();
+  } catch (err) {
+    $("skill-error").textContent = err.message;
+  }
+});
+
+async function removeSkill(skill) {
+  if (!confirm(`스킬 "${skill.name}"을(를) 삭제할까요?\n\n${skill.file} 폴더째 지우고, 이 스킬을 이어 둔 세션에서도 뺍니다.`)) return;
+  try {
+    await api("DELETE", `/api/skills/${skill.name}?path=${encodeURIComponent(state.project)}`);
+  } catch (err) {
+    alert(err.message);
+  }
+  await Promise.all([loadSkills(), loadSessions()]);
+}
+
+// 세션이 쓰는 스킬 목록을 바꾼다.
+async function setSessionSkills(sessionId, change) {
+  const s = sessionById(sessionId);
+  if (!s) return;
+  const next = change(s.skills ?? []);
+  try {
+    await api("PUT", `/api/sessions/${sessionId}`, { skills: next });
+  } catch (err) {
+    alert(err.message);
+  }
+  await loadSessions();
+  if (state.view === "project") renderGraph();
+}
+
+const attachSkill = (sessionId, name) => setSessionSkills(sessionId, (list) => [...new Set([...list, name])]);
+const detachSkill = (sessionId, name) => setSessionSkills(sessionId, (list) => list.filter((n) => n !== name));
+
+async function detachSkillEverywhere(name) {
+  const using = state.sessions.filter((s) => samePath(s.projectPath, state.project) && s.skills?.includes(name));
+  for (const s of using) await detachSkill(s.id, name);
 }
 
 function placeCards() {
@@ -627,27 +822,29 @@ function placeCards() {
   let height = 0;
   for (const [id, card] of g.cards) {
     const p = g.pos.get(id);
+    const size = nodeSize(id);
     card.style.left = `${p.x}px`;
     card.style.top = `${p.y}px`;
-    width = Math.max(width, p.x + CARD_W + PAD);
-    height = Math.max(height, p.y + CARD_H + PAD);
+    width = Math.max(width, p.x + size.w + PAD);
+    height = Math.max(height, p.y + size.h + PAD);
   }
   g.canvas.style.width = `${width}px`;
   g.canvas.style.height = `${height}px`;
   drawEdges();
 }
 
-function edgePath(a, b) {
-  const x1 = a.x + CARD_W;
-  const y1 = a.y + CARD_H / 2;
+// sa·sb: 양 끝 노드 크기(세션 카드와 스킬 노드는 크기가 다르다)
+function edgePath(a, b, sa = CARD_SIZE, sb = CARD_SIZE) {
+  const x1 = a.x + sa.w;
+  const y1 = a.y + sa.h / 2;
   const x2 = b.x;
-  const y2 = b.y + CARD_H / 2;
+  const y2 = b.y + sb.h / 2;
   if (x2 < x1) {
     // 되돌아가는 연결은 카드 아래쪽끼리 잇는다.
-    const sx = a.x + CARD_W / 2;
-    const tx = b.x + CARD_W / 2;
-    const sy = a.y + CARD_H;
-    const ty = b.y + CARD_H;
+    const sx = a.x + sa.w / 2;
+    const tx = b.x + sb.w / 2;
+    const sy = a.y + sa.h;
+    const ty = b.y + sb.h;
     const low = Math.max(sy, ty) + 44;
     return { d: `M${sx},${sy} C${sx},${low} ${tx},${low} ${tx},${ty}`, mid: { x: (sx + tx) / 2, y: low - 11 } };
   }
@@ -665,6 +862,20 @@ function drawEdges() {
     path.setAttribute("class", "edge command");
     g.svg.append(path);
   }
+  // 스킬 → 세션: 그 세션이 이 스킬을 쓴다. 라벨을 누르면 끊는다.
+  for (const { skill, session } of g.skillEdges) {
+    const from = `${SKILL_PREFIX}${skill}`;
+    const { d, mid } = edgePath(g.pos.get(from), g.pos.get(session), SKILL_SIZE, CARD_SIZE);
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("class", "edge skill");
+    path.setAttribute("marker-end", "url(#arrow)");
+    g.svg.append(path);
+    const label = el("button", { class: "edge-label skill-label", type: "button", "data-skill-edge": `${session}|${skill}`, title: "누르면 이 스킬 연결을 끊습니다" }, "스킬");
+    label.style.left = `${mid.x}px`;
+    label.style.top = `${mid.y}px`;
+    g.canvas.append(label);
+  }
   const placed = []; // 라벨이 겹치면 아래로 비킨다.
   for (const link of g.links) {
     const { d, mid } = edgePath(g.pos.get(link.from), g.pos.get(link.to));
@@ -674,11 +885,12 @@ function drawEdges() {
     const path = document.createElementNS(SVG_NS, "path");
     const live = sessionById(link.from)?.state === "running";
     path.setAttribute("d", d);
-    path.setAttribute("class", `edge${link.enabled ? "" : " off"}${live ? " live" : ""}`);
+    path.setAttribute("class", `edge${link.enabled ? "" : " off"}${live ? " live" : ""}${link.pending ? " gated" : ""}`);
     path.setAttribute("marker-end", "url(#arrow)");
     g.svg.append(path);
-    const label = el("button", { class: `edge-label${link.enabled ? "" : " off"}`, type: "button", "data-link": link.id },
-      linkLabel(link));
+    const label = link.pending ? gateLabel(link)
+      : el("button", { class: `edge-label${link.enabled ? "" : " off"}${link.approve ? " gate" : ""}`, type: "button", "data-link": link.id },
+        linkLabel(link));
     label.style.left = `${mid.x}px`;
     label.style.top = `${mid.y}px`;
     g.canvas.append(label);
@@ -690,9 +902,42 @@ function canvasPoint(e) {
   return { x: e.clientX - rect.left, y: e.clientY - rect.top };
 }
 
+// 연결선 가운데의 승인 대기. 승인하면 그때 받는 세션으로 넘긴다.
+function gateLabel(link) {
+  const decide = async (e, action) => {
+    e.stopPropagation();
+    for (const b of e.currentTarget.parentElement.querySelectorAll("button")) b.disabled = true;
+    try {
+      await api("POST", `/api/links/${link.id}/decide`, { action });
+    } catch (err) {
+      alert(err.message);
+    }
+    loadLinks();
+  };
+  const from = sessionById(link.from)?.title ?? "?";
+  const to = sessionById(link.to)?.title ?? "?";
+  return el("div", { class: "edge-label gate-pending", "data-link": link.id, title: `${from} → ${to}\n${link.pending.preview || "(답변 없음)"}` },
+    el("span", { class: "gate-text" }, "승인 대기"),
+    el("button", { type: "button", class: "gate-btn ok", title: "승인하고 넘기기", onclick: (e) => decide(e, "approve") }, "✓"),
+    el("button", { type: "button", class: "gate-btn no", title: "넘기지 않기", onclick: (e) => decide(e, "reject") }, "✕"));
+}
+
+function notifyGate(link) {
+  if (!("Notification" in window) || Notification.permission !== "granted" || document.hasFocus()) return;
+  const n = new Notification("넘기기 승인을 기다립니다", {
+    body: `${sessionById(link.from)?.title ?? "?"} → ${sessionById(link.to)?.title ?? "?"}`,
+    tag: `gate-${link.id}`,
+  });
+  const s = sessionById(link.from);
+  n.onclick = () => {
+    window.focus();
+    if (s?.projectPath) goProject(s.projectPath);
+  };
+}
+
 // 카드를 누르고 떼면 열고, 끌면 옮긴다. 손잡이를 끌어 다른 카드에 놓으면 연결한다.
 function onGraphPointerDown(e) {
-  if (e.button === 1 && e.target.closest(".gcard")) {
+  if (e.button === 1 && e.target.closest(".gcard") && !e.target.closest(".gskill")) {
     e.preventDefault();
     openSessionWindow(e.target.closest(".gcard").dataset.id);
     return;
@@ -700,14 +945,21 @@ function onGraphPointerDown(e) {
   if (e.button !== 0) return;
   const g = state.graph;
   const label = e.target.closest(".edge-label");
+  if (label && e.target.closest(".gate-btn")) return; // 승인·거절 버튼은 자기 onclick으로 처리한다.
+  if (label?.dataset.skillEdge) {
+    const [sessionId, name] = label.dataset.skillEdge.split("|");
+    if (confirm(`"${sessionById(sessionId)?.title}" 세션에서 스킬 "${name}" 연결을 끊을까요?`)) detachSkill(sessionId, name);
+    return;
+  }
   if (label) {
     openLinkDialog(state.links.find((l) => l.id === label.dataset.link));
     return;
   }
-  const card = e.target.closest(".gcard");
-  if (!card) return;
+  const card = e.target.closest(".gcard, .gskill");
+  if (!card || e.target.closest(".gcard-restart")) return; // 다시 시작 버튼은 카드 열기·끌기와 따로 동작한다.
   e.preventDefault();
   const id = card.dataset.id;
+  const skill = isSkillNode(id) ? skillByName(id.slice(SKILL_PREFIX.length)) : null;
   const start = canvasPoint(e);
   const origin = { ...g.pos.get(id) };
   const connecting = e.target.classList.contains("gcard-handle");
@@ -721,8 +973,8 @@ function onGraphPointerDown(e) {
     g.dragging = true;
     if (connecting) {
       const from = g.pos.get(id);
-      const x1 = from.x + CARD_W;
-      const y1 = from.y + CARD_H / 2;
+      const x1 = from.x + nodeSize(id).w;
+      const y1 = from.y + nodeSize(id).h / 2;
       if (!temp) {
         temp = document.createElementNS(SVG_NS, "path");
         temp.setAttribute("class", "temp");
@@ -747,15 +999,24 @@ function onGraphPointerDown(e) {
     g.canvas.classList.remove("connecting");
     temp?.remove();
     if (!moved) {
-      if (!connecting) sessionOpener(id)(ev);
+      if (!connecting) skill ? openSkillDialog(skill) : sessionOpener(id)(ev);
       return;
     }
     if (connecting) {
-      const target = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".gcard");
-      if (target && target.dataset.id !== id) openLinkDialog(null, id, target.dataset.id);
+      // 스킬과 세션을 이으면 그 세션이 스킬을 쓴다. 세션끼리 이으면 넘기기 연결을 만든다.
+      const targetId = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".gcard, .gskill")?.dataset.id;
+      if (!targetId || targetId === id) return;
+      if (isSkillNode(id) && !isSkillNode(targetId)) attachSkill(targetId, id.slice(SKILL_PREFIX.length));
+      else if (!isSkillNode(id) && isSkillNode(targetId)) attachSkill(id, targetId.slice(SKILL_PREFIX.length));
+      else if (!isSkillNode(id)) openLinkDialog(null, id, targetId);
       return;
     }
     const p = g.pos.get(id);
+    if (skill) {
+      skill.pos = { x: Math.round(p.x), y: Math.round(p.y) };
+      api("PUT", `/api/skills/${skill.name}`, { projectPath: state.project, pos: skill.pos }).catch((err) => alert(err.message));
+      return;
+    }
     const s = sessionById(id);
     if (s) s.graphPos = { x: Math.round(p.x), y: Math.round(p.y) };
     try {
@@ -772,8 +1033,13 @@ function onGraphPointerDown(e) {
 $("p-relayout").addEventListener("click", async () => {
   const placed = state.sessions.filter((s) => samePath(s.projectPath, state.project) && s.graphPos);
   for (const s of placed) s.graphPos = null;
+  const placedSkills = (state.skills ?? []).filter((k) => k.pos);
+  for (const k of placedSkills) k.pos = null;
   renderGraph();
-  await Promise.all(placed.map((s) => api("PUT", `/api/sessions/${s.id}`, { graphPos: null }).catch(() => {})));
+  await Promise.all([
+    ...placed.map((s) => api("PUT", `/api/sessions/${s.id}`, { graphPos: null }).catch(() => {})),
+    ...placedSkills.map((k) => api("PUT", `/api/skills/${k.name}`, { projectPath: state.project, pos: null }).catch(() => {})),
+  ]);
 });
 
 // ── 연결 설정 ───────────────────────────────────────────────────
@@ -785,6 +1051,7 @@ function openLinkDialog(link, from = link?.from, to = link?.to) {
   $("link-keyword").value = link?.keyword ?? "";
   $("link-note").value = link?.note ?? "";
   $("link-enabled").checked = link?.enabled ?? true;
+  $("link-approve").checked = link?.approve ?? false;
   $("link-delete").hidden = !link;
   $("link-run").hidden = !link;
   $("link-error").textContent = "";
@@ -807,6 +1074,7 @@ $("link-form").addEventListener("submit", async (e) => {
     keyword: $("link-keyword").value,
     note: $("link-note").value,
     enabled: $("link-enabled").checked,
+    approve: $("link-approve").checked,
   };
   try {
     if (action === "delete") {
@@ -989,7 +1257,77 @@ function renderState() {
   $("s-stop").disabled = !running;
   $("s-restart").disabled = running || !s.agentSessionId;
   renderLife("s-life", s);
-  $("s-form").querySelector("button").disabled = running;
+  renderComposer("s", s);
+}
+
+// ── 실행 중에 보내기 ────────────────────────────────────────────
+// Claude는 Enter로 지금 작업에 붙이고(CLI가 다음 도구 실행 사이에 읽는다), Tab이나 "대기열에 추가"로 끝난 뒤 보낸다.
+// 실행 중인 작업에 붙일 수 없는 Codex는 대기열에만 넣는다.
+function composerMode(s, submitter) {
+  if (s?.state !== "running") return "send";
+  return submitter === "queue" || !s.canInject ? "queue" : "steer";
+}
+
+function renderComposer(prefix, s) {
+  const running = s?.state === "running";
+  const steer = running && s.canInject;
+  const send = $(`${prefix}-send`);
+  send.disabled = false;
+  send.textContent = !running ? "보내기" : steer ? "지금 붙이기" : "대기열에 추가";
+  send.title = !running ? "" : steer ? "지금 하는 작업에 이 요청을 붙입니다 (Enter)" : "지금 작업이 끝나면 보냅니다 (Enter)";
+  $(`${prefix}-queue-btn`).hidden = !steer;
+  $(`${prefix}-prompt`).placeholder = !running
+    ? (prefix === "c" ? "메시지를 입력하세요" : "요청을 입력하세요") + " · Enter 보내기, Shift+Enter 줄바꿈"
+    : steer ? "작업 중 · Enter 지금 작업에 붙이기, Tab 대기열에 추가" : "작업 중 · Enter 대기열에 추가 (끝나면 차례로 보냅니다)";
+  renderQueue(prefix, s);
+}
+
+// 끝나면 보낼 요청 목록. 지금 작업에 붙이거나, 실행 중이 아니면 바로 보내거나, 지울 수 있다.
+function renderQueue(prefix, s) {
+  const items = s?.queue ?? [];
+  const running = s?.state === "running";
+  const act = async (item, action) => {
+    try {
+      if (action === "delete") await api("DELETE", `/api/sessions/${s.id}/queue/${item.id}`);
+      else await api("POST", `/api/sessions/${s.id}/queue/${item.id}`, { action });
+    } catch (err) {
+      alert(err.message);
+    }
+    refreshQueue(s.id);
+  };
+  $(`${prefix}-queue`).hidden = !items.length;
+  $(`${prefix}-queue`).replaceChildren(...items.map((item) => el("li", { class: "queue-item" },
+    el("span", { class: "queue-tag" }, item.user ? "대기" : `↳ ${item.fromTitle ?? "넘어온 작업"}`),
+    el("span", { class: "queue-text", title: item.text }, firstLine(item.text)),
+    running && s.canInject && item.user ? el("button", { type: "button", class: "ghost sm", onclick: () => act(item, "steer") }, "지금 붙이기") : null,
+    running ? null : el("button", { type: "button", class: "ghost sm", onclick: () => act(item, "send") }, "보내기"),
+    el("button", { type: "button", class: "ghost sm danger", title: "대기열에서 지우기", onclick: () => act(item, "delete") }, "×"))));
+}
+
+async function refreshQueue(sessionId) {
+  if (state.current?.id !== sessionId) return;
+  try {
+    const { queue } = await api("GET", `/api/sessions/${sessionId}`);
+    if (state.current?.id !== sessionId) return;
+    state.current.queue = queue;
+  } catch {
+    return;
+  }
+  renderComposer(state.view === "chat" ? "c" : "s", state.current);
+}
+
+// Enter: 보내기(실행 중이면 붙이기 또는 대기열), Tab: 실행 중이면 대기열에 추가, Shift+Enter: 줄바꿈. 한글 조합 중인 키는 무시한다.
+function composerKeys(prefix) {
+  $(`${prefix}-prompt`).addEventListener("keydown", (e) => {
+    if (e.isComposing) return;
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      $(`${prefix}-form`).requestSubmit($(`${prefix}-send`));
+    } else if (e.key === "Tab" && !e.shiftKey && state.current?.state === "running" && e.target.value.trim()) {
+      e.preventDefault();
+      $(`${prefix}-form`).requestSubmit($(`${prefix}-queue-btn`).hidden ? $(`${prefix}-send`) : $(`${prefix}-queue-btn`));
+    }
+  });
 }
 
 const PLAN_STATUS = { pending: "승인 대기", applied: "실행함", rejected: "거절함", invalid: "형식 오류" };
@@ -1042,9 +1380,138 @@ function renderPlan(ev) {
   return node;
 }
 
+// ── 에이전트의 질문 ─────────────────────────────────────────────
+const QUESTION_FENCE = "agenthub-question";
+const QUESTION_BLOCK = new RegExp("```" + QUESTION_FENCE + "\\s*\\n[\\s\\S]*?```", "g");
+const QUESTION_STATUS = { pending: "답을 기다림", answered: "답함", skipped: "지나감", invalid: "형식 오류" };
+
+// 선택지를 고르거나 직접 적어 답한다. 답은 다음 요청으로 에이전트에게 간다.
+function renderQuestion(ev) {
+  const s = state.current;
+  const pending = ev.status === "pending";
+  const node = el("li", { class: `ev question ${ev.status}` },
+    el("div", { class: "plan-head" }, el("b", {}, "질문"), el("span", { class: `pill q-${ev.status}` }, QUESTION_STATUS[ev.status] ?? ev.status)),
+    ev.error ? el("div", { class: "plan-error" }, ev.error) : null);
+  if (!ev.questions) return node;
+
+  const picks = ev.questions.map((_, i) => new Set(ev.answers?.[i]?.selected ?? []));
+  const texts = [];
+  const submit = async (button) => {
+    const answers = ev.questions.map((_, i) => ({ selected: [...picks[i]], text: texts[i].value.trim() }));
+    if (!answers.some((a) => a.selected.length || a.text)) return alert("답을 고르거나 적으세요.");
+    button.disabled = true;
+    try {
+      await api("POST", `/api/sessions/${s.id}/questions/${ev.questionId}`, { answers });
+    } catch (err) {
+      alert(err.message);
+      button.disabled = false;
+    }
+  };
+
+  ev.questions.forEach((q, i) => {
+    const group = el("div", { class: "q-options" });
+    for (const o of q.options) {
+      const attrs = { type: "button", class: `q-option${picks[i].has(o.label) ? " picked" : ""}`, "data-label": o.label };
+      if (!pending) attrs.disabled = "";
+      group.append(el("button", {
+        ...attrs,
+        onclick: () => {
+          const on = !picks[i].has(o.label);
+          if (!q.multiSelect) picks[i].clear();
+          if (on) picks[i].add(o.label);
+          else picks[i].delete(o.label);
+          for (const b of group.children) b.classList.toggle("picked", picks[i].has(b.dataset.label));
+        },
+      }, el("b", {}, o.label), o.description ? el("span", { class: "muted" }, o.description) : null));
+    }
+    const textAttrs = { class: "q-text", placeholder: pending ? "직접 답 적기 · Enter로 답하기" : "" };
+    if (!pending) textAttrs.disabled = "";
+    const text = el("input", textAttrs);
+    text.value = ev.answers?.[i]?.text ?? "";
+    text.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" && !e.isComposing) node.querySelector(".q-submit")?.click();
+    });
+    texts.push(text);
+    node.append(el("div", { class: "q-item" },
+      el("div", { class: "q-question" }, q.header ? el("span", { class: "q-header" }, q.header) : null, q.question,
+        q.multiSelect ? el("span", { class: "muted" }, " (여러 개 고를 수 있음)") : null),
+      q.options.length ? group : null,
+      text));
+  });
+  if (pending) {
+    node.append(el("div", { class: "plan-actions" },
+      el("button", { class: "primary sm q-submit", onclick: (e) => submit(e.currentTarget) }, "답하기")));
+  }
+  return node;
+}
+
+// 실행 중에 CLI가 묻는 권한 요청. 답할 때까지 CLI가 기다린다.
+const PERMISSION_STATUS = { pending: "허용을 기다림", allowed: "허용함", denied: "거절함", skipped: "지나감" };
+
+function renderPermission(ev) {
+  const s = state.current;
+  const decide = async (decision, button) => {
+    let message;
+    if (decision === "deny") {
+      message = prompt("거절 이유나 대신 할 일 (비워 두어도 됩니다)");
+      if (message === null) return;
+    }
+    for (const b of button.parentElement.children) b.disabled = true;
+    try {
+      await api("POST", `/api/sessions/${s.id}/permissions/${ev.requestId}`, { decision, message });
+    } catch (err) {
+      alert(err.message);
+      for (const b of button.parentElement.children) b.disabled = false;
+    }
+  };
+  const label = ev.status === "allowed" && ev.decision === "always" ? "항상 허용함" : PERMISSION_STATUS[ev.status] ?? ev.status;
+  const node = el("li", { class: `ev permission ${ev.status}` },
+    el("div", { class: "plan-head" }, el("b", {}, "권한 요청"), el("span", { class: `pill p-${ev.status}` }, label)),
+    el("div", { class: "perm-tool mono" }, ev.text),
+    ev.reason ? el("div", { class: "muted" }, ev.reason) : null,
+    ev.detail ? el("details", {}, el("summary", {}, "자세히"), el("pre", { class: "perm-detail" }, ev.detail)) : null);
+  if (ev.status === "pending") {
+    node.append(el("div", { class: "plan-actions" },
+      el("button", { class: "primary sm", onclick: (e) => decide("allow", e.currentTarget) }, "허용"),
+      ev.canRemember ? el("button", { class: "ghost sm", title: "이 프로젝트에서 같은 종류의 요청은 다시 묻지 않습니다", onclick: (e) => decide("always", e.currentTarget) }, "항상 허용") : null,
+      el("button", { class: "ghost sm danger", onclick: (e) => decide("deny", e.currentTarget) }, "거절")));
+  }
+  return node;
+}
+
+// 다른 창을 보고 있거나 다른 세션을 열어 둔 사이에 온 질문·권한 요청은 알림으로 알린다.
+function notifyQuestion(sessionId, event) {
+  const seeing = state.current?.id === sessionId && document.hasFocus();
+  if (seeing || !("Notification" in window)) return;
+  const s = sessionById(sessionId);
+  const permission = event.kind === "permission";
+  const show = () => {
+    const n = new Notification(`${s?.title ?? "세션"}에서 ${permission ? "허용을 기다립니다" : "질문이 왔습니다"}`, {
+      body: permission ? event.text : event.questions?.[0]?.question ?? "",
+      tag: `q-${event.questionId ?? event.requestId}`,
+    });
+    n.onclick = () => {
+      window.focus();
+      selectSession(sessionId);
+    };
+  };
+  if (Notification.permission === "granted") show();
+  else if (Notification.permission !== "denied") Notification.requestPermission().then((p) => p === "granted" && show());
+}
+
 function renderEvent(ev) {
-  const cls = `ev ${ev.kind}${ev.isError ? " is-error" : ""}`;
+  const cls = `ev ${ev.kind}${ev.isError ? " is-error" : ""}${ev.injected ? " injected" : ""}`;
   if (ev.kind === "plan") return renderPlan(ev);
+  if (ev.kind === "question") return renderQuestion(ev);
+  if (ev.kind === "permission") return renderPermission(ev);
+  // 질문 블록은 아래 질문 카드로 보여 주므로 답변 본문에서는 뺀다.
+  if (ev.kind === "text") {
+    // 에이전트 답변은 마크다운으로 보여 준다(renderMarkdown이 원문을 이스케이프한다).
+    const text = ev.text?.includes(QUESTION_FENCE) ? ev.text.replace(QUESTION_BLOCK, "").trim() : ev.text ?? "";
+    const node = el("li", { class: `${cls} md` });
+    node.innerHTML = renderMarkdown(text);
+    return node;
+  }
   if (ev.kind === "user" && ev.from) {
     // 연결된 세션에서 넘어온 요청은 접어서 보여 준다.
     const open = (e) => {
@@ -1073,22 +1540,17 @@ $("s-show-log").addEventListener("change", (e) => {
 $("s-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const prompt = $("s-prompt").value.trim();
-  if (!prompt || !state.current) return;
+  const s = state.current;
+  if (!prompt || !s) return;
   try {
-    await api("POST", `/api/sessions/${state.current.id}/messages`, { prompt });
+    const result = await api("POST", `/api/sessions/${s.id}/messages`, { prompt, mode: composerMode(s, e.submitter?.value) });
     $("s-prompt").value = "";
+    if (result.queued) refreshQueue(s.id);
   } catch (err) {
     alert(err.message);
   }
 });
-
-// Enter로 보내고 Shift+Enter로 줄을 바꾼다. 한글 조합 중인 Enter는 무시한다.
-$("s-prompt").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    $("s-form").requestSubmit();
-  }
-});
+composerKeys("s");
 
 $("s-crumb-project").addEventListener("click", (e) => {
   e.preventDefault();
@@ -1122,8 +1584,8 @@ $("role-form").addEventListener("submit", async (e) => {
 $("s-stop").addEventListener("click", () => api("POST", `/api/sessions/${state.current.id}/stop`).catch((e) => alert(e.message)));
 
 // CLI 대화만 새로 시작한다. 화면이 새로 그려지는 것은 서버가 보내는 session 이벤트로 한다.
-async function restartSession() {
-  const s = state.current;
+// s: 다시 시작할 세션(흐름 그래프 카드에서 누르면 그 카드의 세션, 아니면 보고 있는 세션)
+async function restartSession(s = state.current) {
   if (!s) return;
   const kept = s.chat ? "화면의 기록은 남지만" : "AgentHub 기록·역할·연결은 그대로 남지만";
   if (!confirm(`"${s.title}"을(를) 다시 시작할까요?\n\nCLI 대화를 새로 시작해 컨텍스트를 비웁니다. ${kept}, AI는 이전 대화 내용을 기억하지 못합니다.`)) return;
@@ -1133,7 +1595,7 @@ async function restartSession() {
     alert(err.message);
   }
 }
-$("s-restart").addEventListener("click", restartSession);
+$("s-restart").addEventListener("click", () => restartSession());
 
 $("s-delete").addEventListener("click", async () => {
   const s = state.current;
@@ -1150,6 +1612,83 @@ $("s-delete").addEventListener("click", async () => {
   if (s.projectPath) await goProject(s.projectPath);
   else goDashboard();
 });
+
+// ── 세션 우클릭 메뉴 ────────────────────────────────────────────
+// 흐름 그래프 카드와 사이드바 세션 목록에서 쓴다.
+function closeContextMenu() {
+  document.querySelector(".context-menu")?.remove();
+}
+
+function openSessionMenu(e, s) {
+  e.preventDefault();
+  closeContextMenu();
+  const running = s.state === "running";
+  const item = (label, action, { danger = false, disabled = false, title = "" } = {}) => el("button", {
+    type: "button",
+    class: `menu-item${danger ? " danger" : ""}`,
+    title,
+    ...(disabled ? { disabled: "" } : {}),
+    onclick: () => {
+      closeContextMenu();
+      action();
+    },
+  }, label);
+  const menu = el("div", { class: "context-menu", role: "menu" },
+    el("div", { class: "menu-title" }, s.title),
+    item("열기", () => selectSession(s.id)),
+    item("새 창으로 열기", () => openSessionWindow(s.id)),
+    item("다시 시작", () => restartSession(s), {
+      disabled: running, title: "CLI 대화만 새로 시작해 컨텍스트를 비웁니다. 화면 기록·역할·연결은 그대로 둡니다.",
+    }),
+    item("재생성", () => recreateSession(s), {
+      disabled: running, title: "같은 설정(역할·모델·권한·연결)으로 새 세션을 만들고 지금 세션은 지웁니다. 화면 기록도 비워집니다.",
+    }),
+    el("hr"),
+    item("삭제", () => confirmDeleteSession(s), { danger: true }));
+  document.body.append(menu);
+  // 화면 밖으로 나가지 않게 놓는다.
+  const { width, height } = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(e.clientX, innerWidth - width - 8)}px`;
+  menu.style.top = `${Math.min(e.clientY, innerHeight - height - 8)}px`;
+}
+
+document.addEventListener("pointerdown", (e) => {
+  if (!e.target.closest(".context-menu")) closeContextMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeContextMenu();
+});
+window.addEventListener("blur", closeContextMenu);
+window.addEventListener("resize", closeContextMenu);
+
+async function recreateSession(s) {
+  const folder = s.worktree ? `\n작업 폴더(${s.cwd})는 그대로 이어받습니다.` : "";
+  if (!confirm(`"${s.title}"을(를) 재생성할까요?\n\n같은 역할·모델·권한·연결로 새 세션을 만들고 지금 세션은 지웁니다. 화면 기록과 CLI 대화는 새로 시작합니다.${folder}`)) return;
+  try {
+    const created = await api("POST", `/api/sessions/${s.id}/recreate`);
+    await Promise.all([loadSessions(), loadLinks()]);
+    if (state.current?.id === s.id) await selectSession(created.id);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+// 확인을 받고 지운다. 보고 있던 세션이면 프로젝트(또는 채팅·대시보드) 화면으로 돌아간다.
+async function confirmDeleteSession(s) {
+  const note = s.imported ? "\n\n원래 Claude Code·Codex 기록은 지워지지 않습니다." : "";
+  if (!confirm(`"${s.title}" ${s.chat ? "채팅" : "세션 기록"}을 삭제할까요?${note}`)) return;
+  let removeWorktree = false;
+  if (s.worktree) {
+    removeWorktree = confirm(
+      `작업 폴더도 지울까요?\n${s.cwd}\n\n커밋하지 않은 변경이 있으면 지우지 않고 중단합니다. 브랜치 ${s.worktree.branch}는 남습니다.`);
+  }
+  if (!(await deleteSession(s, { removeWorktree }))) return;
+  await loadSessions();
+  if (state.current?.id !== s.id) return;
+  if (s.chat) openChat();
+  else if (s.projectPath) await goProject(s.projectPath);
+  else goDashboard();
+}
 
 // 세션을 지운다. 실행 중으로 멈춰 있거나 작업 폴더를 못 지우면 그 자리에서 어떻게 할지 묻는다. 지웠으면 true.
 async function deleteSession(s, { removeWorktree = false, force = false } = {}) {
@@ -1328,7 +1867,7 @@ function renderChatState() {
   if (s) renderLife("c-life", s);
   $("c-restart").hidden = !s?.agentSessionId;
   $("c-restart").disabled = running;
-  $("c-form").querySelector("button").disabled = running;
+  renderComposer("c", s);
   $("c-events").classList.toggle("running", running);
   if (running) $("c-empty").hidden = true;
 }
@@ -1373,15 +1912,16 @@ $("c-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const prompt = $("c-prompt").value.trim();
   if (!prompt) return;
-  $("c-form").querySelector("button").disabled = true;
+  $("c-send").disabled = true;
   try {
     let s = state.current;
     if (!s) {
       const { agent, model, effort } = state.chatDraft;
       s = await api("POST", "/api/sessions", { chat: true, agent, model, effort, title: chatTitle(prompt) });
     }
-    await api("POST", `/api/sessions/${s.id}/messages`, { prompt });
+    const result = await api("POST", `/api/sessions/${s.id}/messages`, { prompt, mode: composerMode(state.current, e.submitter?.value) });
     $("c-prompt").value = "";
+    if (result.queued) refreshQueue(s.id);
     if (!state.current) {
       await loadSessions();
       await selectSession(s.id);
@@ -1393,13 +1933,7 @@ $("c-form").addEventListener("submit", async (e) => {
   }
 });
 
-// Enter로 보내고 Shift+Enter로 줄을 바꾼다. 한글 조합 중인 Enter는 무시한다.
-$("c-prompt").addEventListener("keydown", (e) => {
-  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-    e.preventDefault();
-    $("c-form").requestSubmit();
-  }
-});
+composerKeys("c");
 
 $("c-title").addEventListener("click", async () => {
   const s = state.current;
@@ -1417,7 +1951,7 @@ $("c-title").addEventListener("click", async () => {
 
 $("c-stop").addEventListener("click", () => state.current && api("POST", `/api/sessions/${state.current.id}/stop`).catch((e) => alert(e.message)));
 $("c-new").addEventListener("click", () => openChat());
-$("c-restart").addEventListener("click", restartSession);
+$("c-restart").addEventListener("click", () => restartSession());
 
 $("c-delete").addEventListener("click", async () => {
   const s = state.current;
@@ -1502,7 +2036,9 @@ function syncOrchestrator() {
 }
 
 // kind: claude | codex | claude-chat | codex-chat
-async function openNew(projectPath, { orchestrator = false, kind } = {}) {
+// pos: 흐름 그래프에서 우클릭한 자리(만든 세션을 거기에 놓는다)
+async function openNew(projectPath, { orchestrator = false, kind, pos = null } = {}) {
+  state.newSessionPos = pos;
   await loadStatus();
   const projects = sortedProjects();
   if (!projects.length && !kind?.endsWith("-chat")) {
@@ -1553,6 +2089,14 @@ $("new-form").addEventListener("submit", async (e) => {
     const created = await api("POST", "/api/sessions", body);
     $("new-dialog").close();
     e.target.reset();
+    // 흐름 그래프에서 우클릭으로 만들었으면 그 자리에 놓고 그래프에 머문다.
+    const pos = state.newSessionPos;
+    state.newSessionPos = null;
+    if (pos && !body.chat && state.view === "project") {
+      await api("PUT", `/api/sessions/${created.id}`, { graphPos: pos }).catch(() => {});
+      await Promise.all([loadSessions(), loadProjects()]);
+      return;
+    }
     await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 세션을 만들면서 등록된다.
     await selectSession(created.id);
     $("s-prompt").focus();
@@ -1688,6 +2232,7 @@ function connectStream() {
   const source = new EventSource("/api/stream");
   source.addEventListener("event", (e) => {
     const { sessionId, event } = JSON.parse(e.data);
+    if ((event.kind === "question" || event.kind === "permission") && event.status === "pending") notifyQuestion(sessionId, event);
     const s = state.current;
     if (s?.id !== sessionId || event.seq < s.events.length) return;
     s.events.push(event);
@@ -1714,6 +2259,10 @@ function connectStream() {
   });
   source.addEventListener("sessions", loadSessions);
   source.addEventListener("links", loadLinks);
+  source.addEventListener("skills", (e) => {
+    if (samePath(JSON.parse(e.data).projectPath, state.project)) loadSkills();
+  });
+  source.addEventListener("queue", (e) => refreshQueue(JSON.parse(e.data).sessionId));
   source.addEventListener("session", (e) => {
     const { sessionId } = JSON.parse(e.data);
     if (state.current?.id === sessionId) selectSession(sessionId);
