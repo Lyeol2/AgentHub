@@ -1,13 +1,13 @@
-import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "../../config.mjs";
+import { readJsonFile, writeJsonAtomic } from "./json-file.mjs";
 
 // ── 저장 ───────────────────────────────────────────────────────
 export class CommandStore {
   constructor({ dataDir = DATA_DIR } = {}) {
     this.dataDir = dataDir;
     this.file = path.join(dataDir, "commands.json");
-    this.commands = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, "utf8")) : [];
+    this.commands = readJsonFile(this.file, { dataDir, fallback: () => [], valid: Array.isArray });
     // 서버가 꺼질 때 실행 중이던 명령은 중단된 것으로 본다.
     for (const c of this.commands) if (c.state === "running") c.state = "error";
   }
@@ -38,8 +38,7 @@ export class CommandStore {
   }
 
   save() {
-    fs.mkdirSync(this.dataDir, { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify(this.commands, null, 2));
+    writeJsonAtomic(this.file, this.commands);
   }
 }
 

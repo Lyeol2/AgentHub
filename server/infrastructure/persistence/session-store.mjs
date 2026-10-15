@@ -2,6 +2,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "../../config.mjs";
 import { handoverText } from "../../handover.mjs";
+import { readJsonFile, writeJsonAtomic } from "./json-file.mjs";
+
+const validSession = (session) => typeof session?.id === "string" && typeof session.updatedAt === "string";
 
 // 사용 중인 worktree는 재시작해도 유지한다. 폴더가 없거나 메타데이터가 없는 이전 세션만 원본으로 인계한다.
 export function useProjectFolder(session) {
@@ -57,8 +60,12 @@ export class SessionStore {
     this.timers = new Map();
     fs.mkdirSync(this.directory, { recursive: true });
     for (const file of fs.readdirSync(this.directory)) {
+      // 저장 도중 꺼져 남은 임시 파일. 원래 파일은 이전 내용 그대로다.
+      if (file.endsWith(".tmp")) { fs.rmSync(path.join(this.directory, file), { force: true }); continue; }
       if (!file.endsWith(".json")) continue;
-      const session = JSON.parse(fs.readFileSync(path.join(this.directory, file), "utf8"));
+      // 깨진 파일 하나 때문에 시작이 실패하지 않도록 data/corrupted로 옮기고 나머지 세션으로 시작한다.
+      const session = readJsonFile(path.join(this.directory, file), { dataDir, fallback: () => null, valid: validSession });
+      if (!session) continue;
       // 서버가 꺼질 때 실행 중이던 턴은 중단된 것으로 보고 타이머도 종료한다.
       const interrupted = session.state === "running";
       const staleTimer = session.runningStartedAt != null;
@@ -93,7 +100,7 @@ export class SessionStore {
     clearTimeout(this.timers.get(id));
     this.timers.delete(id);
     const session = this.sessions.get(id);
-    if (session) fs.writeFileSync(path.join(this.directory, `${id}.json`), JSON.stringify(session, null, 2));
+    if (session) writeJsonAtomic(path.join(this.directory, `${id}.json`), session);
   }
 
   // 파일을 먼저 지운다. 파일을 못 지웠는데(다른 프로그램이 잡고 있는 등) 목록에서만 빠지면 다음 실행 때 되살아난다.

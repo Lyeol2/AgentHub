@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 
+import { writeJsonAtomic } from "./json-file.mjs";
+
 const TAIL_BYTES = 512 * 1024;
 
 export class FileLimitsRepository {
@@ -14,8 +16,7 @@ export class FileLimitsRepository {
   }
 
   save(saved) {
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify(saved, null, 2));
+    writeJsonAtomic(this.file, saved);
   }
 }
 
