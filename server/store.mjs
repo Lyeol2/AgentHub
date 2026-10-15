@@ -5,13 +5,18 @@ import { handoverText } from "./handover.mjs";
 
 const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
 
-// 저장한 세션도 선언된 프로젝트 폴더를 쓴다. 이전 작업 폴더의 파일과 브랜치는 지우지 않는다.
+// 사용 중인 worktree는 재시작해도 유지한다. 폴더가 없거나 메타데이터가 없는 이전 세션만 원본으로 인계한다.
 export function useProjectFolder(session) {
   if (session.chat || !session.projectPath) return false;
   const key = (folder) => {
     const resolved = path.resolve(folder);
     return process.platform === "win32" ? resolved.toLowerCase() : resolved;
   };
+  if (session.worktree?.dir && fs.existsSync(session.worktree.dir) && fs.statSync(session.worktree.dir).isDirectory()) {
+    if (session.cwd && key(session.cwd) === key(session.worktree.dir)) return false;
+    session.cwd = session.worktree.dir;
+    return true;
+  }
   const previousCwd = session.worktree?.dir || session.cwd;
   const moved = !!previousCwd && key(previousCwd) !== key(session.projectPath);
   if (!moved && !session.worktree) {

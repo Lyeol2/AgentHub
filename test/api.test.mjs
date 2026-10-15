@@ -19,6 +19,25 @@ process.env.PORT = "45177";
 // 실제 개인 스킬(~/.claude/skills, ~/.agents/skills)을 읽지 않도록 홈 폴더도 임시 폴더로 바꾼다.
 process.env.USERPROFILE = process.env.HOME = path.join(tmp, "home");
 process.env.CLAUDE_CONFIG_DIR = path.join(tmp, "home", ".claude");
+// 계획 승인을 검증할 저장 세션. 실제 CLI 출력이나 개인 데이터는 사용하지 않는다.
+const planSessionId = "plan-fixture";
+const planFixture = {
+  id: planSessionId, title: "계획 검증", agent: "claude", model: "", permission: "default",
+  projectName: "repo", projectPath: repo, cwd: repo, worktree: null, kind: "orchestrator", state: "idle",
+  createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+  events: [
+    { seq: 0, kind: "plan", planId: "collision", status: "pending", raw: { sessions: [
+      { key: "first", isolate: true, worktreeName: "plan-unmade" },
+      { key: "second", isolate: true, worktreeName: "plan-conflict" },
+    ] } },
+    { seq: 1, kind: "plan", planId: "named", status: "pending", raw: { sessions: [
+      { key: "default", agent: "codex" },
+      { key: "isolated", agent: "codex", isolate: true, worktreeName: "plan-work" },
+    ] } },
+  ],
+};
+fs.mkdirSync(path.join(tmp, "data", "sessions"), { recursive: true });
+fs.writeFileSync(path.join(tmp, "data", "sessions", planSessionId + ".json"), JSON.stringify(planFixture));
 const server = await import("../server/index.mjs");
 await server.listening;
 
@@ -62,10 +81,10 @@ test("api: 세션 수정·연결·삭제", async () => {
   assert.equal((await api("DELETE", `/sessions/${a.id}`)).status, 200);
 });
 
-test("api: 이전 분리 옵션이 와도 모든 새 세션은 원본 폴더에서 작업한다", async () => {
+test("api: 새 세션은 기본으로 원본을 쓰며 이름만 보내도 워크트리를 만들지 않는다", async () => {
   fs.writeFileSync(path.join(repo, "uncommitted.txt"), "원본의 현재 수정\n");
   for (const agent of ["claude", "codex"]) {
-    for (const options of [{}, { isolate: false }, { isolate: true, worktreeName: "bag-ui" }, { isolate: true, worktreeName: "../x" }]) {
+    for (const options of [{}, { isolate: false }, { worktreeName: "ignored" }, { isolate: "false", worktreeName: "ignored" }]) {
       const made = await api("POST", "/sessions", { agent, projectPath: repo, ...options });
       assert.equal(made.status, 200);
       assert.equal(made.body.cwd, repo);
@@ -80,14 +99,49 @@ test("api: 이전 분리 옵션이 와도 모든 새 세션은 원본 폴더에�
   assert.equal(worktrees.match(/^worktree /gm).length, 1);
 });
 
-test("api: git 저장소가 아닌 프로젝트도 이전 분리 옵션을 무시한다", async () => {
+test("api: 워크트리를 명시 선택하면 필수 이름으로 분리하고 원본의 수정을 가져가지 않는다", async () => {
+  for (const agent of ["claude", "codex"]) {
+    const name = `bag-ui-${agent}`;
+    const made = await api("POST", "/sessions", { agent, projectPath: repo, isolate: true, worktreeName: ` ${name} ` });
+    assert.equal(made.status, 200);
+    assert.equal(made.body.cwd, path.join(repo + ".agenthub", name));
+    assert.deepEqual(made.body.worktree, { dir: made.body.cwd, branch: `agenthub/${name}` });
+    assert.equal(execFileSync("git", ["branch", "--show-current"], { cwd: made.body.cwd, encoding: "utf8" }).trim(), `agenthub/${name}`);
+    assert.equal(fs.existsSync(path.join(made.body.cwd, "uncommitted.txt")), false);
+    assert.ok(fs.existsSync(path.join(made.body.cwd, "README.md")));
+    assert.equal(made.body.baseCommit, execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim());
+    const duplicate = await api("POST", "/sessions", { agent, projectPath: repo, isolate: true, worktreeName: name });
+    assert.equal(duplicate.status, 400);
+    assert.equal((await api("DELETE", `/sessions/${made.body.id}?removeWorktree=1`)).status, 200);
+    assert.equal(fs.existsSync(made.body.cwd), false);
+    assert.equal(fs.readFileSync(path.join(repo, "uncommitted.txt"), "utf8"), "원본의 현재 수정\n");
+  }
+});
+
+test("api: 이름 없는 워크트리와 잘못된 이름은 세션이나 작업 폴더를 만들지 않는다", async () => {
+  const before = (await api("GET", "/sessions")).body.map((s) => s.id);
+  for (const worktreeName of [undefined, "", " ", "../x", "bad/name", "C:\\temp", "-x", "CON", "x".repeat(65), 123]) {
+    const made = await api("POST", "/sessions", { agent: "claude", projectPath: repo, isolate: true, worktreeName });
+    assert.equal(made.status, 400, String(worktreeName));
+    assert.match(made.body.error, /워크트리 이름/);
+  }
+  assert.deepEqual((await api("GET", "/sessions")).body.map((s) => s.id), before);
+  const worktrees = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repo, encoding: "utf8" });
+  assert.equal(worktrees.match(/^worktree /gm).length, 1);
+});
+
+test("api: git 저장소가 아닌 프로젝트는 기본 원본이며 워크트리 선택은 오류를 알린다", async () => {
   const folder = path.join(tmp, "plain");
   fs.mkdirSync(folder);
-  const made = await api("POST", "/sessions", { agent: "claude", projectPath: folder, isolate: true });
+  const made = await api("POST", "/sessions", { agent: "claude", projectPath: folder });
   assert.equal(made.status, 200);
   assert.equal(made.body.cwd, folder);
   assert.equal(made.body.worktree, null);
   assert.equal(made.body.baseCommit, null);
+  const isolated = await api("POST", "/sessions", { agent: "claude", projectPath: folder, isolate: true, worktreeName: "feature" });
+  assert.equal(isolated.status, 400);
+  assert.match(isolated.body.error, /Git 저장소/);
+  assert.equal(fs.existsSync(folder + ".agenthub"), false);
   assert.equal((await api("DELETE", `/sessions/${made.body.id}`)).status, 200);
 });
 
@@ -119,7 +173,7 @@ test("api: 이전 worktree의 CLI 기록을 가져와도 원본에서 시작하�
 });
 
 test("api: 세션 재생성도 원본 폴더와 설정·연결을 유지한다", async () => {
-  const made = await api("POST", "/sessions", { agent: "codex", projectPath: repo, isolate: true, title: "새로 만들기", role: "구현" });
+  const made = await api("POST", "/sessions", { agent: "codex", projectPath: repo, title: "새로 만들기", role: "구현" });
   const other = (await api("POST", "/sessions", { agent: "claude", projectPath: repo })).body;
   await api("PUT", `/sessions/${made.body.id}`, { graphPos: { x: 11, y: 22 } });
   await api("POST", "/links", { from: made.body.id, to: other.id });
@@ -134,6 +188,22 @@ test("api: 세션 재생성도 원본 폴더와 설정·연결을 유지한다",
   assert.equal((await api("GET", "/links")).body[0].from, recreated.body.id);
   await api("DELETE", `/sessions/${recreated.body.id}`);
   await api("DELETE", `/sessions/${other.id}`);
+});
+
+test("api: 워크트리 세션 재생성은 기존 폴더와 수정 파일을 그대로 이어 쓴다", async () => {
+  const made = await api("POST", "/sessions", { agent: "codex", projectPath: repo, isolate: true, worktreeName: "recreate-ui" });
+  assert.equal(made.status, 200);
+  fs.writeFileSync(path.join(made.body.cwd, "pending.txt"), "keep work\n");
+  const recreated = await api("POST", `/sessions/${made.body.id}/recreate`);
+  assert.equal(recreated.status, 200);
+  assert.notEqual(recreated.body.id, made.body.id);
+  assert.equal(recreated.body.cwd, made.body.cwd);
+  assert.deepEqual(recreated.body.worktree, made.body.worktree);
+  assert.equal(recreated.body.agentSessionId, null);
+  assert.equal(fs.readFileSync(path.join(recreated.body.cwd, "pending.txt"), "utf8"), "keep work\n");
+  assert.equal((await api("GET", `/sessions/${made.body.id}`)).status, 404);
+  fs.rmSync(path.join(recreated.body.cwd, "pending.txt"));
+  assert.equal((await api("DELETE", `/sessions/${recreated.body.id}?removeWorktree=1`)).status, 200);
 });
 
 test("api: Claude Code·Codex 기록은 목록에서 숨기고 다시 보일 수 있다", async () => {
@@ -175,6 +245,28 @@ test("api: 오케스트레이터 세션과 계획 처리 경로", async () => {
   assert.equal(orc.permission, "default");
   assert.equal((await api("POST", `/sessions/${orc.id}/plans/nope`, { action: "approve" })).status, 404);
   await api("DELETE", `/sessions/${orc.id}`);
+});
+
+test("api: 계획은 이름 충돌을 미리 거부하고 명시한 워크트리만 생성한다", async () => {
+  execFileSync("git", ["branch", "agenthub/plan-conflict", "HEAD"], { cwd: repo });
+  const before = (await api("GET", "/sessions")).body.map((s) => s.id);
+  const collision = await api("POST", `/sessions/${planSessionId}/plans/collision`, { action: "approve" });
+  assert.equal(collision.status, 400);
+  assert.match(collision.body.error, /이미 있습니다/);
+  assert.deepEqual((await api("GET", "/sessions")).body.map((s) => s.id), before);
+  assert.equal(fs.existsSync(path.join(repo + ".agenthub", "plan-unmade")), false);
+  const applied = await api("POST", `/sessions/${planSessionId}/plans/named`, { action: "approve" });
+  assert.equal(applied.status, 200);
+  assert.equal(applied.body.status, "applied");
+  const created = (await api("GET", "/sessions")).body.filter((s) => s.createdBy === planSessionId);
+  assert.equal(created.length, 2);
+  assert.equal(created.find((s) => s.title === "default").cwd, repo);
+  assert.equal(created.find((s) => s.title === "default").worktree, null);
+  const isolated = created.find((s) => s.title === "isolated");
+  assert.equal(isolated.cwd, path.join(repo + ".agenthub", "plan-work"));
+  assert.equal(isolated.worktree.branch, "agenthub/plan-work");
+  for (const session of created) await api("DELETE", `/sessions/${session.id}?removeWorktree=1`);
+  await api("DELETE", `/sessions/${planSessionId}`);
 });
 
 test("api: 스킬을 만들고 세션에 이은 뒤 지우면 세션에서도 빠진다", async () => {

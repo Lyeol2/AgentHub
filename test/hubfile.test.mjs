@@ -23,7 +23,7 @@ test("hubfile: 이전 작업 폴더 분리 설정은 본문에 남기지 않고 
     assert.equal(hub.roles[0].agent, "codex", setting);
     assert.equal(hub.roles[0].body, "기능을 구현한다.", setting);
     assert.equal(hub.warnings.length, 1, setting);
-    assert.match(hub.warnings[0], /분리 설정을 무시하고 프로젝트 원본 폴더/);
+    assert.match(hub.warnings[0], /분리 설정은 자동 적용하지 않습니다.*이름을 입력/);
   }
   for (const setting of ["작업 폴더: 원본", "folder: original", "isolate: false"]) {
     const hub = parseHubFile(`## 역할: 구현\n- ${setting}\n\n역할 설명`);

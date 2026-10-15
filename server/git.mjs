@@ -19,16 +19,35 @@ export async function isGitRepo(dir) {
   }
 }
 
+// 폴더명과 Git 브랜치에 함께 쓰므로 경로 구분자·Git 특수문자·Windows 예약명을 받지 않는다.
+export function validateWorktreeName(value) {
+  const name = typeof value === "string" ? value.trim() : "";
+  if (!name) throw new Error("워크트리 이름을 입력하세요.");
+  if (!/^[A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ][A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ_-]{0,63}$/u.test(name)) {
+    throw new Error("워크트리 이름은 1~64자의 영문·숫자·한글·하이픈·밑줄만 쓸 수 있으며, 영문·숫자·한글로 시작해야 합니다.");
+  }
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) {
+    throw new Error("워크트리 이름으로 Windows 예약어를 사용할 수 없습니다.");
+  }
+  return name;
+}
+
 // 저장소 옆 `<저장소>.agenthub/<이름>` 폴더에 `agenthub/<이름>` 브랜치로 HEAD 기준 worktree를 만든다.
-// 이름은 사용자가 정하고, 비워 두면 세션 ID를 쓴다. 저장소의 커밋되지 않은 수정은 worktree에 포함되지 않는다.
-export async function createWorktree(repo, name) {
+// 이름은 사용자가 반드시 정한다. 저장소의 커밋되지 않은 수정은 worktree에 포함되지 않는다.
+export async function checkWorktreeAvailable(repo, name) {
+  name = validateWorktreeName(name);
   const root = path.join(path.dirname(repo), `${path.basename(repo)}.agenthub`);
   const dir = path.join(root, name);
   const branch = `agenthub/${name}`;
   if (fs.existsSync(dir)) throw new Error(`작업 폴더 ${dir}가 이미 있습니다. 다른 이름을 쓰세요.`);
   const exists = await git(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
   if (exists) throw new Error(`브랜치 ${branch}가 이미 있습니다. 다른 이름을 쓰세요.`);
-  fs.mkdirSync(root, { recursive: true });
+  return { dir, branch };
+}
+
+export async function createWorktree(repo, name) {
+  const { dir, branch } = await checkWorktreeAvailable(repo, name);
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
   await git(repo, ["worktree", "add", "-b", branch, dir, "HEAD"]);
   return { dir, branch };
 }

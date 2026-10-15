@@ -12,7 +12,7 @@ const SETTING_KEYS = {
   모델: "model", model: "model",
   "작업 폴더": "folder", folder: "folder", isolate: "folder",
 };
-// 이전 파일의 분리 설정도 머리 설정으로 읽되, 실행은 모두 원본 폴더에서 한다.
+// 이전 분리 설정은 읽되 자동 적용하지 않는다. 워크트리는 새 세션에서 이름을 지정해 선택한다.
 const FOLDERS = { 분리: true, worktree: true, true: true, 원본: false, original: false, false: false };
 const CONDITIONS = {
   성공: "success", "성공 시": "success", success: "success",
@@ -36,7 +36,7 @@ function parseRole(name, lines, warnings) {
     if (key === "folder") {
       const folder = value.toLowerCase();
       if (Object.hasOwn(FOLDERS, folder)) {
-        if (FOLDERS[folder]) warnings.push(`역할 "${name}": 작업 폴더 분리 설정을 무시하고 프로젝트 원본 폴더를 사용합니다.`);
+        if (FOLDERS[folder]) warnings.push(`역할 "${name}": 작업 폴더 분리 설정은 자동 적용하지 않습니다. 워크트리는 새 세션에서 선택하고 이름을 입력하세요.`);
       } else warnings.push(`역할 "${name}": 작업 폴더는 원본을 사용합니다 (${value}).`);
     } else {
       role[key] = key === "agent" ? value.toLowerCase() : value;
@@ -134,7 +134,7 @@ AgentHub에서 세션끼리 협업하는 방식이다. 코드 규칙·빌드 명
 
 - 커밋하지 않는다. 끝나면 바뀐 파일과 이유를 짧게 정리한다.
 - 맡은 범위 밖을 고쳐야 하면 직접 고치지 말고 알린다.
-- 모든 세션은 프로젝트 원본 폴더를 함께 사용한다. 같은 파일을 동시에 수정하지 않는다.
+- 세션에 지정된 작업 폴더에서 작업한다. 기본은 프로젝트 원본 폴더이며, 워크트리는 새 세션에서 이름을 지정해 선택한다. 같은 폴더의 같은 파일을 동시에 수정하지 않는다.
 
 ## 역할: 구현
 
@@ -150,7 +150,7 @@ AgentHub에서 세션끼리 협업하는 방식이다. 코드 규칙·빌드 명
 - 권한: read-only
 - 작업 폴더: 원본
 
-코드를 고치지 않는다. 프로젝트 원본 폴더의 변경을 읽고 버그와 빠진 처리를 찾는다.
+코드를 고치지 않는다. 현재 작업 폴더의 변경을 읽고 버그와 빠진 처리를 찾는다.
 답변의 마지막 줄에는 판정 하나만 쓴다. 고칠 것이 있으면 "수정 필요", 없으면 "통과".
 
 ## 흐름: 구현과 리뷰

@@ -2,6 +2,7 @@
 import { AGENTS } from "./runner.mjs";
 import { CONDITIONS } from "./chain.mjs";
 import { withRole } from "./role.mjs";
+import { validateWorktreeName } from "./git.mjs";
 
 export const PLAN_FENCE = "agenthub-plan";
 export const ORCHESTRATOR = "orchestrator"; // 계획 안에서 오케스트레이터 자신을 가리키는 이름
@@ -39,7 +40,8 @@ ${PLAN_EXAMPLE}
 - 이미 이어진 두 세션 사이의 연결을 다시 적으면 그 조건으로 고친다.
 - 결과를 다시 받아야 하면 그 세션에서 "${ORCHESTRATOR}"로 가는 연결을 만든다. 결과는 다음 요청으로 들어온다.
 - send: 이미 있는 세션에 요청을 보낸다. { "to": "<key 또는 id>", "prompt": "..." }
-- 모든 세션은 프로젝트 원본 폴더를 함께 사용한다. 같은 파일을 고치는 세션을 동시에 돌리지 않는다.
+- 새 세션의 기본은 프로젝트 원본 폴더다. 사용자가 워크트리 사용을 요청한 세션만 isolate:true와 worktreeName(필수 이름)을 함께 적는다. 이름을 생략하거나 세션 key로 대신하지 않는다. 역할 템플릿의 이전 분리 설정을 자동으로 따르지 않는다.
+- 같은 원본 폴더에서 같은 파일을 고치는 세션을 동시에 돌리지 않는다.
 - 결과가 돌아오면 확인하고 다음 계획을 세운다. 목표를 다 이루었으면 무엇이 어디에 바뀌었는지 정리해 보고한다.`;
 }
 
@@ -93,6 +95,7 @@ export function normalizePlan(raw, { hub, sessions, orchestratorId }) {
   const known = new Map(sessions.map((s) => [s.id, s]));
   const keys = new Map(); // key → { id } 또는 { new: true }
   const plan = { sessions: [], links: [], send: [] };
+  const worktreeNames = new Set();
 
   for (const item of raw.sessions ?? []) {
     const key = str(item?.key, 40);
@@ -112,13 +115,21 @@ export function normalizePlan(raw, { hub, sessions, orchestratorId }) {
     const permission = item.permission ?? (role?.agent === agent ? role.permission : null)
       ?? (agent === "claude" ? "acceptEdits" : "workspace-write");
     if (!modes.includes(permission)) throw new Error(`세션 "${key}": ${agent} 권한은 ${modes.join(", ")} 중 하나입니다.`);
+    const isolate = item.isolate === true;
+    const worktreeName = isolate ? validateWorktreeName(item.worktreeName) : "";
+    if (isolate) {
+      const nameKey = worktreeName.toLowerCase();
+      if (worktreeNames.has(nameKey)) throw new Error(`워크트리 이름이 겹칩니다: "${worktreeName}"`);
+      worktreeNames.add(nameKey);
+    }
     keys.set(key, { new: true });
     plan.sessions.push({
       key,
       agent,
       permission,
       model: str(item.model ?? role?.model, 64),
-      isolate: false, // 이전 계획이나 역할의 분리 설정도 원본 폴더로 통일한다.
+      isolate,
+      worktreeName,
       roleName: role?.name ?? "",
       roleText: str(item.roleText ?? role?.body, 4000),
       title: str(item.title, 100) || role?.name || key,

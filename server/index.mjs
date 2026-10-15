@@ -7,7 +7,7 @@ import { ROOT, CHAT_DIR, DATA_DIR, loadConfig, saveConfig } from "./config.mjs";
 import { locateCli, cliVersion, cliAuth, openLogin, spawnCli } from "./cli.mjs";
 import { SessionStore, summary, useProjectFolder } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
-import { isGitRepo, removeWorktree, headCommit, diffSince, changedFiles } from "./git.mjs";
+import { isGitRepo, createWorktree, checkWorktreeAvailable, validateWorktreeName, removeWorktree, headCommit, diffSince, changedFiles } from "./git.mjs";
 import { AGENT_NAME, handoverText, mapPermission } from "./handover.mjs";
 import { gitOverview, fileDiff, showCommit, branchDiff, stage, unstage, commit, merge } from "./gitpanel.mjs";
 import { githubPulls, GitHubError } from "./github.mjs";
@@ -499,10 +499,13 @@ function composeBase(session, prompt) {
     hub: readHubFile(session.projectPath),
     sessions: projectSessions(session.projectPath),
   }));
-  // 원본 폴더를 함께 사용한다는 규칙은 기존 CLI 대화에도 한 번 알린다.
-  if (!session.agentSessionId || !session.projectFolderGuide) {
-    session.projectFolderGuide = true;
-    input = `[AgentHub 작업 폴더]\n이 프로젝트의 모든 세션은 프로젝트 원본 폴더(${session.projectPath})에서 함께 작업한다. 별도 git worktree를 만들지 않는다. 같은 파일을 고칠 때는 다른 세션과 겹치지 않게 조율한다.\n\n${input}`;
+  // 이전 버전의 원본 전용 안내를 받은 CLI 대화에도 현재 작업 폴더를 다시 알린다.
+  if (!session.agentSessionId || session.projectFolderGuide !== "optional-worktree") {
+    session.projectFolderGuide = "optional-worktree";
+    const folder = session.worktree
+      ? `이 세션은 분리한 작업 폴더(${session.cwd}), 브랜치 ${session.worktree.branch}에서 작업한다. 프로젝트 원본 폴더는 ${session.projectPath}이다. 다른 세션의 작업 폴더를 직접 수정하지 않는다.`
+      : `이 세션은 프로젝트 원본 폴더(${session.projectPath})에서 작업한다. 같은 폴더를 쓰는 세션과 같은 파일을 고칠 때는 겹치지 않게 조율한다.`;
+    input = `[AgentHub 작업 폴더]\n${folder} 다른 작업 폴더가 필요하면 사용자가 AgentHub에서 워크트리를 선택하고 이름을 지정해 세션을 만든다.\n\n${input}`;
   }
   // 세션 사이 소통 규칙도 CLI 대화마다 한 번 붙인다.
   if (!session.agentSessionId || !session.messageGuide) {
@@ -554,18 +557,29 @@ function checkSessionOptions({ agent, model = "", effort = "", permission, chat 
 }
 
 // chat: 프로젝트 없이 빈 폴더에서 도구 없이 대화만 하는 일반 채팅(project는 null).
-// 이전 클라이언트가 isolate/worktreeName을 보내도 모든 프로젝트 세션은 원본 폴더를 쓴다.
-async function createSession({ project, title, role, roleName, orchestrator, createdBy, chat, ...options }) {
+// 기본은 원본 폴더다. isolate:true와 사용자가 지정한 이름이 있을 때만 새 worktree를 만든다.
+// 두 번째 인수는 재생성할 때 기존 작업 폴더를 이어 쓰는 내부 전용 값이다.
+async function createSession({ project, title, role, roleName, orchestrator, createdBy, chat, isolate = false, worktreeName, ...options }, { worktree: existingWorktree = null } = {}) {
   chat = !!chat;
   if (chat && orchestrator) throw new HttpError(400, "일반 채팅은 오케스트레이터로 만들 수 없습니다.");
   const { agent, model, effort, permission } = checkSessionOptions({ ...options, chat });
+  if (isolate === true && chat) throw new HttpError(400, "일반 채팅은 워크트리를 사용할 수 없습니다.");
+  let name;
+  if (isolate === true) {
+    try { name = validateWorktreeName(worktreeName); } catch (err) { throw new HttpError(400, err.message); }
+  }
   if (chat) {
     fs.mkdirSync(CHAT_DIR, { recursive: true });
     project = { name: "일반 채팅", path: null };
   }
   const id = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
   const git = chat ? false : await isGitRepo(project.path);
-  const cwd = chat ? CHAT_DIR : project.path;
+  let worktree = existingWorktree;
+  if (isolate === true) {
+    if (!git) throw new HttpError(400, "워크트리는 Git 저장소에서만 사용할 수 있습니다.");
+    try { worktree = await createWorktree(project.path, name); } catch (err) { throw new HttpError(400, err.message); }
+  }
+  const cwd = chat ? CHAT_DIR : worktree?.dir ?? project.path;
 
   const now = new Date().toISOString();
   const session = {
@@ -583,7 +597,7 @@ async function createSession({ project, title, role, roleName, orchestrator, cre
     projectName: project.name,
     projectPath: project.path,
     cwd,
-    worktree: null,
+    worktree,
     baseCommit: git ? await headCommit(cwd) : null,
     agentSessionId: null,
     state: "idle",
@@ -727,6 +741,15 @@ async function applyPlan(orchestrator, raw) {
   // 승인을 기다리는 사이 세션이 지워졌을 수 있으므로 다시 검사한다.
   const plan = normalizePlan(raw, planContext(orchestrator));
   const project = ensureProject(orchestrator.projectPath);
+  // 이름 충돌이나 잘못된 옵션 때문에 앞의 세션만 생성되는 일을 막도록 먼저 모두 검사한다.
+  if (plan.sessions.some((item) => !item.id && item.isolate)) {
+    if (!await isGitRepo(project.path)) throw new Error("워크트리는 Git 저장소에서만 사용할 수 있습니다.");
+    await headCommit(project.path);
+  }
+  for (const item of plan.sessions.filter((item) => !item.id)) {
+    checkSessionOptions(item);
+    if (item.isolate) await checkWorktreeAvailable(project.path, item.worktreeName);
+  }
   const ids = new Map();
   let created = 0;
   for (const item of plan.sessions) {
@@ -742,6 +765,8 @@ async function applyPlan(orchestrator, raw) {
       title: item.title,
       role: item.roleText,
       roleName: item.roleName,
+      isolate: item.isolate,
+      worktreeName: item.worktreeName,
       createdBy: orchestrator.id,
     });
     ids.set(item.key, session.id);
@@ -1520,9 +1545,10 @@ async function handleApi(req, res, url) {
     }
 
     // 재생성: 같은 설정(제목·역할·모델·권한·연결·그래프 위치)으로 새 세션을 만들고 기존 세션은 지운다.
-    // 화면 기록과 CLI 대화는 새로 시작하고, 원본 프로젝트 폴더에서 작업한다.
+    // 화면 기록과 CLI 대화는 새로 시작하고, 기존 작업 폴더는 이어 쓴다.
     if (parts[2] === "recreate" && method === "POST") {
       if (runner.isRunning(session.id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
+      if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, "워크트리 폴더가 없습니다. 서버를 다시 시작해 원본 폴더로 전환한 뒤 재생성하세요.");
       const created = await createSession({
         project: session.chat ? null : ensureProject(session.projectPath),
         title: session.title,
@@ -1535,7 +1561,7 @@ async function handleApi(req, res, url) {
         model: session.model,
         effort: session.effort,
         permission: session.permission,
-      });
+      }, { worktree: session.worktree });
       Object.assign(created, {
         baseCommit: session.baseCommit ?? created.baseCommit,
         graphPos: session.graphPos ?? null,

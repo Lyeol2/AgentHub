@@ -2802,7 +2802,7 @@ function renderPlan(ev) {
       section("세션", plan.sessions.map((x) => x.id
         ? el("li", {}, el("span", { class: "muted" }, "기존 "), x.title)
         : el("li", { title: x.roleText }, badge(x.agent), ` ${x.title} `,
-          el("span", { class: "muted" }, [x.roleName && `역할 ${x.roleName}`, x.permission].filter(Boolean).join(" · "))))),
+          el("span", { class: "muted" }, [x.roleName && `역할 ${x.roleName}`, x.permission, x.isolate ? `워크트리 ${x.worktreeName}` : "원본 폴더"].filter(Boolean).join(" · "))))),
       section("연결", plan.links.map((l) => el("li", {}, `${name(l.from)} → ${name(l.to)}`, el("span", { class: "muted" }, ` · ${linkLabel(l)}`)))),
       section("요청", plan.send.map((m) => el("li", { title: m.prompt }, el("b", {}, name(m.to)), ` ${firstLine(m.prompt)}`))));
   }
@@ -3609,7 +3609,11 @@ function syncNewKind() {
   for (const node of $("new-form").querySelectorAll(".for-project")) node.hidden = chat;
   for (const node of $("new-form").querySelectorAll(".for-chat")) node.hidden = !chat;
   $("new-project").required = !chat;
-  if (chat) $("new-orchestrator").checked = false;
+  if (chat) {
+    $("new-orchestrator").checked = false;
+    $("new-isolate").checked = false;
+  }
+  syncNewWorktree();
   $("new-template-row").hidden = chat || !state.templateRoles?.length;
   $("new-title").placeholder = chat ? "예: 여행 일정 짜기" : "예: 가방 UI 버그 수정";
   $("new-role").placeholder = chat
@@ -3618,6 +3622,27 @@ function syncNewKind() {
   fillPermissions();
   fillModels("new-models", agent);
   fillEfforts("new-effort", agent, $("new-model").value.trim());
+}
+
+function worktreeNameError(value) {
+  const name = String(value ?? "").trim();
+  if (!name) return "워크트리 이름을 입력하세요.";
+  if (!/^[A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ][A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ_-]{0,63}$/u.test(name)) {
+    return "워크트리 이름은 1~64자의 영문·숫자·한글·하이픈·밑줄만 쓸 수 있으며, 영문·숫자·한글로 시작해야 합니다.";
+  }
+  if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) return "워크트리 이름으로 Windows 예약어를 사용할 수 없습니다.";
+  return "";
+}
+
+function syncNewWorktree() {
+  const chat = newKind().chat;
+  const useWorktree = !chat && $("new-isolate").checked;
+  const input = $("new-worktree-name");
+  $("new-isolate").disabled = chat;
+  $("new-worktree-row").hidden = !useWorktree;
+  input.disabled = !useWorktree;
+  input.required = useWorktree;
+  input.setCustomValidity(useWorktree ? worktreeNameError(input.value) : "");
 }
 
 function fillPermissions() {
@@ -3659,7 +3684,7 @@ function applyTemplate() {
   if (!$("new-title").value.trim()) $("new-title").value = role.name;
 }
 
-// 오케스트레이터는 원본 폴더에서 읽기만 한다.
+// 오케스트레이터는 선택한 작업 폴더에서 읽기만 한다.
 function syncOrchestrator() {
   if (!$("new-orchestrator").checked) return;
   $("new-permission").value = newKind().agent === "claude" ? "default" : "read-only";
@@ -3703,6 +3728,8 @@ async function openNew(projectPath, { orchestrator = false, kind, pos = null, co
   state.templateRoles = [];
   $("new-error").textContent = "";
   $("new-orchestrator").checked = orchestrator;
+  $("new-isolate").checked = false;
+  $("new-worktree-name").value = "";
   syncNewKind();
   syncOrchestrator();
   $("new-dialog").showModal();
@@ -3719,6 +3746,11 @@ $("new-agent").addEventListener("change", () => {
 });
 $("new-model").addEventListener("input", () => fillEfforts("new-effort", newKind().agent, $("new-model").value.trim()));
 $("new-orchestrator").addEventListener("change", syncOrchestrator);
+$("new-isolate").addEventListener("change", () => {
+  syncNewWorktree();
+  if ($("new-isolate").checked) $("new-worktree-name").focus();
+});
+$("new-worktree-name").addEventListener("input", syncNewWorktree);
 $("p-orchestrator").addEventListener("click", () => openNew(state.project, { orchestrator: true }));
 $("new-project").addEventListener("change", fillTemplates);
 $("new-template").addEventListener("change", applyTemplate);
@@ -3736,6 +3768,16 @@ $("new-form").addEventListener("submit", async (e) => {
   const { kind, ...body } = Object.fromEntries(form);
   Object.assign(body, newKind());
   body.orchestrator = form.has("orchestrator") && !body.chat;
+  body.isolate = form.has("isolate") && !body.chat;
+  if (body.isolate) {
+    body.worktreeName = String(body.worktreeName ?? "").trim();
+    const error = worktreeNameError(body.worktreeName);
+    if (error) {
+      $("new-error").textContent = error;
+      $("new-worktree-name").focus();
+      return;
+    }
+  } else delete body.worktreeName;
   if (body.chat) delete body.projectPath;
   try {
     const created = await api("POST", "/api/sessions", body);

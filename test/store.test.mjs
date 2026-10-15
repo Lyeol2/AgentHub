@@ -1,4 +1,4 @@
-// 저장한 세션의 폴더 전환을 임시 데이터로 검증한다. 실제 CLI와 git worktree는 만들지 않는다.
+// 저장한 워크트리 유지와 누락 폴더 인계를 임시 데이터로 검증한다. 실제 CLI와 git worktree는 만들지 않는다.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -43,50 +43,40 @@ function persisted(id) {
   return JSON.parse(fs.readFileSync(path.join(sessionsDir, id + ".json"), "utf8"));
 }
 
-test("store: 기존 분리 세션은 원본으로 옮기고 이전 파일·브랜치·기록·역할을 보존한다", () => {
-  const previousCwd = path.join(tmp, "project.agenthub", "feature");
-  fs.mkdirSync(previousCwd, { recursive: true });
-  fs.writeFileSync(path.join(previousCwd, "file.txt"), "uncommitted work\n");
-  const worktree = { dir: previousCwd, branch: "agenthub/feature" };
-  const question = { seq: 2, kind: "question", status: "pending", questions: [{ question: "다음 작업?" }] };
+test("store: 기존 워크트리 세션은 재시작해도 폴더·CLI 대화·진행 기록을 유지한다", () => {
+  const cwd = path.join(tmp, "project.agenthub", "feature");
+  fs.mkdirSync(cwd, { recursive: true });
+  fs.writeFileSync(path.join(cwd, "file.txt"), "uncommitted work\n");
   const before = fixture("legacy", {
-    cwd: previousCwd, worktree, state: "paused", paused: true, pausedMidTurn: true,
+    cwd, worktree: { dir: cwd, branch: "agenthub/feature" },
+    state: "paused", paused: true, pausedMidTurn: true,
     role: "UI 구현", roleName: "구현", skills: ["review"], graphPos: { x: 12, y: 34 },
     createdBy: "orchestrator", chainDepth: 3, handover: "앞서 인계받은 내용",
   });
-  before.events.push(question);
-  fs.writeFileSync(path.join(sessionsDir, "legacy.json"), JSON.stringify(before, null, 2));
-
-  const store = new SessionStore();
-  const session = store.get("legacy");
-  assert.equal(session.cwd, project);
-  assert.equal(session.worktree, null);
-  assert.equal(session.previousCwd, previousCwd);
-  assert.deepEqual(session.previousWorktree, worktree);
-  assert.equal(fs.readFileSync(path.join(previousCwd, "file.txt"), "utf8"), "uncommitted work\n");
+  const file = fs.readFileSync(path.join(sessionsDir, "legacy.json"), "utf8");
+  const session = new SessionStore().get("legacy");
+  assert.deepEqual(session, before);
+  assert.equal(fs.readFileSync(path.join(sessionsDir, "legacy.json"), "utf8"), file);
+  assert.equal(fs.readFileSync(path.join(cwd, "file.txt"), "utf8"), "uncommitted work\n");
   assert.equal(fs.readFileSync(path.join(project, "file.txt"), "utf8"), "project contents\n");
-  assert.equal(session.agentSessionId, null);
-  assert.deepEqual(session.cliSessionIds, ["cli-earlier", "cli-current"]);
-  assert.equal(session.compactions, 0);
-  assert.equal(session.context, null);
-  assert.equal(session.waiting, false);
-  assert.equal("roleChanged" in session, false);
-  assert.deepEqual(session.events.slice(0, before.events.length), before.events);
-  for (const key of ["state", "paused", "pausedMidTurn", "role", "roleName", "skills", "graphPos", "createdBy", "chainDepth", "createdAt", "updatedAt"]) {
-    assert.deepEqual(session[key], before[key], key);
-  }
-  assert.ok(session.handover.split("\n").includes("작업 폴더: " + project));
-  assert.ok(session.handover.includes("이전 작업 폴더: " + previousCwd + " (브랜치 agenthub/feature)"));
-  assert.match(session.handover, /변경을 원본으로 자동으로 옮기지는 않았다/);
-  assert.match(session.handover, /이전 경로에서 작업하거나 새 worktree를 만들지 않는다/);
-  assert.ok(session.handover.includes("기능을 구현한다."));
-  assert.ok(session.handover.includes("앞서 인계받은 내용"));
-  const event = session.events.at(-1);
-  assert.equal(event.kind, "status");
-  assert.ok(event.text.includes(project));
-  assert.ok(event.text.includes(previousCwd));
-  assert.match(event.text, /변경은 자동으로 합치지 않았습니다/);
-  assert.deepEqual(persisted("legacy"), session);
+  assert.equal(useProjectFolder(session), false);
+  assert.deepEqual(new SessionStore().get("legacy"), before);
+});
+
+test("store: 실행 중이던 워크트리의 타이머만 종료하고 작업 폴더와 CLI는 유지한다", () => {
+  const cwd = path.join(tmp, "active-worktree");
+  fs.mkdirSync(cwd);
+  const before = fixture("active", { cwd, worktree: { dir: cwd, branch: "agenthub/active" }, state: "running", runningStartedAt: "2026-10-15T00:00:00.000Z" });
+  const session = new SessionStore().get("active");
+  assert.deepEqual(session, { ...before, state: "interrupted", runningStartedAt: null });
+  assert.deepEqual(persisted("active"), session);
+});
+
+test("store: 원본으로 전환된 세션의 이전 워크트리 기록은 자동 복구하지 않는다", () => {
+  const dir = path.join(tmp, "previous-worktree");
+  fs.mkdirSync(dir);
+  const before = fixture("already-original", { previousCwd: dir, previousWorktree: { dir, branch: "agenthub/previous" } });
+  assert.deepEqual(new SessionStore().get("already-original"), before);
 });
 
 test("store: 이전 폴더가 없어도 원본으로 전환하고 실행 중 상태를 중단으로 저장한다", () => {

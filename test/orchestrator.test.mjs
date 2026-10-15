@@ -38,23 +38,29 @@ test("orchestrator: 역할 템플릿과 key·id·orchestrator를 풀어 쓴다",
   assert.deepEqual(plan.send, [{ to: "old", prompt: "이어서" }, { to: "ui", prompt: "만들어" }]);
 });
 
-test("orchestrator: 이전 계획과 역할의 명시적인 분리 설정도 원본 폴더로 통일한다", () => {
+test("orchestrator: 워크트리는 명시 선택과 필수 이름을 요구하고 역할 설정으로 켜지지 않는다", () => {
   const legacyHub = { ...hub, roles: hub.roles.map((role) => ({ ...role, isolate: true })) };
   const raw = { sessions: [
     { key: "template", role: "구현" },
-    { key: "explicit", agent: "codex", isolate: true },
-    { key: "override", role: "리뷰", isolate: true },
+    { key: "explicit", agent: "codex", isolate: true, worktreeName: " bag-ui " },
+    { key: "override", role: "리뷰", isolate: false, worktreeName: "ignored" },
+    { key: "string", isolate: "true", worktreeName: "ignored" },
   ] };
   const plan = normalizePlan(raw, { ...ctx, hub: legacyHub });
-  assert.deepEqual(plan.sessions.map((session) => session.isolate), [false, false, false]);
-  assert.equal(raw.sessions[1].isolate, true);
+  assert.deepEqual(plan.sessions.map((session) => [session.isolate, session.worktreeName]), [[false, ""], [true, "bag-ui"], [false, ""], [false, ""]]);
+  assert.equal(raw.sessions[1].worktreeName, " bag-ui ");
   assert.equal(legacyHub.roles[0].isolate, true);
-
+  for (const worktreeName of [undefined, "", " ", "../x"]) {
+    assert.throws(() => normalizePlan({ sessions: [{ key: "a", isolate: true, worktreeName }] }, ctx), /워크트리 이름/);
+  }
+  assert.throws(() => normalizePlan({ sessions: [
+    { key: "a", isolate: true, worktreeName: "Feature" },
+    { key: "b", isolate: true, worktreeName: "feature" },
+  ] }, ctx), /이름이 겹칩니다/);
   const input = orchestratorInput({ id: "orc" }, "목표", { hub: legacyHub, sessions });
-  assert.match(input, /모든 세션은 프로젝트 원본 폴더를 함께 사용한다/);
-  assert.match(input, /같은 파일을 고치는 세션을 동시에 돌리지 않는다/);
+  assert.match(input, /새 세션의 기본은 프로젝트 원본 폴더/);
+  assert.match(input, /worktreeName.*필수 이름/);
   assert.match(input, /- 구현: claude · acceptEdits · 원본 폴더/);
-  assert.doesNotMatch(input, /작업 폴더 분리|isolate/);
 });
 
 test("orchestrator: 잘못된 계획을 막는다", () => {
