@@ -9,8 +9,9 @@ import { GitHubPulls, parseGitHubRemote, normalizePull, summarizeChecks, runGitH
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-pulls-"));
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 let sequence = 0;
-function fixture() {
-  const dir = path.join(tmp, String(++sequence));
+let seed;
+function seedRepository() {
+  const dir = path.join(tmp, "seed");
   fs.mkdirSync(dir);
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", windowsHide: true });
   git("init", "-q", "-b", "feature");
@@ -18,7 +19,16 @@ function fixture() {
   fs.writeFileSync(path.join(dir, "file.txt"), "base\n");
   git("add", "."); git("commit", "-qm", "기능 제목\n\n본문");
   git("remote", "add", "origin", "https://github.com/acme/widget.git");
-  const sha = git("rev-parse", "HEAD").trim();
+  return { dir, sha: git("rev-parse", "HEAD").trim() };
+}
+function fixture() {
+  seed ??= seedRepository();
+  const dir = path.join(tmp, String(++sequence));
+  // Copy the working tree and .git, including independent index/config/refs files.
+  // Only repository preparation is reused; all tested Git commands still run for real.
+  fs.cpSync(seed.dir, dir, { recursive: true });
+  const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", windowsHide: true });
+  const sha = seed.sha;
   const state = { sha, remoteSha: sha, existing: [], calls: [], auth: true, fail: null, push: null, readiness: "CLEAN",
     info: { default_branch: "main", permissions: { push: true }, allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: false },
     pull: { number: 7, title: "기능", body: "내용", state: "open", draft: false, user: { login: "coder" }, head: { ref: "feature", sha }, base: { ref: "main" },
@@ -63,6 +73,25 @@ function fixture() {
   return { dir, git, sha, state, client, body };
 }
 const writes = (state) => state.calls.filter((call) => call.file === "fake-gh" && ["POST", "PUT", "PATCH"].includes(call.args[call.args.indexOf("--method") + 1]));
+
+test("github: 복사한 저장소의 작업 파일·index·설정·HEAD는 다른 검사와 분리된다", () => {
+  const first = fixture();
+  const second = fixture();
+  fs.writeFileSync(path.join(first.dir, "file.txt"), "first only\n");
+  first.git("add", "file.txt");
+  first.git("remote", "set-url", "origin", "https://github.com/other/repo.git");
+  assert.equal(second.git("status", "--porcelain").trim(), "");
+  assert.equal(second.git("show", ":file.txt").trim(), "base");
+  assert.equal(fs.readFileSync(path.join(second.dir, "file.txt"), "utf8"), "base\n");
+  assert.equal(second.git("remote", "get-url", "origin").trim(), "https://github.com/acme/widget.git");
+  first.git("commit", "-qm", "first only");
+  assert.notEqual(first.git("rev-parse", "HEAD").trim(), second.sha);
+  assert.equal(second.git("rev-parse", "HEAD").trim(), second.sha);
+  const third = fixture(); // The seed also stays unchanged for later tests.
+  assert.equal(third.git("rev-parse", "HEAD").trim(), second.sha);
+  assert.equal(third.git("status", "--porcelain").trim(), "");
+  assert.equal(third.git("remote", "get-url", "origin").trim(), "https://github.com/acme/widget.git");
+});
 
 test("github: GitHub.com 원격만 허용하고 외부 응답 URL은 쓰지 않는다", () => {
   for (const value of ["https://github.com/acme/widget.git", "git@github.com:acme/widget.git", "ssh://git@github.com/acme/widget.git"])
