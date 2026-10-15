@@ -100,12 +100,18 @@ test("browser: GitFlow tasks create, finish, recover uncertain writes, and retai
       else if (url.pathname === "/fixture/requests") value = requests;
       else if (url.pathname === "/fixture/emit") { for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n"); value = {}; }
       else if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
+      else if (url.pathname === "/api/workbranches") value = { currentBranch: 'main', branches: [
+        { name: 'main', cwd: project.path, original: true, selectable: false, reason: '원본 작업 폴더' },
+        { name: 'feature/selected', cwd: 'C:/fixture.agenthub/selected', selectable: true, selectableForTask: !tasks.some((task) => task.branch === 'feature/selected'), selectableForSession: true },
+        { name: 'feature/locked', cwd: 'C:/fixture.agenthub/locked', selectable: false, locked: true, reason: '잠긴 작업 폴더' },
+        ...tasks.filter((task) => task.branch !== 'feature/selected').map((task) => ({ name: task.branch, cwd: task.cwd, selectable: true, selectableForTask: false, selectableForSession: true, taskId: task.id })),
+      ] };
       else if (url.pathname === "/api/tasks/context") { if (mode.contextFailure) throw Object.assign(Error("원격 확인 실패"), { status: 400 }); value = context; }
       else if (url.pathname === "/api/tasks") {
         if (req.method === "POST") {
           if (mode.holdCreate) { mode.holdCreate = false; await new Promise((resolve) => releaseCreate = resolve); }
           const id = "task-" + (tasks.length + 1), sessionId = "session-" + id;
-          const type = body.type ?? "feature", branch = type + "/" + id, baseBranch = type === "hotfix" ? "main" : "develop";
+          const type = body.type ?? "feature", branch = body.workBranch ?? type + "/" + id, baseBranch = type === "hotfix" ? "main" : "develop";
           const task = { id, title: body.title, projectPath: project.path, type, branch, baseBranch, targetBranch: type === "feature" ? "develop" : "main", cwd: "C:/fixture.agenthub/" + id, sessionIds: [sessionId], state: "working", pull: null, createdAt: context.checkedAt, updatedAt: context.checkedAt, freshness: { state: "current", checkedAt: context.checkedAt } };
           const session = { id: sessionId, title: body.title, taskId: id, projectPath: project.path, projectName: project.name, cwd: task.cwd, worktree: { dir: task.cwd, branch }, agent: body.agent, permission: body.permission, state: "idle", events: [], skills: [], queue: [], createdAt: context.checkedAt, updatedAt: context.checkedAt };
           tasks.unshift(task); sessions.push(session); value = { task, session };
@@ -121,7 +127,16 @@ test("browser: GitFlow tasks create, finish, recover uncertain writes, and retai
         else if (action === "sync") value = { task };
         else if (action === "cleanup") { task.state = "cleaned"; value = { task }; }
         else value = { task };
-      } else if (url.pathname === "/api/sessions") value = sessions;
+      } else if (url.pathname === "/api/sessions") {
+        if (req.method === 'POST') {
+          const owner = tasks.find((task) => task.branch === body.workBranch);
+          const session = { id: 'selected-session-' + sessions.length, title: body.title || 'Existing branch session', taskId: owner?.id,
+            projectPath: project.path, projectName: project.name, cwd: owner?.cwd || 'C:/fixture.agenthub/selected',
+            worktree: { dir: owner?.cwd || 'C:/fixture.agenthub/selected', branch: body.workBranch, shared: true },
+            agent: body.agent, permission: body.permission, state: 'idle', events: [], skills: [], queue: [], createdAt: context.checkedAt, updatedAt: context.checkedAt };
+          sessions.push(session); owner?.sessionIds.push(session.id); value = session;
+        } else value = sessions;
+      }
       else if (url.pathname.startsWith("/api/sessions/")) value = sessions.find((item) => item.id === url.pathname.split("/")[3]);
       else if (url.pathname === "/api/projects/all") value = [project];
       else if (["/api/projects/discover", "/api/links", "/api/skills", "/api/messages"].includes(url.pathname)) value = [];

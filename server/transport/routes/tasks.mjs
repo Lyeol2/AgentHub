@@ -1,5 +1,6 @@
 export function taskRoutes(s) {
   return [
+    ["GET", "workbranches", ({ query }) => s.workbranches(query.get("path"))],
     ["GET", "tasks", ({ query }) => s.list(query.get("path"))],
     ["GET", "tasks/context", ({ query }) => s.context(query.get("path"))],
     ["POST", "tasks", ({ body }) => s.create(body)],

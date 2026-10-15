@@ -382,12 +382,20 @@
       <datalist id="new-models"></datalist>
       <label class="for-project">권한 <select name="permission" id="new-permission"></select></label>
       <label class="check for-project"><input type="checkbox" name="isolate" id="new-isolate">
-        워크트리에서 작업하기 (기본은 원본 폴더)
+        작업 브랜치에서 작업하기 (기본은 원본 폴더)
       </label>
-      <label class="for-project" id="new-worktree-row" hidden>워크트리 이름 <span class="muted">직접 입력 · 필수</span>
+      <label class="for-project" id="new-worktree-mode-row" hidden>작업 브랜치
+        <select name="worktreeMode" id="new-worktree-mode" disabled><option value="new">새 작업 브랜치 만들기</option><option value="existing">기존 작업 브랜치 선택</option></select>
+      </label>
+      <label class="for-project" id="new-worktree-row" hidden>새 작업 브랜치 이름 <span class="muted">직접 입력 · 필수</span>
         <input name="worktreeName" id="new-worktree-name" maxlength="64" spellcheck="false" autocomplete="off" placeholder="예: bag-ui-fix" aria-describedby="new-worktree-hint" disabled>
         <span class="hint" id="new-worktree-hint">영문·숫자·한글로 시작하는 1~64자의 영문·숫자·한글·하이픈·밑줄. 저장소 옆 &lt;저장소&gt;.agenthub/&lt;이름&gt; 폴더와 agenthub/&lt;이름&gt; 브랜치를 만듭니다. 현재 커밋을 기준으로 하며, 커밋하지 않은 변경은 포함하지 않습니다.</span>
       </label>
+      <div class="for-project" id="new-worktree-branch-row" hidden>
+        <label>기존 작업 브랜치 <select name="workBranch" id="new-worktree-branch" aria-describedby="new-worktree-branch-status" disabled></select></label>
+        <p class="hint workbranch-status" id="new-worktree-branch-status" aria-live="polite"></p>
+        <button type="button" class="ghost sm" id="new-worktree-branch-refresh">목록 새로고침</button>
+      </div>
       <label class="check for-project"><input type="checkbox" name="orchestrator" id="new-orchestrator">
         오케스트레이터 세션 (코드를 고치지 않고 다른 세션을 만들어 지휘)
       </label>
@@ -395,7 +403,7 @@
       <p class="error" id="new-error"></p>
       <menu>
         <button value="cancel" formnovalidate class="ghost">취소</button>
-        <button value="ok" class="primary">만들기</button>
+        <button value="ok" class="primary" id="new-submit">만들기</button>
       </menu>
     </form>
   </dialog>
@@ -679,6 +687,12 @@
     <form id="new-task-form" class="dialog-form">
       <h3 id="task-create-heading">새 작업</h3>
       <label>작업 제목 <input id="task-title" maxlength="160" required placeholder="예: 로그인 버튼 수정" autocomplete="off"></label>
+      <label>작업 브랜치 <select id="task-workbranch-mode"><option value="new">새 작업 브랜치 만들기</option><option value="existing">기존 작업 브랜치 선택</option></select></label>
+      <div id="task-workbranch-row" hidden>
+        <label>기존 작업 브랜치 <select id="task-workbranch" aria-describedby="task-workbranch-status" disabled></select></label>
+        <p class="hint workbranch-status" id="task-workbranch-status" aria-live="polite"></p>
+        <button type="button" class="ghost sm" id="task-workbranch-refresh">목록 새로고침</button>
+      </div>
       <label>작업 유형 <select id="task-type"><option value="feature">기능 개발 · 일반 수정</option><option value="hotfix">긴급 수정</option><option value="release">배포 준비</option></select></label>
       <label id="task-version-row" hidden>배포 버전 <input id="task-version" maxlength="64" placeholder="예: 0.4.0" disabled></label>
       <p class="hint task-branch-preview" id="task-branch-preview"></p>
@@ -688,7 +702,7 @@
       </div>
       <label>모델 <input id="task-model" list="task-models" placeholder="CLI 기본값"><datalist id="task-models"></datalist></label>
       <label>작업 지침 <textarea id="task-role" rows="3" maxlength="12000" placeholder="맡길 범위와 완료 기준을 적어 주세요"></textarea></label>
-      <p class="hint">원격 main과 기준 브랜치를 확인한 뒤 전용 브랜치·폴더·세션을 만듭니다.</p>
+      <p class="hint">원격 main과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.</p>
       <p class="error" id="task-create-error" role="alert"></p>
       <menu><button type="button" class="ghost" id="task-create-cancel">취소</button><button type="submit" class="primary" id="task-create-submit">작업 만들기</button></menu>
     </form>

@@ -305,6 +305,12 @@ export function createSessionService({
   }
 
   async function create(body) {
+    if (body.workBranch !== undefined) {
+      if (body.isolate === true) throw new HttpError(400, "새 작업 브랜치 생성과 기존 브랜치 선택 중 하나만 지정하세요.");
+      const session = await tasks().createBranchSession(body);
+      broadcast("sessions", {});
+      return session;
+    }
     const session = await createSession({ ...body, project: body.chat ? null : ensureProject(body.projectPath) });
     broadcast("sessions", {});
     return summary(session);
@@ -532,7 +538,7 @@ export function createSessionService({
   async function recreate(id) {
     const session = getSession(id);
     if (runner.isRunning(id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
-    if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, session.taskId
+    if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, session.taskId || session.worktree.shared
       ? "작업 폴더가 없습니다. 작업 탭에서 상태를 확인하세요. 대화 기록은 보관되며 작업 폴더 복구 또는 새 작업이 필요합니다."
       : "워크트리 폴더가 없습니다. 서버를 다시 시작해 원본 폴더로 전환한 뒤 재생성하세요.");
     const created = await createSession({
@@ -572,7 +578,7 @@ export function createSessionService({
 
   async function remove(id, { force = false, removeWorktree: removeFolder = false, deleteRecords = false } = {}) {
     const session = getSession(id);
-    if (removeFolder && session.taskId) throw new HttpError(409, "작업의 폴더는 작업 탭에서 병합 상태를 확인한 뒤 정리하세요.", "task-worktree");
+    if (removeFolder && (session.taskId || session.worktree?.shared)) throw new HttpError(409, "공유하는 작업 브랜치의 폴더는 세션 삭제와 함께 지울 수 없습니다. 작업 탭에서 정리 상태를 확인하세요.", "task-worktree");
     if (runner.isRunning(id)) {
       if (!force) throw new HttpError(409, "실행 중인 세션입니다.", "running");
       runner.stop(session);

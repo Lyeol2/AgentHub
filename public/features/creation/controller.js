@@ -1,12 +1,20 @@
 import { $, AGENT_LABEL, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
+import { createWorkbranchPicker } from "../../shared/workbranches.js";
 
 export function createCreationController({ api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, loadHub, fillModels, fillEfforts, openChat, openSettings, data, navigation }) {
   const ui = {
     "templateRoles": null,
-    "newSessionContext": null
+    "newSessionContext": null,
+    "creating": false
   };
+  const branchPicker = createWorkbranchPicker({
+    api, owner: "session", select: $("new-worktree-branch"), status: $("new-worktree-branch-status"), refresh: $("new-worktree-branch-refresh"),
+    getPath: () => $("new-project").value,
+    isActive: () => Boolean($("new-dialog").open && ui.newSessionContext && !ui.newSessionContext.cancelled && !newKind().chat && $("new-isolate").checked && $("new-worktree-mode").value === "existing"),
+    onChange: () => syncNewSubmit(),
+  });
   // ── 새 세션 ─────────────────────────────────────────────────────
   const newKind = () => {
     const [agent, mode] = $("new-agent").value.split("-");
@@ -35,23 +43,39 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
 
   function worktreeNameError(value) {
     const name = String(value ?? "").trim();
-    if (!name) return "워크트리 이름을 입력하세요.";
+    if (!name) return "작업 브랜치 이름을 입력하세요.";
     if (!/^[A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ][A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ_-]{0,63}$/u.test(name)) {
-      return "워크트리 이름은 1~64자의 영문·숫자·한글·하이픈·밑줄만 쓸 수 있으며, 영문·숫자·한글로 시작해야 합니다.";
+      return "작업 브랜치 이름은 1~64자의 영문·숫자·한글·하이픈·밑줄만 쓸 수 있으며, 영문·숫자·한글로 시작해야 합니다.";
     }
-    if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) return "워크트리 이름으로 Windows 예약어를 사용할 수 없습니다.";
+    if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) return "작업 브랜치 이름으로 Windows 예약어를 사용할 수 없습니다.";
     return "";
   }
 
-  function syncNewWorktree() {
+  function existingWorkbranchMode() {
+    return !newKind().chat && $("new-isolate").checked && $("new-worktree-mode").value === "existing";
+  }
+
+  function syncNewSubmit() {
+    $("new-submit").disabled = ui.creating || Boolean(ui.newSessionContext?.outcomeUnknown) || (existingWorkbranchMode() && !branchPicker.ready());
+  }
+
+  function syncNewWorktree(loadBranches = false) {
     const chat = newKind().chat;
     const useWorktree = !chat && $("new-isolate").checked;
+    const existing = useWorktree && $("new-worktree-mode").value === "existing";
     const input = $("new-worktree-name");
     $("new-isolate").disabled = chat;
-    $("new-worktree-row").hidden = !useWorktree;
-    input.disabled = !useWorktree;
-    input.required = useWorktree;
-    input.setCustomValidity(useWorktree ? worktreeNameError(input.value) : "");
+    $("new-worktree-mode-row").hidden = !useWorktree;
+    $("new-worktree-mode").disabled = !useWorktree;
+    $("new-worktree-row").hidden = !useWorktree || existing;
+    $("new-worktree-branch-row").hidden = !existing;
+    $("new-worktree-branch").required = existing;
+    input.disabled = !useWorktree || existing;
+    input.required = useWorktree && !existing;
+    input.setCustomValidity(input.required ? worktreeNameError(input.value) : "");
+    if (!existing) branchPicker.reset();
+    else if (loadBranches) void branchPicker.load();
+    syncNewSubmit();
   }
 
   function fillPermissions() {
@@ -104,6 +128,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   // pos: 흐름 그래프에서 우클릭한 자리(만든 세션을 거기에 놓는다)
   async function openNew(projectPath, { orchestrator = false, kind, pos = null, connectFrom = null } = {}) {
     if (ui.newSessionContext) ui.newSessionContext.cancelled = true;
+    branchPicker.reset();
     const context = { projectPath, pos, connectFrom };
     ui.newSessionContext = context;
     try {
@@ -136,6 +161,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     $("new-error").textContent = "";
     $("new-orchestrator").checked = orchestrator;
     $("new-isolate").checked = false;
+    $("new-worktree-mode").value = "new";
     $("new-worktree-name").value = "";
     syncNewKind();
     syncOrchestrator();
@@ -154,29 +180,49 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   $("new-model").addEventListener("input", () => fillEfforts("new-effort", newKind().agent, $("new-model").value.trim()));
   $("new-orchestrator").addEventListener("change", syncOrchestrator);
   $("new-isolate").addEventListener("change", () => {
-    syncNewWorktree();
-    if ($("new-isolate").checked) $("new-worktree-name").focus();
+    syncNewWorktree(true);
+    if ($("new-isolate").checked) $(existingWorkbranchMode() ? "new-worktree-branch" : "new-worktree-name").focus();
   });
+  $("new-worktree-mode").addEventListener("change", () => syncNewWorktree(true));
   $("new-worktree-name").addEventListener("input", syncNewWorktree);
   $("p-orchestrator").addEventListener("click", () => openNew(navigation.project, { orchestrator: true }));
-  $("new-project").addEventListener("change", fillTemplates);
+  $("new-project").addEventListener("change", () => {
+    branchPicker.reset();
+    syncNewWorktree(true);
+    void fillTemplates();
+  });
   $("new-template").addEventListener("change", applyTemplate);
 
   $("new-dialog").addEventListener("close", () => {
     if (ui.newSessionContext) ui.newSessionContext.cancelled = true;
     ui.newSessionContext = null;
+    branchPicker.reset();
   });
 
   $("new-form").addEventListener("submit", async (e) => {
     if (e.submitter?.value !== "ok") return;
     e.preventDefault();
+    if (ui.creating || ui.newSessionContext?.outcomeUnknown) return;
     const context = ui.newSessionContext;
     const form = new FormData(e.target);
     const { kind, ...body } = Object.fromEntries(form);
     Object.assign(body, newKind());
     body.orchestrator = form.has("orchestrator") && !body.chat;
     body.isolate = form.has("isolate") && !body.chat;
-    if (body.isolate) {
+    const existing = body.isolate && (body.worktreeMode || $("new-worktree-mode").value) === "existing";
+    delete body.worktreeMode;
+    if (existing) {
+      const branch = branchPicker.selected();
+      if (!branch) {
+        $("new-error").textContent = branchPicker.validationError();
+        $("new-worktree-branch").focus();
+        return;
+      }
+      body.isolate = false;
+      body.workBranch = branch.name;
+      delete body.worktreeName;
+    } else if (body.isolate) {
+      delete body.workBranch;
       body.worktreeName = String(body.worktreeName ?? "").trim();
       const error = worktreeNameError(body.worktreeName);
       if (error) {
@@ -184,8 +230,13 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
         $("new-worktree-name").focus();
         return;
       }
-    } else delete body.worktreeName;
+    } else {
+      delete body.worktreeName;
+      delete body.workBranch;
+    }
     if (body.chat) delete body.projectPath;
+    ui.creating = true;
+    syncNewSubmit();
     try {
       const created = await api("POST", "/api/sessions", body);
       // 생성 후 연결이 실패해도 세션을 중복 생성하지 않게 생성 창부터 닫는다.
@@ -202,13 +253,20 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       }
       await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 세션을 만들면서 등록된다.
     } catch (err) {
-      $("new-error").textContent = err.message;
+      if (err.outcomeUnknown && context) context.outcomeUnknown = true;
+      if (ui.newSessionContext === context) $("new-error").textContent = err.outcomeUnknown
+        ? "세션 생성 결과를 아직 확인할 수 없습니다. 창을 닫고 세션 목록을 확인해 주세요."
+        : err.message;
+    } finally {
+      ui.creating = false;
+      syncNewSubmit();
     }
   });
 
   function cancelCreation() {
     if (ui.newSessionContext) ui.newSessionContext.cancelled = true;
     ui.newSessionContext = null;
+    branchPicker.reset();
     if ($("new-dialog").open) $("new-dialog").close();
   }
 

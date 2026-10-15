@@ -91,7 +91,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   function openRemoveProject(p) {
     const sessions = hubSessions(p).filter((s) => !s.chat);
     const running = sessions.filter((s) => s.state === "running").length;
-    const worktrees = sessions.filter((s) => s.worktree && !s.taskId).length;
+    const worktrees = sessions.filter((s) => s.worktree && !s.taskId && !s.worktree.shared).length;
     const commandCount = data.commandsProject && samePath(data.commandsProject, p.path) ? (data.commands ?? []).length : 0;
     ui.removingProject = p;
     $("project-remove-name").textContent = p.name;
