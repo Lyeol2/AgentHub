@@ -17,6 +17,7 @@ import { orchestratorInput, extractPlan, normalizePlan } from "./orchestrator.mj
 import { HUB_FILE, HUB_TEMPLATE, hubFilePath, readHubFile } from "./hubfile.mjs";
 import { QUESTION_GUIDE, extractQuestions, answerPrompt, hasAnswer } from "./question.mjs";
 import { listSkills, checkSkill, writeSkill, deleteSkill, moveSkill, withSkills, SCOPES } from "./skills.mjs";
+import { Setup, TOOLS } from "./setup.mjs";
 import { CommandStore, isCommandId, newCommandId, checkCommand, shells, generatePrompt, parseGenerated } from "./commands.mjs";
 
 const config = loadConfig();
@@ -50,6 +51,7 @@ const cliPaths = () => ({
   claude: locateCli("claude", config.cli.claude),
   codex: locateCli("codex", config.cli.codex),
 });
+const setup = new Setup({ cliPath: (tool) => (tool === "gh" ? locateCli("gh", "") : cliPaths()[tool]) });
 const commands = new CommandStore();
 const chain = new Chain({
   store, runner, links, cliPaths, compose: composeInput, commands,
@@ -165,6 +167,9 @@ runner.on("event", (sessionId, event) => {
   if (event.status === "pending" && (event.kind === "question" || event.kind === "permission")) broadcast("sessions", {});
 });
 runner.on("state", (sessionId, state) => broadcast("state", { sessionId, state }));
+// 설치·로그인이 진행되면 화면에 알리고, 끝나면 CLI 상태도 다시 받게 한다.
+setup.on("change", (jobs) => broadcast("setup", jobs));
+setup.on("finished", () => broadcast("cli", {}));
 // 턴이 끝나면 목록의 세션 수명(압축 횟수, 컨텍스트 크기)도 새로 받게 한다.
 runner.on("turnEnd", () => broadcast("sessions", {}));
 // 데스크톱 앱(Electron)이 업데이트 기능을 넘겨준다. 브라우저로 쓸 때는 없다.
@@ -526,6 +531,25 @@ async function handleApi(req, res, url) {
     const fresh = url.searchParams.get("fresh") === "1";
     const [claude, codex] = await Promise.all([cliAuth("claude", paths.claude, { fresh }), cliAuth("codex", paths.codex, { fresh })]);
     return send(res, 200, { claude, codex });
+  }
+
+  // CLI 설치·로그인(Claude Code, Codex, GitHub CLI). 진행 상황은 "setup" 이벤트로 보낸다.
+  if (parts[0] === "setup") {
+    if (method === "GET" && parts.length === 1) return send(res, 200, await setup.status());
+    const tool = parts[1];
+    if (!TOOLS[tool]) throw new HttpError(404, "없는 CLI입니다.");
+    const body = method === "POST" ? await readJson(req) : {};
+    try {
+      if (method === "POST" && parts[2] === "install") return send(res, 200, setup.install(tool));
+      if (method === "POST" && parts[2] === "login") return send(res, 200, setup.login(tool));
+      if (method === "POST" && parts[2] === "input") {
+        setup.input(tool, String(body.text ?? "").slice(0, 2000));
+        return send(res, 200, { ok: true });
+      }
+      if (method === "POST" && parts[2] === "cancel") return send(res, 200, { canceled: setup.cancel(tool) });
+    } catch (err) {
+      throw new HttpError(409, err.message);
+    }
   }
 
   if (parts[0] === "auth" && parts[2] === "login" && method === "POST") {
