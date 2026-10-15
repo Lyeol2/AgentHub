@@ -105,6 +105,7 @@ function table(id, headers, rows, emptyText) {
 // ── 화면 전환 ───────────────────────────────────────────────────
 function show(view) {
   state.viewRevision = (state.viewRevision ?? 0) + 1;
+  clearGraphTransientState();
   state.view = view;
   for (const name of ["dashboard", "project", "session", "chat"]) $(`view-${name}`).hidden = name !== view;
   $("nav-dashboard").classList.toggle("active", view === "dashboard");
@@ -1306,16 +1307,27 @@ function renderGraph() {
     canvas.append(node);
   }
 
-  // 확대·축소: 캔버스는 transform으로 키우고, 바깥 상자를 확대한 크기로 맞춰 스크롤 범위를 맞춘다.
+  // 캔버스를 배율에 맞춰 그리고, 프로젝트별 화면 이동 위치를 유지한다.
   const sizer = el("div", { class: "graph-sizer" }, canvas);
-  state.graph = { canvas, sizer, svg, cards, pos, links, commands, zoom: graphZoomFor(state.project) };
+  const pan = samePath(state.graph?.projectPath, state.project) ? { ...state.graph.pan } : { x: 0, y: 0 };
+  state.graph = { canvas, sizer, svg, cards, pos, links, commands, zoom: graphZoomFor(state.project), pan, projectPath: state.project };
   placeCards();
   syncGraphSelection();
   box.replaceChildren(sizer);
   renderZoomLabel();
 }
-// 카드 끌기·연결·선택 상자. 캔버스 밖 여백에서도 선택 상자를 시작할 수 있게 그래프 칸에 한 번만 단다.
+// 카드 끌기·연결·선택 상자. 그래프에 초점을 두면 Delete로 선택한 노드를 한 번에 지운다.
+$("p-graph").tabIndex = 0;
 $("p-graph").addEventListener("pointerdown", onGraphPointerDown);
+$("p-graph").addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
+$("p-graph").addEventListener("keydown", (e) => {
+  if (e.key !== "Delete" || e.repeat || e.isComposing || e.defaultPrevented) return;
+  if (e.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=\"false\"])")) return;
+  if (document.querySelector("dialog[open]")) return;
+  if (!state.graphSelected.size || state.view !== "project" || state.graph?.dragging) return;
+  e.preventDefault();
+  deleteGraphSelection();
+});
 
 // 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 명령 노드는 명령 메뉴, 빈 곳은 그 자리에 새 세션·명령을 만든다.
 $("p-graph").addEventListener("contextmenu", (e) => {
@@ -1337,15 +1349,77 @@ $("p-graph").addEventListener("contextmenu", (e) => {
     if (s) openSessionMenu(e, s);
     return;
   }
+  openGraphCreateMenu(e);
+});
+
+// 손잡이를 빈 곳에 놓았을 때도 같은 생성 메뉴를 쓰고, 만든 노드에 바로 잇는다.
+function openGraphCreateMenu(e, connectFrom = null) {
+  const projectPath = state.project;
   const at = state.graph ? canvasPoint(e) : { x: PAD, y: PAD };
   const pos = { x: Math.max(0, Math.round(at.x)), y: Math.max(0, Math.round(at.y)) };
-  openContextMenu(e, "여기에 만들기", [
-    ["새 세션", () => openNew(state.project, { pos })],
-    ["새 명령", () => openCommandDialog(null, pos)],
+  const inProject = (action) => () => {
+    if (state.view === "project" && samePath(projectPath, state.project)) action();
+  };
+  openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [
+    ["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom }))],
+    ["새 명령", inProject(() => openCommandDialog(null, pos, connectFrom))],
     null,
-    ["스킬 관리", () => openSkillsManager()],
+    ["스킬 관리", inProject(() => openSkillsManager())],
   ]);
-});
+}
+
+function clearGraphTransientState() {
+  state.graphGesture?.cancel();
+  closeContextMenu();
+  for (const context of [state.newSessionContext, state.editingCommand]) {
+    if (context) context.cancelled = true;
+  }
+  state.newSessionContext = null;
+  state.editingCommand = null;
+  if ($("new-dialog").open) $("new-dialog").close();
+  if ($("command-dialog").open) $("command-dialog").close();
+  state.graphSelected.clear();
+}
+
+// 취소·포커스 상실·화면 전환에도 임시 선과 선택 상자가 남지 않게 정리한다.
+function trackGraphGesture(startEvent, onMove, onEnd) {
+  state.graphGesture?.cancel();
+  let active = true;
+  const matches = (e) => e.pointerId === startEvent.pointerId;
+  const move = (e) => { if (matches(e)) onMove(e); };
+  const finish = (e, cancelled) => {
+    if (!active) return;
+    active = false;
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", abort);
+    window.removeEventListener("blur", cancel);
+    if (state.graphGesture?.cancel === cancel) state.graphGesture = null;
+    onEnd(e, cancelled);
+  };
+  const up = (e) => { if (matches(e)) finish(e, false); };
+  const abort = (e) => { if (matches(e)) finish(e, true); };
+  const cancel = () => finish(startEvent, true);
+  state.graphGesture = { cancel };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+  window.addEventListener("pointercancel", abort);
+  window.addEventListener("blur", cancel);
+}
+
+async function connectCreatedGraphNode(context, to, projectPath) {
+  if (!context?.connectFrom || context.cancelled || !samePath(context.projectPath, projectPath)) return;
+  if (state.view !== "project" || !samePath(state.project, projectPath)) return;
+  const source = sessionById(context.connectFrom) ??
+    (samePath(state.commandsProject, projectPath) ? commandById(context.connectFrom) : null);
+  if (!source || (source.projectPath && !samePath(source.projectPath, projectPath))) return;
+  try {
+    await api("POST", "/api/links", { from: source.id, to, ...defaultLinkCondition(source.id), enabled: true });
+    await loadLinks();
+  } catch (err) {
+    alert(`노드는 만들었지만 연결하지 못했습니다. 손잡이를 끌어 다시 연결해 주세요.\n\n${err.message}`);
+  }
+}
 
 // 우클릭 메뉴. entries: [이름, 동작, { danger, disabled, title }] 또는 구분선 null
 function openContextMenu(e, title, entries) {
@@ -1455,8 +1529,9 @@ async function removeCommand(c) {
 }
 
 // cmd가 없으면 새로 만든다. pos는 새 노드를 놓을 자리.
-function openCommandDialog(cmd, pos = null) {
-  state.editingCommand = { id: cmd?.id ?? null, pos };
+function openCommandDialog(cmd, pos = null, connectFrom = null) {
+  if (state.editingCommand) state.editingCommand.cancelled = true;
+  state.editingCommand = { id: cmd?.id ?? null, pos, projectPath: state.project, connectFrom };
   const shells = state.shells ?? [{ id: "powershell", label: "PowerShell" }];
   $("command-heading").textContent = cmd ? `명령 ${cmd.title}` : "새 명령";
   $("command-title").value = cmd?.title ?? "";
@@ -1521,11 +1596,18 @@ $("command-prompt").addEventListener("keydown", (e) => {
   }
 });
 
+$("command-dialog").addEventListener("close", () => {
+  if (state.editingCommand) state.editingCommand.cancelled = true;
+  state.editingCommand = null;
+});
+
 $("command-form").addEventListener("submit", async (e) => {
   const action = e.submitter?.value;
   if (action === "cancel") return;
   e.preventDefault();
-  const { id, pos } = state.editingCommand;
+  const context = state.editingCommand;
+  if (!context || context.cancelled) return;
+  const { id, pos, projectPath } = context;
   const cmd = commandById(id);
   if (action === "delete") {
     $("command-dialog").close();
@@ -1540,10 +1622,15 @@ $("command-form").addEventListener("submit", async (e) => {
     timeoutSec: Number($("command-timeout").value),
   };
   try {
+    let created = null;
     if (cmd) await api("PUT", `/api/commands/${cmd.id}`, body);
-    else await api("POST", "/api/commands", { ...body, projectPath: state.project, pos });
-    $("command-dialog").close();
-    await loadCommands();
+    else created = await api("POST", "/api/commands", { ...body, projectPath, pos });
+    if (state.editingCommand === context) {
+      state.editingCommand = null;
+      $("command-dialog").close();
+    }
+    if (created) await connectCreatedGraphNode(context, created.id, projectPath);
+    await loadCommands(projectPath);
   } catch (err) {
     $("command-error").textContent = err.message;
   }
@@ -1876,6 +1963,8 @@ function applyGraphZoom() {
   const g = state.graph;
   if (!g?.size) return;
   g.canvas.style.transform = g.zoom === 1 ? "" : `scale(${g.zoom})`;
+  g.canvas.style.left = `${g.pan.x}px`;
+  g.canvas.style.top = `${g.pan.y}px`;
   g.sizer.style.width = `${g.size.width * g.zoom}px`;
   g.sizer.style.height = `${g.size.height * g.zoom}px`;
 }
@@ -1897,13 +1986,12 @@ function setGraphZoom(zoom, anchor = null) {
   const rect = box.getBoundingClientRect();
   const ax = anchor ? anchor.clientX - rect.left : box.clientWidth / 2;
   const ay = anchor ? anchor.clientY - rect.top : box.clientHeight / 2;
-  const cx = (box.scrollLeft + ax) / g.zoom;
-  const cy = (box.scrollTop + ay) / g.zoom;
+  const cx = (ax - g.pan.x) / g.zoom;
+  const cy = (ay - g.pan.y) / g.zoom;
+  g.pan = { x: ax - cx * next, y: ay - cy * next };
   g.zoom = next;
   saveGraphZoom(state.project, next);
   applyGraphZoom();
-  box.scrollLeft = cx * next - ax;
-  box.scrollTop = cy * next - ay;
   renderZoomLabel();
 }
 
@@ -1915,6 +2003,8 @@ function fitGraph() {
   const maxHeight = parseFloat(getComputedStyle(box).maxHeight) || box.clientHeight;
   const fit = Math.min(1, box.clientWidth / g.size.width, maxHeight / g.size.height);
   setGraphZoom(fit);
+  g.pan = { x: 0, y: 0 };
+  applyGraphZoom();
   box.scrollLeft = 0;
   box.scrollTop = 0;
 }
@@ -1924,11 +2014,13 @@ $("p-zoom-out").addEventListener("click", () => setGraphZoom((state.graph?.zoom 
 $("p-zoom-reset").addEventListener("click", () => setGraphZoom(1));
 $("p-zoom-fit").addEventListener("click", fitGraph);
 
-// Ctrl+휠(터치패드 오므리기·벌리기 포함)로 커서 자리를 기준으로 확대·축소한다. 그냥 휠은 스크롤이다.
+// 휠로 커서 자리를 기준으로 확대·축소한다(터치패드 오므리기·벌리기도 포함).
 $("p-graph").addEventListener("wheel", (e) => {
-  if (!e.ctrlKey && !e.metaKey) return;
+  if (!state.graph?.canvas.isConnected) return;
   e.preventDefault();
-  setGraphZoom((state.graph?.zoom ?? 1) * Math.exp(-e.deltaY * 0.0015), e);
+  if (state.graph.dragging) return;
+  const delta = e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? $("p-graph").clientHeight : 1);
+  setGraphZoom((state.graph.zoom ?? 1) * Math.exp(-delta * 0.0015), e);
 }, { passive: false });
 
 // sa·sb: 양 끝 노드 크기
@@ -2041,16 +2133,20 @@ function notifyGate(link) {
   };
 }
 
-// 카드를 누르고 떼면 열고, 끌면 옮긴다. 손잡이를 끌어 다른 카드에 놓으면 연결한다.
+// 카드를 누르면 선택하고, 끌면 옮긴다. 손잡이는 기존 카드나 빈 곳에 이어 새 노드를 만든다.
 function onGraphPointerDown(e) {
-  if (e.button === 1 && e.target.closest(".gcard")) {
+  if (e.button !== 0 && e.button !== 1) return;
+  state.graphGesture?.cancel();
+  const g = state.graph;
+  if (e.button === 1) {
     e.preventDefault();
-    openSessionWindow(e.target.closest(".gcard").dataset.id);
+    if (g?.canvas.isConnected) startGraphPan(e);
     return;
   }
   if (e.button !== 0) return;
-  const g = state.graph;
   if (!g?.canvas.isConnected) return; // 카드가 없어 안내 문구만 있는 그래프
+  if (e.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=\"false\"])")) return;
+  $("p-graph").focus({ preventScroll: true });
   const label = e.target.closest(".edge-label");
   if (label && e.target.closest(".gate-btn")) return; // 승인·거절 버튼은 자기 onclick으로 처리한다.
   if (label) {
@@ -2075,6 +2171,7 @@ function onGraphPointerDown(e) {
   const origins = new Map(group.map((n) => [n, { ...g.pos.get(n) }]));
   let moved = false;
   let temp = null;
+  g.dragging = true;
 
   const onMove = (ev) => {
     const p = canvasPoint(ev);
@@ -2106,13 +2203,17 @@ function onGraphPointerDown(e) {
     }
   };
 
-  const onUp = async (ev) => {
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", onUp);
+  const onUp = async (ev, cancelled) => {
     g.dragging = false;
     for (const n of group) g.cards.get(n)?.classList.remove("dragging");
     g.canvas.classList.remove("connecting");
     temp?.remove();
+    if (cancelled) {
+      for (const [n, origin] of origins) g.pos.set(n, origin);
+      if (state.graph === g && g.canvas.isConnected) placeCards();
+      return;
+    }
+    if (state.graph !== g || !g.canvas.isConnected) return;
     if (!moved) {
       // 누르면 선택만 한다(열기는 두 번 누르기). Ctrl·Shift를 누르고 누르면 선택에 더하거나 뺀다.
       if (connecting) return;
@@ -2127,20 +2228,42 @@ function onGraphPointerDown(e) {
     }
     if (connecting) {
       // 세션·명령 노드끼리 이으면 넘기기 연결을 만든다.
-      const targetId = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".gcard, .gcmd")?.dataset.id;
+      const target = document.elementFromPoint(ev.clientX, ev.clientY);
+      const targetId = target?.closest(".gcard, .gcmd")?.dataset.id;
       if (targetId && targetId !== id) openLinkDialog(null, id, targetId);
+      else if (!targetId && target?.closest("#p-graph") && !target.closest(".edge-label, button, a, input, select, textarea")) {
+        openGraphCreateMenu(ev, id);
+      }
       return;
     }
     await Promise.all(group.map(saveNodePos));
   };
 
-  window.addEventListener("pointermove", onMove);
-  window.addEventListener("pointerup", onUp);
+  trackGraphGesture(e, onMove, onUp);
+}
+
+// 휠 버튼을 누른 채 끌면 카드를 건드리지 않고 화면을 이동한다.
+function startGraphPan(e) {
+  const g = state.graph;
+  const box = $("p-graph");
+  const start = { x: e.clientX, y: e.clientY, pan: { ...g.pan } };
+  box.focus({ preventScroll: true });
+  closeContextMenu();
+  g.dragging = true;
+  box.classList.add("panning");
+  trackGraphGesture(e, (ev) => {
+    g.pan = { x: start.pan.x + ev.clientX - start.x, y: start.pan.y + ev.clientY - start.y };
+    applyGraphZoom();
+  }, () => {
+    g.dragging = false;
+    box.classList.remove("panning");
+  });
 }
 
 // 옮긴 카드의 위치를 저장한다.
 async function saveNodePos(id) {
-  const p = state.graph.pos.get(id);
+  const p = state.graph?.pos.get(id);
+  if (!p) return;
   const pos = { x: Math.round(p.x), y: Math.round(p.y) };
   const cmd = commandById(id);
   try {
@@ -2173,8 +2296,10 @@ function startBoxSelect(e) {
   if (!g) return;
   e.preventDefault();
   const start = canvasPoint(e);
-  const base = e.ctrlKey || e.metaKey || e.shiftKey ? new Set(state.graphSelected) : new Set();
+  const before = new Set(state.graphSelected);
+  const base = e.ctrlKey || e.metaKey || e.shiftKey ? new Set(before) : new Set();
   let box = null;
+  g.dragging = true;
 
   const onMove = (ev) => {
     const p = canvasPoint(ev);
@@ -2198,20 +2323,44 @@ function startBoxSelect(e) {
     syncGraphSelection();
   };
 
-  const onUp = () => {
-    window.removeEventListener("pointermove", onMove);
-    window.removeEventListener("pointerup", onUp);
+  const onUp = (_ev, cancelled) => {
+    g.dragging = false;
     g.canvas.classList.remove("selecting");
-    if (box) {
-      box.remove();
-      return;
-    }
-    state.graphSelected = base;
+    box?.remove();
+    if (cancelled) state.graphSelected = before;
+    else if (!box) state.graphSelected = base;
     syncGraphSelection();
   };
 
-  window.addEventListener("pointermove", onMove);
-  window.addEventListener("pointerup", onUp);
+  trackGraphGesture(e, onMove, onUp);
+}
+
+// 전체에 한 번만 확인한다. 작업 폴더와 원본 CLI 기록은 개별 삭제 메뉴에서 관리한다.
+async function deleteGraphSelection() {
+  if (state.deletingGraphNodes || state.view !== "project") return;
+  const projectPath = state.project;
+  const nodes = [...state.graphSelected].map((id) =>
+    state.sessions.find((s) => s.id === id && samePath(s.projectPath, projectPath)) ??
+    (samePath(state.commandsProject, projectPath) ? commandById(id) : null)).filter(Boolean);
+  if (!nodes.length) return;
+  const running = nodes.filter((n) => n.state === "running").length;
+  if (!confirm(`선택한 노드 ${nodes.length}개와 이어진 연결을 삭제할까요?${running ? `\n실행 중인 ${running}개는 멈춥니다.` : ""}\n세션의 작업 폴더와 원본 CLI 기록은 남겨 둡니다.`)) return;
+  state.deletingGraphNodes = true;
+  closeContextMenu();
+  try {
+    const results = await Promise.allSettled(nodes.map((node) =>
+      api("DELETE", isCommandNode(node.id) ? `/api/commands/${node.id}` : `/api/sessions/${node.id}?force=1`)));
+    const errors = [];
+    results.forEach((result, i) => {
+      if (result.status === "fulfilled") state.graphSelected.delete(nodes[i].id);
+      else errors.push(`${nodes[i].title}: ${result.reason.message}`);
+    });
+    await Promise.all([loadSessions(), loadCommands(projectPath), loadLinks()]);
+    if (errors.length) alert(`일부 노드를 삭제하지 못했습니다.\n\n${errors.join("\n")}`);
+  } finally {
+    state.deletingGraphNodes = false;
+    syncGraphSelection();
+  }
 }
 
 // 카드를 두 번 누르면 연다. Ctrl·Shift를 누르고 두 번 누르면 세션을 새 창으로 연다.
@@ -3458,11 +3607,25 @@ function syncOrchestrator() {
 
 // kind: claude | codex | claude-chat | codex-chat
 // pos: 흐름 그래프에서 우클릭한 자리(만든 세션을 거기에 놓는다)
-async function openNew(projectPath, { orchestrator = false, kind, pos = null } = {}) {
-  state.newSessionPos = pos;
-  await loadStatus();
+async function openNew(projectPath, { orchestrator = false, kind, pos = null, connectFrom = null } = {}) {
+  if (state.newSessionContext) state.newSessionContext.cancelled = true;
+  const context = { projectPath, pos, connectFrom };
+  state.newSessionContext = context;
+  try {
+    await loadStatus();
+  } catch (err) {
+    if (state.newSessionContext === context) state.newSessionContext = null;
+    alert(err.message);
+    return;
+  }
+  if (state.newSessionContext !== context || context.cancelled) return;
+  if (pos && (state.view !== "project" || !samePath(projectPath, state.project))) {
+    state.newSessionContext = null;
+    return;
+  }
   const projects = sortedProjects();
   if (!projects.length && !kind?.endsWith("-chat")) {
+    state.newSessionContext = null;
     if (confirm("등록된 프로젝트가 없습니다. 프로젝트 없이 일반 채팅을 시작할까요?\n\n취소를 누르면 설정에서 프로젝트를 추가합니다.")) openChat();
     else openSettings();
     return;
@@ -3497,9 +3660,15 @@ $("p-orchestrator").addEventListener("click", () => openNew(state.project, { orc
 $("new-project").addEventListener("change", fillTemplates);
 $("new-template").addEventListener("change", applyTemplate);
 
+$("new-dialog").addEventListener("close", () => {
+  if (state.newSessionContext) state.newSessionContext.cancelled = true;
+  state.newSessionContext = null;
+});
+
 $("new-form").addEventListener("submit", async (e) => {
   if (e.submitter?.value !== "ok") return;
   e.preventDefault();
+  const context = state.newSessionContext;
   const form = new FormData(e.target);
   const { kind, ...body } = Object.fromEntries(form);
   Object.assign(body, newKind());
@@ -3507,14 +3676,17 @@ $("new-form").addEventListener("submit", async (e) => {
   if (body.chat) delete body.projectPath;
   try {
     const created = await api("POST", "/api/sessions", body);
-    $("new-dialog").close();
-    e.target.reset();
-    // 만든 세션을 바로 열지 않고 보던 화면에 머문다. 새 세션은 사이드바 목록과 흐름 그래프에 나타난다.
-    // 흐름 그래프에서 우클릭으로 만들었으면 그 자리에 놓는다.
-    const pos = state.newSessionPos;
-    state.newSessionPos = null;
-    if (pos && !body.chat && state.view === "project") {
-      await api("PUT", `/api/sessions/${created.id}`, { graphPos: pos }).catch(() => {});
+    // 생성 후 연결이 실패해도 세션을 중복 생성하지 않게 생성 창부터 닫는다.
+    if (state.newSessionContext === context) {
+      state.newSessionContext = null;
+      $("new-dialog").close();
+      e.target.reset();
+    }
+    // 그래프에서 만든 세션은 지정한 자리에 놓고, 손잡이에서 시작했으면 바로 연결한다.
+    if (context?.pos && !context.cancelled && !body.chat && state.view === "project" &&
+        samePath(context.projectPath, body.projectPath) && samePath(state.project, body.projectPath)) {
+      await api("PUT", `/api/sessions/${created.id}`, { graphPos: context.pos }).catch(() => {});
+      await connectCreatedGraphNode(context, created.id, body.projectPath);
     }
     await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 세션을 만들면서 등록된다.
   } catch (err) {

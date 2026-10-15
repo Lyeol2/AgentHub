@@ -108,13 +108,13 @@
         <div class="tab-panel" data-panel="flow">
         <div class="card">
           <div class="card-head">
-            <h3>세션 흐름 <span class="muted" title="클릭으로 선택, 두 번 클릭으로 열기. 빈 곳을 끌어 여러 개 선택. ● 손잡이를 끌어 연결. Ctrl+두 번 클릭은 새 창.">두 번 클릭해 열기 · ●를 끌어 연결</span></h3>
+            <h3>세션 흐름 <span class="muted" title="두 번 클릭해 열기 · 빈 곳을 끌어 선택 후 Delete로 삭제 · ●를 다른 카드나 빈 곳에 끌어 연결">휠 확대·축소 · 휠 버튼 끌어 이동</span></h3>
             <div class="actions">
               <button class="ghost sm" id="p-orchestrator" title="목표를 작업으로 나누고 세션을 만들어 지휘하는 세션">오케스트레이터 만들기</button>
               <button class="ghost sm" id="p-skills" title="스킬 만들기·편집·옮기기. 세션 카드의 스킬 칩을 눌러 장착합니다">스킬</button>
               <button class="ghost sm" id="p-board" title="세션들이 함께 보는 메모. API 약속·정한 사항·진행 상황을 남깁니다">공유 노트</button>
               <button class="ghost sm" id="p-relayout" title="옮긴 위치를 지우고 연결 순서대로 다시 배치">자동 배치</button>
-              <span class="zoom-controls" title="Ctrl+마우스 휠로도 확대·축소합니다">
+              <span class="zoom-controls" title="마우스 휠로 확대·축소하고 휠 버튼을 누른 채 끌어 이동합니다">
                 <button class="ghost sm" id="p-zoom-out" aria-label="축소">−</button>
                 <button class="ghost sm" id="p-zoom-reset" title="100%로 되돌리기">100%</button>
                 <button class="ghost sm" id="p-zoom-in" aria-label="확대">+</button>
@@ -123,7 +123,7 @@
             </div>
           </div>
           <div class="hub-bar" id="p-hub"></div>
-          <div class="graph" id="p-graph"></div>
+          <div class="graph" id="p-graph" role="region" aria-label="세션 흐름 그래프. 휠로 확대·축소, 휠 버튼을 끌어 이동, 빈 곳을 끌어 선택 후 Delete로 삭제"></div>
         </div>
         </div>
 

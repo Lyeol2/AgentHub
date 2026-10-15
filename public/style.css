@@ -379,8 +379,9 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
 }
 
 /* ── 세션 흐름 그래프 ─────────────────────────────────────── */
-.graph { overflow: auto; min-height: 180px; max-height: 62vh; background:
+.graph { overflow: hidden; min-height: 180px; max-height: 62vh; background:
   radial-gradient(circle, var(--line) 1px, transparent 1px) 0 0 / 20px 20px; }
+.graph.panning, .graph.panning * { cursor: grabbing !important; user-select: none; }
 .graph-empty { color: var(--faint); text-align: center; padding: 48px 16px; }
 .graph-canvas { position: relative; min-width: 100%; }
 .graph-edges { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; pointer-events: none; }
