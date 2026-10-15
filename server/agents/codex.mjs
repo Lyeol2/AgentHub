@@ -1,4 +1,4 @@
-// Codex CLI(`codex exec --json`) 연결.
+// Codex CLI app-server 연결. 기존 exec 기록 파서도 유지한다.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -91,29 +91,54 @@ export function efforts() {
 export const CHAT_INTRO = "[일반 대화] 코딩 작업이 아니라 사용자와 나누는 일반 대화다. " +
   "파일을 읽거나 명령을 실행하지 말고 바로 답한다. 사용자가 쓴 언어로 답한다.";
 
-// mcp: AgentHub MCP 서버(세션끼리 소통하는 도구). ask_session은 답을 몇 분까지 기다리므로 도구 제한 시간을 늘린다.
-// resolved: 실제로 쓸 모델과 추론 강도(resolveModel). 테스트에서 넘겨 사용자 설정 파일을 읽지 않게 한다.
+// app-server는 기존 CLI 로그인·설정을 쓰며 실행 중 승인을 JSON-RPC로 주고받는다.
+export const transport = "app-server";
 export function buildArgs(session, { mcp = null, resolved = resolveModel(session) } = {}) {
-  const sandbox = session.permission ?? "workspace-write";
-  const args = ["exec"];
-  if (session.agentSessionId) {
-    // resume에는 --sandbox/--cd가 없으므로 설정 덮어쓰기로 넘기고, 작업 폴더는 cwd로 정한다.
-    args.push("resume", session.agentSessionId, "--json", "-c", `sandbox_mode=${sandbox}`);
-  } else {
-    args.push("--json", "--sandbox", sandbox, "--cd", session.cwd);
-  }
-  const { model, effort } = resolved;
-  if (model) args.push("--model", model);
-  if (effort) args.push("-c", `model_reasoning_effort=${effort}`);
-  // exec는 승인을 물을 수 없어 승인이 필요한 MCP 도구를 거절하므로, AgentHub 도구는 묻지 않고 쓰게 한다.
+  const args = ["app-server", "--listen", "stdio://"];
+  const settings = { approval_policy: session.chat ? "never" : "on-request", approvals_reviewer: "user", sandbox_mode: session.permission ?? "workspace-write" };
+  if (resolved.model) settings.model = resolved.model;
+  if (resolved.effort) settings.model_reasoning_effort = resolved.effort;
+  if (session.addDirs?.length) settings["sandbox_workspace_write.writable_roots"] = session.addDirs;
   if (mcp) {
-    args.push("-c", `mcp_servers.agenthub.url=${mcp.url}`, "-c", "mcp_servers.agenthub.tool_timeout_sec=660",
-      "-c", "mcp_servers.agenthub.default_tools_approval_mode=approve");
+    settings["mcp_servers.agenthub.url"] = mcp.url;
+    settings["mcp_servers.agenthub.tool_timeout_sec"] = 660;
+    settings["mcp_servers.agenthub.default_tools_approval_mode"] = "approve";
   }
-  // 일반 채팅은 git 저장소가 아닌 빈 폴더에서 실행한다.
-  if (session.chat) args.push("--skip-git-repo-check");
-  args.push("-");
+  for (const [key, value] of Object.entries(settings)) args.push("-c", `${key}=${JSON.stringify(value)}`);
   return args;
+}
+
+export function parseControl(msg) {
+  const { method, params = {} } = msg.request ?? {};
+  if (method === "item/tool/requestUserInput") {
+    return { kind: "question", input: params, questions: (params.questions ?? []).map((q) => ({ ...q, multiSelect: false })) };
+  }
+  const tools = { "item/commandExecution/requestApproval": "명령 실행", "item/fileChange/requestApproval": "파일 변경", "item/permissions/requestApproval": "추가 권한" };
+  if (!tools[method]) return null;
+  const network = params.networkApprovalContext;
+  return {
+    kind: "permission", method, input: params,
+    rememberLabel: "이번 실행에서 허용",
+    rememberDescription: "현재 Codex 실행이 끝날 때까지 요청한 범위를 허용합니다. 다음 요청에는 다시 물을 수 있습니다.",
+    tool: network ? "네트워크 접근" : tools[method],
+    text: network ? `네트워크 접근: ${network.protocol ?? ""} ${network.host ?? ""}`.trim() : params.command || (params.changes?.length ? `파일 변경: ${params.changes.map((change) => change.path).join(", ")}` : tools[method]),
+    detail: truncate(params), reason: params.reason ?? null,
+    suggestions: params.availableDecisions && !params.availableDecisions.includes("acceptForSession") ? [] : ["session"],
+  };
+}
+
+export function permissionResponse(control, decision) {
+  if (!["allow", "always", "deny"].includes(decision)) throw new Error("올바른 권한 결정을 선택하세요.");
+  if (control.method === "item/permissions/requestApproval") {
+    return { permissions: decision === "deny" ? {} : control.input.permissions, scope: decision === "always" ? "session" : "turn" };
+  }
+  const selected = decision === "deny" ? "decline" : decision === "always" ? "acceptForSession" : "accept";
+  if (control.input.availableDecisions?.length && !control.input.availableDecisions.includes(selected)) throw new Error("이 요청에서 지원하지 않는 결정입니다.");
+  return { decision: selected };
+}
+
+export function questionResponse(input, answers) {
+  return { answers: Object.fromEntries((input.questions ?? []).map((q, i) => [q.id, { answers: [...(answers?.[i]?.selected ?? []), String(answers?.[i]?.text ?? "").trim()].filter(Boolean) }])) };
 }
 
 function truncate(text, max = 4000) {
@@ -182,6 +207,7 @@ export function parseLine(line) {
   }
 
   switch (msg.type) {
+    case "agenthub_event": return msg.event ? [msg.event] : [];
     case "thread.started":
       return [{ kind: "status", text: "세션 시작", agentSessionId: msg.thread_id }];
     case "item.started":

@@ -1,6 +1,7 @@
 // Claude Code CLI(`claude -p --input-format stream-json --output-format stream-json`) 연결.
 // 요청을 stdin으로 한 줄씩 보내고, 실행 중에 CLI가 묻는 권한 요청·질문(AskUserQuestion)을 control_request로 받아
 // 화면에서 답을 받은 뒤 control_response로 돌려준다(Agent SDK가 쓰는 방식과 같다).
+import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 
 // default: 허락이 필요한 도구(수정, 명령)를 쓸 때마다 화면에서 허용·거절을 묻는다.
@@ -53,9 +54,9 @@ export const interruptLine = () => JSON.stringify({ type: "control_request", req
 
 export const initLine = () => JSON.stringify({ type: "control_request", request_id: `init-${randomUUID()}`, request: { subtype: "initialize" } });
 
-export const userLine = (text) => JSON.stringify({
+export const userLine = (text, attachments = []) => JSON.stringify({
   type: "user",
-  message: { role: "user", content: [{ type: "text", text }] },
+  message: { role: "user", content: [{ type: "text", text }, ...attachments.map((attachment) => ({ type: "image", source: { type: "base64", media_type: attachment.mimeType, data: fs.readFileSync(attachment.path).toString("base64") } }))] },
   parent_tool_use_id: null,
   session_id: "",
 });

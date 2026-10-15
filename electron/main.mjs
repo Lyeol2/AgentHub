@@ -34,8 +34,9 @@ if (!app.requestSingleInstanceLock()) {
 async function start() {
   Menu.setApplicationMenu(null);
   try {
-    server = await import("../server/index.mjs");
-    await server.listening;
+    const { createHub } = await import("../server/bootstrap.mjs");
+    server = createHub();
+    await server.start();
   } catch (err) {
     const detail = err.code === "EADDRINUSE"
       ? `포트 ${server?.port ?? ""}가 이미 쓰이고 있습니다. npm start로 띄운 서버가 있다면 끄고 다시 실행하세요.`

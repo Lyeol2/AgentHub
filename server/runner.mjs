@@ -2,6 +2,9 @@ import { EventEmitter } from "node:events";
 import * as claude from "./agents/claude.mjs";
 import * as codex from "./agents/codex.mjs";
 import { spawnCli } from "./cli.mjs";
+import { CodexAppServer } from "./codex-app-server.mjs";
+
+const publicMeta = (meta) => ({ ...meta, ...(meta.attachments ? { attachments: meta.attachments.map(({ id, name, mimeType, size, url }) => ({ id, name, mimeType, size, url })) } : {}) });
 
 export const AGENTS = { claude, codex };
 
@@ -11,9 +14,10 @@ const INTERRUPT_GRACE_MS = 10000;
 
 // 세션 하나에 한 번에 한 턴만 실행한다. 다른 세션은 동시에 실행할 수 있다.
 export class Runner extends EventEmitter {
-  constructor(store) {
+  constructor(store, { spawn = spawnCli } = {}) {
     super();
     this.store = store;
+    this.spawn = spawn;
     this.running = new Map();
     this.prompts = new Map(); // CLI가 실행 중에 물은 요청 ID → { session, child, agent, control, event }
     // 세션에 붙일 AgentHub MCP 서버 정보를 돌려주는 함수(session → { url, configFile } | null). 서버가 정한다.
@@ -32,15 +36,16 @@ export class Runner extends EventEmitter {
     const id = msg.request_id;
     const event = control.kind === "question"
       ? { kind: "question", questionId: id, status: "pending", text: "질문", questions: control.questions, live: true }
-      : { kind: "permission", requestId: id, status: "pending", tool: control.tool, text: control.text, detail: control.detail, reason: control.reason, canRemember: control.suggestions.length > 0 };
-    this.prompts.set(id, { session, child, agent, control, event });
+      : { kind: "permission", requestId: id, status: "pending", tool: control.tool, text: control.text, detail: control.detail, reason: control.reason, canRemember: (control.suggestions?.length ?? 0) > 0, promptId: id, ...(control.rememberLabel ? { rememberLabel: control.rememberLabel, rememberDescription: control.rememberDescription } : {}) };
     session.waiting = true;
-    this.append(session, event);
+    const full = this.append(session, event);
+    this.prompts.set(id, { session, child, agent, control, event: full });
   }
 
-  // 실행 중인 턴에 요청을 붙인다. CLI가 다음 도구 실행 사이에 읽어 같은 작업에 반영한다(Claude만).
+  // 실행 중인 턴에 요청을 붙인다. CLI가 같은 작업에 반영할 수 있을 때만 허용한다.
   canInject(session) {
-    return this.running.has(session.id) && !!AGENTS[session.agent].interactive;
+    const child = this.running.get(session.id);
+    return !!child && (child.appServer ? child.appServer.canInject() : !!AGENTS[session.agent].interactive);
   }
 
   // meta: 요청 이벤트에 덧붙일 값(보낸 세션 등)
@@ -48,10 +53,11 @@ export class Runner extends EventEmitter {
     const child = this.running.get(session.id);
     const agent = AGENTS[session.agent];
     if (!child) throw new Error("실행 중이 아닙니다.");
-    if (!agent.interactive) throw new Error(`${session.agent}는 실행 중인 작업에 요청을 붙일 수 없습니다. 대기열에 넣으세요.`);
-    child.stdin.write(`${agent.userLine(text)}\n`);
+    if (!agent.interactive && !child.appServer) throw new Error(`${session.agent}는 실행 중인 작업에 요청을 붙일 수 없습니다. 대기열에 넣으세요.`);
+    if (child.appServer) child.appServer.inject(text, meta.attachments);
+    else child.stdin.write(`${agent.userLine(text, meta.attachments)}\n`);
     child.injected = (child.injected ?? 0) + 1;
-    this.append(session, { kind: "user", text, ...meta, injected: true });
+    this.append(session, { kind: "user", text, ...publicMeta(meta), injected: true });
   }
 
   hasPrompt(id, sessionId) {
@@ -66,7 +72,8 @@ export class Runner extends EventEmitter {
     const response = control.kind === "question"
       ? agent.questionResponse(control.input, answers)
       : agent.permissionResponse(control, decision, message);
-    child.stdin.write(`${agent.controlResponse(id, response)}\n`);
+    if (child.appServer) child.appServer.respond(id, response);
+    else child.stdin.write(`${agent.controlResponse(id, response)}\n`);
     this.prompts.delete(id);
     if (control.kind === "question") {
       event.status = "answered";
@@ -100,6 +107,7 @@ export class Runner extends EventEmitter {
     session.events.push(full);
     this.store.touch(session);
     this.emit("event", session.id, full);
+    return full;
   }
 
   setState(session, state) {
@@ -128,18 +136,19 @@ export class Runner extends EventEmitter {
 
     const agent = AGENTS[session.agent];
     const args = agent.buildArgs(session, { mcp: session.chat ? null : this.mcp(session) });
+    const userInput = agent.interactive ? agent.userLine(input, meta.attachments) : null;
     if (!retry) {
       // 답하지 않은 질문은 새 요청이 들어오면 지나간 것으로 본다.
       for (const e of session.events) if (e.kind === "question" && e.status === "pending") e.status = "skipped";
       session.waiting = false;
-      this.append(session, { kind: "user", text: prompt, ...meta });
+      this.append(session, { kind: "user", text: prompt, ...publicMeta(meta) });
       // 설정의 기본 모델을 쓸 수 없어 다른 모델로 실행하면 새 대화를 시작할 때 한 번 알린다.
       const note = !session.agentSessionId && agent.modelNote?.(session);
       if (note) this.append(session, { kind: "status", text: note });
     }
     this.setState(session, "running");
 
-    const child = spawnCli(cliPath, args, {
+    const child = this.spawn(cliPath, args, {
       cwd: session.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -147,6 +156,7 @@ export class Runner extends EventEmitter {
       env: { ...process.env, NO_COLOR: "1", MCP_TOOL_TIMEOUT: "660000" },
     });
     this.running.set(session.id, child);
+    if (agent.transport === "app-server") child.appServer = new CodexAppServer(child, session);
 
     const stderrTail = [];
     const resuming = !!session.agentSessionId;
@@ -156,7 +166,8 @@ export class Runner extends EventEmitter {
     let lastErrorText = null;
 
     let endTimer = null;
-    const handleLine = (line) => {
+    const handleLine = (line, common = false) => {
+      if (child.appServer && !common) return child.appServer.handleLine(line);
       if (!line.trim()) return;
       // 턴이 끝난 뒤에도 붙인 요청으로 다음 출력이 오면 stdin을 닫지 않고 기다린다.
       clearTimeout(endTimer);
@@ -208,13 +219,24 @@ export class Runner extends EventEmitter {
         const final = event.final;
         delete event.final;
         this.append(session, event);
-        if (final && agent.interactive) {
+        if (final && child.appServer) child.appServer.shutdown();
+        else if (final && agent.interactive) {
           // 실행 중에 붙인 요청이 있으면 CLI가 이어서 처리할 수 있으므로 잠시 기다렸다가 닫는다.
           if (child.injected) endTimer = setTimeout(() => child.stdin.end(), INJECT_GRACE_MS);
           else child.stdin.end();
         }
       }
     };
+
+    if (child.appServer) {
+      child.appServer.on("event", (event) => handleLine(JSON.stringify({ type: "agenthub_event", event }), true));
+      child.appServer.on("control", (msg) => this.ask(session, child, agent, msg));
+      child.appServer.on("cancel", (id) => { this.dropPrompts(session.id, id); this.store.touch(session); });
+      child.appServer.on("shutdown", () => {
+        const timer = setTimeout(() => { if (this.running.get(session.id) === child) this.kill(child); }, INTERRUPT_GRACE_MS);
+        timer.unref?.();
+      });
+    }
 
     let buffer = "";
     child.stdout.setEncoding("utf8");
@@ -240,6 +262,8 @@ export class Runner extends EventEmitter {
 
     child.on("close", (code, signal) => {
       if (buffer) handleLine(buffer);
+      clearTimeout(endTimer);
+      child.appServer?.close();
       this.running.delete(session.id);
       this.dropPrompts(session.id);
       // 첫 턴이 끝까지 가지 못했으면 CLI 쪽에 이어 갈 대화가 없을 수 있으므로 다음 턴은 새로 시작한다.
@@ -265,6 +289,10 @@ export class Runner extends EventEmitter {
         this.emit("turnEnd", session, null);
         return;
       }
+      if (child.appServer && !completedTurn && !sawError) {
+        sawError = true;
+        this.append(session, { kind: "error", text: "Codex 연결이 턴을 완료하기 전에 끝났습니다." });
+      }
       if (code !== 0 && !sawError) {
         const tail = stderrTail.join("").trim().split(/\r?\n/).slice(-15).join("\n");
         this.append(session, { kind: "error", text: `CLI가 종료 코드 ${code ?? signal}로 끝났습니다.\n${tail}` });
@@ -278,8 +306,10 @@ export class Runner extends EventEmitter {
 
     // stdin이 먼저 닫혀도(실행 실패 등) 서버가 죽지 않게 한다.
     child.stdin.on("error", () => {});
-    if (agent.interactive) {
-      child.stdin.write(`${agent.initLine()}\n${agent.userLine(input)}\n`);
+    if (child.appServer) {
+      child.appServer.start(input, meta.attachments);
+    } else if (agent.interactive) {
+      child.stdin.write(`${agent.initLine()}\n${userInput}\n`);
     } else {
       child.stdin.end(input);
     }
@@ -303,6 +333,7 @@ export class Runner extends EventEmitter {
     const child = this.running.get(session.id);
     if (!child) return false;
     const agent = AGENTS[session.agent];
+    if (child.appServer) return this.stop(session);
     if (!agent.interruptLine) return this.stop(session);
     session.stopRequested = true;
     child.stdin.write(`${agent.interruptLine()}\n`);
@@ -316,7 +347,12 @@ export class Runner extends EventEmitter {
     const child = this.running.get(session.id);
     if (!child) return false;
     session.stopRequested = true;
-    this.kill(child);
+    this.dropPrompts(session.id);
+    if (child.appServer) {
+      child.appServer.interrupt();
+      const timer = setTimeout(() => { if (this.running.get(session.id) === child) this.kill(child); }, INTERRUPT_GRACE_MS);
+      timer.unref?.();
+    } else this.kill(child);
     return true;
   }
 

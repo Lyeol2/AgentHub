@@ -16,8 +16,10 @@ test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
 const session = (id, extra = {}) => ({ id, title: id.toUpperCase(), agent: "claude", projectPath: "C:/p", cwd: "C:/p", events: [], state: "idle", ...extra });
 
+const link = (from, to, extra = {}) => ({ id: `${from}-${to}`, from, to, when: "manual", enabled: true, ...extra });
+
 // 세션 여러 개와 가짜 runner로 Chain·Mailbox를 만든다. 시작한 턴은 runner.sent에, 붙인 요청은 runner.injected에 쌓인다.
-function world(list) {
+function world(list, connections = []) {
   const sessions = new Map(list.map((s) => [s.id, s]));
   const runner = Object.assign(new EventEmitter(), {
     sent: [], injected: [], running: new Set(), live: new Set(),
@@ -27,16 +29,16 @@ function world(list) {
     send(s, prompt, cli, input, meta) { this.sent.push([s.id, prompt]); this.running.add(s.id); this.append(s, { kind: "user", text: prompt, ...meta }); },
     append(s, e) { s.events.push(e); },
   });
-  const links = { list: () => [], from: () => [], update: (l, c) => Object.assign(l, c) };
+  const links = { list: () => connections, from: (id) => connections.filter((l) => l.from === id), update: (l, c) => Object.assign(l, c) };
   const chain = new Chain({ store: { get: (id) => sessions.get(id) }, runner, links, cliPaths: () => ({ claude: "x", codex: "x" }), compose: (s, t) => t });
-  const mailbox = new Mailbox({ store: {}, runner, chain, sessions: () => [...sessions.values()] });
+  const mailbox = new Mailbox({ store: {}, runner, chain, links, sessions: () => [...sessions.values()] });
   // 턴을 끝낸다(runner가 내는 turnEnd를 흉내 낸다).
   const finish = async (s, ok = true) => {
     runner.running.delete(s.id);
     runner.emit("turnEnd", s, ok);
     await new Promise((r) => setImmediate(r));
   };
-  return { sessions, runner, chain, mailbox, finish };
+  return { sessions, runner, chain, links, connections, mailbox, finish };
 }
 
 test("messages: 답변에서 메시지 블록을 꺼낸다", () => {
@@ -64,7 +66,7 @@ test("messages: 이름·역할·id·흐름 제목 뒷부분으로 받는 세션�
 });
 
 test("messages: 쉬는 세션은 대기열로 바로 시작하고, 실행 중인 Claude 세션에는 작업 중에 붙인다", () => {
-  const { sessions, runner, mailbox } = world([session("a"), session("b"), session("c")]);
+  const { sessions, runner, mailbox } = world([session("a"), session("b"), session("c")], [link("a", "b"), link("c", "a")]);
   const a = sessions.get("a");
   assert.equal(mailbox.send(a, "B", "API 모양 알려 줘").via, "queue");
   assert.equal(runner.sent[0][0], "b");
@@ -80,7 +82,7 @@ test("messages: 쉬는 세션은 대기열로 바로 시작하고, 실행 중인
 });
 
 test("messages: ask_session은 상대의 답을 도구 결과로 받는다", async () => {
-  const { sessions, runner, mailbox } = world([session("a"), session("b")]);
+  const { sessions, runner, mailbox } = world([session("a"), session("b")], [link("a", "b")]);
   const a = sessions.get("a");
   const b = sessions.get("b");
   runner.running.add("a"); // 묻는 세션은 도구를 부르는 중이다.
@@ -96,7 +98,7 @@ test("messages: ask_session은 상대의 답을 도구 결과로 받는다", asy
 });
 
 test("messages: 답을 기다리던 턴이 끝나면 ask는 null로 끝나고 늦은 답은 다음 요청으로 간다", async () => {
-  const { sessions, runner, mailbox, finish } = world([session("a"), session("b")]);
+  const { sessions, runner, mailbox, finish } = world([session("a"), session("b")], [link("a", "b")]);
   const a = sessions.get("a");
   runner.running.add("a");
   const pending = mailbox.ask(a, "B", "언제 끝나?");
@@ -107,11 +109,11 @@ test("messages: 답을 기다리던 턴이 끝나면 ask는 null로 끝나고 �
 });
 
 test("messages: 블록으로 답을 기다리던 세션이 받은 답은 하던 일을 잇는 요청이라 연결로도 넘긴다", async () => {
-  const { sessions, runner, chain, mailbox, finish } = world([session("a"), session("b"), session("c")]);
+  const { sessions, runner, connections, mailbox, finish } = world([session("a"), session("b"), session("c")], [link("a", "b"), link("c", "a")]);
   const a = sessions.get("a");
   const b = sessions.get("b");
   const toC = { id: "l", from: "a", to: "c", when: "success", enabled: true };
-  chain.links = { list: () => [toC], from: (id) => (id === "a" ? [toC] : []), update: () => {} };
+  connections.push(toC);
 
   a.awaitingReply = "b";
   mailbox.send(b, "A", "이렇게 해");
@@ -129,7 +131,7 @@ test("messages: 블록으로 답을 기다리던 세션이 받은 답은 하던 
 });
 
 test("messages: 메시지가 끝없이 오가지 않게 막는다", () => {
-  const { sessions, runner, mailbox } = world([session("a"), session("b")]);
+  const { sessions, runner, mailbox } = world([session("a"), session("b")], [link("a", "b")]);
   const a = sessions.get("a");
   a.chainDepth = MAX_HOPS;
   assert.throws(() => mailbox.send(a, "B", "또"), /단계/);
@@ -140,7 +142,7 @@ test("messages: 메시지가 끝없이 오가지 않게 막는다", () => {
 });
 
 test("messages: check_messages는 대기열의 메시지만 꺼낸다", () => {
-  const { sessions, runner, chain, mailbox } = world([session("a"), session("b")]);
+  const { sessions, runner, chain, mailbox } = world([session("a"), session("b")], [link("a", "b")]);
   const b = sessions.get("b");
   runner.running.add("b"); // Codex처럼 작업 중에 붙일 수 없는 세션
   chain.enqueue(b, "사용자 요청", { user: true }, 0);
@@ -150,6 +152,112 @@ test("messages: check_messages는 대기열의 메시지만 꺼낸다", () => {
   assert.match(inbox[0], /참고로 이거 바뀜/);
   assert.deepEqual(chain.list("b").map((i) => i.text), ["사용자 요청"]);
   assert.deepEqual(mailbox.inbox(b), []);
+});
+
+test("messages: 활성 직접 연결 상대만 보이며 연결 방향과 관계없이 연락할 수 있다", () => {
+  const { sessions, runner, chain, mailbox } = world([
+    session("a"), session("b"), session("c"), session("disabled"), session("command-neighbor"),
+    session("indirect"), session("foreign", { projectPath: "C:/elsewhere" }), session("chat", { chat: true }),
+  ], [
+    link("a", "b"), link("c", "a"), link("a", "disabled", { enabled: false }),
+    link("a", "cmd:build"), link("cmd:build", "command-neighbor"), link("b", "indirect"),
+    link("a", "foreign"), link("a", "chat"), link("a", "a"),
+  ]);
+  const a = sessions.get("a");
+  const disabled = sessions.get("disabled");
+  disabled.awaitingReply = "a";
+  runner.live.add(disabled.id); // 차단된 상대가 실행 중이어도 주입하지 않는다.
+  const beforeLog = mailbox.log.length;
+  const directory = mailbox.directory(a);
+  assert.match(directory, /- B \(id b,/);
+  assert.match(directory, /- C \(id c,/);
+  assert.doesNotMatch(directory, /DISABLED|COMMAND-NEIGHBOR|INDIRECT|FOREIGN|CHAT|id a,/);
+  assert.equal(mailbox.directory(sessions.get("chat")), "직접 연결된 다른 세션이 없습니다.");
+  for (const id of ["a", "disabled", "command-neighbor", "indirect", "foreign", "chat", "cmd:build"]) {
+    assert.throws(() => mailbox.send(a, id, "전달하면 안 됨"), /직접 연결된 세션끼리만/);
+    assert.throws(() => mailbox.ask(a, id, "답해 줘"), /직접 연결된 세션끼리만/);
+  }
+  assert.throws(() => mailbox.send(sessions.get("chat"), "a", "안 됨"), /일반 채팅/);
+  assert.throws(() => mailbox.ask(sessions.get("chat"), "a", "안 됨"), /일반 채팅/);
+  assert.equal(runner.sent.length, 0);
+  assert.equal(runner.injected.length, 0);
+  assert.equal(chain.queue.size, 0);
+  assert.equal(mailbox.log.length, beforeLog);
+  assert.equal(mailbox.sentThisTurn.size, 0);
+  assert.equal(mailbox.asks.size, 0);
+  assert.ok([...sessions.values()].every((s) => s.events.length === 0));
+  assert.equal(disabled.awaitingReply, "a");
+
+  assert.equal(mailbox.send(a, "b", "정방향 허용").target.id, "b");
+  assert.equal(mailbox.send(a, "c", "역방향 허용").target.id, "c");
+});
+
+test("messages: 같은 이름의 미연결 세션은 연결된 상대 찾기를 방해하지 않는다", () => {
+  const { sessions, mailbox } = world([
+    session("a"), session("connected", { title: "리뷰" }), session("unconnected", { title: "리뷰" }),
+  ], [link("a", "connected")]);
+  assert.equal(mailbox.send(sessions.get("a"), "리뷰", "검토 부탁").target.id, "connected");
+});
+
+test("messages: 연결 저장소가 없으면 목록과 발신 모두 허용하지 않는다", () => {
+  const { sessions, runner, chain } = world([session("a"), session("b")], [link("a", "b")]);
+  const mailbox = new Mailbox({ store: {}, runner, chain, sessions: () => [...sessions.values()] });
+  const a = sessions.get("a");
+  const beforeLog = mailbox.log.length;
+  assert.equal(mailbox.directory(a), "직접 연결된 다른 세션이 없습니다.");
+  assert.throws(() => mailbox.send(a, "b", "안 됨"), /직접 연결된 세션끼리만/);
+  assert.throws(() => mailbox.ask(a, "b", "안 됨"), /직접 연결된 세션끼리만/);
+  assert.equal(mailbox.asks.size, 0);
+  assert.equal(mailbox.sentThisTurn.size, 0);
+  assert.equal(runner.sent.length, 0);
+  assert.equal(chain.queue.size, 0);
+  assert.equal(mailbox.log.length, beforeLog);
+});
+
+test("messages: 질문한 뒤 연결을 해제하면 답장도 도구 결과나 재개 요청으로 전달하지 않는다", async () => {
+  const { sessions, runner, chain, connections, mailbox } = world([session("a"), session("b")], [link("a", "b")]);
+  const a = sessions.get("a");
+  const b = sessions.get("b");
+  runner.running.add(a.id);
+  const pending = mailbox.ask(a, "b", "답해 줘");
+  connections[0].enabled = false;
+  a.awaitingReply = b.id;
+  const beforeLog = mailbox.log.length;
+  const beforeEvents = a.events.length;
+  try {
+    assert.throws(() => mailbox.send(b, "a", "연결 해제 뒤의 답"), /직접 연결된 세션끼리만/);
+    assert.equal(mailbox.asks.has(a.id), true);
+    assert.equal(a.awaitingReply, b.id);
+    assert.equal(a.events.length, beforeEvents);
+    assert.equal(b.events.filter((event) => event.kind === "message").length, 0);
+    assert.equal(mailbox.log.length, beforeLog);
+    assert.equal(runner.sent.length, 1);
+    assert.equal(runner.injected.length, 0);
+    assert.equal(chain.pending(a.id), 0);
+    assert.equal(mailbox.sentThisTurn.has(b.id), false);
+  } finally {
+    mailbox.settleAsk(a.id, null);
+  }
+  assert.equal((await pending).answer, null);
+});
+
+test("messages: check_messages는 대기 중 연결을 해제하거나 발신 세션을 지운 메시지를 버린다", () => {
+  for (const revoke of ["disable", "remove-link", "remove-session", "change-project"]) {
+    const { sessions, runner, chain, connections, mailbox } = world([session("a"), session("b")], [link("a", "b")]);
+    const a = sessions.get("a");
+    const b = sessions.get("b");
+    runner.running.add(b.id);
+    mailbox.send(a, "b", "대기 중인 메시지");
+    assert.equal(chain.pending(b.id), 1);
+    if (revoke === "disable") connections[0].enabled = false;
+    if (revoke === "remove-link") connections.splice(0);
+    if (revoke === "remove-session") sessions.delete(a.id);
+    if (revoke === "change-project") a.projectPath = "C:/elsewhere";
+    const beforeEvents = b.events.length;
+    assert.deepEqual(mailbox.inbox(b), []);
+    assert.equal(chain.pending(b.id), 0);
+    assert.equal(b.events.length, beforeEvents);
+  }
 });
 
 test("messages: 공유 노트에 덧붙이고 비운다", () => {

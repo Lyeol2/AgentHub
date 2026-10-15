@@ -1,0 +1,116 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import http from "node:http";
+import { spawn } from "node:child_process";
+
+const projectRoot = fileURLToPath(new URL("..", import.meta.url));
+const browserExecutable = "C:/Program Files/Google/Chrome/Application/chrome.exe";
+
+async function runBrowser(temp, url) {
+  const profile = path.join(temp, "profile");
+  const child = spawn(browserExecutable, ["--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], { windowsHide: true });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => stderr += chunk);
+  const closed = new Promise((resolve) => child.on("exit", resolve));
+  let socket;
+  try {
+    const deadline = Date.now() + 10000;
+    let port;
+    while (!port) {
+      if (Date.now() > deadline) throw Error("Browser launch timeout: " + stderr);
+      port = await fs.readFile(path.join(profile, "DevToolsActivePort"), "utf8").then((s) => Number(s.split("\n")[0]), () => null);
+      if (!port) await new Promise((resolve) => setTimeout(resolve, 30));
+    }
+    const target = await fetch("http://127.0.0.1:" + port + "/json/new?" + encodeURIComponent(url), { method: "PUT" }).then((res) => res.json());
+    socket = new WebSocket(target.webSocketDebuggerUrl);
+    const pending = new Map(), errors = [], messages = [];
+    let id = 0;
+    socket.addEventListener("message", ({ data }) => {
+      const message = JSON.parse(data); messages.push(message);
+      if (message.method === "Page.javascriptDialogOpening") { errors.push(message.params.message); socket.send(JSON.stringify({ id: ++id, method: "Page.handleJavaScriptDialog", params: { accept: true } })); }
+      if (message.id && pending.has(message.id)) { const request = pending.get(message.id); pending.delete(message.id); if (message.error) request.reject(Error(message.error.message)); else request.resolve(message.result); }
+      if (message.method === "Runtime.exceptionThrown") errors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+      if (message.method === "Runtime.consoleAPICalled" && message.params.type === "error") errors.push(message.params.args.map((arg) => arg.value ?? arg.description).join(" "));
+    });
+    await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", reject, { once: true }); });
+    const command = (method, params = {}) => new Promise((resolve, reject) => { const requestId = ++id; const timer = setTimeout(() => reject(Error("DevTools timed out: " + method + "\n" + errors.join("\n") + "\nMessages " + JSON.stringify(messages) + "\nLog " + stderr)), 15000); pending.set(requestId, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } }); socket.send(JSON.stringify({ id: requestId, method, params })); });
+    await command("Runtime.enable");
+    await command("Page.enable");
+    await command("Emulation.setDeviceMetricsOverride", { width: 1400, height: 1000, deviceScaleFactor: 1, mobile: false });
+    const loaded = new Promise((resolve) => { const listener = ({ data }) => { if (JSON.parse(data).method === "Page.loadEventFired") { socket.removeEventListener("message", listener); resolve(); } }; socket.addEventListener("message", listener); });
+    await command("Page.navigate", { url }); await loaded;
+    const expression = await fs.readFile(new URL("./fixtures/frontend-browser.js.txt", import.meta.url), "utf8");
+    const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
+    if (result.exceptionDetails) throw Error((result.exceptionDetails.exception?.description ?? result.exceptionDetails.text) + "\nBrowser errors:\n" + errors.join("\n"));
+    if (process.env.AGENTHUB_UI_SCREENSHOT) {
+      const { data } = await command("Page.captureScreenshot", { format: "png" });
+      await fs.writeFile(process.env.AGENTHUB_UI_SCREENSHOT, Buffer.from(data, "base64"));
+    }
+    return { checks: result.result.value, errors };
+  } finally {
+    socket?.close(); child.kill();
+    await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 1000))]);
+  }
+}
+
+
+// All APIs are fixture responses. No CLI, Git, or user-data store is accessed.
+test("browser: feature composition, graph gestures, Git, settings, and live session updates", { timeout: 45000 }, async (t) => {
+  if (process.platform !== "win32" || !await fs.access(browserExecutable).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required for browser integration");
+  const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-browser-"));
+  const streams = new Set(), requests = [];
+  const project = { path: "C:/fixture", name: "Fixture", claude: 0, codex: 0, registered: true };
+  const session = (id, title, agent = "codex") => ({ id, title, agent, projectPath: project.path, projectName: project.name, cwd: project.path, state: "idle", createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", baseCommit: "a".repeat(40), skills: [], events: id === "s1" ? [{ seq: 0, kind: "text", text: "Hello **world**" }] : [], graphPos: { x: id === "s1" ? 20 : 360, y: 20 }, queue: [] });
+  const sessions = [session("s1", "First"), session("s2", "Second", "claude")];
+  const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: null, autoPath: null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, "http://localhost");
+      if (url.pathname === "/api/stream") { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.write(": ready\n\n"); streams.add(res); req.on("close", () => streams.delete(res)); return; }
+      const chunks = []; for await (const chunk of req) chunks.push(chunk);
+      const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : undefined;
+      requests.push({ method: req.method, path: url.pathname, body });
+      if (url.pathname === "/fixture/emit") { for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n"); res.end("{}"); return; }
+      let value;
+      if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
+      else if (url.pathname === "/api/sessions") value = sessions;
+      else if (/^\/api\/sessions\/[^/]+\/diff$/.test(url.pathname)) value = { status: "M fixture.txt", diff: "+fixture change" };
+      else if (url.pathname.startsWith("/api/sessions/")) { const s = sessions.find((s) => s.id === url.pathname.split("/")[3]); if (req.method === "PUT") Object.assign(s, body); if (req.method === "DELETE") sessions.splice(sessions.indexOf(s), 1); value = s; }
+      else if (url.pathname === "/api/projects/all") value = [project];
+      else if (url.pathname === "/api/projects/discover") value = [];
+      else if (url.pathname === "/api/links") value = [{ id: "l1", from: "s1", to: "s2", enabled: true, when: "success" }];
+      else if (url.pathname.startsWith("/api/commands/") && req.method === "DELETE") throw Error("locked");
+      else if (url.pathname.startsWith("/api/commands/") && req.method === "PUT") value = {};
+      else if (url.pathname === "/api/commands") value = { shells: [{ id: "powershell", label: "PowerShell" }], commands: [{ id: "cmd-a", title: "Check", projectPath: project.path, command: "echo fixture", shell: "powershell", state: "idle", pos: { x: 20, y: 200 } }] };
+      else if (url.pathname === "/api/skills" || url.pathname === "/api/messages") value = [];
+      else if (url.pathname === "/api/hub") value = { exists: false, roles: [] };
+      else if (url.pathname === "/api/limits") value = { claude: { windows: [] }, codex: { windows: [] } };
+      else if (url.pathname === "/api/auth") value = { claude: false, codex: false };
+      else if (url.pathname === "/api/setup") value = { tools: [], jobs: {} };
+      else if (url.pathname === "/api/update") value = { current: "0.2.0", desktop: false };
+      else if (url.pathname === "/api/git") value = { branch: "main", files: [], moreFiles: 0, stagedCount: 0, unstagedCount: 0, branches: [{ name: "main", current: true }], commits: [{ hash: "a".repeat(40), short: "aaaaaaa", subject: "Fixture", author: "test", date: "2026-10-01T00:00:00Z", parents: [], refs: ["main"] }] };
+      else if (url.pathname.startsWith("/api/")) throw Error("Unexpected fixture request " + req.method + " " + req.url);
+      else {
+        const target = path.resolve(projectRoot, "public", "." + (url.pathname === "/" ? "/index.html" : url.pathname));
+        if (!target.startsWith(path.resolve(projectRoot, "public") + path.sep)) throw Error("Unsafe fixture path");
+        const content = await fs.readFile(target); res.setHeader("Content-Type", target.endsWith(".js") ? "text/javascript" : target.endsWith(".css") ? "text/css" : target.endsWith(".svg") ? "image/svg+xml" : "text/html"); res.end(content); return;
+      }
+      res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(value));
+    } catch (error) { res.statusCode = 500; res.end(JSON.stringify({ error: error.message })); }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const report = await runBrowser(temp, "http://127.0.0.1:" + server.address().port);
+    assert.ok(report?.checks.length >= 20); assert.deepEqual(report.errors, []);
+    assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"), "Verification must not start an agent or command");
+  } finally {
+    for (const stream of streams) stream.end();
+    await new Promise((resolve) => server.close(resolve));
+    assert.ok(path.resolve(temp).startsWith(path.resolve(os.tmpdir()) + path.sep));
+    await fs.rm(temp, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });
+  }
+});

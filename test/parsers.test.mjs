@@ -65,11 +65,12 @@ test("codex: 사용 한도 같은 실패를 오류로 표시한다", () => {
   assert.equal(ev.text, "usage limit");
 });
 
-test("codex: 재개 인자에는 resume과 샌드박스 설정이 들어간다", () => {
+test("codex: app-server를 띄우고 샌드박스와 사용자 승인 설정을 넘긴다", () => {
   const args = codex.buildArgs({ agentSessionId: "t1", permission: "read-only", cwd: "C:/x" });
-  assert.deepEqual(args.slice(0, 3), ["exec", "resume", "t1"]);
-  assert.ok(args.includes("sandbox_mode=read-only"));
-  assert.equal(args.at(-1), "-");
+  assert.deepEqual(args.slice(0, 3), ["app-server", "--listen", "stdio://"]);
+  assert.ok(args.includes('sandbox_mode="read-only"'));
+  assert.ok(args.includes('approval_policy="on-request"'));
+  assert.ok(args.includes('approvals_reviewer="user"'));
 });
 
 test("claude: 추론 강도와 일반 채팅(도구 없음) 인자를 넘긴다", () => {
@@ -80,11 +81,11 @@ test("claude: 추론 강도와 일반 채팅(도구 없음) 인자를 넘긴다"
   assert.ok(!claude.buildArgs({ permission: "plan" }).includes("--tools"));
 });
 
-test("codex: 추론 강도는 설정 덮어쓰기로, 일반 채팅은 git 확인 없이 실행한다", () => {
+test("codex: 추론 강도는 설정 덮어쓰기로, 일반 채팅은 승인을 요청하지 않는다", () => {
   const args = codex.buildArgs({ agentSessionId: "t1", permission: "read-only", effort: "low", chat: true });
-  assert.equal(args[args.indexOf("model_reasoning_effort=low") - 1], "-c");
-  assert.ok(args.includes("--skip-git-repo-check"));
-  assert.equal(args.at(-1), "-");
+  assert.equal(args[args.indexOf('model_reasoning_effort="low"') - 1], "-c");
+  assert.ok(args.includes('approval_policy="never"'));
+  assert.equal(codex.transport, "app-server");
 });
 
 test("claude: rate_limit_event는 화면 이벤트가 아니라 한도 정보로 넘긴다", () => {
@@ -187,10 +188,10 @@ test("args: AgentHub MCP 서버를 붙인다", () => {
   assert.deepEqual(c.slice(c.indexOf("--mcp-config"), c.indexOf("--mcp-config") + 4), ["--mcp-config", "C:/d/mcp/s.json", "--allowedTools", "mcp__agenthub"]);
   assert.ok(!claude.buildArgs({ permission: "acceptEdits" }).includes("--mcp-config"));
   const x = codex.buildArgs({ agentSessionId: "t1", permission: "read-only", cwd: "C:/x" }, { mcp });
-  assert.ok(x.includes("mcp_servers.agenthub.url=http://127.0.0.1:4517/mcp/abc"));
+  assert.ok(x.includes('mcp_servers.agenthub.url="http://127.0.0.1:4517/mcp/abc"'));
   assert.ok(x.includes("mcp_servers.agenthub.tool_timeout_sec=660"));
-  assert.ok(x.includes("mcp_servers.agenthub.default_tools_approval_mode=approve")); // exec는 승인을 물을 수 없다.
-  assert.equal(x.at(-1), "-"); // 요청은 여전히 stdin으로 보낸다.
+  assert.ok(x.includes('mcp_servers.agenthub.default_tools_approval_mode="approve"')); // 프로젝트가 제공한 세션 소통 도구는 그대로 허용한다.
+  assert.equal(codex.transport, "app-server"); // 요청과 승인은 JSON-RPC로 보낸다.
 });
 
 test("codex: MCP 도구 결과와 실패를 보인다", () => {
@@ -232,10 +233,10 @@ test("codex: 쓸 수 없는 모델(설정의 기본값이나 세션에 고른 �
   assert.equal(codex.resolveModel({}, [], config, []).model, null);
 
   const args = codex.buildArgs({ permission: "read-only", cwd: "C:/x" }, { resolved: { model: "gpt-6-astra", effort: "medium" } });
-  assert.deepEqual(args.slice(args.indexOf("--model"), args.indexOf("--model") + 2), ["--model", "gpt-6-astra"]);
-  assert.ok(args.includes("model_reasoning_effort=medium"));
+  assert.ok(args.includes('model="gpt-6-astra"'));
+  assert.ok(args.includes('model_reasoning_effort="medium"'));
   const none = codex.buildArgs({ permission: "read-only", cwd: "C:/x" }, { resolved: { model: null, effort: null } });
-  assert.ok(!none.includes("--model")); // CLI 설정에 맡긴다.
+  assert.ok(!none.some((arg) => arg.startsWith("model="))); // CLI 설정에 맡긴다.
   assert.match(codex.modelNote({}, gone), /Codex 설정의 기본 모델 gpt-6\.1-sol.*gpt-6-astra/);
   assert.match(codex.modelNote({ model: "gpt-6.1-sol" }, saved), /이 세션의 모델 gpt-6\.1-sol.*gpt-6-astra/);
   assert.equal(codex.modelNote({}, codex.resolveModel({}, list, { model: null, effort: null }, known)), null);

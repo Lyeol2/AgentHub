@@ -225,3 +225,54 @@ test("chain: 일시중지한 세션은 대기열을 쌓아 두기만 하고, 멈
   chain.flush(b);
   assert.equal(runner.sent[0][0], "b");
 });
+
+for (const direction of ["forward", "reverse"]) {
+  test(`chain: 활성 직접 연결이면 ${direction} 방향의 대기 메시지를 전달한다`, async () => {
+    const connection = { from: direction === "forward" ? "a" : "b", to: direction === "forward" ? "b" : "a", enabled: true };
+    const { chain, runner, sessions } = await fakeChain([connection], { a: "", b: "" });
+    for (const session of sessions.values()) session.projectPath = "C:/p";
+    chain.enqueue(sessions.get("b"), "요청한 결과", { from: "a", message: true }, 1);
+    assert.deepEqual(runner.sent, [["b", "요청한 결과"]]);
+  });
+}
+
+for (const change of ["remove", "disable", "delete-source", "move-project", "source-chat", "target-chat"]) {
+  test(`chain: 대기 중 ${change} 변경이 생기면 메시지와 답장을 전달하지 않는다`, async () => {
+    const connection = { from: "a", to: "b", enabled: true };
+    const linkList = [connection];
+    const { chain, runner, sessions } = await fakeChain(linkList, { a: "", b: "" });
+    for (const session of sessions.values()) session.projectPath = "C:/p";
+    const b = sessions.get("b");
+    let running = true;
+    runner.isRunning = () => running;
+    chain.enqueue(b, "뒤늦은 알림", { from: "a", message: true }, 1);
+    chain.enqueue(b, "뒤늦은 답장", { from: "a", reply: true }, 1);
+    assert.equal(chain.pending("b"), 2);
+    if (change === "remove") linkList.length = 0;
+    if (change === "disable") connection.enabled = false;
+    if (change === "delete-source") sessions.delete("a");
+    if (change === "move-project") sessions.get("a").projectPath = "C:/other";
+    if (change === "source-chat") sessions.get("a").chat = true;
+    if (change === "target-chat") b.chat = true;
+    running = false;
+    chain.flush(b);
+    assert.deepEqual(runner.sent, []);
+    assert.equal(chain.pending("b"), 0);
+  });
+}
+
+test("chain: 연결이 끊긴 메시지를 버린 뒤 사용자 요청은 정상 실행한다", async () => {
+  const connection = { from: "a", to: "b", enabled: true };
+  const { chain, runner, sessions } = await fakeChain([connection], { a: "", b: "" });
+  for (const session of sessions.values()) session.projectPath = "C:/p";
+  const b = sessions.get("b");
+  let running = true;
+  runner.isRunning = () => running;
+  chain.enqueue(b, "끊긴 메시지", { from: "a", message: true }, 1);
+  chain.enqueue(b, "사용자 요청", { user: true }, 0);
+  connection.enabled = false;
+  running = false;
+  chain.flush(b);
+  assert.deepEqual(runner.sent, [["b", "사용자 요청"]]);
+  assert.equal(chain.pending("b"), 0);
+});

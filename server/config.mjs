@@ -6,7 +6,6 @@ export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const DATA_DIR = process.env.AGENTHUB_DATA ?? path.join(ROOT, "data");
 // 일반 채팅 세션의 작업 폴더. 프로젝트 감지에서는 뺀다.
 export const CHAT_DIR = path.join(DATA_DIR, "chat");
-const CONFIG_PATH = path.join(DATA_DIR, "config.json");
 
 const DEFAULTS = {
   port: 4517,
@@ -21,17 +20,20 @@ const DEFAULTS = {
   skillLayout: {},
 };
 
-export function loadConfig() {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  if (!fs.existsSync(CONFIG_PATH)) {
-    saveConfig(DEFAULTS);
+export function loadConfig(dataDir = DATA_DIR) {
+  const configPath = path.join(dataDir, "config.json");
+  fs.mkdirSync(dataDir, { recursive: true });
+  if (!fs.existsSync(configPath)) {
+    saveConfig(DEFAULTS, dataDir);
     return structuredClone(DEFAULTS);
   }
-  const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
-  return { ...DEFAULTS, ...raw, cli: { ...DEFAULTS.cli, ...raw.cli } };
+  const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  const defaults = structuredClone(DEFAULTS);
+  return { ...defaults, ...raw, cli: { ...defaults.cli, ...raw.cli } };
 }
 
-export function saveConfig(config) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+export function saveConfig(config, dataDir = DATA_DIR) {
+  const configPath = path.join(dataDir, "config.json");
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }

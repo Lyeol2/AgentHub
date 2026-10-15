@@ -6,9 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { DATA_DIR } from "./config.mjs";
 
-const COMMANDS_PATH = path.join(DATA_DIR, "commands.json");
 const isWindows = process.platform === "win32";
 export const COMMAND_PREFIX = "cmd-";
 export const isCommandId = (id) => typeof id === "string" && id.startsWith(COMMAND_PREFIX);
@@ -137,44 +135,7 @@ export function runShell({ shell, command, cwd, timeoutSec = TIMEOUT_DEFAULT, on
   };
 }
 
-// ── 저장 ───────────────────────────────────────────────────────
-export class CommandStore {
-  constructor() {
-    this.commands = fs.existsSync(COMMANDS_PATH) ? JSON.parse(fs.readFileSync(COMMANDS_PATH, "utf8")) : [];
-    // 서버가 꺼질 때 실행 중이던 명령은 중단된 것으로 본다.
-    for (const c of this.commands) if (c.state === "running") c.state = "error";
-  }
-
-  list(projectPath) {
-    if (!projectPath) return this.commands;
-    const key = path.resolve(projectPath).toLowerCase();
-    return this.commands.filter((c) => path.resolve(c.projectPath).toLowerCase() === key);
-  }
-
-  get(id) {
-    return this.commands.find((c) => c.id === id);
-  }
-
-  add(command) {
-    this.commands.push(command);
-    this.save();
-  }
-
-  update(command, changes) {
-    Object.assign(command, changes);
-    this.save();
-  }
-
-  remove(id) {
-    this.commands = this.commands.filter((c) => c.id !== id);
-    this.save();
-  }
-
-  save() {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    fs.writeFileSync(COMMANDS_PATH, JSON.stringify(this.commands, null, 2));
-  }
-}
+export { CommandStore } from "./infrastructure/persistence/command-store.mjs";
 
 export const newCommandId = () => `${COMMAND_PREFIX}${randomBytes(4).toString("hex")}`;
 

@@ -449,7 +449,7 @@ test("api: PR 목록·상세·생성·병합·닫기·푸시 경로와 오류를
     assert.deepEqual(calls.at(-1), { name: "list", args: [repo, { remote: "upstream", state: "all" }] });
     assert.equal((await api("GET", "/git/pulls/7" + query)).body.diff, "+new");
     assert.deepEqual(calls.at(-1), { name: "detail", args: [repo, "7", { remote: "upstream" }] });
-    const body = { path: repo, repo: "acme/widget", remote: "upstream", title: "PR", body: "text", head: "feature", base: "main", expectedHead: "a".repeat(40) };
+    const body = { path: repo, repo: "acme/widget", remote: "upstream", branch: "feature", state: "draft", title: "PR", body: "text", head: "feature", base: "main", expectedHead: "a".repeat(40) };
     for (const [route, name] of [["/git/pulls", "create"], ["/git/pulls/7/merge", "merge"], ["/git/pulls/7/close", "close"], ["/git/push", "push"]]) {
       assert.equal((await api("POST", route, body)).status, 200);
       assert.equal(calls.at(-1).name, name);

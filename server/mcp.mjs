@@ -1,6 +1,7 @@
 // AgentHub MCP 서버(streamable HTTP, JSON 응답만). 세션마다 받은 토큰 주소(/mcp/<토큰>)로 어느 세션이 부르는지 가린다.
 // Claude·Codex CLI가 실행될 때 이 주소를 MCP 서버로 붙여, 에이전트가 작업 중에 다른 세션과 소통하게 한다.
 import { randomBytes } from "node:crypto";
+import { ASK_TIMEOUT_SEC, ASK_TIMEOUT_MAX } from "./policies/messaging.mjs";
 
 const PROTOCOL = "2025-06-18";
 
@@ -80,4 +81,83 @@ async function dispatch(msg, session, tools, info) {
     default:
       return failure(id, -32601, `지원하지 않는 메서드입니다: ${method}`);
   }
+}
+
+
+// MCP 도구의 schema와 사용자용 결과 형식은 전송 어댑터의 책임이다.
+export function createMessagingTools({ mailbox, board, notify = () => {} }) {
+  const VIA_TEXT = {
+    answer: "보냈다. 상대가 이 답을 기다리던 중이라 바로 받았다.",
+    live: "보냈다. 상대가 작업 중이라 지금 하는 작업에 바로 들어갔다.",
+    queue: "보냈다. 상대가 쉬고 있으면 바로 시작하고, 실행 중이면 지금 작업이 끝난 뒤 받는다.",
+  };
+
+  return [
+    {
+      name: "list_sessions",
+      description: "같은 프로젝트에서 활성화된 노드 연결로 직접 연결된 세션(이름, id, 에이전트, 역할, 상태)만 본다. 메시지를 보낼 상대를 찾을 때 쓴다.",
+      inputSchema: { type: "object", properties: {} },
+      run: (session) => mailbox.directory(session),
+    },
+    {
+      name: "send_message",
+      description: "활성화된 노드 연결로 직접 연결된 세션에만 필요한 질문·충돌 조율·요청받은 결과를 보낸다. 연결 방향은 구분하지 않는다. 답을 기다리지 않으며 확인·감사 답장이나 반복 상태 보고에는 쓰지 않는다.",
+      inputSchema: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "받는 세션의 이름, 역할 이름, 또는 id" },
+          text: { type: "string", description: "보낼 내용" },
+        },
+        required: ["to", "text"],
+      },
+      run: (session, { to, text }) => {
+        const { target, via } = mailbox.send(session, to, text);
+        return `"${target.title}"에게 ${VIA_TEXT[via]}`;
+      },
+    },
+    {
+      name: "ask_session",
+      description: `활성화된 노드 연결로 직접 연결된 세션에 묻고 답이 올 때까지 기다린다(기본 ${ASK_TIMEOUT_SEC}초, 최대 ${ASK_TIMEOUT_MAX}초). 답 없이는 진행할 수 없을 때만 쓴다.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "받는 세션의 이름, 역할 이름, 또는 id" },
+          question: { type: "string", description: "물을 내용" },
+          timeoutSec: { type: "number", description: "기다릴 최대 시간(초)" },
+        },
+        required: ["to", "question"],
+      },
+      run: async (session, { to, question, timeoutSec }) => {
+        const { target, answer } = await mailbox.ask(session, to, question, timeoutSec);
+        return answer ?? `"${target.title}"에게서 제한 시간 안에 답이 오지 않았다. 늦게 온 답은 다음 요청으로 받는다. 기다리지 말고 할 수 있는 일을 계속한다.`;
+      },
+    },
+    {
+      name: "check_messages",
+      description: "작업 중에 나에게 와서 아직 읽지 않은 메시지를 확인한다. 읽은 메시지는 다음 요청으로 다시 오지 않는다.",
+      inputSchema: { type: "object", properties: {} },
+      run: (session) => mailbox.inbox(session).join("\n\n---\n\n") || "새 메시지가 없다.",
+    },
+    {
+      name: "board_read",
+      description: "프로젝트 공유 노트를 읽는다. 다른 세션이 남긴 약속·결정·진행 상황이 있다.",
+      inputSchema: { type: "object", properties: {} },
+      run: (session) => board.read(session.projectPath) || "공유 노트가 비어 있다.",
+    },
+    {
+      name: "board_post",
+      description: "프로젝트 공유 노트에 글을 덧붙인다. API 약속, 정한 사항, 진행 상황처럼 다른 세션도 알아야 할 것을 짧게 남긴다.",
+      inputSchema: {
+        type: "object",
+        properties: { text: { type: "string", description: "남길 내용(마크다운)" } },
+        required: ["text"],
+      },
+      run: (session, { text }) => {
+        board.post(session.projectPath, session.title, text);
+        notify("board", { projectPath: session.projectPath });
+        return "공유 노트에 남겼다.";
+      },
+    },
+  ];
+
 }

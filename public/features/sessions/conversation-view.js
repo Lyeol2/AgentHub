@@ -1,0 +1,261 @@
+import { $, el, badge } from "../../shared/dom.js";
+import { firstLine } from "../../shared/store.js";
+import { linkLabel } from "../../shared/flow.js";
+import { renderMarkdown } from "../../markdown.js";
+import { renderAttachmentLinks } from "./image-composer.js";
+
+/** Render conversation history; user decisions are commands supplied by the controller. */
+export function createConversationView({ getSession, sessionById, selectSession, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision }) {
+  const PLAN_STATUS = { pending: "승인 대기", applied: "실행함", rejected: "거절함", invalid: "형식 오류" };
+
+  // 오케스트레이터가 쓴 계획. 승인하면 세션·연결·요청을 만든다.
+  function renderPlan(ev) {
+    const s = getSession();
+    const plan = ev.plan;
+    const name = (ref) => {
+      if (ref === s.id) return "오케스트레이터";
+      return plan?.sessions.find((x) => x.key === ref)?.title ?? sessionById(ref)?.title ?? ref;
+    };
+    const section = (title, items) => items.length
+      ? el("div", { class: "plan-section" }, el("div", { class: "plan-label" }, title), el("ul", {}, ...items))
+      : null;
+    const node = el("li", { class: `ev plan ${ev.status}` },
+      el("div", { class: "plan-head" }, el("b", {}, "계획"), el("span", { class: `pill plan-${ev.status}` }, PLAN_STATUS[ev.status] ?? ev.status)),
+      ev.error ? el("div", { class: "plan-error" }, ev.error) : null);
+    if (plan) {
+      node.append(
+        section("세션", plan.sessions.map((x) => x.id
+          ? el("li", {}, el("span", { class: "muted" }, "기존 "), x.title)
+          : el("li", { title: x.roleText }, badge(x.agent), ` ${x.title} `,
+            el("span", { class: "muted" }, [x.roleName && `역할 ${x.roleName}`, x.permission, x.isolate ? `워크트리 ${x.worktreeName}` : "원본 폴더"].filter(Boolean).join(" · "))))),
+        section("연결", plan.links.map((l) => el("li", {}, `${name(l.from)} → ${name(l.to)}`, el("span", { class: "muted" }, ` · ${linkLabel(l)}`)))),
+        section("요청", plan.send.map((m) => el("li", { title: m.prompt }, el("b", {}, name(m.to)), ` ${firstLine(m.prompt)}`))));
+    }
+    const decide = async (action, reason) => {
+      try {
+        await onPlanDecision(s.id, ev.planId, { action, reason });
+      } catch (err) {
+        alert(err.message);
+      }
+    };
+    if (ev.status === "pending") {
+      node.append(el("div", { class: "plan-actions" },
+        el("button", { class: "primary sm", onclick: () => decide("approve") }, "승인하고 실행"),
+        el("button", { class: "ghost sm", onclick: () => {
+          const reason = prompt("거절 이유 (적으면 오케스트레이터가 계획을 고칩니다)");
+          if (reason !== null) decide("reject", reason);
+        } }, "거절")));
+    } else if (ev.status === "invalid") {
+      node.append(el("div", { class: "plan-actions" },
+        el("button", { class: "ghost sm", onclick: () => onPlanError(s.id, ev.error).catch((err) => alert(err.message)) }, "오케스트레이터에게 오류 알리기")));
+    } else if (ev.result) {
+      node.append(el("div", { class: "plan-result" }, ev.result));
+    }
+    return node;
+  }
+
+  // ── 에이전트의 질문 ─────────────────────────────────────────────
+  const QUESTION_FENCE = "agenthub-question";
+  const QUESTION_BLOCK = new RegExp("```" + QUESTION_FENCE + "\\s*\\n[\\s\\S]*?```", "g");
+  // 메시지 블록은 보낸 메시지 줄로 따로 보여 주므로 답변 본문에서 뺀다(서버의 messages.mjs와 같다).
+  const MESSAGE_FENCE = "agenthub-message";
+  const MESSAGE_BLOCK = new RegExp("```" + MESSAGE_FENCE + "\\s*\\n[\\s\\S]*?```", "g");
+  const MESSAGE_VIA = { answer: "답을 기다리던 상대에게 전달", live: "작업 중에 전달", queue: "대기열로 전달" };
+  const QUESTION_STATUS = { pending: "답을 기다림", answered: "답함", skipped: "지나감", invalid: "형식 오류" };
+
+  // 선택지를 고르거나 직접 적어 답한다. 답은 다음 요청으로 에이전트에게 간다.
+  function renderQuestion(ev) {
+    const s = getSession();
+    const pending = ev.status === "pending";
+    const node = el("li", { class: `ev question ${ev.status}` },
+      el("div", { class: "plan-head" }, el("b", {}, "질문"), el("span", { class: `pill q-${ev.status}` }, QUESTION_STATUS[ev.status] ?? ev.status)),
+      ev.error ? el("div", { class: "plan-error" }, ev.error) : null);
+    if (!ev.questions) return node;
+    // 답했거나 지나간 질문은 버튼 없이 질문과 고른 답만 글로 남긴다.
+    if (!pending) {
+      ev.questions.forEach((q, i) => {
+        const a = ev.answers?.[i];
+        const answer = [...(a?.selected ?? []), a?.text].filter(Boolean).join(", ");
+        node.append(el("div", { class: "q-item done" },
+          el("div", { class: "q-question" }, q.header ? el("span", { class: "q-header" }, q.header) : null, q.question),
+          el("div", { class: "q-answer" }, answer ? `→ ${answer}` : el("span", { class: "muted" }, "답하지 않음"))));
+      });
+      return node;
+    }
+
+    const picks = ev.questions.map((_, i) => new Set(ev.answers?.[i]?.selected ?? []));
+    const texts = [];
+    const submit = async (button) => {
+      const answers = ev.questions.map((_, i) => ({ selected: [...picks[i]], text: texts[i].value.trim() }));
+      if (!answers.some((a) => a.selected.length || a.text)) return alert("답을 고르거나 적으세요.");
+      button.disabled = true;
+      try {
+        await onQuestionAnswer(s.id, ev.questionId, answers);
+      } catch (err) {
+        alert(err.message);
+        button.disabled = false;
+      }
+    };
+
+    ev.questions.forEach((q, i) => {
+      const group = el("div", { class: "q-options" });
+      for (const o of q.options) {
+        const attrs = { type: "button", class: `q-option${picks[i].has(o.label) ? " picked" : ""}`, "data-label": o.label };
+        if (!pending) attrs.disabled = "";
+        group.append(el("button", {
+          ...attrs,
+          onclick: () => {
+            const on = !picks[i].has(o.label);
+            if (!q.multiSelect) picks[i].clear();
+            if (on) picks[i].add(o.label);
+            else picks[i].delete(o.label);
+            for (const b of group.children) b.classList.toggle("picked", picks[i].has(b.dataset.label));
+          },
+        }, el("b", {}, o.label), o.description ? el("span", { class: "muted" }, o.description) : null));
+      }
+      const textAttrs = { class: "q-text", placeholder: pending ? "직접 답 적기 · Enter로 답하기" : "" };
+      if (!pending) textAttrs.disabled = "";
+      const text = el("input", textAttrs);
+      text.value = ev.answers?.[i]?.text ?? "";
+      text.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) node.querySelector(".q-submit")?.click();
+      });
+      texts.push(text);
+      node.append(el("div", { class: "q-item" },
+        el("div", { class: "q-question" }, q.header ? el("span", { class: "q-header" }, q.header) : null, q.question,
+          q.multiSelect ? el("span", { class: "muted" }, " (여러 개 고를 수 있음)") : null),
+        q.options.length ? group : null,
+        text));
+    });
+    if (pending) {
+      node.append(el("div", { class: "plan-actions" },
+        el("button", { class: "primary sm q-submit", onclick: (e) => submit(e.currentTarget) }, "답하기")));
+    }
+    return node;
+  }
+
+  // 실행 중에 CLI가 묻는 권한 요청. 답할 때까지 CLI가 기다린다.
+  const PERMISSION_STATUS = { pending: "허용을 기다림", allowed: "허용함", denied: "거절함", skipped: "지나감" };
+
+  function renderPermission(ev) {
+    const s = getSession();
+    const decide = async (decision, button) => {
+      let message;
+      if (decision === "deny") {
+        message = prompt("거절 이유나 대신 할 일 (비워 두어도 됩니다)");
+        if (message === null) return;
+      }
+      for (const b of button.parentElement.children) b.disabled = true;
+      try {
+        await onPermissionDecision(s.id, ev.requestId, { decision, message });
+      } catch (err) {
+        alert(err.message);
+        for (const b of button.parentElement.children) b.disabled = false;
+      }
+    };
+    const label = ev.status === "allowed" && ev.decision === "always" ? (ev.rememberLabel ? ev.rememberLabel + "함" : "항상 허용함") : PERMISSION_STATUS[ev.status] ?? ev.status;
+    const node = el("li", { class: `ev permission ${ev.status}` },
+      el("div", { class: "plan-head" }, el("b", {}, "권한 요청"), el("span", { class: `pill p-${ev.status}` }, label)),
+      el("div", { class: "perm-tool mono" }, ev.text),
+      ev.reason ? el("div", { class: "muted" }, ev.reason) : null,
+      ev.detail ? el("details", {}, el("summary", {}, "자세히"), el("pre", { class: "perm-detail" }, ev.detail)) : null);
+    if (ev.status === "pending") {
+      node.append(el("div", { class: "plan-actions" },
+        el("button", { class: "primary sm", onclick: (e) => decide("allow", e.currentTarget) }, "허용"),
+        ev.canRemember ? el("button", { class: "ghost sm", title: ev.rememberDescription ?? "이 프로젝트에서 같은 종류의 요청은 다시 묻지 않습니다", onclick: (e) => decide("always", e.currentTarget) }, ev.rememberLabel ?? "항상 허용") : null,
+        el("button", { class: "ghost sm danger", onclick: (e) => decide("deny", e.currentTarget) }, "거절")));
+    }
+    return node;
+  }
+
+  // 다른 창을 보고 있거나 다른 세션을 열어 둔 사이에 온 질문·권한 요청은 알림으로 알린다.
+
+  // ── 도구 호출 ───────────────────────────────────────────────────
+  // 도구 호출(명령 실행, 파일 읽기 등)은 한 줄로 접어 두고, 누르면 입력과 출력을 펼친다.
+  // 결과(tool_result)는 아직 결과가 없는 가장 앞의 도구 호출에 붙인다(CLI가 호출한 순서대로 결과를 보낸다).
+  const EXPAND_TOOLS_KEY = "agenthub-expand-tools";
+  const expandTools = () => localStorage.getItem(EXPAND_TOOLS_KEY) === "1";
+
+  function renderTool(ev, cls) {
+    const body = el("div", { class: "tool-body" });
+    if (ev.detail) body.append(el("div", { class: "tool-label" }, "입력"), el("pre", { class: "tool-input" }, ev.detail));
+    const details = el("details", {},
+      el("summary", {}, el("span", { class: "tool-name" }, ev.text ?? ""), el("span", { class: "tool-state" })),
+      body);
+    details.open = expandTools();
+    return el("li", { class: `${cls} pending`, title: ev.text ?? "" }, details);
+  }
+
+  // 결과를 붙일 도구 호출이 있으면 붙이고 true
+  function attachToolResult(list, ev) {
+    const tool = list.querySelector("li.ev.tool.pending");
+    if (!tool) return false;
+    tool.classList.remove("pending");
+    tool.classList.add(ev.isError ? "failed" : "done");
+    const text = ev.text ?? "";
+    const lines = text ? text.split("\n").length : 0;
+    tool.querySelector(".tool-state").textContent = ev.isError ? "오류" : lines ? `${lines}줄` : "";
+    tool.querySelector(".tool-body").append(el("div", { class: "tool-label" }, "출력"),
+      el("pre", { class: `tool-output${ev.isError ? " is-error" : ""}` }, text || "(출력 없음)"));
+    return true;
+  }
+
+  function appendEvent(list, ev) {
+    if (ev.kind === "tool_result" && attachToolResult(list, ev)) return;
+    list.append(renderEvent(ev));
+  }
+
+  function renderEvents(list, events) {
+    list.replaceChildren();
+    for (const ev of events) appendEvent(list, ev);
+  }
+
+  $("s-expand-tools").checked = expandTools();
+  $("s-expand-tools").addEventListener("change", (e) => {
+    localStorage.setItem(EXPAND_TOOLS_KEY, e.target.checked ? "1" : "0");
+    for (const d of document.querySelectorAll(".events li.ev.tool > details")) d.open = e.target.checked;
+  });
+
+  function renderEvent(ev) {
+    const cls = `ev ${ev.kind}${ev.isError ? " is-error" : ""}${ev.injected ? " injected" : ""}`;
+    if (ev.kind === "tool") return renderTool(ev, cls);
+    if (ev.kind === "plan") return renderPlan(ev);
+    if (ev.kind === "question") return renderQuestion(ev);
+    if (ev.kind === "permission") return renderPermission(ev);
+    // 질문 블록은 아래 질문 카드로 보여 주므로 답변 본문에서는 뺀다.
+    if (ev.kind === "text") {
+      // 에이전트 답변은 마크다운으로 보여 준다(renderMarkdown이 원문을 이스케이프한다).
+      const text = (ev.text ?? "").replace(QUESTION_BLOCK, "").replace(MESSAGE_BLOCK, "").trim();
+      if (!text) return el("li", { class: "ev hidden-empty", hidden: true });
+      const node = el("li", { class: `${cls} md` });
+      node.innerHTML = renderMarkdown(text);
+      return node;
+    }
+    if (ev.kind === "message") {
+      // 이 세션이 다른 세션에 보낸 메시지
+      return el("li", { class: `${cls} handoff` },
+        el("details", {},
+          el("summary", {}, "✉ ", el("a", { href: "#", onclick: (e) => { e.preventDefault(); if (sessionById(ev.to)) selectSession(ev.to); } }, ev.toTitle),
+            `에게 보낸 메시지 · ${MESSAGE_VIA[ev.via] ?? ""}`),
+          el("div", { class: "handoff-body" }, ev.text)));
+    }
+    if (ev.kind === "user" && ev.from) {
+      // 연결된 세션에서 넘어온 요청은 접어서 보여 준다.
+      const open = (e) => {
+        e.preventDefault();
+        if (sessionById(ev.from)) selectSession(ev.from);
+      };
+      return el("li", { class: `${cls} handoff` },
+        el("details", {},
+          el("summary", {}, el("a", { href: "#", onclick: open }, `${ev.message || ev.reply ? "✉" : "↳"} ${ev.fromTitle}`),
+            ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
+          el("div", { class: "handoff-body" }, ev.text)));
+    }
+    const node = el("li", { class: cls }, ev.text ?? "");
+    if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
+    if (ev.detail) node.title = ev.detail;
+    return node;
+  }
+
+  return { renderEvents, appendEvent };
+}
