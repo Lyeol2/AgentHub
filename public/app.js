@@ -19,7 +19,11 @@ const api = createApiClient();
 const { data, navigation } = createStore();
 const POPUP = new URLSearchParams(location.search).get("session") ?? new URLSearchParams(location.search).get("chat");
 const openWindow = (query) => window.open(`/?${query}`, "_blank", "width=760,height=900");
-const openSessionWindow = (id) => openWindow(`session=${encodeURIComponent(id)}`);
+const openSessionWindow = (id) => {
+  const session = sessionById(id);
+  if (session?.locked) return onSessionLocked(session);
+  return openWindow(`session=${encodeURIComponent(id)}`);
+};
 const sessionOpener = (id) => (event) => {
   if (event.button === 1 || event.ctrlKey || event.shiftKey) openSessionWindow(id);
   else if (event.button === 0) selectSession(id);
@@ -60,10 +64,21 @@ async function goProject(projectPath) {
 
 // 일반 채팅은 채팅 화면으로, 나머지는 세션 화면으로 연다.
 async function selectSession(id) {
-  const request = ++sessionSelectionRevision;
+  const revision = ++sessionSelectionRevision;
   const viewRevision = navigation.viewRevision;
-  const session = await api("GET", `/api/sessions/${id}`);
-  if (request !== sessionSelectionRevision || viewRevision !== navigation.viewRevision) return;
+  const summary = sessionById(id);
+  if (summary?.locked) return onSessionLocked(summary);
+  let session;
+  try {
+    session = await api("GET", `/api/sessions/${id}`);
+  } catch (err) {
+    if (err.reason !== "locked" && err.status !== 423) throw err;
+    if (summary) summary.locked = true;
+    if (revision === sessionSelectionRevision && navigation.viewRevision === viewRevision) return onSessionLocked(summary ?? { id });
+    return;
+  }
+  if (revision !== sessionSelectionRevision || navigation.viewRevision !== viewRevision) return;
+  if (session.locked || sessionById(id)?.locked) return onSessionLocked(session);
   data.current = session;
   navigation.project = null;
   if (data.current.chat) {
@@ -73,6 +88,19 @@ async function selectSession(id) {
     show("session");
     renderSession();
   }
+}
+
+function onSessionLocked(session) {
+  sessionSelectionRevision++;
+  if (data.current && data.current.id !== session.id) return;
+  data.current = null;
+  for (const prefix of ["s", "c"]) {
+    $(`${prefix}-events`).replaceChildren();
+    $(`${prefix}-prompt`).value = "";
+  }
+  document.body.classList.remove("popup");
+  if (session.projectPath) return goProject(session.projectPath);
+  goDashboard();
 }
 
 // 지금 보이는 대화 목록(채팅 화면이면 채팅 쪽)
@@ -94,16 +122,22 @@ const openSessionMenu = (...args) => sessions.openSessionMenu(...args);
 const openNew = (...args) => creation.openNew(...args);
 const openSetup = (...args) => settings.openSetup(...args);
 const projectTab = (...args) => projects.projectTab(...args);
-const loadSessions = (...args) => projects.loadSessions(...args);
+const loadSessions = async (...args) => {
+  await projects.loadSessions(...args);
+  const current = data.current && sessionById(data.current.id);
+  if (current?.locked) await onSessionLocked(current);
+};
 const commandNode = (...args) => commands.commandNode(...args);
 const runCommand = (...args) => commands.runCommand(...args);
 const stopCommand = (...args) => commands.stopCommand(...args);
 const removeCommand = (...args) => commands.removeCommand(...args);
 const openCommandDialog = (...args) => commands.openCommandDialog(...args);
+const openCommandOutput = (...args) => commands.openCommandOutput(...args);
 const skillChips = (...args) => skills.skillChips(...args);
 const openSkillsManager = (...args) => skills.openSkillsManager(...args);
 const renderFlow = (...args) => sessions.renderFlow(...args);
 const restartSession = (...args) => sessions.restartSession(...args);
+const toggleSessionLock = (...args) => sessions.toggleSessionLock(...args);
 const connectCreatedGraphNode = (...args) => graph.connectCreatedGraphNode(...args);
 const drawEdges = (...args) => graph.drawEdges(...args);
 const highlightSessions = (...args) => graph.highlightSessions(...args);
@@ -140,13 +174,13 @@ const settings = createSettingsController({
   api, goDashboard, loadProjects, renderProjectNav, currentProject, renderLinkConditions, data, navigation
 });
 const projects = createProjectsController({
-  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation
+  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, toggleSessionLock, openNew, data, navigation
 });
 const git = createGitController({
   api, selectSession, openSetup, currentProject, projectTab, navigation
 });
 const graph = createGraphController({
-  openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, skillChips, openSkillsManager, renderFlow, restartSession, openSessionMenu, openNew, cancelNodeCreation, data, navigation
+  openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, data, navigation
 });
 const commands = createCommandsController({
   api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation
@@ -158,7 +192,7 @@ const knowledge = createKnowledgeController({
   api, loadSessions, loadProjects, currentProject, loadLinks, data, navigation
 });
 const sessions = createSessionsController({
-  POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation
+  POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation
 });
 const creation = createCreationController({
   api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, loadHub, fillModels, fillEfforts, openChat, openSettings, data, navigation

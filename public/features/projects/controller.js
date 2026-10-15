@@ -2,7 +2,7 @@ import { createProjectsView } from "./view.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 
-export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation }) {
+export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, toggleSessionLock, openNew, data, navigation }) {
   const ui = {
     "filter": "",
     "removingProject": null,
@@ -10,7 +10,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   };
   const { renderProjectNav, renderSessionList, renderDashboard, renderProjectSessionTable } = createProjectsView({
     data, navigation, getFilter: () => ui.filter, sortedProjects, hubSessions: (project) => hubSessions(project),
-    lastActive, currentProject, goProject, openRemoveProject, sessionOpener, openSessionMenu,
+    lastActive, currentProject, goProject, openRemoveProject, sessionOpener, openSessionMenu, toggleSessionLock,
   });
 
   // ── 사이드바 ────────────────────────────────────────────────────

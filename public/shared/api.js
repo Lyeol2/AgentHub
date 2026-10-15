@@ -8,7 +8,7 @@ export function createApiClient({ fetch: request = globalThis.fetch } = {}) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw Object.assign(new Error(data.error ?? `요청 실패 (${res.status})`), {
-      reason: data.reason, outcomeUnknown: data.outcomeUnknown === true,
+      reason: data.reason, status: res.status, outcomeUnknown: data.outcomeUnknown === true,
     });
     return data;
   };
