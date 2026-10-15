@@ -14,6 +14,9 @@ import { createKnowledgeController } from "./features/knowledge/controller.js";
 import { createSessionsController } from "./features/sessions/controller.js";
 import { createCreationController } from "./features/creation/controller.js";
 import { createTasksController } from "./features/tasks/controller.js";
+import { createAccountController } from "./features/account/controller.js";
+import { createIssuesController } from "./features/issues/controller.js";
+import { createRecordsController } from "./features/records/controller.js";
 
 const api = createApiClient();
 const { data, navigation } = createStore();
@@ -168,16 +171,23 @@ const renderProject = (...args) => projects.renderProject(...args);
 const renderSession = (...args) => sessions.renderSession(...args);
 const renderChat = (...args) => sessions.renderChat(...args);
 const loadUpdate = (...args) => settings.loadUpdate(...args);
+const loadIssues = (...args) => issues.activate(...args);
+const renderIssueCount = (...args) => issues.renderTabCount(...args);
+const sendSessionToTeam = (...args) => issues.sendSession(...args);
+const pullIssues = (...args) => issues.pullIssues(...args);
+const showProjectTab = (...args) => projects.showProjectTab(...args);
+const loadAccount = (...args) => account.loadAccount(...args);
+const issuesChanged = (...args) => issues.changed(...args);
 
 // Compose independent features through explicit commands and shared server snapshots.
 const settings = createSettingsController({
   api, goDashboard, loadProjects, renderProjectNav, currentProject, renderLinkConditions, data, navigation
 });
 const projects = createProjectsController({
-  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, toggleSessionLock, openNew, data, navigation
+  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, toggleSessionLock, openNew, data, navigation
 });
 const git = createGitController({
-  api, selectSession, openSetup, currentProject, projectTab, navigation
+  api, selectSession, openSetup, currentProject, projectTab, pullIssues, navigation
 });
 const graph = createGraphController({
   openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, data, navigation
@@ -192,8 +202,15 @@ const knowledge = createKnowledgeController({
   api, loadSessions, loadProjects, currentProject, loadLinks, data, navigation
 });
 const sessions = createSessionsController({
-  POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation
+  POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, data, navigation
 });
+const account = createAccountController({
+  api, openSetup, onChange: () => issues?.accountChanged(),
+});
+const issues = createIssuesController({
+  api, account: () => account.account(), connectAccount: () => account.connect(), goProject, showProjectTab, projectTab, selectSession, loadHub, navigation
+});
+createRecordsController({ api, loadSessions, selectSession, data, navigation });
 const creation = createCreationController({
   api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, loadHub, fillModels, fillEfforts, openChat, openSettings, data, navigation
 });
@@ -206,7 +223,7 @@ const tasks = createTasksController({
 // 첫 로딩 중에 목록이 먼저 그려지면 사용자가 프로젝트·세션을 누를 수 있다. 그랬으면 대시보드로 되돌리지 않는다.
 const bootView = navigation.viewRevision;
 const bootSelection = sessionSelectionRevision;
-await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate(), loadProjects(), loadLinks()]);
+await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate(), loadProjects(), loadLinks(), loadAccount()]);
 if (POPUP) {
   document.body.classList.add("popup");
   if (POPUP === "new") openChat();
@@ -214,7 +231,7 @@ if (POPUP) {
 } else if (navigation.viewRevision === bootView && sessionSelectionRevision === bootSelection) goDashboard();
 
 const stream = connectLiveUpdates({
-  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate
+  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged
 });
 loadAuth();
 loadSetup();

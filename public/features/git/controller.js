@@ -4,7 +4,7 @@ import { samePath } from "../../shared/store.js";
 import { renderMarkdown } from "../../markdown.js";
 import { createPullRequests } from "../../gitpulls.js";
 
-export function createGitController({ api, selectSession, openSetup, currentProject, projectTab, navigation }) {
+export function createGitController({ api, selectSession, openSetup, currentProject, projectTab, pullIssues = () => [], navigation }) {
   const ui = {
     "git": null
   };
@@ -20,7 +20,7 @@ export function createGitController({ api, selectSession, openSetup, currentProj
   // ── Git 탭 ──────────────────────────────────────────────────────
   const GIT_TAB_KEY = "agenthub-git-tab";
   const GIT_TABS = ["changes", "history", "pulls"];
-  const pullRequests = createPullRequests({ api, renderMarkdown, renderDiff, onSetup: () => openSetup("gh"), isProjectCurrent: (project) => samePath(project, navigation.project) });
+  const pullRequests = createPullRequests({ api, renderMarkdown, renderDiff, onSetup: () => openSetup("gh"), isProjectCurrent: (project) => samePath(project, navigation.project), pullIssues });
   const gitTab = () => GIT_TABS.includes(localStorage.getItem(GIT_TAB_KEY)) ? localStorage.getItem(GIT_TAB_KEY) : "changes";
   const gitBusy = () => !!(ui.git?.indexBusy || ui.git?.committing || ui.git?.merging);
   const gitFiles = (area) => (ui.git?.data?.files ?? []).filter((f) => f[area]);
