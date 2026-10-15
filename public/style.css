@@ -729,7 +729,7 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
   position: absolute; z-index: 4; pointer-events: none;
   border: 1px dashed var(--accent); background: var(--accent-soft); border-radius: 3px;
 }
-.limit-mini .item .reset { font-size: 10.5px; color: var(--faint); text-align: right; }
+.limit-mini .item .reset { font-size: 10.5px; color: var(--faint); }
 
 /* ── AI 바꾸기 ───────────────────────────────────────────── */
 .config-switch { display: grid; gap: 4px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: 6px; }
@@ -738,3 +738,72 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 button.primary.danger { background: var(--danger); border-color: var(--danger); color: var(--bg); }
 button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: brightness(1.1); }
 .project-remove-keep { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); display: grid; gap: 3px; }
+
+/* ── 그래프 확대·축소 ─────────────────────────────────────── */
+/* 바깥 상자는 확대한 크기로 스크롤 범위를 잡고, 캔버스는 왼쪽 위를 기준으로 transform으로 키운다. */
+.graph-sizer { position: relative; min-width: 100%; min-height: 180px; }
+.graph-sizer > .graph-canvas { position: absolute; left: 0; top: 0; min-width: 0; transform-origin: 0 0; }
+.zoom-controls { display: inline-flex; gap: 2px; align-items: center; }
+.zoom-controls #p-zoom-reset { min-width: 52px; font-variant-numeric: tabular-nums; }
+
+/* 창이 낮아도 세션 목록이 아래 상태 칸에 눌려 겹치지 않게 최소 높이를 두고, 아래 칸은 넘치면 스크롤한다. */
+.sidebar { overflow: hidden; }
+.nav-section.grow { min-height: 110px; overflow: hidden; }
+.sidebar-foot { flex: none; max-height: 42vh; overflow-y: auto; }
+
+/* ── 프로젝트 탭 ─────────────────────────────────────────── */
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+.tabs [data-tab] {
+  border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent;
+  color: var(--muted); padding: 8px 14px; font-weight: 600; margin-bottom: -1px;
+}
+.tabs [data-tab]:hover:not(:disabled) { background: transparent; color: var(--text); }
+.tabs [data-tab].active { color: var(--text); border-bottom-color: var(--accent); }
+.tab-count { margin-left: 4px; font-size: 11px; font-weight: 500; color: var(--faint); }
+.tab-panel { display: grid; gap: 18px; }
+.tab-panel[hidden] { display: none; }
+#p-sessions .role-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+#p-session-filter { margin: 0; width: 220px; }
+
+/* ── Git 탭 ──────────────────────────────────────────────── */
+.git-grid { display: grid; grid-template-columns: minmax(300px, 420px) 1fr; min-height: 420px; }
+.git-side { display: grid; gap: 14px; align-content: start; padding: 12px 14px; border-right: 1px solid var(--line); max-height: 72vh; overflow-y: auto; }
+.git-side h4 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+.git-side h4 .muted { font-weight: 400; font-size: 11px; }
+.git-side textarea { width: 100%; resize: vertical; margin-top: 6px; }
+.git-all { font-size: 12px; color: var(--muted); }
+.git-row { display: flex; gap: 10px; align-items: center; margin-top: 6px; }
+.git-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 12.5px; }
+.git-file { display: flex; gap: 7px; align-items: center; min-width: 0; }
+.git-file input { width: auto; margin: 0; }
+.git-file .link { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+button.link { border: 0; background: transparent; padding: 1px 0; color: var(--text); text-align: left; cursor: pointer; }
+button.link:hover:not(:disabled) { background: transparent; color: var(--accent); }
+.git-status { flex: none; font-size: 10.5px; padding: 0 6px; border-radius: 4px; border: 1px solid var(--line-strong); color: var(--muted); }
+.git-status.s-new { color: var(--ok); border-color: var(--ok); }
+.git-status.s-del { color: var(--danger); border-color: var(--danger); }
+.git-status.s-conflict { color: var(--warn); border-color: var(--warn); }
+.git-branch { padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; display: grid; gap: 3px; }
+.git-branch.current { border-color: var(--accent); }
+.git-branch-head { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.git-branch-head .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-branch .facts { font-size: 11.5px; }
+.git-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.pill.session-ref { cursor: pointer; font-size: 11px; }
+.pill.ref { font-size: 10.5px; padding: 0 6px; margin-left: 4px; color: var(--accent); }
+.git-commit { display: grid; gap: 1px; padding: 3px 0; border-bottom: 1px solid var(--line); }
+.git-commit .hash { color: var(--accent); }
+.git-commit .when { font-size: 11px; }
+.git-inline { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 4px; }
+.git-inline input { flex: 1; min-width: 160px; padding: 4px 8px; font-size: 12.5px; }
+.git-view { display: grid; grid-template-rows: auto 1fr; min-width: 0; }
+.git-view-title { padding: 10px 14px; font-size: 12.5px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.git-view .diff { margin: 0; max-height: 72vh; border: 0; border-radius: 0; }
+@media (max-width: 900px) {
+  .git-grid { grid-template-columns: 1fr; }
+  .git-side { border-right: 0; border-bottom: 1px solid var(--line); max-height: none; }
+}
+.git-side label.git-all { display: flex; gap: 7px; align-items: center; }
+.git-side label.git-all input { width: auto; margin: 0; }
+.git-commit-meta { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.git-commit-meta .pill.ref { margin-left: 0; }

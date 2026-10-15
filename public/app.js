@@ -359,15 +359,16 @@ function limitMini(agent, w) {
   const known = typeof used === "number";
   const reset = !expired && w.resetsAt ? untilText(w.resetsAt) : null;
   return el("div", { class: "item", title: w.resetsAt ? `초기화 ${fmtDate(w.resetsAt)}` : "" },
+    // 초기화까지 남은 시간은 이름 옆에 작게 붙여 사이드바 높이를 늘리지 않는다.
     el("div", { class: "line" },
-      el("span", {}, `${AGENT_LABEL[agent]} ${w.label}`),
+      el("span", {}, `${AGENT_LABEL[agent]} ${w.label}`,
+        reset || expired ? el("span", { class: "reset" }, expired ? " · 초기화됨" : ` · ${reset} 뒤`) : null),
       // 사용률을 모르면(실행 중 이벤트만 받은 경우) 상태만 보인다.
       el("span", {}, known ? `${Math.max(0, 100 - used).toFixed(0)}% 남음` : LIMIT_STATUS[w.status] ?? "사용률 모름")),
     el("div", { class: "bar" }, el("span", {
       class: known ? barLevel(used) : w.status === "rejected" ? "danger" : w.status === "allowed_warning" ? "warn" : "",
       style: `width:${known ? Math.min(100, used) : w.status === "rejected" ? 100 : 0}%`,
-    })),
-    reset || expired ? el("div", { class: "reset" }, expired ? "초기화됨" : `${reset} 뒤 초기화`) : null);
+    })));
 }
 
 // 지금부터 그 시각까지 남은 시간("2시간 13분", "40분", "3일 4시간")
@@ -584,6 +585,233 @@ function currentProject() {
   return state.projects?.find((p) => samePath(p.path, state.project));
 }
 
+// ── 프로젝트 탭 ─────────────────────────────────────────────────
+// 세션 흐름 / 세션 목록 / Git. 마지막에 본 탭을 이 브라우저에 기억한다.
+const TAB_KEY = "agenthub-project-tab";
+const PROJECT_TABS = ["flow", "sessions", "git"];
+const projectTab = () => (PROJECT_TABS.includes(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "flow");
+
+function showProjectTab(tab) {
+  localStorage.setItem(TAB_KEY, tab);
+  for (const b of $("p-tabs").querySelectorAll("[data-tab]")) {
+    b.classList.toggle("active", b.dataset.tab === tab);
+    b.setAttribute("aria-selected", String(b.dataset.tab === tab));
+  }
+  for (const panel of document.querySelectorAll("#view-project .tab-panel")) panel.hidden = panel.dataset.panel !== tab;
+  if (tab === "git") loadGit();
+}
+
+$("p-tabs").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-tab]");
+  if (button) showProjectTab(button.dataset.tab);
+});
+
+// ── 세션 목록 탭 ────────────────────────────────────────────────
+function renderProjectSessionTable() {
+  const p = currentProject();
+  if (!p) return;
+  const all = hubSessions(p).filter((s) => !s.chat);
+  $("p-tab-sessions").textContent = all.length ? String(all.length) : "";
+  const q = $("p-session-filter").value.trim().toLowerCase();
+  const shown = all
+    .filter((s) => !q || `${s.title} ${s.roleName ?? ""} ${s.role ?? ""}`.toLowerCase().includes(q))
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const rows = shown.map((s) => el("tr", {
+    class: "click", onclick: sessionOpener(s.id), onauxclick: sessionOpener(s.id), oncontextmenu: (e) => openSessionMenu(e, s),
+  },
+  el("td", { class: "title-cell", title: s.title }, s.title, s.kind === "orchestrator" ? el("span", { class: "pill orch" }, "지휘") : null),
+  el("td", {}, sessionBadge(s), s.model ? el("span", { class: "muted" }, ` ${s.model}`) : null),
+  el("td", { class: "role-cell", title: s.role ?? "" }, [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ") || "—"),
+  el("td", { class: "path", title: s.cwd }, s.worktree ? s.worktree.branch : "원본"),
+  el("td", {}, s.waiting ? el("span", { class: "pill q-pending" }, "답 대기") : pill(s.state)),
+  el("td", { class: "num" }, timeAgo(s.updatedAt))));
+  table("p-sessions", [["세션"], ["AI"], ["역할"], ["작업 폴더"], ["상태"], ["업데이트", "num"]], rows,
+    q ? "검색 결과가 없습니다." : "이 프로젝트에서 만든 세션이 없습니다. 새 세션을 만들거나 아래에서 기존 세션을 가져오세요.");
+}
+$("p-session-filter").addEventListener("input", renderProjectSessionTable);
+
+// ── Git 탭 ──────────────────────────────────────────────────────
+// 변경 파일을 골라 커밋하고, 커밋·브랜치·파일의 차이를 오른쪽에 본다.
+// 세션 브랜치는 그 세션 작업 폴더의 커밋 안 한 변경을 보고, 그 브랜치에 커밋한 뒤 현재 브랜치로 병합할 수 있다.
+async function loadGit() {
+  const p = currentProject();
+  if (!p) return;
+  const projectPath = p.path;
+  if (!state.git || !samePath(state.git.project, projectPath)) state.git = { project: projectPath, selected: new Set(), data: null };
+  let data;
+  try {
+    data = await api("GET", `/api/git?path=${encodeURIComponent(projectPath)}`);
+  } catch (err) {
+    if (!samePath(projectPath, state.project)) return;
+    $("g-note").hidden = false;
+    $("g-note").textContent = err.reason === "not-git" ? "git 저장소가 아닌 프로젝트입니다." : err.message;
+    $("g-body").hidden = true;
+    $("g-branch").textContent = "";
+    return;
+  }
+  if (!samePath(projectPath, state.project)) return;
+  $("g-note").hidden = true;
+  $("g-body").hidden = false;
+  // 목록에서 사라진 파일은 고른 것에서도 뺀다.
+  const paths = new Set(data.files.map((f) => f.path));
+  for (const f of state.git.selected) if (!paths.has(f)) state.git.selected.delete(f);
+  state.git.data = data;
+  renderGit();
+}
+
+function renderGit() {
+  const { data, selected } = state.git;
+  const upstream = data.upstream
+    ? ` · ${data.upstream} 기준 ${data.ahead ? `${data.ahead}개 앞섬` : ""}${data.ahead && data.behind ? ", " : ""}${data.behind ? `${data.behind}개 뒤처짐` : ""}${!data.ahead && !data.behind ? "같음" : ""}`
+    : " · 원격 브랜치 없음";
+  $("g-branch").textContent = `현재 브랜치 ${data.branch}${upstream}`;
+  $("p-tab-git").textContent = data.files.length ? String(data.files.length + data.moreFiles) : "";
+
+  // 변경 파일
+  $("g-file-count").textContent = data.files.length ? `${data.files.length + data.moreFiles}개` : "";
+  $("g-files").replaceChildren(...(data.files.length ? data.files.map((f) => {
+    const box = el("input", { type: "checkbox", onchange: (e) => {
+      if (e.target.checked) selected.add(f.path);
+      else selected.delete(f.path);
+      renderGitCommitButton();
+    } });
+    box.checked = selected.has(f.path);
+    return el("li", { class: "git-file" },
+      box,
+      el("span", { class: `git-status s-${f.label === "새 파일" ? "new" : f.label === "삭제" ? "del" : f.label === "충돌" ? "conflict" : "mod"}` }, f.label),
+      el("button", { type: "button", class: "link mono", title: f.orig ? `${f.orig} → ${f.path}` : f.path, onclick: () => showGitFile(f.path) }, f.path));
+  }) : [el("li", { class: "muted" }, "바뀐 파일이 없습니다.")]),
+  ...(data.moreFiles ? [el("li", { class: "muted" }, `… 외 ${data.moreFiles}개`)] : []));
+  $("g-all").checked = data.files.length > 0 && data.files.every((f) => selected.has(f.path));
+  renderGitCommitButton();
+
+  // 브랜치
+  $("g-branches").replaceChildren(...data.branches.map(renderGitBranch));
+
+  // 최근 커밋
+  $("g-commits").replaceChildren(...(data.commits.length ? data.commits.map((c) => el("li", { class: "git-commit" },
+    el("button", { type: "button", class: "link", title: `${c.hash}\n${c.author} · ${fmtDate(c.date)}`, onclick: () => showGitCommit(c) },
+      el("span", { class: "mono hash" }, c.short), " ", c.subject),
+    el("div", { class: "git-commit-meta" },
+      el("span", { class: "muted when" }, `${c.author} · ${timeAgo(c.date)}`),
+      ...c.refs.map((r) => el("span", { class: "pill ref" }, r.replace(/^HEAD -> /, "● ")))))) : [el("li", { class: "muted" }, "커밋이 없습니다.")]));
+}
+
+function renderGitCommitButton() {
+  const files = state.git.data?.files ?? [];
+  $("g-all").checked = files.length > 0 && files.every((f) => state.git.selected.has(f.path));
+  const n = state.git.selected.size;
+  $("g-commit").disabled = !n;
+  $("g-commit").textContent = n ? `고른 파일 ${n}개 커밋` : "고른 파일 커밋";
+}
+
+function renderGitBranch(b) {
+  const actions = [];
+  const run = (label, fn, opts = {}) => actions.push(el("button", { type: "button", class: `ghost sm${opts.primary ? " primary" : ""}`, title: opts.title ?? "", onclick: fn }, label));
+  if (b.sessionId && b.dirty) run("변경 보기", () => showSessionChanges(b), { title: "세션 작업 폴더의 커밋 안 한 변경" });
+  if (b.sessionId && b.dirty) run("브랜치에 커밋", (e) => openBranchCommit(e.target.closest("li"), b), { title: "세션 작업 폴더의 변경을 이 브랜치에 커밋합니다" });
+  if (!b.current && b.ahead) run("들어올 내용", () => showGitBranch(b), { title: "병합하면 현재 브랜치에 들어올 커밋의 차이" });
+  if (!b.current && b.ahead) run("병합", () => mergeGitBranch(b), { title: `현재 브랜치(${state.git.data.branch})로 병합합니다` });
+  const facts = [
+    b.current ? "현재 브랜치" : b.ahead ? `커밋 ${b.ahead}개 앞섬` : "새 커밋 없음",
+    b.sessionId ? (b.dirty === null ? "작업 폴더 없음" : b.dirty ? `커밋 안 한 변경 ${b.dirty}개` : "작업 폴더 깨끗함") : null,
+  ].filter(Boolean).join(" · ");
+  return el("li", { class: `git-branch${b.current ? " current" : ""}` },
+    el("div", { class: "git-branch-head" },
+      el("span", { class: "mono name", title: b.subject ?? "" }, b.current ? `● ${b.name}` : b.name),
+      b.sessionId ? el("button", { type: "button", class: "pill session-ref", title: "세션 열기", onclick: () => selectSession(b.sessionId) }, b.sessionTitle) : null),
+    el("div", { class: "muted facts" }, facts),
+    actions.length ? el("div", { class: "git-actions" }, ...actions) : null);
+}
+
+function showGitView(title, text) {
+  $("g-view-title").textContent = title;
+  $("g-view").replaceChildren(...renderDiff(text));
+  $("g-view").scrollTop = 0;
+}
+
+async function gitGet(url, title) {
+  try {
+    showGitView(title, (await api("GET", url)).diff);
+  } catch (err) {
+    showGitView(title, err.message);
+  }
+}
+
+const gitQuery = (extra) => new URLSearchParams({ path: state.git.project, ...extra });
+const showGitFile = (file) => gitGet(`/api/git/diff?${gitQuery({ file })}`, `변경: ${file}`);
+const showGitCommit = (c) => gitGet(`/api/git/show?${gitQuery({ hash: c.hash })}`, `커밋 ${c.short} · ${c.subject}`);
+const showGitBranch = (b) => gitGet(`/api/git/branch?${gitQuery({ branch: b.name })}`, `${b.name}에서 들어올 내용`);
+
+async function showSessionChanges(b) {
+  try {
+    const data = await api("GET", `/api/sessions/${b.sessionId}/diff`);
+    showGitView(`${b.sessionTitle} 작업 폴더의 변경 (세션을 만든 커밋 기준)`, `${data.status}\n${data.diff}`);
+  } catch (err) {
+    showGitView(b.sessionTitle, err.message);
+  }
+}
+
+// 세션 브랜치에 커밋: 그 줄 아래에 메시지 칸을 열어 받는다(앱 창에서는 prompt를 쓸 수 없다).
+function openBranchCommit(li, b) {
+  li.querySelector(".git-inline")?.remove();
+  const input = el("input", { placeholder: `${b.sessionTitle}의 작업 커밋 메시지`, value: `${b.sessionTitle} 작업` });
+  const error = el("span", { class: "error" });
+  const submit = async () => {
+    try {
+      await api("POST", "/api/git/commit", { path: state.git.project, session: b.sessionId, message: input.value });
+      await loadGit();
+    } catch (err) {
+      error.textContent = err.message;
+    }
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+    if (e.key === "Escape") form.remove();
+  });
+  const form = el("div", { class: "git-inline" }, input,
+    el("button", { type: "button", class: "primary sm", onclick: submit }, "커밋"),
+    el("button", { type: "button", class: "ghost sm", onclick: () => form.remove() }, "취소"), error);
+  li.append(form);
+  input.focus();
+  input.select();
+}
+
+async function mergeGitBranch(b) {
+  const into = state.git.data.branch;
+  if (!confirm(`${b.name}의 커밋 ${b.ahead}개를 현재 브랜치(${into})로 병합할까요?\n\n충돌이 나면 병합을 되돌리고 충돌한 파일을 알려 줍니다.`)) return;
+  try {
+    const { result } = await api("POST", "/api/git/merge", { path: state.git.project, branch: b.name });
+    showGitView(`병합함: ${b.name} → ${into}`, result);
+  } catch (err) {
+    alert(err.message);
+  }
+  await loadGit();
+}
+
+$("g-refresh").addEventListener("click", loadGit);
+$("g-all").addEventListener("change", (e) => {
+  for (const f of state.git?.data?.files ?? []) {
+    if (e.target.checked) state.git.selected.add(f.path);
+    else state.git.selected.delete(f.path);
+  }
+  renderGit();
+});
+$("g-commit").addEventListener("click", async () => {
+  const button = $("g-commit");
+  $("g-error").textContent = "";
+  button.disabled = true;
+  try {
+    const { result } = await api("POST", "/api/git/commit", { path: state.git.project, message: $("g-message").value, files: [...state.git.selected] });
+    $("g-message").value = "";
+    state.git.selected.clear();
+    showGitView("커밋함", result);
+  } catch (err) {
+    $("g-error").textContent = err.message;
+  }
+  await loadGit();
+});
+
 // ── 프로젝트 제거 ───────────────────────────────────────────────
 // AgentHub 목록에서만 뺀다. 이 프로젝트의 AgentHub 세션·명령 노드·연결·공유 노트는 지우고, 폴더와 파일은 그대로 둔다.
 function openRemoveProject(p) {
@@ -637,6 +865,7 @@ $("project-remove-form").addEventListener("submit", async (e) => {
 
 function renderProjectSessions() {
   renderGraph();
+  renderProjectSessionTable();
 }
 
 async function renderProject() {
@@ -646,6 +875,7 @@ async function renderProject() {
   $("p-path").textContent = p.path;
   $("p-registered").hidden = p.registered;
   renderProjectSessions();
+  showProjectTab(projectTab());
   loadSkills(p.path);
   loadCommands(p.path);
   loadMessages(p.path);
@@ -846,10 +1076,13 @@ function renderGraph() {
     canvas.append(node);
   }
 
-  state.graph = { canvas, svg, cards, pos, links, commands };
+  // 확대·축소: 캔버스는 transform으로 키우고, 바깥 상자를 확대한 크기로 맞춰 스크롤 범위를 맞춘다.
+  const sizer = el("div", { class: "graph-sizer" }, canvas);
+  state.graph = { canvas, sizer, svg, cards, pos, links, commands, zoom: graphZoomFor(state.project) };
   placeCards();
   syncGraphSelection();
-  box.replaceChildren(canvas);
+  box.replaceChildren(sizer);
+  renderZoomLabel();
 }
 // 카드 끌기·연결·선택 상자. 캔버스 밖 여백에서도 선택 상자를 시작할 수 있게 그래프 칸에 한 번만 단다.
 $("p-graph").addEventListener("pointerdown", onGraphPointerDown);
@@ -1369,10 +1602,104 @@ function placeCards() {
     width = Math.max(width, p.x + size.w + PAD);
     height = Math.max(height, p.y + size.h + PAD);
   }
+  // 되돌아가는 연결은 카드 아래로 휘어 내려가므로(edgePath) 그 선과 라벨이 잘리지 않게 아래 여백을 더 둔다.
+  for (const link of g.links) {
+    const a = g.pos.get(link.from);
+    const b = g.pos.get(link.to);
+    if (!a || !b || b.x >= a.x + nodeSize(link.from).w) continue;
+    height = Math.max(height, Math.max(a.y + nodeSize(link.from).h, b.y + nodeSize(link.to).h) + 64);
+  }
   g.canvas.style.width = `${width}px`;
   g.canvas.style.height = `${height}px`;
+  g.size = { width, height };
+  applyGraphZoom();
   drawEdges();
 }
+
+// ── 그래프 확대·축소 ────────────────────────────────────────────
+// 배율은 프로젝트마다 이 브라우저에 기억한다. 카드 위치는 배율과 상관없는 캔버스 좌표로 저장한다.
+const ZOOM_KEY = "agenthub-graph-zoom";
+const ZOOM_MIN = 0.3;
+const ZOOM_MAX = 2;
+
+function graphZoomFor(projectPath) {
+  try {
+    const z = JSON.parse(localStorage.getItem(ZOOM_KEY) ?? "{}")[String(projectPath).toLowerCase()];
+    return Number.isFinite(z) ? z : 1;
+  } catch {
+    return 1;
+  }
+}
+
+function saveGraphZoom(projectPath, zoom) {
+  let all = {};
+  try {
+    all = JSON.parse(localStorage.getItem(ZOOM_KEY) ?? "{}");
+  } catch {
+    // 깨진 값은 새로 쓴다.
+  }
+  all[String(projectPath).toLowerCase()] = zoom;
+  localStorage.setItem(ZOOM_KEY, JSON.stringify(all));
+}
+
+function applyGraphZoom() {
+  const g = state.graph;
+  if (!g?.size) return;
+  g.canvas.style.transform = g.zoom === 1 ? "" : `scale(${g.zoom})`;
+  g.sizer.style.width = `${g.size.width * g.zoom}px`;
+  g.sizer.style.height = `${g.size.height * g.zoom}px`;
+}
+
+function renderZoomLabel() {
+  const z = state.graph?.zoom ?? 1;
+  $("p-zoom-reset").textContent = `${Math.round(z * 100)}%`;
+  $("p-zoom-out").disabled = z <= ZOOM_MIN;
+  $("p-zoom-in").disabled = z >= ZOOM_MAX;
+}
+
+// anchor(clientX·clientY)가 가리키는 지점이 그 자리에 머물도록 배율을 바꾼다. 없으면 보이는 칸의 가운데를 기준으로 한다.
+function setGraphZoom(zoom, anchor = null) {
+  const g = state.graph;
+  if (!g?.canvas.isConnected) return;
+  const box = $("p-graph");
+  const next = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(zoom * 100) / 100));
+  if (next === g.zoom) return;
+  const rect = box.getBoundingClientRect();
+  const ax = anchor ? anchor.clientX - rect.left : box.clientWidth / 2;
+  const ay = anchor ? anchor.clientY - rect.top : box.clientHeight / 2;
+  const cx = (box.scrollLeft + ax) / g.zoom;
+  const cy = (box.scrollTop + ay) / g.zoom;
+  g.zoom = next;
+  saveGraphZoom(state.project, next);
+  applyGraphZoom();
+  box.scrollLeft = cx * next - ax;
+  box.scrollTop = cy * next - ay;
+  renderZoomLabel();
+}
+
+// 모든 카드가 보이게 맞춘다. 작으면 키우지 않는다(100%까지).
+function fitGraph() {
+  const g = state.graph;
+  if (!g?.size) return;
+  const box = $("p-graph");
+  const maxHeight = parseFloat(getComputedStyle(box).maxHeight) || box.clientHeight;
+  const fit = Math.min(1, box.clientWidth / g.size.width, maxHeight / g.size.height);
+  setGraphZoom(fit);
+  box.scrollLeft = 0;
+  box.scrollTop = 0;
+}
+
+$("p-zoom-in").addEventListener("click", () => setGraphZoom((state.graph?.zoom ?? 1) * 1.2));
+$("p-zoom-out").addEventListener("click", () => setGraphZoom((state.graph?.zoom ?? 1) / 1.2));
+$("p-zoom-reset").addEventListener("click", () => setGraphZoom(1));
+$("p-zoom-fit").addEventListener("click", fitGraph);
+
+// Ctrl+휠(터치패드 오므리기·벌리기 포함)로 커서 자리를 기준으로 확대·축소한다. 그냥 휠은 스크롤이다.
+$("p-graph").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  setGraphZoom((state.graph?.zoom ?? 1) * Math.exp(-e.deltaY * 0.0015), e);
+}, { passive: false });
 
 // sa·sb: 양 끝 노드 크기
 function edgePath(a, b, sa = CARD_SIZE, sb = CARD_SIZE) {
@@ -1444,9 +1771,11 @@ ${talk.last.text}`;
   }
 }
 
+// 화면 좌표를 캔버스 좌표로. 확대·축소한 만큼 나눠 카드 위치와 같은 단위로 맞춘다.
 function canvasPoint(e) {
   const rect = state.graph.canvas.getBoundingClientRect();
-  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  const zoom = state.graph.zoom ?? 1;
+  return { x: (e.clientX - rect.left) / zoom, y: (e.clientY - rect.top) / zoom };
 }
 
 // 연결선 가운데의 승인 대기. 승인하면 그때 받는 세션으로 넘긴다.
@@ -3072,12 +3401,18 @@ function connectStream() {
     renderProjectNav();
     if (state.view === "dashboard") renderDashboard();
     if (state.view === "project") renderProjectSessions();
+    // 보고 있는 프로젝트의 세션이 턴을 마치면 파일이 바뀌었을 수 있으므로 Git 탭을 새로 받는다.
+    if (state.view === "project" && projectTab() === "git" && next !== "running" && item && samePath(item.projectPath, state.project)) loadGit();
     if (state.current?.id === sessionId) {
       state.current.state = next;
       renderState();
     }
   });
   source.addEventListener("sessions", loadSessions);
+  // 다른 창에서 커밋·병합했다.
+  source.addEventListener("git", (e) => {
+    if (state.view === "project" && projectTab() === "git" && samePath(JSON.parse(e.data).projectPath, state.project)) loadGit();
+  });
   // 프로젝트를 더하거나 뺐다. 보고 있던 프로젝트가 빠졌으면 대시보드로 돌아간다.
   source.addEventListener("projects", async () => {
     await loadProjects();

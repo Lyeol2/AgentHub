@@ -104,6 +104,12 @@
       </header>
       <div class="content">
         <p class="notice" id="p-registered">Claude Code·Codex 기록에서 자동으로 찾은 프로젝트입니다. 세션을 가져오거나 새로 만들면 AgentHub 프로젝트로 등록됩니다.</p>
+        <nav class="tabs" id="p-tabs" role="tablist" aria-label="프로젝트 보기">
+          <button type="button" role="tab" data-tab="flow">세션 흐름</button>
+          <button type="button" role="tab" data-tab="sessions">세션 목록 <span class="tab-count" id="p-tab-sessions"></span></button>
+          <button type="button" role="tab" data-tab="git">Git <span class="tab-count" id="p-tab-git"></span></button>
+        </nav>
+        <div class="tab-panel" data-panel="flow">
         <div class="card">
           <div class="card-head">
             <h3>세션 흐름 <span class="muted">카드를 눌러 고르고 두 번 눌러 엽니다(가운데 버튼·Ctrl+두 번 누르기는 새 창). 빈 곳을 끌면 여러 개를 고르고, 고른 카드는 함께 옮겨집니다. ● 손잡이를 끌어 다른 카드에 연결합니다</span></h3>
@@ -112,17 +118,67 @@
               <button class="ghost sm" id="p-skills" title="스킬 만들기·편집·옮기기. 세션 카드의 스킬 칩을 눌러 장착합니다">스킬</button>
               <button class="ghost sm" id="p-board" title="세션들이 함께 보는 메모. API 약속·정한 사항·진행 상황을 남깁니다">공유 노트</button>
               <button class="ghost sm" id="p-relayout" title="옮긴 위치를 지우고 연결 순서대로 다시 배치">자동 배치</button>
+              <span class="zoom-controls" title="Ctrl+마우스 휠로도 확대·축소합니다">
+                <button class="ghost sm" id="p-zoom-out" aria-label="축소">−</button>
+                <button class="ghost sm" id="p-zoom-reset" title="100%로 되돌리기">100%</button>
+                <button class="ghost sm" id="p-zoom-in" aria-label="확대">+</button>
+                <button class="ghost sm" id="p-zoom-fit" title="모든 카드가 보이게 맞추기">맞춤</button>
+              </span>
             </div>
           </div>
           <div class="hub-bar" id="p-hub"></div>
           <div class="graph" id="p-graph"></div>
         </div>
-        <div class="card">
-          <div class="card-head">
-            <h3>Claude Code · Codex 세션 <span class="muted">이 프로젝트에서 연 세션</span></h3>
+        </div>
+
+        <div class="tab-panel" data-panel="sessions" hidden>
+          <div class="card">
+            <div class="card-head">
+              <h3>AgentHub 세션 <span class="muted">누르면 열고, 가운데 버튼·Ctrl+클릭은 새 창</span></h3>
+              <div class="actions"><input id="p-session-filter" class="filter" placeholder="제목·역할 검색"></div>
+            </div>
+            <table class="table" id="p-sessions"></table>
           </div>
-          <p class="hint pad">가져오면 기존 대화 기록을 보여 주고, 다음 요청부터 같은 CLI 세션을 이어서 실행합니다. 다른 앱에서 같은 세션을 동시에 쓰지 마세요.</p>
-          <table class="table" id="p-found"></table>
+          <div class="card">
+            <div class="card-head">
+              <h3>Claude Code · Codex 세션 <span class="muted">이 프로젝트에서 연 세션</span></h3>
+            </div>
+            <p class="hint pad">가져오면 기존 대화 기록을 보여 주고, 다음 요청부터 같은 CLI 세션을 이어서 실행합니다. 다른 앱에서 같은 세션을 동시에 쓰지 마세요.</p>
+            <table class="table" id="p-found"></table>
+          </div>
+        </div>
+
+        <div class="tab-panel" data-panel="git" hidden>
+          <div class="card">
+            <div class="card-head">
+              <h3>Git <span class="muted" id="g-branch"></span></h3>
+              <div class="actions"><button class="ghost sm" id="g-refresh">새로고침</button></div>
+            </div>
+            <p class="hint pad" id="g-note" hidden></p>
+            <div class="git-grid" id="g-body">
+              <div class="git-side">
+                <section>
+                  <h4>변경 파일 <span class="muted" id="g-file-count"></span></h4>
+                  <label class="check git-all"><input type="checkbox" id="g-all"> 모두 고르기</label>
+                  <ul class="git-list" id="g-files"></ul>
+                  <textarea id="g-message" rows="3" placeholder="커밋 메시지"></textarea>
+                  <div class="git-row"><button class="primary sm" id="g-commit">고른 파일 커밋</button><span class="error" id="g-error"></span></div>
+                </section>
+                <section>
+                  <h4>브랜치 <span class="muted">세션 브랜치는 작업 폴더의 커밋 안 한 변경까지 보입니다</span></h4>
+                  <ul class="git-list" id="g-branches"></ul>
+                </section>
+                <section>
+                  <h4>최근 커밋</h4>
+                  <ul class="git-list" id="g-commits"></ul>
+                </section>
+              </div>
+              <div class="git-view">
+                <div class="git-view-title" id="g-view-title">파일·커밋·브랜치를 고르면 내용이 여기 보입니다.</div>
+                <pre class="diff" id="g-view"></pre>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </section>

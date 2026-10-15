@@ -201,3 +201,16 @@ test("api: 프로젝트를 제거하면 AgentHub 세션·연결은 지우고 폴
   assert.ok((await api("GET", "/projects/all")).body.some((p) => p.registered && p.path.toLowerCase() === path.resolve(repo).toLowerCase()));
   await api("DELETE", `/sessions/${again.id}`);
 });
+
+test("api: Git 패널 조회와 입력 검사", async () => {
+  const overview = await api("GET", `/git?path=${encodeURIComponent(repo)}`);
+  assert.equal(overview.status, 200);
+  assert.ok(Array.isArray(overview.body.files) && Array.isArray(overview.body.commits) && Array.isArray(overview.body.branches));
+  assert.equal((await api("GET", "/git")).status, 400);
+  const plain = fs.mkdtempSync(path.join(tmp, "plain-"));
+  const notGit = await api("GET", `/git?path=${encodeURIComponent(plain)}`);
+  assert.deepEqual([notGit.status, notGit.body.reason], [400, "not-git"]);
+  assert.equal((await api("GET", `/git/show?path=${encodeURIComponent(repo)}&hash=--all`)).status, 400);
+  assert.equal((await api("POST", "/git/merge", { path: repo, branch: "--abort" })).status, 400);
+  assert.equal((await api("POST", "/git/commit", { path: repo, message: "x", session: "없는세션" })).status, 404);
+});

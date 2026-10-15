@@ -9,6 +9,7 @@ import { SessionStore, summary } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
 import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince, changedFiles } from "./git.mjs";
 import { AGENT_NAME, handoverText, mapPermission } from "./handover.mjs";
+import { gitOverview, fileDiff, showCommit, branchDiff, commit, merge } from "./gitpanel.mjs";
 import { discoverProjects, discoverSessions, loadHistory, deleteSessionRecords } from "./discover.mjs";
 import { readLimits, recordClaudeLimit, refreshClaudeUsage } from "./limits.mjs";
 import { ROLE_MAX, withRole } from "./role.mjs";
@@ -344,6 +345,23 @@ function linkFields(body, current = {}) {
     approve: !!(body.approve ?? current.approve ?? false), // 넘기기 전에 연결선 위에서 승인을 받는다
     ...(body.approve === false ? { pending: null } : {}), // 승인을 끄면 기다리던 것도 거둔다
   };
+}
+
+// Git 패널이 다룰 저장소. 폴더가 있고 git 저장소여야 한다.
+async function gitRepo(projectPath) {
+  if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+  const dir = path.resolve(String(projectPath));
+  if (!fs.existsSync(dir)) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
+  if (!(await isGitRepo(dir))) throw new HttpError(400, "git 저장소가 아닙니다.", "not-git");
+  return dir;
+}
+
+// 세션의 분리한 작업 폴더. 이 프로젝트의 세션이어야 한다.
+function sessionWorktree(sessionId, repo) {
+  const session = getSession(sessionId);
+  if (!samePath(session.projectPath, repo)) throw new HttpError(400, "이 프로젝트의 세션이 아닙니다.");
+  if (!session.worktree || !fs.existsSync(session.worktree.dir)) throw new HttpError(400, "작업 폴더를 분리한 세션이 아닙니다.");
+  return session.worktree.dir;
 }
 
 // 제거해서 숨긴 프로젝트를 다시 보이게 한다(저장은 부르는 쪽에서).
@@ -1136,6 +1154,40 @@ async function handleApi(req, res, url) {
       broadcast("links", {});
       return send(res, 200, created.map(summary));
     }
+  }
+
+  // 프로젝트 화면의 Git 패널. 조회는 GET(path 쿼리), 커밋·병합은 POST(본문의 path).
+  // session을 주면 그 세션의 분리한 작업 폴더(브랜치)에서 한다.
+  if (parts[0] === "git") {
+    const body = method === "POST" ? await readJson(req) : {};
+    const repo = await gitRepo(url.searchParams.get("path") ?? body.path);
+    const sessionId = url.searchParams.get("session") ?? body.session;
+    const dir = sessionId ? sessionWorktree(sessionId, repo) : repo;
+    try {
+      if (method === "GET" && parts.length === 1) {
+        return send(res, 200, await gitOverview(repo, projectSessions(repo)));
+      }
+      if (method === "GET" && parts[1] === "diff") return send(res, 200, { diff: await fileDiff(dir, url.searchParams.get("file") ?? "") });
+      if (method === "GET" && parts[1] === "show") return send(res, 200, { diff: await showCommit(repo, url.searchParams.get("hash")) });
+      if (method === "GET" && parts[1] === "branch") return send(res, 200, { diff: await branchDiff(repo, url.searchParams.get("branch")) });
+      if (method === "POST" && parts[1] === "commit") {
+        if (sessionId && runner.isRunning(sessionId)) throw new HttpError(409, "세션이 실행 중입니다. 끝나거나 일시중지한 뒤 커밋하세요.");
+        const files = Array.isArray(body.files) ? body.files : null;
+        const result = await commit(dir, body.message, files);
+        broadcast("git", { projectPath: repo });
+        return send(res, 200, { ok: true, result });
+      }
+      if (method === "POST" && parts[1] === "merge") {
+        const result = await merge(repo, String(body.branch ?? ""));
+        broadcast("git", { projectPath: repo });
+        return send(res, 200, { ok: true, result });
+      }
+    } catch (err) {
+      if (err instanceof HttpError) throw err;
+      // 충돌은 상태 충돌(409), 나머지 git 실패는 입력·상태 문제로 보고 메시지를 그대로 보인다.
+      throw new HttpError(err.conflict ? 409 : 400, err.message, err.conflict ? "conflict" : undefined);
+    }
+    throw new HttpError(404, "없는 API입니다.");
   }
 
   // 프로젝트에서 세션끼리 주고받은 메시지(최근 것)
