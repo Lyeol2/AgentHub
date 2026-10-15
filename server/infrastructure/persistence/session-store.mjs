@@ -20,7 +20,7 @@ export function useProjectFolder(session) {
   }
   // 작업 폴더가 정리되거나 사라져도 작업 세션을 원본 브랜치로 옮기지 않는다.
   // 실행 가능 여부는 작업 서비스가 판정하며, 대화 기록은 원래 작업에 남긴다.
-  if (session.taskId) return false;
+  if (session.taskId || session.worktree?.shared) return false;
   const previousCwd = session.worktree?.dir || session.cwd;
   const moved = !!previousCwd && key(previousCwd) !== key(session.projectPath);
   if (!moved && !session.worktree) {

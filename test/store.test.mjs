@@ -104,6 +104,14 @@ test("store: 작업 소유 폴더가 정리되어도 세션을 원본 브랜치�
   assert.deepEqual(persisted(before.id), before);
 });
 
+test("store: 선택한 공유 브랜치 폴더가 없어져도 원본에서 대신 실행하지 않는다", () => {
+  const cwd = path.join(tmp, "missing-shared-branch");
+  const before = fixture("shared-branch", { cwd, worktree: { dir: cwd, branch: "feature/shared", shared: true } });
+  const session = new SessionStore().get(before.id);
+  assert.deepEqual(session, before);
+  assert.equal(useProjectFolder(session), false);
+});
+
 test("store: worktree 메타데이터가 없는 가져온 세션도 원본에서 새 CLI 대화를 시작한다", () => {
   const previousCwd = path.join(project, ".claude", "worktrees", "imported");
   fixture("imported", { cwd: previousCwd, worktree: null, imported: true });

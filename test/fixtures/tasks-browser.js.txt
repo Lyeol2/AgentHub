@@ -155,5 +155,34 @@
   check($('task-settings-main').value === 'Primary' && $('task-settings-develop').value === 'Integration', 'delayed saves update only their original project');
   $('task-settings-cancel').click(); await selectProject('Fixture'); await openSettings();
   check($('task-settings-main').value === 'Main' && $('task-settings-develop').value === 'Develop', 'custom GitFlow settings remain available after project navigation');
+  $('task-settings-cancel').click();
+  $('tasks-new').click();
+  await until(() => $('new-task-dialog').open);
+  $('task-title').value = '기존 브랜치에서 이어서 작업';
+  $('task-workbranch-mode').value = 'existing'; $('task-workbranch-mode').dispatchEvent(new Event('change'));
+  await until(() => [...$('task-workbranch').options].some(option => option.value === 'feature/selected'));
+  check([...$('task-workbranch').options].find(option => option.value === 'main')?.disabled, 'task picker blocks source branch');
+  check([...$('task-workbranch').options].find(option => option.value === 'feature/locked')?.disabled, 'task picker blocks locked worktree');
+  check([...$('task-workbranch').options].find(option => option.value === 'feature/task-1')?.disabled, 'task picker blocks duplicate task ownership');
+  $('task-workbranch').value = 'feature/selected'; $('task-workbranch').dispatchEvent(new Event('change'));
+  await until(() => !$('task-create-submit').disabled);
+  $('new-task-form').requestSubmit($('task-create-submit'));
+  await until(() => !$('new-task-dialog').open && !$('view-session').hidden);
+  await returnToTasks(); await until(() => card('task-4'));
+  check(card('task-4').textContent.includes('feature/selected'), 'new task reuses selected workbranch');
+  check((await requests()).filter(request => request.path === '/api/tasks' && request.method === 'POST').at(-1).body.workBranch === 'feature/selected', 'task sends selected branch instead of creating another');
+  $('open-new').click(); await until(() => $('new-dialog').open);
+  $('new-agent').value = 'codex'; $('new-agent').dispatchEvent(new Event('change'));
+  $('new-isolate').checked = true; $('new-isolate').dispatchEvent(new Event('change'));
+  $('new-worktree-mode').value = 'existing'; $('new-worktree-mode').dispatchEvent(new Event('change'));
+  await until(() => [...$('new-worktree-branch').options].some(option => option.value === 'feature/selected'));
+  $('new-worktree-branch').value = 'feature/selected'; $('new-worktree-branch').dispatchEvent(new Event('change'));
+  $('new-title').value = '기존 작업 검토'; await until(() => !$('new-submit').disabled);
+  $('new-form').requestSubmit($('new-submit')); await until(() => !$('new-dialog').open);
+  const selectedSession = (await requests()).filter(request => request.path === '/api/sessions' && request.method === 'POST').at(-1);
+  check(selectedSession?.body.workBranch === 'feature/selected' && selectedSession.body.isolate === false && !('worktreeName' in selectedSession.body), 'session picker shares the selected branch');
+  check((await requests()).filter(request => request.path === '/api/workbranches').length >= 2, 'tasks and sessions use the same branch list API');
+  // 아래 화면 크기 검사는 설정 창이 열린 상태를 본다.
+  await returnToTasks(); await until(() => !$('tasks-settings').disabled); await openSettings();
   return checks;
 })()

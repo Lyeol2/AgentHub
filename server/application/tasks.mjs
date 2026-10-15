@@ -3,11 +3,15 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { githubPulls, normalizePull } from "../github.mjs";
 import { summary } from "../store.mjs";
+import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
   taskDirty, taskWorktreeLocation, sameTaskPath, assertTaskGitIdle } from "../tasks.mjs";
 import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey } from "../gitflow-settings.mjs";
+
+// 설정한 배포·개발 브랜치인지(대소문자를 구분한다)
+const isGitflowBase = (flow, branch) => branch === flow.main || branch === flow.develop;
 
 const clone = (value) => structuredClone(value);
 const now = () => new Date().toISOString();
@@ -48,7 +52,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     finally { if (queue.get(key) === current) queue.delete(key); }
   }
   function taskSessions(task) {
-    return store.list().filter((session) => session.taskId === task.id || sameTaskPath(session.cwd, task.cwd));
+    return store.list().filter((session) => (task.id && session.taskId === task.id) || sameTaskPath(session.cwd, task.cwd));
   }
   function assertIdle(task, except) {
     if (taskSessions(task).some((session) => session.id !== except && runner.isRunning(session.id)))
@@ -58,7 +62,14 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if (["merged", "cleaned"].includes(task.state)) throw new HttpError(409, "병합이 완료된 작업입니다. 새 작업에서 이어서 진행하세요.", "task-completed");
   }
   function assertSession(session) {
-    if (!session.taskId) return;
+    if (!session.taskId) {
+      if (session.worktree) {
+        if (!sameTaskPath(session.cwd, session.worktree.dir) || readTaskBranch(session.cwd) !== session.worktree.branch)
+          throw new HttpError(409, "선택한 작업 브랜치의 폴더 또는 브랜치가 바뀌었습니다.", "workbranch-changed");
+        assertIdle({ cwd: session.cwd }, session.id);
+      }
+      return;
+    }
     const task = get(session.taskId);
     assertActive(task);
     if (busy.has(task.id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
@@ -106,6 +117,64 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       }
       notify("tasks", { projectPath: repo.top });
       return { projectPath: repo.top, settings: clone(value) };
+    });
+  }
+  function branchOwner(common, branch) {
+    return [...records.values()].find((task) => task.state !== "cleaned" && task.branch === branch && sameTaskPath(task.gitCommonDir, common));
+  }
+  async function workbranches(projectPath) {
+    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+    const repo = await taskRepo(projectPath);
+    const result = await listWorkbranches(projectPath);
+    const flow = projectGitflowSettings(config, repo.top);
+    return { ...result, branches: result.branches.map((branch) => {
+      // 설정한 배포·개발 브랜치는 이름을 바꿨어도 작업 브랜치로 고를 수 없다.
+      if (isGitflowBase(flow, branch.name)) return { ...branch, selectable: false, selectableForTask: false, selectableForSession: false, reason: `${flow.main}과 ${flow.develop}은 작업 브랜치로 선택할 수 없습니다.` };
+      const owner = branchOwner(repo.common, branch.name);
+      return { ...branch, taskId: owner?.id, taskState: owner?.state,
+        selectableForTask: branch.selectable && !owner,
+        selectableForSession: branch.selectable && (!owner || !["merged", "cleaned"].includes(owner.state)),
+        ...(owner ? { reason: owner.state === "merged" ? "병합된 작업입니다. 작업 탭에서 먼저 정리하세요." : "이미 작업에 연결된 브랜치입니다. 세션을 추가할 수 있습니다." } : {}),
+      };
+    }) };
+  }
+  function shareFolder(dir, task) {
+    for (const session of store.list()) {
+      if (!sameTaskPath(session.cwd, dir)) continue;
+      if (session.worktree) session.worktree.shared = true;
+      if (task && (!session.taskId || session.taskId === task.id)) {
+        session.taskId = task.id;
+        if (!task.sessionIds.includes(session.id)) task.sessionIds.push(session.id);
+      }
+      store.touch?.(session);
+      // Folder ownership must survive a restart as soon as branch selection succeeds.
+      store.flush?.(session.id);
+    }
+  }
+  async function createBranchSession(body) {
+    if (body.chat) throw new HttpError(400, "일반 채팅에서는 작업 브랜치를 선택할 수 없습니다.");
+    sessionService().checkSessionOptions(body);
+    const project = projectService().ensureProject(body.projectPath);
+    const repo = await taskRepo(project.path);
+    const flow = projectGitflowSettings(config, repo.top);
+    if (isGitflowBase(flow, body.workBranch)) throw new HttpError(409, `${flow.main}과 ${flow.develop}은 작업 브랜치로 선택할 수 없습니다.`, "workbranch-protected");
+    return locked(repo.common, async () => {
+      const candidates = await listWorkbranches(project.path);
+      const candidate = candidates.branches.find((branch) => branch.name === body.workBranch);
+      if (!candidate?.selectable) throw new HttpError(409, candidate?.reason ?? "선택한 작업 브랜치를 사용할 수 없습니다.", "workbranch-unavailable");
+      const owner = branchOwner(repo.common, body.workBranch);
+      if (owner) {
+        assertActive(owner);
+        assertIdle(owner);
+        if (busy.has(owner.id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
+        return (await attach(owner, body)).session;
+      }
+      const selected = await resolveWorkbranch(project.path, body.workBranch);
+      const session = await sessionService().createSession({ ...body, project, isolate: false },
+        { worktree: { dir: selected.dir, branch: selected.branch, shared: true } });
+      shareFolder(selected.dir);
+      notify("sessions", {});
+      return summary(session);
     });
   }
   async function context(projectPath) {
@@ -160,7 +229,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     await assertTaskWorktree(task);
     if (task.provisioning) { delete task.provisioning; delete task.error; save(task); }
     const session = await sessionService().createSession({ project: projectService().ensureProject(task.projectPath),
-      title: task.title, role: body.role ?? task.role, agent: body.agent ?? task.agent ?? "claude",
+      title: body.title ?? task.title, roleName: body.roleName, orchestrator: body.orchestrator,
+      role: body.role ?? task.role, agent: body.agent ?? task.agent ?? "claude",
       model: body.model ?? task.model, effort: body.effort ?? task.effort, permission: body.permission ?? task.permission },
     { worktree: { dir: task.cwd, branch: task.branch }, taskId: task.id });
     task.sessionIds.push(session.id);
@@ -174,8 +244,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if (!title || title.length > 160) throw new HttpError(400, "작업 제목을 1~160자로 입력하세요.");
     const type = body.type ?? "feature";
     if (!["feature", "hotfix", "release"].includes(type)) throw new HttpError(400, "작업 유형이 올바르지 않습니다.");
+    const selectedBranch = body.workBranch;
+    if (selectedBranch !== undefined && (typeof selectedBranch !== "string" || !selectedBranch.trim())) throw new HttpError(400, "작업 브랜치를 선택하세요.");
     const version = typeof body.version === "string" ? body.version.trim() : "";
-    if (type === "release" && !/^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/.test(version))
+    if (!selectedBranch && type === "release" && !/^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/.test(version))
       throw new HttpError(400, "배포 버전을 입력하세요. 예: 1.2.0");
     sessionService().checkSessionOptions?.({ ...body, agent: body.agent ?? "claude" });
     const project = projectService().ensureProject(body.projectPath);
@@ -186,23 +258,33 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, `새 작업을 만들기 전에 ${gitflow.main}의 변경을 ${gitflow.develop}에 반영하세요.`, "gitflow-develop-behind");
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
       const slug = title.normalize("NFKC").replace(/[^A-Za-z0-9가-힣_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "work";
-      const branch = `${gitflow[`${type}Prefix`]}${type === "release" ? version : `${id}-${slug}`}`;
+      const branch = selectedBranch ?? `${gitflow[`${type}Prefix`]}${type === "release" ? version : `${id}-${slug}`}`;
       await taskGit(project.path, ["check-ref-format", "--branch", branch]);
-      if (await taskRef(project.path, `refs/heads/${branch}`) || await taskRef(project.path, `refs/remotes/${current.remote}/${branch}`))
+      if (branchOwner(repo.common, branch)) throw new HttpError(409, "이미 작업에 연결된 브랜치입니다. 해당 작업에서 세션을 추가하세요.", "task-branch-exists");
+      if (selectedBranch && isGitflowBase(gitflow, branch)) throw new HttpError(409, `${gitflow.main}과 ${gitflow.develop}은 작업 브랜치로 선택할 수 없습니다.`, "workbranch-protected");
+      const branchType = branch.startsWith(gitflow.hotfixPrefix) ? "hotfix" : branch.startsWith(gitflow.releasePrefix) ? "release" : "feature";
+      if (selectedBranch && branchType !== type) throw new HttpError(400, "선택한 브랜치와 작업 유형이 다릅니다.", "workbranch-type");
+      if (!selectedBranch && (await taskRef(project.path, `refs/heads/${branch}`) || await taskRef(project.path, `refs/remotes/${current.remote}/${branch}`)))
         throw new HttpError(409, "해당 작업 브랜치가 이미 있습니다.", "task-branch-exists");
       const baseBranch = type === "hotfix" ? gitflow.main : gitflow.develop;
       const baseCommit = type === "hotfix" ? current.mainSha : current.developSha ?? current.mainSha;
-      const location = taskWorktreeLocation(repo, id);
+      const selected = selectedBranch ? await resolveWorkbranch(project.path, branch) : null;
+      if (selected) assertIdle({ cwd: selected.dir });
+      const location = selected ? { cwd: selected.dir, root: path.dirname(selected.dir) } : taskWorktreeLocation(repo, id);
+      const targetSha = type === "feature" ? current.developSha ?? current.mainSha : current.mainSha;
+      const behind = !!selected && !await taskAncestor(project.path, targetSha, await taskRef(selected.dir, "HEAD"));
       const task = { id, projectPath: project.path, title, type, version: type === "release" ? version : undefined,
         agent: body.agent ?? "claude", model: body.model, effort: body.effort, permission: body.permission, role: body.role,
         branch, baseBranch, targetBranch: type === "feature" ? gitflow.develop : gitflow.main, baseCommit, gitflow: clone(gitflow),
         cwd: location.cwd, worktreeRoot: location.root, gitCommonDir: repo.common,
+        ownsWorktree: !selected || selected.created, ownsBranch: !selected,
+        ...(selected ? { selectedWorkBranch: true } : {}),
         remote: current.remote, remoteFingerprint: remoteFingerprint((await taskGit(project.path, ["remote", "get-url", current.remote])).trim()),
         sessionIds: [], state: "working", pull: null, createdAt: now(), updatedAt: now(),
-        freshness: { ...current, targetSha: type === "hotfix" || type === "release" ? current.mainSha : baseCommit, behind: false },
+        freshness: { ...current, targetSha, behind, state: behind ? "needs-update" : current.state },
         needsDevelopSetup: !current.developSha };
       fs.mkdirSync(location.root, { recursive: true });
-      try { await taskGit(project.path, ["worktree", "add", "-b", branch, task.cwd, baseCommit], { write: true }); }
+      try { if (!selected) await taskGit(project.path, ["worktree", "add", "-b", branch, task.cwd, baseCommit], { write: true }); }
       catch (error) {
         if (error.outcomeUnknown || fs.existsSync(task.cwd) || await taskRef(project.path, `refs/heads/${branch}`)) {
           task.provisioning = true;
@@ -211,6 +293,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         }
         throw failure(error);
       }
+      if (selected) shareFolder(selected.dir, task);
       save(task);
       try { return await attach(task, body); }
       catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
@@ -413,15 +496,22 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         throw new HttpError(409, `${main}의 배포·긴급 수정을 ${develop}에도 반영한 뒤 정리하세요.`, "gitflow-develop-pending");
       }
       const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id);
-      if (!sameTaskPath(expected.cwd, task.cwd) || !sameTaskPath(path.dirname(task.cwd), expected.root))
+      const ownsWorktree = task.ownsWorktree !== false;
+      const ownsBranch = task.ownsBranch !== false;
+      const expectedRoot = task.selectedWorkBranch ? task.worktreeRoot : expected.root;
+      if (ownsWorktree && ((!task.selectedWorkBranch && !sameTaskPath(expected.cwd, task.cwd)) || !sameTaskPath(path.dirname(task.cwd), expectedRoot)))
         throw new HttpError(409, "AgentHub가 생성한 작업 폴더인지 확인할 수 없습니다.", "task-worktree");
       if (await assertTaskWorktree(task) !== head || await taskDirty(task))
         throw new HttpError(409, "정리 확인 중 작업 폴더가 변경됐습니다. 다시 확인하세요.", "task-stale-head");
-      await taskGit(task.projectPath, ["worktree", "remove", "--", task.cwd], { write: true });
+      if (ownsWorktree) await taskGit(task.projectPath, ["worktree", "remove", "--", task.cwd], { write: true });
+      else task.worktreePreserved = true;
+      task.localBranchRemoved = false;
       // Compare-and-delete permits squash merges without using a destructive force flag.
       try {
-        await taskGit(task.projectPath, ["update-ref", "-d", `refs/heads/${task.branch}`, head], { write: true });
-        task.localBranchRemoved = true;
+        if (ownsBranch) {
+          await taskGit(task.projectPath, ["update-ref", "-d", `refs/heads/${task.branch}`, head], { write: true });
+          task.localBranchRemoved = true;
+        }
       } catch (error) { task.cleanupWarning = `작업 폴더는 정리됐지만 로컬 브랜치는 남았습니다: ${error.message}`; }
       task.state = "cleaned";
       task.cleanedAt = now();
@@ -444,6 +534,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, context, settings, updateSettings, create, finish, refresh, sync, cleanup, assertSession, replaceSession, detachSession,
+  return { list, context, settings, updateSettings, create, finish, refresh, sync, cleanup, assertSession, replaceSession, detachSession, workbranches, createBranchSession,
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }

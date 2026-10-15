@@ -185,6 +185,51 @@ test("tasks: cleanup refuses dirty files and extra commits created after merge",
   assert.ok(fs.existsSync(task.cwd));
 });
 
+test("tasks: an existing workbranch preserves its shared folder and branch after task cleanup", async (t) => {
+  const f = fixture(t);
+  const branch = "agenthub/borrowed";
+  const cwd = path.join(path.dirname(f.repo), "borrowed-work");
+  f.git(f.repo, "worktree", "add", "-b", branch, cwd, "develop");
+  const legacy = { id: "legacy", title: "Legacy session", projectPath: f.repo, cwd, worktree: { dir: cwd, branch }, state: "idle", events: [] };
+  f.stored.set(legacy.id, legacy);
+  f.change(cwd, "pending.txt", "keep existing changes\n");
+  const { task } = await f.create("feature", { workBranch: branch });
+  assert.equal(path.resolve(task.cwd), path.resolve(cwd));
+  assert.equal(task.ownsWorktree, false);
+  assert.equal(task.ownsBranch, false);
+  assert.equal(legacy.taskId, task.id);
+  assert.ok(task.sessionIds.includes(legacy.id));
+  assert.equal(fs.readFileSync(path.join(cwd, "pending.txt"), "utf8"), "keep existing changes\n");
+  await assert.rejects(f.create("feature", { workBranch: branch }), (error) => error.reason === "task-branch-exists");
+  await f.service.finish(task.id);
+  f.state.pulls[0].merged = true; f.state.pulls[0].state = "closed";
+  f.git(f.repo, "switch", "-q", "develop");
+  f.git(f.repo, "merge", "--no-edit", branch); f.git(f.repo, "push", "-q", "origin", "develop");
+  const result = await f.service.cleanup(task.id);
+  assert.equal(result.task.state, "cleaned");
+  assert.equal(result.task.worktreePreserved, true);
+  assert.equal(result.task.localBranchRemoved, false);
+  assert.equal(fs.existsSync(cwd), true);
+  assert.ok(f.git(f.repo, "rev-parse", `refs/heads/${branch}`));
+});
+
+test("tasks: choosing an unchecked-out branch only cleans the new folder, preserving the branch", async (t) => {
+  const f = fixture(t);
+  const branch = "feature/existing";
+  f.git(f.repo, "branch", branch, "develop");
+  const { task } = await f.create("feature", { workBranch: branch });
+  assert.equal(task.branch, branch);
+  assert.equal(task.ownsWorktree, true);
+  assert.equal(task.ownsBranch, false);
+  f.change(task.cwd); await f.service.finish(task.id);
+  f.state.pulls[0].merged = true; f.state.pulls[0].state = "closed";
+  f.git(f.repo, "switch", "-q", "develop");
+  f.git(f.repo, "merge", "--no-edit", branch); f.git(f.repo, "push", "-q", "origin", "develop");
+  await f.service.cleanup(task.id);
+  assert.equal(fs.existsSync(task.cwd), false);
+  assert.ok(f.git(f.repo, "rev-parse", `refs/heads/${branch}`));
+});
+
 test("tasks: hotfix cleanup waits for propagation from main to develop", async (t) => {
   const f = fixture(t);
   const { task } = await f.create("hotfix"); f.change(task.cwd); await f.service.finish(task.id);

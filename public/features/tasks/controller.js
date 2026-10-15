@@ -1,4 +1,5 @@
 import { permissionLabel } from '../../shared/permissions.js';
+import { createWorkbranchPicker, workBranchType } from '../../shared/workbranches.js';
 
 const TASK_STATES = { working: '작업 중', review: '리뷰 대기', merged: '병합 완료', cleaned: '정리 완료' };
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
@@ -61,6 +62,16 @@ export function createTasksController({
   let settingsBusy = false;
   let settingsLoading = false;
   let settingsReadFailed = false;
+  const workbranchPicker = createWorkbranchPicker({
+    api, owner: 'task', select: $('task-workbranch'), status: $('task-workbranch-status'), refresh: $('task-workbranch-refresh'),
+    getPath: () => createProject,
+    isActive: () => Boolean(createDialog?.open && sameProject(createProject) && $('task-workbranch-mode')?.value === 'existing'),
+    onChange: branch => {
+      if (branch && $('task-type')) $('task-type').value = workBranchType(branch.name, settings);
+      updateCreatePreview();
+      updateCreateSubmit();
+    },
+  });
 
   function node(tag, className, value) {
     const el = document.createElement(tag);
@@ -106,6 +117,7 @@ export function createTasksController({
     for (const id of ['tasks-settings', 'task-create-settings']) {
       if ($(id)) $(id).disabled = !projectPath || loading || createBusy || settingsBusy || settingsLoading;
     }
+    updateCreateSubmit();
   }
 
   function renderContext() {
@@ -210,9 +222,11 @@ export function createTasksController({
       if (task.state === 'merged') actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
       card.append(actions);
       if (task.state === 'merged' && task.type !== 'feature') card.append(node('p', 'task-note', `${flow.develop}에도 반영되어야 작업 폴더를 정리할 수 있습니다.`));
-      if (task.state === 'cleaned') card.append(node('p', 'task-note', task.localBranchRemoved === false
-        ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
-        : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
+      if (task.state === 'cleaned') card.append(node('p', 'task-note', task.worktreePreserved
+        ? '작업 기록을 정리했습니다. 선택했던 기존 작업 폴더와 브랜치는 보존됩니다.'
+        : task.localBranchRemoved === false
+          ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
+          : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
       if (task.cleanupWarning) card.append(node('p', 'task-note', typeof task.cleanupWarning === 'string' ? task.cleanupWarning : task.cleanupWarning.message || '정리 결과를 확인해 주세요.'));
       const error = taskErrors.get(task.id) || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
       if (error) {
@@ -387,17 +401,29 @@ export function createTasksController({
   }
 
   function updateCreatePreview() {
+    const existing = $('task-workbranch-mode')?.value === 'existing';
+    const selected = workbranchPicker.selected();
+    if ($('task-workbranch-row')) $('task-workbranch-row').hidden = !existing;
+    if ($('task-workbranch')) $('task-workbranch').required = existing;
+    if ($('task-type')) $('task-type').disabled = existing;
     const type = $('task-type')?.value || 'feature';
-    const isRelease = type === 'release';
+    const isRelease = type === 'release' && !existing;
     const versionField = $('task-version-row') || $('task-version')?.closest('label');
     if (versionField) versionField.hidden = !isRelease;
     if ($('task-version')) {
       $('task-version').required = isRelease;
       $('task-version').disabled = !isRelease;
     }
-    if ($('task-branch-preview')) $('task-branch-preview').textContent = taskBranchPreview(type, $('task-version')?.value.trim(), settings);
+    if ($('task-branch-preview')) $('task-branch-preview').textContent = existing
+      ? selected ? `${selected.name}에서 작업 → ${workBranchType(selected.name, settings) === 'feature' ? settings.develop : settings.main}으로 PR` : '기존 작업 브랜치를 선택하면 작업 유형과 PR 대상을 맞춥니다.'
+      : taskBranchPreview(type, $('task-version')?.value.trim(), settings);
     if ($('task-gitflow-summary')) $('task-gitflow-summary').textContent = `기준: ${settings.main} / ${settings.develop}`;
-    if ($('task-create-hint')) $('task-create-hint').textContent = `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 전용 브랜치·폴더·세션을 만듭니다.`;
+    if ($('task-create-hint')) $('task-create-hint').textContent = `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.`;
+  }
+
+  function updateCreateSubmit() {
+    const existing = $('task-workbranch-mode')?.value === 'existing';
+    if ($('task-create-submit')) $('task-create-submit').disabled = createBusy || settingsBusy || uncertainCreates.has(createProject) || (existing && !workbranchPicker.ready());
   }
 
   function updateAgentControls() {
@@ -428,10 +454,11 @@ export function createTasksController({
     if (!path || path !== projectPath || createBusy || settingsBusy || uncertainCreates.has(path)) return;
     createProject = path;
     createForm?.reset();
+    workbranchPicker.reset();
     showError('task-create-error');
     updateCreatePreview();
     updateAgentControls();
-    if ($('task-create-submit')) $('task-create-submit').disabled = false;
+    updateCreateSubmit();
     createDialog?.showModal();
     $('task-title')?.focus();
   }
@@ -439,6 +466,11 @@ export function createTasksController({
   async function createTask(event) {
     event.preventDefault();
     if (createBusy || settingsBusy || !sameProject(createProject) || uncertainCreates.has(createProject)) return;
+    const existing = $('task-workbranch-mode')?.value === 'existing';
+    if (existing && !workbranchPicker.ready()) {
+      showError('task-create-error', workbranchPicker.validationError());
+      return;
+    }
     if (createForm && !createForm.reportValidity()) return;
     const path = createProject;
     const epoch = projectEpoch;
@@ -449,7 +481,8 @@ export function createTasksController({
       agent: $('task-agent')?.value || 'codex',
       permission: $('task-permission')?.value || 'workspace-write',
     };
-    if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
+    if (existing) payload.workBranch = workbranchPicker.selected().name;
+    else if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
     if ($('task-model')?.value.trim()) payload.model = $('task-model').value.trim();
     if ($('task-effort')?.value) payload.effort = $('task-effort').value;
     if ($('task-role')?.value.trim()) payload.role = $('task-role').value.trim();
@@ -604,12 +637,19 @@ export function createTasksController({
   settingsDialog?.addEventListener('cancel', event => { event.preventDefault(); closeSettings(); });
   $('tasks-refresh')?.addEventListener('click', () => { void loadTasks(getProjectPath(), { manual: true }); });
   $('task-type')?.addEventListener('change', updateCreatePreview);
+  $('task-workbranch-mode')?.addEventListener('change', () => {
+    if ($('task-workbranch-mode').value === 'existing') void workbranchPicker.load();
+    else workbranchPicker.reset();
+    updateCreatePreview();
+    updateCreateSubmit();
+  });
   $('task-version')?.addEventListener('input', updateCreatePreview);
   $('task-agent')?.addEventListener('change', () => { if ($('task-model')) $('task-model').value = ''; updateAgentControls(); });
   $('task-model')?.addEventListener('change', () => { if ($('task-effort')) fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model').value); });
   createForm?.addEventListener('submit', createTask);
   finishForm?.addEventListener('submit', finishTask);
   createDialog?.addEventListener('cancel', event => { if (createBusy) event.preventDefault(); });
+  createDialog?.addEventListener('close', () => workbranchPicker.reset());
   finishDialog?.addEventListener('cancel', event => { if (finishBusy) event.preventDefault(); });
   $('task-create-cancel')?.addEventListener('click', () => { if (!createBusy) createDialog?.close(); });
   $('task-finish-cancel')?.addEventListener('click', () => { if (!finishBusy) finishDialog?.close(); });

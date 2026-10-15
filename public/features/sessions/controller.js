@@ -445,7 +445,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   function askDeleteOptions(s) {
     if (!confirm(`"${s.title}" ${s.chat ? "채팅" : "세션"}을 삭제할까요?`)) return null;
     let removeWorktree = false;
-    if (s.worktree && !s.taskId) {
+    if (s.worktree && !s.taskId && !s.worktree.shared) {
       removeWorktree = confirm(
         `작업 폴더도 지울까요?\n${s.cwd}\n\n커밋하지 않은 변경이 있으면 지우지 않고 중단합니다. 브랜치 ${s.worktree.branch}는 남습니다.`);
     }

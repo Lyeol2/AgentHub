@@ -39,7 +39,7 @@ export function createProjectService({ config, store, runner, links, commands, c
     const worktreeErrors = [];
     for (const s of sessions) {
       if (runner.isRunning(s.id)) runner.stop(s);
-      if (removeWorktrees && s.worktree && !s.taskId) {
+      if (removeWorktrees && s.worktree && !s.taskId && !s.worktree.shared) {
         try {
           await removeWorktree(s.projectPath, s.worktree.dir);
         } catch (err) {
