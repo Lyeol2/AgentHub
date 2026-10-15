@@ -62,23 +62,78 @@ test("api: 세션 수정·연결·삭제", async () => {
   assert.equal((await api("DELETE", `/sessions/${a.id}`)).status, 200);
 });
 
-test("api: 작업 폴더를 직접 지운 세션도 삭제된다", async () => {
-  const s = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "W", permission: "acceptEdits", isolate: true })).body;
-  fs.rmSync(s.cwd, { recursive: true, force: true });
-  assert.equal((await api("DELETE", `/sessions/${s.id}?removeWorktree=1`)).status, 200);
-  assert.equal((await api("GET", `/sessions/${s.id}`)).status, 404);
+test("api: 이전 분리 옵션이 와도 모든 새 세션은 원본 폴더에서 작업한다", async () => {
+  fs.writeFileSync(path.join(repo, "uncommitted.txt"), "원본의 현재 수정\n");
+  for (const agent of ["claude", "codex"]) {
+    for (const options of [{}, { isolate: false }, { isolate: true, worktreeName: "bag-ui" }, { isolate: true, worktreeName: "../x" }]) {
+      const made = await api("POST", "/sessions", { agent, projectPath: repo, ...options });
+      assert.equal(made.status, 200);
+      assert.equal(made.body.cwd, repo);
+      assert.equal(made.body.worktree, null);
+      assert.equal(fs.readFileSync(path.join(made.body.cwd, "uncommitted.txt"), "utf8"), "원본의 현재 수정\n");
+      assert.equal((await api("DELETE", `/sessions/${made.body.id}?removeWorktree=1`)).status, 200);
+      assert.ok(fs.existsSync(repo));
+    }
+  }
+  assert.equal(fs.existsSync(repo + ".agenthub"), false);
+  const worktrees = execFileSync("git", ["worktree", "list", "--porcelain"], { cwd: repo, encoding: "utf8" });
+  assert.equal(worktrees.match(/^worktree /gm).length, 1);
 });
 
-test("api: 작업 폴더 이름을 정할 수 있고 겹치거나 잘못된 이름은 거절한다", async () => {
-  const body = { agent: "claude", projectPath: repo, title: "N", permission: "acceptEdits", isolate: true };
-  const s = (await api("POST", "/sessions", { ...body, worktreeName: "bag-ui" })).body;
-  assert.equal(path.basename(s.cwd), "bag-ui");
-  assert.equal(s.worktree.branch, "agenthub/bag-ui");
-  assert.equal((await api("POST", "/sessions", { ...body, worktreeName: "bag-ui" })).status, 400);
-  for (const name of ["../x", "a/b", ".x", "x.lock"]) {
-    assert.equal((await api("POST", "/sessions", { ...body, worktreeName: name })).status, 400, name);
-  }
-  assert.equal((await api("DELETE", `/sessions/${s.id}?removeWorktree=1`)).status, 200);
+test("api: git 저장소가 아닌 프로젝트도 이전 분리 옵션을 무시한다", async () => {
+  const folder = path.join(tmp, "plain");
+  fs.mkdirSync(folder);
+  const made = await api("POST", "/sessions", { agent: "claude", projectPath: folder, isolate: true });
+  assert.equal(made.status, 200);
+  assert.equal(made.body.cwd, folder);
+  assert.equal(made.body.worktree, null);
+  assert.equal(made.body.baseCommit, null);
+  assert.equal((await api("DELETE", `/sessions/${made.body.id}`)).status, 200);
+});
+
+test("api: 이전 worktree의 CLI 기록을 가져와도 원본에서 시작하고 중복으로 가져오지 않는다", async () => {
+  const oldFolder = path.join(repo, ".claude", "worktrees", "old");
+  fs.mkdirSync(oldFolder, { recursive: true });
+  fs.writeFileSync(path.join(oldFolder, "pending.txt"), "이전 작업\n");
+  const records = path.join(tmp, "home", ".claude", "projects", "legacy");
+  fs.mkdirSync(records, { recursive: true });
+  fs.writeFileSync(path.join(records, "legacy-import.jsonl"), [
+    { type: "user", cwd: oldFolder, timestamp: new Date().toISOString(), message: { role: "user", content: "계속 구현한다" } },
+    { type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "진행 중인 작업" }] } },
+  ].map((entry) => JSON.stringify(entry)).join("\n"));
+  const body = { agent: "claude", projectPath: repo, agentSessionId: "legacy-import" };
+  const imported = await api("POST", "/sessions/import", body);
+  assert.equal(imported.status, 200);
+  assert.equal(imported.body.cwd, repo);
+  assert.equal(imported.body.worktree, null);
+  assert.equal(imported.body.previousCwd, oldFolder);
+  assert.equal(imported.body.agentSessionId, null);
+  assert.equal(imported.body.handoverPending, true);
+  assert.deepEqual(imported.body.cliSessionIds, ["legacy-import"]);
+  const duplicate = await api("POST", "/sessions/import", body);
+  assert.equal(duplicate.body.id, imported.body.id);
+  assert.equal(fs.readFileSync(path.join(oldFolder, "pending.txt"), "utf8"), "이전 작업\n");
+  await api("DELETE", `/sessions/${imported.body.id}`);
+  await api("POST", "/projects/hide", { agentSessionId: "legacy-import", hidden: false });
+  fs.rmSync(path.join(records, "legacy-import.jsonl"));
+});
+
+test("api: 세션 재생성도 원본 폴더와 설정·연결을 유지한다", async () => {
+  const made = await api("POST", "/sessions", { agent: "codex", projectPath: repo, isolate: true, title: "새로 만들기", role: "구현" });
+  const other = (await api("POST", "/sessions", { agent: "claude", projectPath: repo })).body;
+  await api("PUT", `/sessions/${made.body.id}`, { graphPos: { x: 11, y: 22 } });
+  await api("POST", "/links", { from: made.body.id, to: other.id });
+  const recreated = await api("POST", `/sessions/${made.body.id}/recreate`);
+  assert.equal(recreated.status, 200);
+  assert.notEqual(recreated.body.id, made.body.id);
+  assert.equal(recreated.body.cwd, repo);
+  assert.equal(recreated.body.worktree, null);
+  assert.equal(recreated.body.title, "새로 만들기");
+  assert.equal(recreated.body.role, "구현");
+  assert.deepEqual(recreated.body.graphPos, { x: 11, y: 22 });
+  assert.equal((await api("GET", "/links")).body[0].from, recreated.body.id);
+  await api("DELETE", `/sessions/${recreated.body.id}`);
+  await api("DELETE", `/sessions/${other.id}`);
 });
 
 test("api: Claude Code·Codex 기록은 목록에서 숨기고 다시 보일 수 있다", async () => {
@@ -109,7 +164,7 @@ test("api: AGENTHUB.md 만들기와 흐름 시작", async () => {
   const created = await api("POST", "/hub/flows", { projectPath: repo, flowName: "구현과 리뷰", name: "작업" });
   assert.equal(created.status, 200);
   assert.deepEqual(created.body.map((s) => [s.title, s.agent, !!s.worktree]),
-    [["작업 · 구현", "claude", true], ["작업 · 리뷰", "codex", false]]);
+    [["작업 · 구현", "claude", false], ["작업 · 리뷰", "codex", false]]);
   assert.equal((await api("GET", "/links")).body.length, 2);
   for (const s of created.body) await api("DELETE", `/sessions/${s.id}?removeWorktree=1`);
 });

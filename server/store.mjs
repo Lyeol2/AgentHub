@@ -1,8 +1,47 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "./config.mjs";
+import { handoverText } from "./handover.mjs";
 
 const SESSIONS_DIR = path.join(DATA_DIR, "sessions");
+
+// 저장한 세션도 선언된 프로젝트 폴더를 쓴다. 이전 작업 폴더의 파일과 브랜치는 지우지 않는다.
+export function useProjectFolder(session) {
+  if (session.chat || !session.projectPath) return false;
+  const key = (folder) => {
+    const resolved = path.resolve(folder);
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  const previousCwd = session.worktree?.dir || session.cwd;
+  const moved = !!previousCwd && key(previousCwd) !== key(session.projectPath);
+  if (!moved && !session.worktree) {
+    if (session.cwd) return false;
+    session.cwd = session.projectPath;
+    return true;
+  }
+  const previousBranch = session.worktree?.branch;
+  if (session.worktree) session.previousWorktree = session.worktree;
+  session.previousCwd = previousCwd;
+  session.cwd = session.projectPath;
+  session.worktree = null;
+  if (moved) {
+    // CLI resume은 이전 폴더를 다시 쓸 수 있으므로 기록을 인계하고 새 대화를 시작한다.
+    session.cliSessionIds = [...new Set([...(session.cliSessionIds ?? []), session.agentSessionId].filter(Boolean))];
+    session.handover = [handoverText(session, "", { previousCwd, previousBranch }), session.handover].filter(Boolean).join("\n\n");
+    session.agentSessionId = null;
+    session.compactions = 0;
+    session.context = null;
+    session.waiting = false;
+    delete session.roleChanged;
+  }
+  session.events.push({
+    seq: session.events.length,
+    ts: new Date().toISOString(),
+    kind: "status",
+    text: `작업 폴더를 프로젝트 원본(${session.projectPath})으로 바꿨습니다. 이전 폴더(${previousCwd})와 브랜치는 그대로 남아 있으며 변경은 자동으로 합치지 않았습니다.`,
+  });
+  return true;
+}
 
 // 세션은 메모리에 두고 변경 시 data/sessions/<id>.json에 저장한다.
 export class SessionStore {
@@ -15,7 +54,9 @@ export class SessionStore {
       const session = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
       // 서버가 꺼질 때 실행 중이던 턴은 중단된 것으로 본다.
       if (session.state === "running") session.state = "interrupted";
+      const migrated = useProjectFolder(session);
       this.sessions.set(session.id, session);
+      if (migrated) this.flush(session.id);
     }
   }
 

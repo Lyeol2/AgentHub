@@ -138,12 +138,38 @@ test("claude: 실행 중 권한 요청과 질문을 control 프로토콜로 주�
 });
 
 test("discover: AgentHub 작업 폴더와 하위 폴더는 원래 저장소로 묶는다", async () => {
+  const fs = await import("node:fs");
+  const os = await import("node:os");
   const path = await import("node:path");
   const { projectRoot } = await import("../server/discover.mjs");
-  const repo = path.resolve(import.meta.dirname, "..");
-  assert.equal(projectRoot(`${repo}.agenthub${path.sep}abc123`), repo);
-  assert.equal(projectRoot(path.join(repo, "server", "agents")), repo);
-  assert.equal(projectRoot(path.join(repo, ".claude", "worktrees", "feature-x")), repo);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-project-root-"));
+  try {
+    const repo = path.join(dir, "repo");
+    const gitDir = path.join(repo, ".git");
+    const source = path.join(repo, "server", "agents");
+    const agenthubTree = path.join(`${repo}.agenthub`, "abc123");
+    const claudeTree = path.join(repo, ".claude", "worktrees", "feature-x");
+    const linkedTree = path.join(dir, "linked-worktree");
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.mkdirSync(source, { recursive: true });
+    for (const [tree, name] of [[agenthubTree, "abc123"], [claudeTree, "feature-x"], [linkedTree, "linked"]]) {
+      const worktreeGitDir = path.join(gitDir, "worktrees", name);
+      fs.mkdirSync(worktreeGitDir, { recursive: true });
+      fs.mkdirSync(path.join(tree, "src"), { recursive: true });
+      fs.writeFileSync(path.join(tree, ".git"), `gitdir: ${worktreeGitDir}\n`);
+      fs.writeFileSync(path.join(worktreeGitDir, "commondir"), "../..\n");
+      fs.writeFileSync(path.join(worktreeGitDir, "gitdir"), `${path.join(tree, ".git")}\n`);
+    }
+    assert.equal(projectRoot(agenthubTree), repo);
+    assert.equal(projectRoot(path.join(agenthubTree, "src")), repo);
+    assert.equal(projectRoot(source), repo);
+    assert.equal(projectRoot(claudeTree), repo);
+    assert.equal(projectRoot(path.join(claudeTree, "src")), repo);
+    // 별도 작업 트리의 .git 파일도 하위 폴더에서 저장소 경계로 찾는다.
+    assert.equal(projectRoot(path.join(linkedTree, "src")), linkedTree);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("discover: AgentHub가 붙인 안내를 걷어내고 실제 요청으로 제목을 정한다", async () => {

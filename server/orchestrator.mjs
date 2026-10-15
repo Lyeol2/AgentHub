@@ -32,14 +32,14 @@ function instructions() {
 ${PLAN_EXAMPLE}
 
 - sessions: 새로 만들 세션, 또는 이미 있는 세션 { "key": "...", "id": "<세션 id>" }. key는 이 계획 안에서 부르는 이름이다(영문·숫자·_·-).
-- 새 세션은 role에 아래 역할 템플릿 이름을 쓰거나, agent(claude|codex)·permission·roleText를 직접 적는다. isolate(작업 폴더 분리), title, model도 적을 수 있다.
+- 새 세션은 role에 아래 역할 템플릿 이름을 쓰거나, agent(claude|codex)·permission·roleText를 직접 적는다. title, model도 적을 수 있다.
 - 새 세션에 prompt를 적으면 만든 뒤 바로 보낸다.
 - links: from·to에는 key, 세션 id, 또는 "${ORCHESTRATOR}"(너 자신)를 쓴다. when은 ${CONDITIONS.join("|")}이고 keyword 조건이면 keyword를 적는다(여러 개는 쉼표로 나눈다). note는 받는 세션에 줄 지시다.
 - 한 세션에서 나가는 연결은 if/else처럼 고른다: 답변 마지막 줄에 키워드가 맞은 연결 → 없으면 success/error 연결 → 그것도 없으면 otherwise 연결. always는 언제나 함께 넘긴다. 키워드로 가르려면 그 세션의 prompt에 마지막 줄에 쓸 판정을 적어 준다.
 - 이미 이어진 두 세션 사이의 연결을 다시 적으면 그 조건으로 고친다.
 - 결과를 다시 받아야 하면 그 세션에서 "${ORCHESTRATOR}"로 가는 연결을 만든다. 결과는 다음 요청으로 들어온다.
 - send: 이미 있는 세션에 요청을 보낸다. { "to": "<key 또는 id>", "prompt": "..." }
-- 같은 파일을 고치는 세션을 동시에 돌리지 않는다. 작업 폴더를 분리한 세션의 변경은 그 세션 브랜치에 남는다.
+- 모든 세션은 프로젝트 원본 폴더를 함께 사용한다. 같은 파일을 고치는 세션을 동시에 돌리지 않는다.
 - 결과가 돌아오면 확인하고 다음 계획을 세운다. 목표를 다 이루었으면 무엇이 어디에 바뀌었는지 정리해 보고한다.`;
 }
 
@@ -47,7 +47,7 @@ function roleLines(hub) {
   if (!hub?.roles.length) return "없음. 새 세션은 agent·permission·roleText를 직접 적는다.";
   return hub.roles.map((r) => {
     const body = r.body.split(/\r?\n/).find((l) => l.trim()) ?? "";
-    return `- ${r.name}: ${r.agent} · ${r.permission} · ${r.isolate ? "작업 폴더 분리" : "원본 폴더"} — ${body}`;
+    return `- ${r.name}: ${r.agent} · ${r.permission} · 원본 폴더 — ${body}`;
   }).join("\n");
 }
 
@@ -118,7 +118,7 @@ export function normalizePlan(raw, { hub, sessions, orchestratorId }) {
       agent,
       permission,
       model: str(item.model ?? role?.model, 64),
-      isolate: item.isolate ?? role?.isolate ?? false,
+      isolate: false, // 이전 계획이나 역할의 분리 설정도 원본 폴더로 통일한다.
       roleName: role?.name ?? "",
       roleText: str(item.roleText ?? role?.body, 4000),
       title: str(item.title, 100) || role?.name || key,

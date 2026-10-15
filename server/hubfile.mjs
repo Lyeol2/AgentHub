@@ -10,9 +10,10 @@ const SETTING_KEYS = {
   에이전트: "agent", agent: "agent",
   권한: "permission", permission: "permission",
   모델: "model", model: "model",
-  "작업 폴더": "folder", folder: "folder",
+  "작업 폴더": "folder", folder: "folder", isolate: "folder",
 };
-const FOLDERS = { 분리: true, worktree: true, 원본: false, original: false };
+// 이전 파일의 분리 설정도 머리 설정으로 읽되, 실행은 모두 원본 폴더에서 한다.
+const FOLDERS = { 분리: true, worktree: true, true: true, 원본: false, original: false, false: false };
 const CONDITIONS = {
   성공: "success", "성공 시": "success", success: "success",
   실패: "error", "실패 시": "error", error: "error",
@@ -33,8 +34,10 @@ function parseRole(name, lines, warnings) {
     if (!key) break;
     const value = m[2].trim();
     if (key === "folder") {
-      if (value in FOLDERS) role.isolate = FOLDERS[value];
-      else warnings.push(`역할 "${name}": 작업 폴더는 분리 또는 원본입니다 (${value}).`);
+      const folder = value.toLowerCase();
+      if (Object.hasOwn(FOLDERS, folder)) {
+        if (FOLDERS[folder]) warnings.push(`역할 "${name}": 작업 폴더 분리 설정을 무시하고 프로젝트 원본 폴더를 사용합니다.`);
+      } else warnings.push(`역할 "${name}": 작업 폴더는 원본을 사용합니다 (${value}).`);
     } else {
       role[key] = key === "agent" ? value.toLowerCase() : value;
     }
@@ -131,12 +134,13 @@ AgentHub에서 세션끼리 협업하는 방식이다. 코드 규칙·빌드 명
 
 - 커밋하지 않는다. 끝나면 바뀐 파일과 이유를 짧게 정리한다.
 - 맡은 범위 밖을 고쳐야 하면 직접 고치지 말고 알린다.
+- 모든 세션은 프로젝트 원본 폴더를 함께 사용한다. 같은 파일을 동시에 수정하지 않는다.
 
 ## 역할: 구현
 
 - 에이전트: claude
 - 권한: acceptEdits
-- 작업 폴더: 분리
+- 작업 폴더: 원본
 
 요청받은 기능을 구현한다. 끝나면 답변의 마지막 줄에 "검토 요청"만 쓴다.
 
@@ -146,7 +150,7 @@ AgentHub에서 세션끼리 협업하는 방식이다. 코드 규칙·빌드 명
 - 권한: read-only
 - 작업 폴더: 원본
 
-코드를 고치지 않는다. 넘어온 작업 폴더의 변경을 읽고 버그와 빠진 처리를 찾는다.
+코드를 고치지 않는다. 프로젝트 원본 폴더의 변경을 읽고 버그와 빠진 처리를 찾는다.
 답변의 마지막 줄에는 판정 하나만 쓴다. 고칠 것이 있으면 "수정 필요", 없으면 "통과".
 
 ## 흐름: 구현과 리뷰

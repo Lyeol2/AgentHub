@@ -38,7 +38,7 @@ function line(e) {
 }
 
 // session: 바꾸기 전 세션(이전 agent·model), files: 기준 커밋 이후 바뀐 파일(git status 형식)
-export function handoverText(session, files = "") {
+export function handoverText(session, files = "", { previousCwd, previousBranch } = {}) {
   const parts = session.events.map(line).filter(Boolean);
   const firstUser = parts.findIndex((p) => p.startsWith("[사용자"));
   // 첫 요청(작업의 목표)은 꼭 남기고, 나머지는 최근 것부터 예산 안에서 채운다.
@@ -54,9 +54,13 @@ export function handoverText(session, files = "") {
   const from = `${AGENT_NAME[session.agent] ?? session.agent}${session.model ? ` (${session.model})` : ""}`;
   const branch = session.worktree ? ` (브랜치 ${session.worktree.branch})` : "";
   return [
-    "[이전 AI에서 이어받은 작업]",
-    `이 세션은 지금까지 ${from}로 진행했다. 지금부터 네가 같은 작업 폴더에서 이어서 한다.`,
-    "아래는 AgentHub에 남은 지금까지의 기록이다. 파일은 작업 폴더의 지금 상태가 최신이므로 필요한 것은 직접 확인한다.",
+    previousCwd ? "[작업 폴더를 바꾼 세션의 진행 상황]" : "[이전 AI에서 이어받은 작업]",
+    previousCwd
+      ? `이 세션은 지금까지 ${from}로 진행했다. 지금부터 아래 프로젝트 원본 폴더에서 작업한다.`
+      : `이 세션은 지금까지 ${from}로 진행했다. 지금부터 네가 같은 작업 폴더에서 이어서 한다.`,
+    previousCwd
+      ? `이전 작업 폴더: ${previousCwd}${previousBranch ? ` (브랜치 ${previousBranch})` : ""}\n이전 폴더와 브랜치는 보존되어 있지만 변경을 원본으로 자동으로 옮기지는 않았다. 아래 기록의 이전 경로에서 작업하거나 새 worktree를 만들지 않는다. 필요한 변경이 있으면 먼저 원본의 현재 파일과 비교한다.`
+      : "아래는 AgentHub에 남은 지금까지의 기록이다. 파일은 작업 폴더의 지금 상태가 최신이므로 필요한 것은 직접 확인한다.",
     `작업 폴더: ${session.cwd}${branch}`,
     "",
     "바뀐 파일:",

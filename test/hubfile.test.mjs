@@ -8,12 +8,29 @@ test("hubfile: 기본 템플릿을 경고 없이 읽는다", () => {
   assert.deepEqual(hub.warnings, []);
   assert.match(hub.common, /커밋하지 않는다/);
   assert.deepEqual(hub.roles.map((r) => [r.name, r.agent, r.permission, r.isolate]),
-    [["구현", "claude", "acceptEdits", true], ["리뷰", "codex", "read-only", false]]);
+    [["구현", "claude", "acceptEdits", false], ["리뷰", "codex", "read-only", false]]);
   assert.match(hub.roles[1].body, /^코드를 고치지 않는다/);
   assert.deepEqual(hub.flows[0].steps, [
     { from: "구현", to: "리뷰", when: "keyword", keyword: "검토 요청", note: "" },
     { from: "리뷰", to: "구현", when: "keyword", keyword: "수정 필요", note: "리뷰에서 지적한 것만 고친다." },
   ]);
+});
+
+test("hubfile: 이전 작업 폴더 분리 설정은 본문에 남기지 않고 원본 폴더로 통일한다", () => {
+  for (const setting of ["작업 폴더: 분리", "folder: worktree", "isolate: true"]) {
+    const hub = parseHubFile(`## 역할: 구현\n- ${setting}\n- agent: codex\n\n기능을 구현한다.`);
+    assert.equal(hub.roles[0].isolate, false, setting);
+    assert.equal(hub.roles[0].agent, "codex", setting);
+    assert.equal(hub.roles[0].body, "기능을 구현한다.", setting);
+    assert.equal(hub.warnings.length, 1, setting);
+    assert.match(hub.warnings[0], /분리 설정을 무시하고 프로젝트 원본 폴더/);
+  }
+  for (const setting of ["작업 폴더: 원본", "folder: original", "isolate: false"]) {
+    const hub = parseHubFile(`## 역할: 구현\n- ${setting}\n\n역할 설명`);
+    assert.equal(hub.roles[0].isolate, false, setting);
+    assert.equal(hub.roles[0].body, "역할 설명", setting);
+    assert.deepEqual(hub.warnings, [], setting);
+  }
 });
 
 test("hubfile: 설정이 없는 역할은 기본값을 쓰고 본문 첫 줄의 목록도 본문으로 둔다", () => {

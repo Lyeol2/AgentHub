@@ -5,9 +5,9 @@ import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { ROOT, CHAT_DIR, DATA_DIR, loadConfig, saveConfig } from "./config.mjs";
 import { locateCli, cliVersion, cliAuth, openLogin, spawnCli } from "./cli.mjs";
-import { SessionStore, summary } from "./store.mjs";
+import { SessionStore, summary, useProjectFolder } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
-import { isGitRepo, createWorktree, removeWorktree, headCommit, diffSince, changedFiles } from "./git.mjs";
+import { isGitRepo, removeWorktree, headCommit, diffSince, changedFiles } from "./git.mjs";
 import { AGENT_NAME, handoverText, mapPermission } from "./handover.mjs";
 import { gitOverview, fileDiff, showCommit, branchDiff, commit, merge } from "./gitpanel.mjs";
 import { discoverProjects, discoverSessions, loadHistory, deleteSessionRecords } from "./discover.mjs";
@@ -498,6 +498,11 @@ function composeBase(session, prompt) {
     hub: readHubFile(session.projectPath),
     sessions: projectSessions(session.projectPath),
   }));
+  // 원본 폴더를 함께 사용한다는 규칙은 기존 CLI 대화에도 한 번 알린다.
+  if (!session.agentSessionId || !session.projectFolderGuide) {
+    session.projectFolderGuide = true;
+    input = `[AgentHub 작업 폴더]\n이 프로젝트의 모든 세션은 프로젝트 원본 폴더(${session.projectPath})에서 함께 작업한다. 별도 git worktree를 만들지 않는다. 같은 파일을 고칠 때는 다른 세션과 겹치지 않게 조율한다.\n\n${input}`;
+  }
   // 세션 사이 소통 규칙도 CLI 대화마다 한 번 붙인다.
   if (!session.agentSessionId || !session.messageGuide) {
     session.messageGuide = true;
@@ -547,19 +552,9 @@ function checkSessionOptions({ agent, model = "", effort = "", permission, chat 
   return { agent, model, effort, permission };
 }
 
-// 작업 폴더 이름은 폴더 이름과 브랜치 이름(agenthub/<이름>)에 그대로 쓰므로 둘 다에 안전한 글자만 받는다.
-function checkWorktreeName(name) {
-  name = String(name ?? "").trim();
-  if (!name) return "";
-  if (name.length > 60 || !/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u.test(name) || name.includes("..") || /\.(lock)?$/i.test(name)) {
-    throw new HttpError(400, "작업 폴더 이름은 60자 이내의 글자·숫자와 . _ - 로 쓰고, 글자나 숫자로 시작하며 . 또는 .lock으로 끝나지 않아야 합니다.");
-  }
-  return name;
-}
-
 // chat: 프로젝트 없이 빈 폴더에서 도구 없이 대화만 하는 일반 채팅(project는 null).
-// worktreeName: 작업 폴더를 분리할 때 쓸 이름(비우면 세션 ID).
-async function createSession({ project, isolate, worktreeName, title, role, roleName, orchestrator, createdBy, chat, ...options }) {
+// 이전 클라이언트가 isolate/worktreeName을 보내도 모든 프로젝트 세션은 원본 폴더를 쓴다.
+async function createSession({ project, title, role, roleName, orchestrator, createdBy, chat, ...options }) {
   chat = !!chat;
   if (chat && orchestrator) throw new HttpError(400, "일반 채팅은 오케스트레이터로 만들 수 없습니다.");
   const { agent, model, effort, permission } = checkSessionOptions({ ...options, chat });
@@ -569,16 +564,7 @@ async function createSession({ project, isolate, worktreeName, title, role, role
   }
   const id = `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`;
   const git = chat ? false : await isGitRepo(project.path);
-  let cwd = chat ? CHAT_DIR : project.path;
-  let worktree = null;
-  if (isolate && !chat) {
-    if (!git) throw new HttpError(400, "git 저장소가 아니어서 작업 폴더를 분리할 수 없습니다.");
-    const name = checkWorktreeName(worktreeName) || id;
-    worktree = await createWorktree(project.path, name).catch((err) => {
-      throw new HttpError(400, err.message);
-    });
-    cwd = worktree.dir;
-  }
+  const cwd = chat ? CHAT_DIR : project.path;
 
   const now = new Date().toISOString();
   const session = {
@@ -596,7 +582,7 @@ async function createSession({ project, isolate, worktreeName, title, role, role
     projectName: project.name,
     projectPath: project.path,
     cwd,
-    worktree,
+    worktree: null,
     baseCommit: git ? await headCommit(cwd) : null,
     agentSessionId: null,
     state: "idle",
@@ -739,7 +725,6 @@ async function applyPlan(orchestrator, raw) {
   // 승인을 기다리는 사이 세션이 지워졌을 수 있으므로 다시 검사한다.
   const plan = normalizePlan(raw, planContext(orchestrator));
   const project = ensureProject(orchestrator.projectPath);
-  const git = await isGitRepo(project.path);
   const ids = new Map();
   let created = 0;
   for (const item of plan.sessions) {
@@ -752,7 +737,6 @@ async function applyPlan(orchestrator, raw) {
       agent: item.agent,
       model: item.model,
       permission: item.permission,
-      isolate: item.isolate && git,
       title: item.title,
       role: item.roleText,
       roleName: item.roleName,
@@ -799,7 +783,6 @@ async function startFlow({ project, flowName, name, prompt }) {
   if (missing.length) throw new HttpError(400, `${HUB_FILE}에 없는 역할입니다: ${missing.join(", ")}`);
   for (const role of roles.values()) checkSessionOptions(role);
 
-  const git = await isGitRepo(project.path);
   const label = String(name ?? "").trim().slice(0, 100);
   const sessions = new Map();
   for (const [roleName, role] of roles) {
@@ -808,7 +791,6 @@ async function startFlow({ project, flowName, name, prompt }) {
       agent: role.agent,
       model: role.model,
       permission: role.permission,
-      isolate: role.isolate && git,
       title: label ? `${label} · ${roleName}` : roleName,
       role: role.body,
       roleName,
@@ -1291,14 +1273,14 @@ async function handleApi(req, res, url) {
     if (parts[1] === "import" && method === "POST") {
       const body = await readJson(req);
       const project = ensureProject(body.projectPath);
-      const existing = store.list().find((s) => s.agentSessionId && s.agentSessionId === body.agentSessionId);
+      const existing = store.list().find((s) => cliSessionIds(s).includes(body.agentSessionId));
       if (existing) return send(res, 200, summary(existing));
       const found = discoverSessions(project.path)
         .find((s) => s.agent === body.agent && s.agentSessionId === body.agentSessionId);
       if (!found) throw new HttpError(404, "세션 기록을 찾지 못했습니다.");
 
-      const cwd = found.cwd && fs.existsSync(found.cwd) ? found.cwd : project.path;
-      const git = await isGitRepo(cwd);
+      const cwd = found.cwd || project.path;
+      const git = await isGitRepo(project.path);
       const now = new Date().toISOString();
       const history = loadHistory(found);
       const session = {
@@ -1311,7 +1293,7 @@ async function handleApi(req, res, url) {
         projectPath: project.path,
         cwd,
         worktree: null,
-        baseCommit: git ? await headCommit(cwd) : null,
+        baseCommit: git ? await headCommit(project.path) : null,
         agentSessionId: found.agentSessionId,
         cliSessionIds: [found.agentSessionId],
         imported: true,
@@ -1322,6 +1304,7 @@ async function handleApi(req, res, url) {
         context: history.context,
         events: history.events,
       };
+      useProjectFolder(session);
       store.add(session);
       broadcast("sessions", {});
       return send(res, 200, summary(session));
@@ -1506,12 +1489,11 @@ async function handleApi(req, res, url) {
     }
 
     // 재생성: 같은 설정(제목·역할·모델·권한·연결·그래프 위치)으로 새 세션을 만들고 기존 세션은 지운다.
-    // 화면 기록과 CLI 대화는 새로 시작하고, 작업 폴더(worktree)는 고치던 파일이 남도록 그대로 이어받는다.
+    // 화면 기록과 CLI 대화는 새로 시작하고, 원본 프로젝트 폴더에서 작업한다.
     if (parts[2] === "recreate" && method === "POST") {
       if (runner.isRunning(session.id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
       const created = await createSession({
         project: session.chat ? null : ensureProject(session.projectPath),
-        isolate: false,
         title: session.title,
         role: session.role,
         roleName: session.roleName,
@@ -1524,10 +1506,10 @@ async function handleApi(req, res, url) {
         permission: session.permission,
       });
       Object.assign(created, {
-        cwd: session.cwd,
-        worktree: session.worktree ?? null,
         baseCommit: session.baseCommit ?? created.baseCommit,
         graphPos: session.graphPos ?? null,
+        previousCwd: session.previousCwd,
+        previousWorktree: session.previousWorktree,
       });
       store.touch(created);
       for (const link of links.list()) {

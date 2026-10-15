@@ -31,11 +31,30 @@ test("orchestrator: 역할 템플릿과 key·id·orchestrator를 풀어 쓴다",
     send: [{ to: "old", prompt: "이어서" }],
   }, ctx);
   const [ui, rev, doc] = plan.sessions;
-  assert.deepEqual([ui.agent, ui.permission, ui.isolate, ui.roleName, ui.title], ["claude", "acceptEdits", true, "구현", "정렬 UI"]);
+  assert.deepEqual([ui.agent, ui.permission, ui.isolate, ui.roleName, ui.title], ["claude", "acceptEdits", false, "구현", "정렬 UI"]);
   assert.deepEqual([rev.agent, rev.permission, rev.isolate, rev.title], ["codex", "read-only", false, "리뷰"]);
   assert.deepEqual([doc.agent, doc.permission, doc.roleText, doc.isolate], ["codex", "workspace-write", "문서만", false]);
   assert.deepEqual(plan.links.map((l) => `${l.from}>${l.to}`), ["ui>rev", "rev>orc"]);
   assert.deepEqual(plan.send, [{ to: "old", prompt: "이어서" }, { to: "ui", prompt: "만들어" }]);
+});
+
+test("orchestrator: 이전 계획과 역할의 명시적인 분리 설정도 원본 폴더로 통일한다", () => {
+  const legacyHub = { ...hub, roles: hub.roles.map((role) => ({ ...role, isolate: true })) };
+  const raw = { sessions: [
+    { key: "template", role: "구현" },
+    { key: "explicit", agent: "codex", isolate: true },
+    { key: "override", role: "리뷰", isolate: true },
+  ] };
+  const plan = normalizePlan(raw, { ...ctx, hub: legacyHub });
+  assert.deepEqual(plan.sessions.map((session) => session.isolate), [false, false, false]);
+  assert.equal(raw.sessions[1].isolate, true);
+  assert.equal(legacyHub.roles[0].isolate, true);
+
+  const input = orchestratorInput({ id: "orc" }, "목표", { hub: legacyHub, sessions });
+  assert.match(input, /모든 세션은 프로젝트 원본 폴더를 함께 사용한다/);
+  assert.match(input, /같은 파일을 고치는 세션을 동시에 돌리지 않는다/);
+  assert.match(input, /- 구현: claude · acceptEdits · 원본 폴더/);
+  assert.doesNotMatch(input, /작업 폴더 분리|isolate/);
 });
 
 test("orchestrator: 잘못된 계획을 막는다", () => {
