@@ -4,7 +4,16 @@ import { changedFiles } from "./git.mjs";
 import { withRole } from "./role.mjs";
 import { isCommandId, runShell, outputTail, commandHandoffText } from "./commands.mjs";
 
-export const CONDITIONS = ["success", "keyword", "error", "always", "manual"];
+export const CONDITIONS = ["success", "keyword", "error", "always", "otherwise", "manual"];
+// 화면의 조건 선택지(보이는 순서). 서버가 내려 주고 같은 목록으로 검사한다.
+export const CONDITION_LABELS = {
+  keyword: "답변 마지막 줄에 키워드가 있으면",
+  success: "턴이 성공하면",
+  error: "턴이 실패하면",
+  otherwise: "다른 연결이 모두 안 맞으면 (그 외)",
+  always: "턴이 끝날 때마다",
+  manual: "수동으로만",
+};
 // 자동으로 이어지는 최대 단계. 서로를 가리키는 연결이 끝없이 돌지 않게 막는다.
 export const MAX_HOPS = 8;
 const ANSWER_MAX = 8000;
@@ -22,16 +31,68 @@ export function lastAnswer(session) {
   return text.length > ANSWER_MAX ? `… (앞부분 생략)\n${text.slice(-ANSWER_MAX)}` : text;
 }
 
+// 판정 줄: 답변의 마지막 글 줄. 마크다운 꾸밈(#, >, -, **, `)과 감싼 따옴표는 걷어 낸다.
+export function verdictLine(answer) {
+  const lines = String(answer ?? "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !/^(```|~~~)/.test(l));
+  return (lines.at(-1) ?? "")
+    .replace(/^(?:[#>*+-]+\s*)+/, "")
+    .replace(/[*_`~]/g, "")
+    .replace(/^["'“‘](.*)["'”’]$/, "$1")
+    .trim();
+}
+
+// 키워드는 쉼표로 여러 개를 적을 수 있고 하나라도 있으면 맞는다.
+export const keywordList = (keyword) => String(keyword ?? "").split(/[,，]/).map((k) => k.trim()).filter(Boolean);
+
+// 키워드 바로 뒤에 부정이 오면("수정 필요 없음", "검토 요청 아님") 맞지 않은 것으로 본다.
+const NEGATION = /^\s*(?:은|는|이|가)?\s*(?:없|아니|아님|않|안\s|불필요|no\b|not\b|none\b)/i;
+
+export function hasKeyword(text, keyword) {
+  const hay = String(text ?? "").toLowerCase();
+  return keywordList(keyword).some((k) => {
+    const needle = k.toLowerCase();
+    for (let i = hay.indexOf(needle); i >= 0; i = hay.indexOf(needle, i + 1)) {
+      if (!NEGATION.test(hay.slice(i + needle.length))) return true;
+    }
+    return false;
+  });
+}
+
+// 연결 하나만 볼 때의 조건. "그 외"는 다른 연결과 함께 봐야 하므로 pickLinks에서 정한다.
 // ok: 턴 성공 여부. 사용자가 중지한 턴(null)은 넘기지 않는다.
-export function matches(link, ok, answer) {
+// verdict: 키워드를 찾을 글(세션은 답변 마지막 줄, 명령 노드는 출력 전체).
+export function matches(link, ok, verdict) {
   if (!link.enabled || ok === null) return false;
   switch (link.when) {
     case "success": return ok;
     case "error": return !ok;
     case "always": return true;
-    case "keyword": return ok && !!link.keyword && answer.toLowerCase().includes(link.keyword.toLowerCase());
+    // 키워드는 에이전트가 직접 쓴 판정이므로 턴이 실패로 끝났어도 따른다.
+    case "keyword": return hasKeyword(verdict, link.keyword);
     default: return false;
   }
+}
+
+// 한 노드에서 나가는 연결 중 이번에 따라갈 것을 고른다. if / else-if / else처럼 동작한다.
+// 1. 키워드가 맞은 연결이 있으면 그것만 따라간다(성공·실패 연결은 건너뛴다).
+// 2. 없으면 맞은 성공·실패 연결을 따라간다.
+// 3. 그것도 없으면 "그 외" 연결을 따라간다.
+// "항상" 연결은 이와 상관없이 함께 따라간다.
+export function pickLinks(links, ok, verdict) {
+  if (ok === null) return [];
+  const on = links.filter((l) => l.enabled);
+  const always = on.filter((l) => l.when === "always");
+  const keyword = on.filter((l) => l.when === "keyword" && matches(l, ok, verdict));
+  if (keyword.length) return [...keyword, ...always];
+  const plain = on.filter((l) => (l.when === "success" || l.when === "error") && matches(l, ok, verdict));
+  if (plain.length) return [...plain, ...always];
+  return [...on.filter((l) => l.when === "otherwise"), ...always];
+}
+
+// 조건을 따지는 연결이 있는데 하나도 맞지 않았을 때 기록에 남길 설명. 남길 것이 없으면 null
+export function noMatchNote(links, verdict) {
+  if (!links.some((l) => l.enabled && ["keyword", "success", "error"].includes(l.when))) return null;
+  return `조건에 맞는 연결이 없어 넘기지 않았습니다 (마지막 줄: "${verdict.slice(0, 80) || "없음"}")`;
 }
 
 export function handoffText(source, link, answer, files) {
@@ -75,6 +136,8 @@ export class Chain {
 
   async onTurnEnd(session, ok) {
     if (ok === null) {
+      // 일시중지한 세션은 대기열을 그대로 두고 재개할 때 이어서 보낸다.
+      if (session.paused) return;
       // 사용자가 멈춘 세션은 넘어온 작업을 버린다. 사용자가 대기열에 넣은 요청은 남겨 두고, 직접 보낼 때까지 시작하지 않는다.
       const kept = (this.queue.get(session.id) ?? []).filter((item) => item.meta.user);
       if (kept.length) this.queue.set(session.id, kept);
@@ -82,13 +145,21 @@ export class Chain {
       this.notify("queue", session.id);
       return;
     }
-    if (!session.waiting) {
+    // 다른 세션의 메시지로 시작한 턴은 곁가지 대화이므로 연결로 넘기지 않는다(대화가 흐름을 건드리지 않게).
+    const started = session.events.findLast((e) => e.kind === "user" && !e.injected);
+    if (!session.waiting && !started?.message) {
       // 사용자에게 질문하고 답을 기다리는 턴은 끝난 작업이 아니므로 넘기지 않는다.
       const answer = lastAnswer(session);
-      for (const link of this.links.from(session.id)) {
-        if (!matches(link, ok, answer)) continue;
+      const verdict = verdictLine(answer);
+      const outgoing = this.links.from(session.id);
+      const picked = pickLinks(outgoing, ok, verdict);
+      if (!picked.length) {
+        const text = noMatchNote(outgoing, verdict);
+        if (text) this.note(session, text);
+      }
+      for (const link of picked) {
         if (link.approve) this.hold(link, session, answer, session.chainDepth ?? 0);
-        else await this.deliver(link, session.chainDepth ?? 0);
+        else await this.deliver(link, session.chainDepth ?? 0, answer);
       }
     }
     this.flush(session);
@@ -99,7 +170,8 @@ export class Chain {
     const target = this.node(link.to);
     if (!target) return;
     const preview = answer.split(/\r?\n/).find((l) => l.trim())?.slice(0, 200) ?? "";
-    this.links.update(link, { pending: { depth, preview, at: new Date().toISOString() } });
+    // 승인하기 전에 보낸 세션이 다음 턴을 돌아도 조건이 맞았던 그 답변을 넘긴다.
+    this.links.update(link, { pending: { depth, preview, answer, at: new Date().toISOString() } });
     this.note(source, `"${target.title}"(으)로 넘기기 전에 승인을 기다립니다`);
     this.notify("links");
   }
@@ -122,12 +194,13 @@ export class Chain {
     this.notify("links");
     const source = this.node(link.from);
     const target = this.node(link.to);
-    if (approve) return this.deliver(link, pending.depth);
+    if (approve) return this.deliver(link, pending.depth, pending.answer);
     if (source && target) this.note(source, `"${target.title}"(으)로 넘기지 않았습니다(거절)`);
   }
 
   // depth: 보내는 세션이 흐름에서 몇 번째 단계인지
-  async deliver(link, depth) {
+  // answer: 넘길 답변. 없으면 보낸 세션의 지금 마지막 답변을 넘긴다.
+  async deliver(link, depth, answer = null) {
     const source = this.node(link.from);
     const target = this.node(link.to);
     if (!source || !target) return;
@@ -155,7 +228,7 @@ export class Chain {
     const files = source.baseCommit ? await changedFiles(source.cwd, source.baseCommit).catch(() => "") : "";
     const waiting = this.runner.isRunning(target.id);
     this.runner.append(source, { kind: "status", text: `"${target.title}"(으)로 넘김${waiting ? " · 실행이 끝나면 시작" : ""}` });
-    this.enqueue(target, handoffText(source, link, lastAnswer(source), files), { from: source.id, fromTitle: source.title }, depth + 1);
+    this.enqueue(target, handoffText(source, link, answer ?? lastAnswer(source), files), { from: source.id, fromTitle: source.title }, depth + 1);
   }
 
   // ── 명령 노드 실행 ────────────────────────────────────────────
@@ -198,8 +271,7 @@ export class Chain {
     this.notify("commands");
     // 사용자가 멈춘 실행은 다음으로 넘기지 않는다.
     if (!result.stopped) {
-      for (const link of this.links.from(cmd.id)) {
-        if (!matches(link, ok, result.output)) continue;
+      for (const link of pickLinks(this.links.from(cmd.id), ok, result.output)) {
         if (link.approve) this.hold(link, cmd, lastRun.tail, depth);
         else await this.deliver(link, depth);
       }
@@ -244,9 +316,22 @@ export class Chain {
     return item;
   }
 
+  // 조건에 맞는 것을 모두 꺼낸다(작업 중에 메시지를 확인할 때).
+  takeWhere(sessionId, predicate) {
+    const queue = this.queue.get(sessionId) ?? [];
+    const taken = queue.filter(predicate);
+    if (!taken.length) return [];
+    const kept = queue.filter((item) => !predicate(item));
+    if (kept.length) this.queue.set(sessionId, kept);
+    else this.queue.delete(sessionId);
+    this.notify("queue", sessionId);
+    return taken;
+  }
+
+  // 일시중지한 세션은 재개할 때까지 쌓아 두기만 한다.
   flush(session) {
     const queue = this.queue.get(session.id);
-    if (!queue?.length || this.runner.isRunning(session.id)) return;
+    if (!queue?.length || this.runner.isRunning(session.id) || session.paused) return;
     const item = queue.shift();
     if (!queue.length) this.queue.delete(session.id);
     this.notify("queue", session.id);

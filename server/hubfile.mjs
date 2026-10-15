@@ -17,6 +17,7 @@ const CONDITIONS = {
   성공: "success", "성공 시": "success", success: "success",
   실패: "error", "실패 시": "error", error: "error",
   항상: "always", always: "always",
+  "그 외": "otherwise", 그외: "otherwise", 나머지: "otherwise", otherwise: "otherwise", else: "otherwise",
   수동: "manual", manual: "manual",
 };
 
@@ -54,23 +55,23 @@ function parseRole(name, lines, warnings) {
 }
 
 // "- 보내는 역할 -> 받는 역할: 조건 | 지시" 줄만 연결로 읽고 나머지 줄은 설명으로 둔다.
-function parseFlow(name, lines, warnings) {
+// 조건은 성공/실패/항상/그 외/수동이고, 그 밖의 글은 키워드다. 따옴표로 감싸면 조건 이름이나 |도 키워드에 넣을 수 있다.
+function parseFlow(name, lines) {
   const steps = [];
   for (const raw of lines) {
     const m = raw.trim().match(/^[-*]\s*(.+?)\s*(?:->|→)\s*([^:：]+?)\s*(?:[:：]\s*(.*))?$/);
     if (!m) continue;
     const [, from, to, rest = ""] = m;
+    const quoted = rest.match(/^["'“‘](.+?)["'”’]\s*(?:\|\s*(.*))?$/);
+    if (quoted) {
+      steps.push({ from, to, when: "keyword", keyword: quoted[1].trim(), note: (quoted[2] ?? "").trim() });
+      continue;
+    }
     const bar = rest.indexOf("|");
     const cond = (bar >= 0 ? rest.slice(0, bar) : rest).trim();
     const note = bar >= 0 ? rest.slice(bar + 1).trim() : "";
-    const quoted = cond.match(/^["'“‘](.+)["'”’]$/);
-    if (quoted) {
-      steps.push({ from, to, when: "keyword", keyword: quoted[1], note });
-    } else if (!cond || CONDITIONS[cond.toLowerCase()]) {
-      steps.push({ from, to, when: cond ? CONDITIONS[cond.toLowerCase()] : "success", keyword: "", note });
-    } else {
-      warnings.push(`흐름 "${name}": 조건을 알 수 없습니다 (${cond}). 성공/실패/항상/수동 또는 "키워드"로 적습니다.`);
-    }
+    const when = cond ? CONDITIONS[cond.toLowerCase()] : "success";
+    steps.push(when ? { from, to, when, keyword: "", note } : { from, to, when: "keyword", keyword: cond, note });
   }
   return { name, steps };
 }
@@ -87,7 +88,7 @@ export function parseHubFile(text) {
     let m;
     if (/^공통\s*지침$/.test(head)) result.common = lines.join("\n").trim();
     else if ((m = head.match(/^역할\s*[:：]\s*(.+)$/))) result.roles.push(parseRole(m[1].trim(), lines, result.warnings));
-    else if ((m = head.match(/^흐름\s*[:：]\s*(.+)$/))) result.flows.push(parseFlow(m[1].trim(), lines, result.warnings));
+    else if ((m = head.match(/^흐름\s*[:：]\s*(.+)$/))) result.flows.push(parseFlow(m[1].trim(), lines));
   }
 
   const names = new Set();
@@ -137,7 +138,7 @@ AgentHub에서 세션끼리 협업하는 방식이다. 코드 규칙·빌드 명
 - 권한: acceptEdits
 - 작업 폴더: 분리
 
-요청받은 기능을 구현한다. 끝나면 마지막 줄에 "검토 요청"이라고 쓴다.
+요청받은 기능을 구현한다. 끝나면 답변의 마지막 줄에 "검토 요청"만 쓴다.
 
 ## 역할: 리뷰
 
@@ -146,7 +147,7 @@ AgentHub에서 세션끼리 협업하는 방식이다. 코드 규칙·빌드 명
 - 작업 폴더: 원본
 
 코드를 고치지 않는다. 넘어온 작업 폴더의 변경을 읽고 버그와 빠진 처리를 찾는다.
-고칠 것이 있으면 마지막 줄에 "수정 필요", 없으면 "통과"라고 쓴다.
+답변의 마지막 줄에는 판정 하나만 쓴다. 고칠 것이 있으면 "수정 필요", 없으면 "통과".
 
 ## 흐름: 구현과 리뷰
 

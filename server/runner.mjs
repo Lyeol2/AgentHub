@@ -7,6 +7,7 @@ export const AGENTS = { claude, codex };
 
 const MISSING_CONVERSATION = /No conversation found with session ID/i;
 const INJECT_GRACE_MS = 4000;
+const INTERRUPT_GRACE_MS = 10000;
 
 // 세션 하나에 한 번에 한 턴만 실행한다. 다른 세션은 동시에 실행할 수 있다.
 export class Runner extends EventEmitter {
@@ -15,6 +16,8 @@ export class Runner extends EventEmitter {
     this.store = store;
     this.running = new Map();
     this.prompts = new Map(); // CLI가 실행 중에 물은 요청 ID → { session, child, agent, control, event }
+    // 세션에 붙일 AgentHub MCP 서버 정보를 돌려주는 함수(session → { url, configFile } | null). 서버가 정한다.
+    this.mcp = () => null;
   }
 
   // ── 실행 중 질문·권한 요청 ──────────────────────────────────────
@@ -40,14 +43,15 @@ export class Runner extends EventEmitter {
     return this.running.has(session.id) && !!AGENTS[session.agent].interactive;
   }
 
-  inject(session, text) {
+  // meta: 요청 이벤트에 덧붙일 값(보낸 세션 등)
+  inject(session, text, meta = {}) {
     const child = this.running.get(session.id);
     const agent = AGENTS[session.agent];
     if (!child) throw new Error("실행 중이 아닙니다.");
     if (!agent.interactive) throw new Error(`${session.agent}는 실행 중인 작업에 요청을 붙일 수 없습니다. 대기열에 넣으세요.`);
     child.stdin.write(`${agent.userLine(text)}\n`);
     child.injected = (child.injected ?? 0) + 1;
-    this.append(session, { kind: "user", text, injected: true });
+    this.append(session, { kind: "user", text, ...meta, injected: true });
   }
 
   hasPrompt(id, sessionId) {
@@ -115,7 +119,7 @@ export class Runner extends EventEmitter {
     if (!cliPath) throw new Error(`${session.agent} CLI를 찾지 못했습니다. 설정에서 경로를 지정하세요.`);
 
     const agent = AGENTS[session.agent];
-    const args = agent.buildArgs(session);
+    const args = agent.buildArgs(session, { mcp: session.chat ? null : this.mcp(session) });
     if (!retry) {
       // 답하지 않은 질문은 새 요청이 들어오면 지나간 것으로 본다.
       for (const e of session.events) if (e.kind === "question" && e.status === "pending") e.status = "skipped";
@@ -128,13 +132,15 @@ export class Runner extends EventEmitter {
       cwd: session.cwd,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: { ...process.env, NO_COLOR: "1" },
+      // ask_session은 상대의 답을 몇 분까지 기다리므로 Claude의 MCP 도구 제한 시간을 늘린다.
+      env: { ...process.env, NO_COLOR: "1", MCP_TOOL_TIMEOUT: "660000" },
     });
     this.running.set(session.id, child);
 
     const stderrTail = [];
     const resuming = !!session.agentSessionId;
     let completedTurn = false;
+    let startedConversation = false; // 이번 실행에서 CLI 대화가 시작됐는지(init)
     let sawError = false;
     let lastErrorText = null;
 
@@ -155,7 +161,10 @@ export class Runner extends EventEmitter {
         if (msg?.type === "control_response") return; // initialize 응답
       }
       for (const event of agent.parseLine(line)) {
+        // 사용자가 멈춰서 CLI가 오류로 끝낸 턴은 오류로 보이지 않게 로그로만 남긴다.
+        if (session.stopRequested && event.final && event.kind === "error") event.kind = "log";
         if (event.agentSessionId) {
+          startedConversation = true;
           session.agentSessionId = event.agentSessionId;
           // 다시 시작하거나 새 대화로 바뀌어도 이 세션이 쓴 CLI 대화를 모두 기억한다(기록 목록 연결·삭제에 쓴다).
           session.cliSessionIds = [...new Set([...(session.cliSessionIds ?? []), event.agentSessionId])];
@@ -223,7 +232,8 @@ export class Runner extends EventEmitter {
       this.running.delete(session.id);
       this.dropPrompts(session.id);
       // 첫 턴이 끝까지 가지 못했으면 CLI 쪽에 이어 갈 대화가 없을 수 있으므로 다음 턴은 새로 시작한다.
-      if (!resuming && !completedTurn) session.agentSessionId = null;
+      // 단, 대화가 시작된 뒤(init) 사용자가 멈춘 턴은 기록이 남아 있으므로 이어 간다(일시중지 후 재개).
+      if (!resuming && !completedTurn && !(startedConversation && session.stopRequested)) session.agentSessionId = null;
       // CLI 쪽 대화가 지워졌으면(다른 앱에서 삭제 등) 이어 갈 수 없으므로 새 대화로 한 번 다시 보낸다.
       if (resuming && !completedTurn && !retry && !session.stopRequested && MISSING_CONVERSATION.test(stderrTail.join(""))) {
         session.agentSessionId = null;
@@ -238,8 +248,9 @@ export class Runner extends EventEmitter {
       }
       if (session.stopRequested) {
         delete session.stopRequested;
-        this.append(session, { kind: "status", text: "사용자가 중지했습니다." });
-        this.setState(session, "idle");
+        // 일시중지는 대화를 그대로 두고 멈춘다. 재개하면 같은 대화로 이어서 진행한다.
+        this.append(session, { kind: "status", text: session.paused ? "일시중지했습니다. 재개하면 멈춘 곳부터 이어서 진행합니다." : "사용자가 중지했습니다." });
+        this.setState(session, session.paused ? "paused" : "idle");
         this.emit("turnEnd", session, null);
         return;
       }
@@ -275,17 +286,36 @@ export class Runner extends EventEmitter {
     this.setState(session, "idle");
   }
 
+  // 일시중지: Claude는 Esc처럼 interrupt 요청을 보내 턴을 정상으로 끝낸다. 대화 기록이 온전히 남아 재개할 때 이어진다.
+  // 강제로 끝내면 도구를 실행하던 중의 기록이 깨져 이어지지 않는다. 잠시 기다려도 안 끝나면 강제로 멈춘다.
+  interrupt(session) {
+    const child = this.running.get(session.id);
+    if (!child) return false;
+    const agent = AGENTS[session.agent];
+    if (!agent.interruptLine) return this.stop(session);
+    session.stopRequested = true;
+    child.stdin.write(`${agent.interruptLine()}\n`);
+    setTimeout(() => {
+      if (this.running.get(session.id) === child) this.kill(child);
+    }, INTERRUPT_GRACE_MS);
+    return true;
+  }
+
   stop(session) {
     const child = this.running.get(session.id);
     if (!child) return false;
     session.stopRequested = true;
+    this.kill(child);
+    return true;
+  }
+
+  kill(child) {
     if (process.platform === "win32") {
       // cmd.exe를 거친 경우 자식 프로세스까지 종료해야 한다.
       spawnCli("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
     } else {
       child.kill("SIGINT");
     }
-    return true;
   }
 
   stopAll() {

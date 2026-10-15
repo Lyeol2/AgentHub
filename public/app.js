@@ -10,6 +10,7 @@ const state = {
   current: null, // 선택한 세션의 전체 데이터
   filter: "",
   links: [], // 세션 사이 연결
+  messages: [], // 보고 있는 프로젝트에서 세션끼리 주고받은 메시지(그래프의 대화선)
   hubs: new Map(), // 프로젝트 경로(소문자) → AGENTHUB.md 내용
 };
 
@@ -40,7 +41,7 @@ async function api(method, url, body) {
 
 const AGENT_LABEL = { claude: "Claude", codex: "Codex" };
 const CHAT_LABEL = { claude: "Claude 채팅", codex: "ChatGPT" };
-const STATE_LABEL = { idle: "대기", running: "실행 중", error: "오류", interrupted: "중단됨" };
+const STATE_LABEL = { idle: "대기", running: "실행 중", error: "오류", interrupted: "중단됨", paused: "일시중지됨" };
 
 function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -140,6 +141,7 @@ const eventsList = () => $(state.view === "chat" ? "c-events" : "s-events");
 // ── CLI 상태 ────────────────────────────────────────────────────
 async function loadStatus() {
   state.status = await api("GET", "/api/status");
+  renderLinkConditions();
   renderCliStatus();
   renderProjectNav();
 }
@@ -559,6 +561,7 @@ async function renderProject() {
   renderProjectSessions();
   loadSkills(p.path);
   loadCommands(p.path);
+  loadMessages(p.path);
   renderHub();
   table("p-found", [["세션"], ["에이전트"], ["요청", "num"], ["마지막 사용", "num"], ["", "right"]], [],
     "기록을 찾는 중…");
@@ -643,8 +646,10 @@ const CARD_SIZE = { w: CARD_W, h: CARD_H };
 const isCommandNode = (id) => id.startsWith("cmd-");
 const CMD_SIZE = { w: CARD_W, h: 108 }; // style.css의 .gcmd와 같다
 const nodeSize = (id) => (isCommandNode(id) ? CMD_SIZE : CARD_SIZE);
-const WHEN_LABEL = { success: "성공 시", error: "실패 시", always: "항상", manual: "수동" };
-const linkLabel = (l) => `${l.when === "keyword" ? `"${l.keyword}" 있으면` : WHEN_LABEL[l.when]}${l.approve ? " · 승인 후" : ""}`;
+// 연결선 위의 짧은 이름. 대화상자의 선택지는 서버가 내려 준다(/api/status의 linkConditions).
+const WHEN_LABEL = { success: "성공 시", error: "실패 시", always: "항상", otherwise: "그 외", manual: "수동" };
+const keywordText = (keyword) => keyword.split(/[,，]/).map((k) => k.trim()).filter(Boolean).map((k) => `"${k}"`).join(" 또는 ");
+const linkLabel = (l) => `${l.when === "keyword" ? `${keywordText(l.keyword)} 있으면` : WHEN_LABEL[l.when] ?? l.when}${l.approve ? " · 승인 후" : ""}`;
 const sessionById = (id) => state.sessions.find((s) => s.id === id);
 const firstLine = (text) => text?.split(/\r?\n/)[0] ?? "";
 
@@ -821,6 +826,19 @@ const nodeTitle = (id) => (sessionById(id) ?? commandById(id))?.title ?? "?";
 const COMMAND_STATE = { idle: "대기", running: "실행 중", success: "성공", error: "실패" };
 const shellLabel = (id) => (state.shells ?? []).find((s) => s.id === id)?.label ?? id;
 const seconds = (ms) => `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}초`;
+
+// 세션끼리 주고받은 메시지. 그래프에 대화선으로 그린다.
+async function loadMessages(projectPath = state.project) {
+  if (!projectPath) return;
+  try {
+    const messages = await api("GET", `/api/messages?path=${encodeURIComponent(projectPath)}`);
+    if (!samePath(projectPath, state.project)) return;
+    state.messages = messages;
+  } catch {
+    return;
+  }
+  if (state.view === "project" && state.graph) drawEdges();
+}
 
 async function loadCommands(projectPath = state.project) {
   if (!projectPath) return;
@@ -1200,6 +1218,46 @@ function renderSkillsManager() {
 
 $("skills-new").addEventListener("click", () => openSkillDialog(null));
 $("p-skills").addEventListener("click", () => openSkillsManager());
+
+// ── 공유 노트 ───────────────────────────────────────────────────
+// 세션들이 MCP 도구로 덧붙이는 프로젝트 메모. 열어 둔 동안 세션이 덧붙이면 다시 받는다(고치던 중이면 그대로 둔다).
+async function loadBoard() {
+  const projectPath = state.boardProject;
+  try {
+    const { text } = await api("GET", `/api/board?path=${encodeURIComponent(projectPath)}`);
+    if (!samePath(projectPath, state.boardProject) || state.boardDirty) return;
+    $("board-text").value = text;
+  } catch (err) {
+    $("board-error").textContent = err.message;
+  }
+}
+
+$("p-board").addEventListener("click", async () => {
+  const p = currentProject();
+  if (!p) return;
+  state.boardProject = p.path;
+  state.boardDirty = false;
+  $("board-project").textContent = p.name;
+  $("board-text").value = "";
+  $("board-error").textContent = "";
+  $("board-dialog").showModal();
+  await loadBoard();
+});
+$("board-text").addEventListener("input", () => { state.boardDirty = true; });
+
+$("board-form").addEventListener("submit", async (e) => {
+  const action = e.submitter?.value;
+  if (action === "cancel") return;
+  e.preventDefault();
+  if (action === "clear" && !confirm("공유 노트를 모두 지울까요?")) return;
+  try {
+    const text = action === "clear" ? "" : $("board-text").value;
+    await api("PUT", "/api/board", { path: state.boardProject, text });
+    $("board-dialog").close();
+  } catch (err) {
+    $("board-error").textContent = err.message;
+  }
+});
 $("skills-dialog").addEventListener("close", () => {
   for (const card of state.graph?.cards.values() ?? []) card.classList.remove("skill-hit");
 });
@@ -1250,6 +1308,26 @@ function drawEdges() {
   const g = state.graph;
   g.svg.querySelectorAll("path.edge").forEach((n) => n.remove());
   g.canvas.querySelectorAll(".edge-label").forEach((n) => n.remove());
+  // 메시지를 주고받은 세션 사이의 대화선(방향 없이 한 줄, 주고받은 수를 툴팁으로)
+  const talks = new Map();
+  for (const m of state.messages) {
+    if (!g.pos.has(m.from) || !g.pos.has(m.to)) continue;
+    const key = [m.from, m.to].sort().join(" ");
+    const talk = talks.get(key) ?? { from: m.from, to: m.to, count: 0, last: m };
+    talk.count++;
+    talk.last = m;
+    talks.set(key, talk);
+  }
+  for (const talk of talks.values()) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", edgePath(g.pos.get(talk.from), g.pos.get(talk.to), nodeSize(talk.from), nodeSize(talk.to)).d);
+    path.setAttribute("class", "edge message");
+    const title = document.createElementNS(SVG_NS, "title");
+    title.textContent = `메시지 ${talk.count}개 · 마지막: ${nodeTitle(talk.last.from)} → ${nodeTitle(talk.last.to)}
+${talk.last.text}`;
+    path.append(title);
+    g.svg.append(path);
+  }
   for (const command of g.commands) {
     const path = document.createElementNS(SVG_NS, "path");
     path.setAttribute("d", edgePath(g.pos.get(command.from), g.pos.get(command.to), nodeSize(command.from), nodeSize(command.to)).d);
@@ -1418,12 +1496,46 @@ $("p-relayout").addEventListener("click", async () => {
 });
 
 // ── 연결 설정 ───────────────────────────────────────────────────
+// 연결 조건 선택지를 서버 목록으로 채운다.
+function renderLinkConditions() {
+  const select = $("link-when");
+  const value = select.value;
+  select.replaceChildren(...(state.status?.linkConditions ?? []).map((c) => el("option", { value: c.id }, c.label)));
+  if (value) select.value = value;
+}
+
+// 보내는 세션의 역할에서 따옴표로 감싼 말("검토 요청", "통과" …)을 키워드 후보로 꺼낸다.
+// 역할 지시에 마지막 줄에 쓸 판정을 적어 두므로 그 말이 곧 분기 키워드다.
+function keywordSuggestions(nodeId) {
+  // 판정을 말하는 줄("마지막 줄에 … 쓴다")만 본다. 다른 줄의 따옴표 말은 분기와 상관없다.
+  const lines = (sessionById(nodeId)?.role ?? "").split(/\r?\n/).filter((l) => /마지막|판정|last line/i.test(l));
+  const found = lines.flatMap((l) => [...l.matchAll(/["“]([^"”]{1,40})["”]/g)].map((m) => m[1].trim())).filter(Boolean);
+  return [...new Set(found)];
+}
+
+// 새 연결의 기본 조건: 보내는 세션의 역할에 아직 다른 연결이 쓰지 않은 키워드 후보가 있으면 그 키워드, 없으면 성공 시
+function defaultLinkCondition(from) {
+  const used = new Set(state.links.filter((l) => l.from === from && l.when === "keyword")
+    .flatMap((l) => l.keyword.split(/[,，]/).map((k) => k.trim())));
+  const keyword = keywordSuggestions(from).find((k) => !used.has(k));
+  return keyword ? { when: "keyword", keyword } : { when: "success", keyword: "" };
+}
+
 // link가 없으면 from → to 새 연결을 만든다.
 function openLinkDialog(link, from = link?.from, to = link?.to) {
   state.editingLink = { link, from, to };
   $("link-names").textContent = `${nodeTitle(from)} → ${nodeTitle(to)}`;
-  $("link-when").value = link?.when ?? "success";
-  $("link-keyword").value = link?.keyword ?? "";
+  const initial = link ?? defaultLinkCondition(from);
+  $("link-when").value = initial.when;
+  $("link-keyword").value = initial.keyword ?? "";
+  // 키워드 후보를 누르면 키워드 칸에 넣는다.
+  $("link-keyword-chips").replaceChildren(...keywordSuggestions(from).map((k) =>
+    el("button", { type: "button", class: "flow-chip", onclick: () => { $("link-keyword").value = k; } }, k)));
+  // 같은 세션에서 나가는 다른 연결을 보여 주어 분기 전체를 한눈에 보게 한다.
+  const siblings = state.links.filter((l) => l.from === from && l.id !== link?.id);
+  $("link-siblings").hidden = !siblings.length;
+  $("link-siblings-list").replaceChildren(...siblings.map((l) =>
+    el("li", {}, `→ ${nodeTitle(l.to)}`, el("span", { class: "muted" }, ` · ${linkLabel(l)}${l.enabled ? "" : " · 꺼짐"}`))));
   $("link-note").value = link?.note ?? "";
   $("link-enabled").checked = link?.enabled ?? true;
   $("link-approve").checked = link?.approve ?? false;
@@ -1618,7 +1730,7 @@ function renderSession() {
   if (POPUP) document.title = `${s.title} · AgentHub`;
   renderFlow();
 
-  $("s-events").replaceChildren(...s.events.map(renderEvent));
+  renderEvents($("s-events"), s.events);
   scrollToBottom();
 }
 
@@ -1629,7 +1741,14 @@ function renderState() {
   label.textContent = STATE_LABEL[s.state] ?? s.state;
   label.className = `pill ${s.state}`;
   const running = s.state === "running";
-  $("s-stop").disabled = !running;
+  const paused = s.state === "paused";
+  // 일시중지 ↔ 재개 한 버튼. 쉬고 있을 때 일시중지하면 넘어오는 작업을 쌓아 두기만 한다.
+  $("s-pause").textContent = paused ? "▶ 재개" : "⏸ 일시중지";
+  $("s-pause").classList.toggle("primary", paused);
+  $("s-pause").classList.toggle("ghost", !paused);
+  $("s-stop").disabled = !running && !paused;
+  // 도구 호출의 "실행 중" 표시는 턴이 도는 동안에만 보인다.
+  $("s-events").classList.toggle("running", running);
   $("s-restart").disabled = running || !s.agentSessionId;
   renderLife("s-life", s);
   renderComposer("s", s);
@@ -1753,6 +1872,10 @@ function renderPlan(ev) {
 // ── 에이전트의 질문 ─────────────────────────────────────────────
 const QUESTION_FENCE = "agenthub-question";
 const QUESTION_BLOCK = new RegExp("```" + QUESTION_FENCE + "\\s*\\n[\\s\\S]*?```", "g");
+// 메시지 블록은 보낸 메시지 줄로 따로 보여 주므로 답변 본문에서 뺀다(서버의 messages.mjs와 같다).
+const MESSAGE_FENCE = "agenthub-message";
+const MESSAGE_BLOCK = new RegExp("```" + MESSAGE_FENCE + "\\s*\\n[\\s\\S]*?```", "g");
+const MESSAGE_VIA = { answer: "답을 기다리던 상대에게 전달", live: "작업 중에 전달", queue: "대기열로 전달" };
 const QUESTION_STATUS = { pending: "답을 기다림", answered: "답함", skipped: "지나감", invalid: "형식 오류" };
 
 // 선택지를 고르거나 직접 적어 답한다. 답은 다음 요청으로 에이전트에게 간다.
@@ -1880,18 +2003,74 @@ function notifyQuestion(sessionId, event) {
   else if (Notification.permission !== "denied") Notification.requestPermission().then((p) => p === "granted" && show());
 }
 
+// ── 도구 호출 ───────────────────────────────────────────────────
+// 도구 호출(명령 실행, 파일 읽기 등)은 한 줄로 접어 두고, 누르면 입력과 출력을 펼친다.
+// 결과(tool_result)는 아직 결과가 없는 가장 앞의 도구 호출에 붙인다(CLI가 호출한 순서대로 결과를 보낸다).
+const EXPAND_TOOLS_KEY = "agenthub-expand-tools";
+const expandTools = () => localStorage.getItem(EXPAND_TOOLS_KEY) === "1";
+
+function renderTool(ev, cls) {
+  const body = el("div", { class: "tool-body" });
+  if (ev.detail) body.append(el("div", { class: "tool-label" }, "입력"), el("pre", { class: "tool-input" }, ev.detail));
+  const details = el("details", {},
+    el("summary", {}, el("span", { class: "tool-name" }, ev.text ?? ""), el("span", { class: "tool-state" })),
+    body);
+  details.open = expandTools();
+  return el("li", { class: `${cls} pending`, title: ev.text ?? "" }, details);
+}
+
+// 결과를 붙일 도구 호출이 있으면 붙이고 true
+function attachToolResult(list, ev) {
+  const tool = list.querySelector("li.ev.tool.pending");
+  if (!tool) return false;
+  tool.classList.remove("pending");
+  tool.classList.add(ev.isError ? "failed" : "done");
+  const text = ev.text ?? "";
+  const lines = text ? text.split("\n").length : 0;
+  tool.querySelector(".tool-state").textContent = ev.isError ? "오류" : lines ? `${lines}줄` : "";
+  tool.querySelector(".tool-body").append(el("div", { class: "tool-label" }, "출력"),
+    el("pre", { class: `tool-output${ev.isError ? " is-error" : ""}` }, text || "(출력 없음)"));
+  return true;
+}
+
+function appendEvent(list, ev) {
+  if (ev.kind === "tool_result" && attachToolResult(list, ev)) return;
+  list.append(renderEvent(ev));
+}
+
+function renderEvents(list, events) {
+  list.replaceChildren();
+  for (const ev of events) appendEvent(list, ev);
+}
+
+$("s-expand-tools").checked = expandTools();
+$("s-expand-tools").addEventListener("change", (e) => {
+  localStorage.setItem(EXPAND_TOOLS_KEY, e.target.checked ? "1" : "0");
+  for (const d of document.querySelectorAll(".events li.ev.tool > details")) d.open = e.target.checked;
+});
+
 function renderEvent(ev) {
   const cls = `ev ${ev.kind}${ev.isError ? " is-error" : ""}${ev.injected ? " injected" : ""}`;
+  if (ev.kind === "tool") return renderTool(ev, cls);
   if (ev.kind === "plan") return renderPlan(ev);
   if (ev.kind === "question") return renderQuestion(ev);
   if (ev.kind === "permission") return renderPermission(ev);
   // 질문 블록은 아래 질문 카드로 보여 주므로 답변 본문에서는 뺀다.
   if (ev.kind === "text") {
     // 에이전트 답변은 마크다운으로 보여 준다(renderMarkdown이 원문을 이스케이프한다).
-    const text = ev.text?.includes(QUESTION_FENCE) ? ev.text.replace(QUESTION_BLOCK, "").trim() : ev.text ?? "";
+    const text = (ev.text ?? "").replace(QUESTION_BLOCK, "").replace(MESSAGE_BLOCK, "").trim();
+    if (!text) return el("li", { class: "ev hidden-empty", hidden: true });
     const node = el("li", { class: `${cls} md` });
     node.innerHTML = renderMarkdown(text);
     return node;
+  }
+  if (ev.kind === "message") {
+    // 이 세션이 다른 세션에 보낸 메시지
+    return el("li", { class: `${cls} handoff` },
+      el("details", {},
+        el("summary", {}, "✉ ", el("a", { href: "#", onclick: (e) => { e.preventDefault(); if (sessionById(ev.to)) selectSession(ev.to); } }, ev.toTitle),
+          `에게 보낸 메시지 · ${MESSAGE_VIA[ev.via] ?? ""}`),
+        el("div", { class: "handoff-body" }, ev.text)));
   }
   if (ev.kind === "user" && ev.from) {
     // 연결된 세션에서 넘어온 요청은 접어서 보여 준다.
@@ -1901,7 +2080,8 @@ function renderEvent(ev) {
     };
     return el("li", { class: `${cls} handoff` },
       el("details", {},
-        el("summary", {}, el("a", { href: "#", onclick: open }, `↳ ${ev.fromTitle}`), "에서 넘어온 작업"),
+        el("summary", {}, el("a", { href: "#", onclick: open }, `${ev.message || ev.reply ? "✉" : "↳"} ${ev.fromTitle}`),
+          ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
         el("div", { class: "handoff-body" }, ev.text)));
   }
   const node = el("li", { class: cls }, ev.text ?? "");
@@ -1963,6 +2143,22 @@ $("role-form").addEventListener("submit", async (e) => {
 });
 
 $("s-stop").addEventListener("click", () => api("POST", `/api/sessions/${state.current.id}/stop`).catch((e) => alert(e.message)));
+
+// 일시중지·재개. 일시중지는 대화를 그대로 두고 멈추며, 재개하면 멈춘 곳부터 이어서 진행한다.
+async function togglePause() {
+  const s = state.current;
+  if (!s || s.chat) return;
+  const button = $("s-pause");
+  button.disabled = true;
+  try {
+    await api("POST", `/api/sessions/${s.id}/${s.state === "paused" ? "resume" : "pause"}`);
+  } catch (err) {
+    alert(err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+$("s-pause").addEventListener("click", togglePause);
 
 // CLI 대화만 새로 시작한다. 화면이 새로 그려지는 것은 서버가 보내는 session 이벤트로 한다.
 // s: 다시 시작할 세션(흐름 그래프 카드에서 누르면 그 카드의 세션, 아니면 보고 있는 세션)
@@ -2032,7 +2228,15 @@ document.addEventListener("pointerdown", (e) => {
   if (!e.target.closest(".context-menu")) closeContextMenu();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") closeContextMenu();
+  if (e.key !== "Escape") return;
+  const hadMenu = !!document.querySelector(".context-menu");
+  closeContextMenu();
+  // Claude Code·Codex처럼 Esc로 실행 중인 세션을 일시중지한다(대화상자·메뉴가 열려 있으면 그것만 닫는다).
+  if (hadMenu || e.defaultPrevented || document.querySelector("dialog[open]")) return;
+  if (state.view === "session" && state.current?.state === "running") {
+    e.preventDefault();
+    togglePause();
+  }
 });
 window.addEventListener("blur", closeContextMenu);
 window.addEventListener("resize", closeContextMenu);
@@ -2221,7 +2425,7 @@ function renderChat() {
   $("c-delete").hidden = !s;
   $("c-popout").hidden = !!POPUP;
   $("c-empty").hidden = !!s?.events.length;
-  $("c-events").replaceChildren(...(s?.events ?? []).map(renderEvent));
+  renderEvents($("c-events"), s?.events ?? []);
   if (POPUP) document.title = `${s?.title ?? "새 채팅"} · AgentHub`;
   renderChatPick();
   renderChatState();
@@ -2626,7 +2830,7 @@ function connectStream() {
     s.events.push(event);
     const list = eventsList();
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
-    list.append(renderEvent(event));
+    appendEvent(list, event);
     if (atBottom) scrollToBottom();
     if (event.kind === "status" || event.kind === "result") selectSession(sessionId); // CLI 세션 ID 등 메타 갱신
   });
@@ -2647,6 +2851,12 @@ function connectStream() {
   });
   source.addEventListener("sessions", loadSessions);
   source.addEventListener("links", loadLinks);
+  source.addEventListener("messages", (e) => {
+    if (samePath(JSON.parse(e.data).projectPath, state.project)) loadMessages();
+  });
+  source.addEventListener("board", (e) => {
+    if ($("board-dialog").open && samePath(JSON.parse(e.data).projectPath, state.boardProject)) loadBoard();
+  });
   // 설치·로그인 진행 상황. 끝나면 CLI 경로·버전·로그인 상태를 다시 받는다.
   source.addEventListener("setup", (e) => {
     if (!state.setup) return loadSetup();

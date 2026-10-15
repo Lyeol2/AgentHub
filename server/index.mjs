@@ -3,7 +3,7 @@ import http from "node:http";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
-import { ROOT, CHAT_DIR, loadConfig, saveConfig } from "./config.mjs";
+import { ROOT, CHAT_DIR, DATA_DIR, loadConfig, saveConfig } from "./config.mjs";
 import { locateCli, cliVersion, cliAuth, openLogin, spawnCli } from "./cli.mjs";
 import { SessionStore, summary } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
@@ -12,13 +12,15 @@ import { discoverProjects, discoverSessions, loadHistory, deleteSessionRecords }
 import { readLimits, recordClaudeLimit, refreshClaudeUsage } from "./limits.mjs";
 import { ROLE_MAX, withRole } from "./role.mjs";
 import { LinkStore } from "./links.mjs";
-import { Chain, CONDITIONS, lastAnswer } from "./chain.mjs";
+import { Chain, CONDITIONS, CONDITION_LABELS, lastAnswer } from "./chain.mjs";
 import { orchestratorInput, extractPlan, normalizePlan } from "./orchestrator.mjs";
 import { HUB_FILE, HUB_TEMPLATE, hubFilePath, readHubFile } from "./hubfile.mjs";
 import { QUESTION_GUIDE, extractQuestions, answerPrompt, hasAnswer } from "./question.mjs";
 import { listSkills, checkSkill, writeSkill, deleteSkill, moveSkill, withSkills, SCOPES } from "./skills.mjs";
 import { Setup, TOOLS } from "./setup.mjs";
 import { CommandStore, isCommandId, newCommandId, checkCommand, shells, generatePrompt, parseGenerated } from "./commands.mjs";
+import { Mailbox, MESSAGE_GUIDE, ASK_TIMEOUT_SEC, ASK_TIMEOUT_MAX, extractMessages, readBoard, postBoard, writeBoard, clearBoard } from "./messages.mjs";
+import { McpTokens, handleRpc } from "./mcp.mjs";
 
 const config = loadConfig();
 const port = Number(process.env.PORT ?? config.port);
@@ -61,6 +63,122 @@ const chain = new Chain({
     else broadcast("queue", { sessionId });
   },
 });
+
+// ── 세션 사이 메시지(MCP 도구·메시지 블록)와 공유 노트 ───────────────
+const mailbox = new Mailbox({
+  store, runner, chain,
+  sessions: (projectPath) => projectSessions(projectPath),
+  notify: (kind, data) => broadcast(kind, data),
+});
+const mcpTokens = new McpTokens();
+const MCP_DIR = path.join(DATA_DIR, "mcp");
+
+// CLI를 실행할 때마다 이 세션의 MCP 주소를 붙인다. Claude는 설정 파일로, Codex는 설정 덮어쓰기로 받는다.
+runner.mcp = (session) => {
+  const url = `http://127.0.0.1:${port}/mcp/${mcpTokens.token(session.id)}`;
+  const configFile = path.join(MCP_DIR, `${session.id}.json`);
+  fs.mkdirSync(MCP_DIR, { recursive: true });
+  fs.writeFileSync(configFile, JSON.stringify({ mcpServers: { agenthub: { type: "http", url } } }, null, 2));
+  return { url, configFile };
+};
+
+const VIA_TEXT = {
+  answer: "보냈다. 상대가 이 답을 기다리던 중이라 바로 받았다.",
+  live: "보냈다. 상대가 작업 중이라 지금 하는 작업에 바로 들어갔다.",
+  queue: "보냈다. 상대가 쉬고 있으면 바로 시작하고, 실행 중이면 지금 작업이 끝난 뒤 받는다.",
+};
+
+const MCP_TOOLS = [
+  {
+    name: "list_sessions",
+    description: "같은 프로젝트의 다른 AgentHub 세션(이름, id, 에이전트, 역할, 상태)을 본다. 메시지를 보낼 상대를 찾을 때 쓴다.",
+    inputSchema: { type: "object", properties: {} },
+    run: (session) => mailbox.directory(session),
+  },
+  {
+    name: "send_message",
+    description: "다른 세션에 메시지를 보낸다. 답을 기다리지 않는다. 받은 메시지에 답할 때도 이것으로 보낸 세션에게 보낸다.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "받는 세션의 이름, 역할 이름, 또는 id" },
+        text: { type: "string", description: "보낼 내용" },
+      },
+      required: ["to", "text"],
+    },
+    run: (session, { to, text }) => {
+      const { target, via } = mailbox.send(session, to, text);
+      return `"${target.title}"에게 ${VIA_TEXT[via]}`;
+    },
+  },
+  {
+    name: "ask_session",
+    description: `다른 세션에 묻고 답이 올 때까지 기다린다(기본 ${ASK_TIMEOUT_SEC}초, 최대 ${ASK_TIMEOUT_MAX}초). 답 없이는 진행할 수 없을 때만 쓴다.`,
+    inputSchema: {
+      type: "object",
+      properties: {
+        to: { type: "string", description: "받는 세션의 이름, 역할 이름, 또는 id" },
+        question: { type: "string", description: "물을 내용" },
+        timeoutSec: { type: "number", description: "기다릴 최대 시간(초)" },
+      },
+      required: ["to", "question"],
+    },
+    run: async (session, { to, question, timeoutSec }) => {
+      const { target, answer } = await mailbox.ask(session, to, question, timeoutSec);
+      return answer ?? `"${target.title}"에게서 제한 시간 안에 답이 오지 않았다. 늦게 온 답은 다음 요청으로 받는다. 기다리지 말고 할 수 있는 일을 계속한다.`;
+    },
+  },
+  {
+    name: "check_messages",
+    description: "작업 중에 나에게 와서 아직 읽지 않은 메시지를 확인한다. 읽은 메시지는 다음 요청으로 다시 오지 않는다.",
+    inputSchema: { type: "object", properties: {} },
+    run: (session) => mailbox.inbox(session).join("\n\n---\n\n") || "새 메시지가 없다.",
+  },
+  {
+    name: "board_read",
+    description: "프로젝트 공유 노트를 읽는다. 다른 세션이 남긴 약속·결정·진행 상황이 있다.",
+    inputSchema: { type: "object", properties: {} },
+    run: (session) => readBoard(session.projectPath) || "공유 노트가 비어 있다.",
+  },
+  {
+    name: "board_post",
+    description: "프로젝트 공유 노트에 글을 덧붙인다. API 약속, 정한 사항, 진행 상황처럼 다른 세션도 알아야 할 것을 짧게 남긴다.",
+    inputSchema: {
+      type: "object",
+      properties: { text: { type: "string", description: "남길 내용(마크다운)" } },
+      required: ["text"],
+    },
+    run: (session, { text }) => {
+      postBoard(session.projectPath, session.title, text);
+      broadcast("board", { projectPath: session.projectPath });
+      return "공유 노트에 남겼다.";
+    },
+  },
+];
+
+// POST /mcp/<토큰>: 에이전트 CLI가 부르는 MCP 요청
+async function handleMcp(req, res, token) {
+  const sessionId = mcpTokens.session(token);
+  const session = sessionId && store.get(sessionId);
+  if (!session) return send(res, 404, { error: "알 수 없는 MCP 주소입니다." });
+  if (req.method === "DELETE") return send(res, 200, {});
+  if (req.method !== "POST") {
+    res.writeHead(405, { Allow: "POST, DELETE" }).end();
+    return;
+  }
+  let body;
+  try {
+    body = await readJson(req);
+  } catch {
+    return send(res, 400, { jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
+  }
+  const reply = await handleRpc(body, session, MCP_TOOLS, { name: "agenthub", version: VERSION, instructions: MESSAGE_GUIDE });
+  if (!reply) {
+    res.writeHead(202).end();
+    return;
+  }
+  send(res, 200, reply);
+}
 
 function getCommand(id) {
   const command = commands.get(id);
@@ -110,6 +228,8 @@ function generateCommand({ prompt, shell, projectPath }) {
 function isTrustedRequest(req) {
   const allowedHosts = [`127.0.0.1:${port}`, `localhost:${port}`];
   if (!allowedHosts.includes(req.headers.host)) return false;
+  // 에이전트 CLI의 MCP 요청은 X-AgentHub 헤더 대신 주소의 비밀 토큰으로 확인한다. 브라우저에서 온 요청(Origin)은 받지 않는다.
+  if (req.url.startsWith("/mcp/")) return !req.headers.origin;
   if (req.method !== "GET" && req.headers["x-agenthub"] !== "1") return false;
   return true;
 }
@@ -211,13 +331,14 @@ function getLink(id) {
 function linkFields(body, current = {}) {
   const when = body.when ?? current.when ?? "success";
   if (!CONDITIONS.includes(when)) throw new HttpError(400, "연결 조건이 올바르지 않습니다.");
-  const keyword = String(body.keyword ?? current.keyword ?? "").trim().slice(0, 100);
-  if (when === "keyword" && !keyword) throw new HttpError(400, "키워드를 입력하세요.");
+  // 키워드 조건이 아니면 키워드를 남겨 두지 않는다.
+  const keyword = when === "keyword" ? String(body.keyword ?? current.keyword ?? "").trim().slice(0, 100) : "";
+  if (when === "keyword" && !keyword) throw new HttpError(400, "키워드를 입력하세요. 여러 개는 쉼표로 나눕니다.");
   return {
     when,
     keyword,
     note: String(body.note ?? current.note ?? "").trim().slice(0, ROLE_MAX),
-    enabled: body.enabled ?? current.enabled ?? true,
+    enabled: !!(body.enabled ?? current.enabled ?? true),
     approve: !!(body.approve ?? current.approve ?? false), // 넘기기 전에 연결선 위에서 승인을 받는다
     ...(body.approve === false ? { pending: null } : {}), // 승인을 끄면 기다리던 것도 거둔다
   };
@@ -257,10 +378,15 @@ function composeInput(session, prompt) {
     const intro = AGENTS[session.agent].CHAT_INTRO;
     return intro && !session.agentSessionId ? `${intro}\n\n${input}` : input;
   }
-  const input = withSkills(session, session.kind !== "orchestrator" ? withRole(session, prompt) : orchestratorInput(session, prompt, {
+  let input = withSkills(session, session.kind !== "orchestrator" ? withRole(session, prompt) : orchestratorInput(session, prompt, {
     hub: readHubFile(session.projectPath),
     sessions: projectSessions(session.projectPath),
   }));
+  // 세션 사이 소통 규칙도 CLI 대화마다 한 번 붙인다.
+  if (!session.agentSessionId || !session.messageGuide) {
+    session.messageGuide = true;
+    input = `${MESSAGE_GUIDE}\n\n${input}`;
+  }
   // Claude는 실행 중에 질문 도구로 직접 묻는다. 질문 블록 규칙은 그런 통로가 없는 CLI(Codex)에만 붙인다.
   if (AGENTS[session.agent].interactive) return input;
   // CLI 대화마다 한 번 붙인다. 가져온 세션처럼 이미 대화가 있어도 아직 안 붙였으면 붙인다.
@@ -352,12 +478,58 @@ async function createSession({ project, isolate, title, role, roleName, orchestr
   return session;
 }
 
-// 사용자가 직접 보낸 요청은 새 흐름이다.
-function startTurn(session, prompt) {
+// ── 일시중지·재개 ─────────────────────────────────────────────
+// 일시중지: 실행 중이면 턴을 멈추되 CLI 대화와 대기열은 그대로 둔다. 쉬고 있으면 넘어오는 작업을 쌓아 두기만 한다.
+// 재개: 턴 중간에 멈췄으면 같은 대화에 이어서 하라고 보내고, 그다음 쌓인 작업을 차례로 보낸다.
+const INTERRUPTED_NOTE = "[사용자가 앞의 작업을 중간에 일시중지했다. 멈춘 곳까지의 상태를 확인하고 이어서 판단한다]";
+const RESUME_PROMPT = "일시중지했던 작업을 재개한다. 멈춘 곳부터 이어서 진행한다.";
+
+// 일시중지를 풀고, 턴 중간에 멈췄었는지 돌려준다.
+function clearPause(session) {
+  if (!session.paused) return false;
+  const midTurn = !!session.pausedMidTurn;
+  delete session.paused;
+  delete session.pausedMidTurn;
+  return midTurn;
+}
+
+function pauseSession(session) {
+  if (session.paused) throw new HttpError(409, "이미 일시중지한 세션입니다.");
+  session.paused = true;
+  if (runner.isRunning(session.id)) {
+    session.pausedMidTurn = true;
+    runner.interrupt(session); // 끝나면 runner가 "paused" 상태로 바꾼다.
+  } else {
+    runner.append(session, { kind: "status", text: "일시중지했습니다. 넘어오는 작업은 재개할 때까지 쌓아 둡니다." });
+    runner.setState(session, "paused");
+  }
+}
+
+function resumeSession(session) {
+  if (!session.paused) throw new HttpError(409, "일시중지한 세션이 아닙니다.");
+  if (runner.isRunning(session.id)) throw new HttpError(409, "아직 멈추는 중입니다. 잠시 뒤에 다시 시도하세요.");
+  if (session.pausedMidTurn) {
+    // 흐름 단계는 이어서 센다. 재개한 턴이 끝나면 연결·대기열도 평소처럼 이어진다.
+    clearPause(session);
+    startTurn(session, RESUME_PROMPT, session.chainDepth ?? 0);
+    return;
+  }
+  clearPause(session);
+  runner.append(session, { kind: "status", text: "재개했습니다." });
+  runner.setState(session, "idle");
+  chain.flush(session);
+}
+
+// 사용자가 직접 보낸 요청은 새 흐름(0단계)이다. 흐름 중간의 질문에 답한 것처럼 같은 흐름을 잇는 요청은 depth를 넘긴다.
+function startTurn(session, prompt, depth = 0) {
   if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
-  session.chainDepth = 0;
+  session.chainDepth = depth;
+  delete session.awaitingReply; // 사용자가 직접 이어 가면 다른 세션의 답을 기다리지 않는다.
+  // 일시중지 중에 직접 보내면 재개한 것으로 본다. 턴 중간에 멈췄으면 CLI에 그 사실을 알린다.
+  const interrupted = clearPause(session);
+  const input = interrupted ? `${INTERRUPTED_NOTE}\n\n${prompt}` : prompt;
   try {
-    runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, prompt));
+    runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, input));
   } catch (err) {
     throw new HttpError(409, err.message);
   }
@@ -399,6 +571,31 @@ runner.prependListener("turnEnd", (session, ok) => {
   runner.append(session, event);
 });
 
+// ── 메시지 블록 ─────────────────────────────────────────────────
+// 턴이 끝나면 답변의 메시지 블록을 꺼내 받는 세션에 보낸다(MCP 도구를 쓰지 못한 경우의 통로).
+// wait이면 답이 올 때까지 이 세션의 연결로 넘기지 않고, 답이 오면 하던 일을 잇는 요청으로 받는다.
+runner.prependListener("turnEnd", (session, ok) => {
+  if (session.chat || ok === null) return;
+  const found = extractMessages(lastAnswer(session));
+  if (!found) return;
+  if (found.error) {
+    runner.append(session, { kind: "error", text: found.error });
+    return;
+  }
+  for (const message of found.messages) {
+    try {
+      const { target } = mailbox.send(session, message.to, message.text);
+      if (message.wait && !session.awaitingReply) {
+        session.awaitingReply = target.id;
+        session.waiting = true;
+        runner.append(session, { kind: "status", text: `"${target.title}"의 답을 기다립니다` });
+      }
+    } catch (err) {
+      runner.append(session, { kind: "error", text: `메시지를 보내지 못했습니다: ${err.message}` });
+    }
+  }
+});
+
 function planContext(session) {
   return {
     hub: readHubFile(session.projectPath),
@@ -436,11 +633,19 @@ async function applyPlan(orchestrator, raw) {
   }
   const id = (name) => ids.get(name) ?? name;
   let linked = 0;
+  let changed = 0;
   for (const item of plan.links) {
     const from = id(item.from);
     const to = id(item.to);
-    if (links.list().some((l) => l.from === from && l.to === to)) continue;
-    links.add({ id: randomBytes(4).toString("hex"), from, to, when: item.when, keyword: item.keyword, note: item.note, enabled: true });
+    const fields = { when: item.when, keyword: item.when === "keyword" ? item.keyword : "", note: item.note, enabled: true };
+    // 이미 이어진 두 세션이면 계획의 조건으로 고친다(새 계획이 조건을 바꾸려는 것이다).
+    const existing = links.list().find((l) => l.from === from && l.to === to);
+    if (existing) {
+      links.update(existing, { ...fields, pending: null });
+      changed++;
+      continue;
+    }
+    links.add({ id: randomBytes(4).toString("hex"), from, to, ...fields });
     linked++;
   }
   broadcast("sessions", {});
@@ -449,7 +654,7 @@ async function applyPlan(orchestrator, raw) {
     const target = store.get(id(item.to));
     if (target) chain.enqueue(target, item.prompt, { from: orchestrator.id, fromTitle: orchestrator.title }, 0);
   }
-  return `세션 ${created}개 만듦 · 연결 ${linked}개 · 요청 ${plan.send.length}건`;
+  return `세션 ${created}개 만듦 · 연결 ${linked}개${changed ? ` · 연결 ${changed}개 고침` : ""} · 요청 ${plan.send.length}건`;
 }
 
 // AGENTHUB.md의 흐름 템플릿으로 역할마다 세션을 만들고 연결한다. prompt가 있으면 받는 연결이 없는 역할에 보낸다.
@@ -522,6 +727,8 @@ async function handleApi(req, res, url) {
       },
       cliOverrides: config.cli,
       projects: config.projects,
+      // 연결 조건 선택지(보이는 순서)
+      linkConditions: Object.entries(CONDITION_LABELS).map(([id, label]) => ({ id, label })),
     });
   }
 
@@ -815,6 +1022,32 @@ async function handleApi(req, res, url) {
     }
   }
 
+  // 프로젝트에서 세션끼리 주고받은 메시지(최근 것)
+  if (parts[0] === "messages" && parts.length === 1 && method === "GET") {
+    const projectPath = url.searchParams.get("path");
+    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+    return send(res, 200, mailbox.list(projectPath, samePath));
+  }
+
+  // 프로젝트 공유 노트. 세션은 MCP 도구로 덧붙이고, 화면에서는 보고 고치거나 비운다.
+  if (parts[0] === "board" && parts.length === 1) {
+    if (method === "GET") {
+      const projectPath = url.searchParams.get("path");
+      if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+      return send(res, 200, { text: readBoard(projectPath) });
+    }
+    if (method === "PUT") {
+      const body = await readJson(req);
+      const project = ensureProject(body.path);
+      const text = String(body.text ?? "").trim();
+      if (text.length > 60000) throw new HttpError(400, "공유 노트는 60000자까지 쓸 수 있습니다.");
+      if (text) writeBoard(project.path, `${text}\n`);
+      else clearBoard(project.path);
+      broadcast("board", { projectPath: project.path });
+      return send(res, 200, { text: readBoard(project.path) });
+    }
+  }
+
   if (parts[0] === "links") {
     if (parts.length === 1 && method === "GET") return send(res, 200, links.list());
 
@@ -953,6 +1186,8 @@ async function handleApi(req, res, url) {
         }
         if (action === "send") {
           if (runner.isRunning(session.id)) throw new HttpError(409, "실행 중입니다. 끝나면 차례로 보냅니다.");
+          // 일시중지 중에 직접 보내면 재개한 것으로 본다.
+          if (clearPause(session) || session.state === "paused") runner.setState(session, "idle");
           const item = chain.take(session.id, parts[3]);
           chain.enqueue(session, item.text, item.meta, item.depth); // 실행 중이 아니므로 바로 시작한다.
           return send(res, 200, { ok: true });
@@ -1032,7 +1267,8 @@ async function handleApi(req, res, url) {
       event.status = "answered";
       event.answers = answers;
       try {
-        startTurn(session, answerPrompt(event.questions, answers));
+        // 흐름 중간에 물은 질문이면 단계를 이어 세어 연결이 끝없이 돌지 않게 한다.
+        startTurn(session, answerPrompt(event.questions, answers), session.chainDepth ?? 0);
       } catch (err) {
         event.status = "pending"; // 보내지 못했으면 다시 답할 수 있게 둔다.
         delete event.answers;
@@ -1053,7 +1289,27 @@ async function handleApi(req, res, url) {
       return send(res, 200, event);
     }
 
-    if (parts[2] === "stop" && method === "POST") return send(res, 200, { stopped: runner.stop(session) });
+    if (parts[2] === "stop" && method === "POST") {
+      // 일시중지한 세션을 중지하면 이어서 하지 않고 넘어온 작업도 버린다(사용자가 넣은 요청은 남긴다).
+      if (session.paused && !runner.isRunning(session.id)) {
+        clearPause(session);
+        runner.setState(session, "idle");
+        await chain.onTurnEnd(session, null);
+        runner.append(session, { kind: "status", text: "일시중지를 풀고 중지했습니다." });
+        return send(res, 200, { stopped: true });
+      }
+      return send(res, 200, { stopped: runner.stop(session) });
+    }
+
+    if (parts[2] === "pause" && method === "POST") {
+      pauseSession(session);
+      return send(res, 200, summary(session));
+    }
+
+    if (parts[2] === "resume" && method === "POST") {
+      resumeSession(session);
+      return send(res, 200, summary(session));
+    }
 
     if (parts[2] === "restart" && method === "POST") {
       try {
@@ -1132,6 +1388,9 @@ async function handleApi(req, res, url) {
         throw new HttpError(500, `세션 파일을 지우지 못했습니다: ${err.message}`);
       }
       links.removeForSession(session.id);
+      mailbox.removeForSession(session.id);
+      mcpTokens.forget(session.id);
+      fs.rmSync(path.join(MCP_DIR, `${session.id}.json`), { force: true });
       // 지운 세션의 Claude Code·Codex 기록이 프로젝트 화면에 "가져오기"로 다시 뜨지 않게 한다.
       // records=delete면 기록 파일까지 지우고, 아니면 목록에서 숨기기만 한다.
       let records = { deleted: 0, errors: [] };
@@ -1155,6 +1414,15 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   const url = new URL(req.url, `http://${req.headers.host}`);
+  const mcp = url.pathname.match(/^\/mcp\/([0-9a-f]{48})$/);
+  if (mcp) {
+    try {
+      await handleMcp(req, res, mcp[1]);
+    } catch (err) {
+      send(res, err.status ?? 500, { error: err.message });
+    }
+    return;
+  }
   if (!url.pathname.startsWith("/api/")) return serveStatic(req, res);
   try {
     await handleApi(req, res, url);

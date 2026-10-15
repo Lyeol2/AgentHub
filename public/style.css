@@ -281,7 +281,6 @@ main { display: flex; min-width: 0; min-height: 0; height: 100vh; }
 .ev.text { padding: 2px 0; line-height: 1.65; }
 .ev.thinking { color: var(--faint); font-style: italic; font-size: 12.5px; border-left: 2px solid var(--line-strong); padding-left: 10px; }
 .ev.tool { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.ev.tool::before { content: "▸ "; color: var(--accent); }
 .ev.tool_result, .ev.log {
   font-family: var(--mono); font-size: 11.5px; color: var(--code-text);
   background: var(--code-bg); border: 1px solid var(--line);
@@ -678,3 +677,46 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .setup-code .mono { font-size: 20px; font-weight: 700; letter-spacing: 2px; color: var(--text); }
 .setup-paste { display: flex; gap: 8px; }
 .setup-log { margin: 4px 0 0; max-height: 200px; overflow: auto; font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; color: var(--muted); }
+
+/* ── 연결 설정 ──────────────────────────────────────────── */
+.link-keyword-row { display: grid; gap: 6px; }
+.link-keyword-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.link-keyword-chips:empty { display: none; }
+.link-siblings { display: grid; gap: 4px; font-size: 12.5px; }
+.link-siblings ul { margin: 0; padding-left: 18px; }
+
+/* ── 세션 메시지 ────────────────────────────────────────── */
+/* 메시지를 주고받은 세션 사이의 대화선. 툴팁으로 주고받은 수와 마지막 메시지를 보인다. */
+.graph-edges path.edge.message { stroke: var(--accent); stroke-opacity: .45; stroke-dasharray: 1 6; stroke-linecap: round; stroke-width: 2.4; pointer-events: stroke; }
+.graph-edges path.edge.message:hover { stroke-opacity: .9; }
+#board-text { font-family: var(--mono); font-size: 12.5px; min-height: 320px; }
+
+/* ── 도구 호출 접기 ─────────────────────────────────────── */
+.ev.tool { width: 100%; }
+.ev.tool > details > summary {
+  display: flex; align-items: center; gap: 8px; cursor: pointer; list-style: none;
+  padding: 2px 0; color: var(--muted);
+}
+.ev.tool > details > summary::-webkit-details-marker { display: none; }
+.ev.tool > details > summary::before { content: "▸"; color: var(--accent); flex: none; transition: transform .12s; }
+.ev.tool > details[open] > summary::before { transform: rotate(90deg); }
+.ev.tool > details > summary:hover .tool-name { color: var(--text); }
+.ev.tool .tool-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ev.tool .tool-state { flex: none; font-size: 11px; color: var(--faint); }
+.ev.tool.failed .tool-state { color: var(--danger); }
+.ev.tool.failed > details > summary::before { color: var(--danger); }
+/* 턴이 도는 동안 결과가 아직 없는 도구 호출은 실행 중으로 보인다. */
+.events.running .ev.tool.pending .tool-state::after { content: "실행 중…"; color: var(--accent); animation: tool-blink 1.2s ease-in-out infinite; }
+@keyframes tool-blink { 50% { opacity: .35; } }
+.ev.tool .tool-body { display: grid; gap: 4px; margin: 4px 0 6px 16px; }
+.ev.tool .tool-label { font-size: 10.5px; color: var(--faint); text-transform: uppercase; letter-spacing: .4px; }
+.ev.tool pre {
+  margin: 0; font-family: var(--mono); font-size: 11.5px; color: var(--code-text);
+  background: var(--code-bg); border: 1px solid var(--line); padding: 7px 10px; border-radius: 6px;
+  max-height: 320px; overflow: auto; white-space: pre-wrap; word-break: break-word;
+}
+.ev.tool pre.is-error { border-left: 3px solid var(--danger); }
+
+/* ── 일시중지 ────────────────────────────────────────────── */
+.pill.paused { color: var(--warn); border-color: var(--warn); }
+.gcard.paused { border-color: var(--warn); border-style: dashed; }

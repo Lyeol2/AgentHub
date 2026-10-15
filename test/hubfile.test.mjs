@@ -25,17 +25,21 @@ test("hubfile: 설정이 없는 역할은 기본값을 쓰고 본문 첫 줄의 
   assert.equal(hub.roles[1].permission, "workspace-write");
 });
 
-test("hubfile: 조건 표기와 잘못된 값을 구분한다", () => {
+test("hubfile: 조건 표기를 읽고 따옴표 없는 말은 키워드로 둔다", () => {
   const hub = parseHubFile([
     "## 역할: a", "## 역할: b",
     "## 흐름: f",
     "설명 줄은 무시한다.",
-    "- a -> b", "- a → b: 실패", "- b -> a: 항상 | 다시 봐", "- a -> b: 가끔", "- a -> c: 수동",
+    "- a -> b", "- a → b: 실패", "- b -> a: 항상 | 다시 봐", "- a -> b: 수정 필요 | 고쳐", "- a -> c: 수동",
+    "- b -> a: 그 외", '- a -> b: "성공" | 키워드로 쓴 조건 이름', '- a -> b: "a|b" | 지시',
     "## 역할: d", "- 권한: plan", "- 에이전트: codex",
   ].join("\n"));
-  assert.deepEqual(hub.flows[0].steps.map((s) => s.when), ["success", "error", "always", "manual"]);
-  assert.equal(hub.flows[0].steps[2].note, "다시 봐");
-  assert.ok(hub.warnings.some((w) => w.includes("가끔")));
+  const steps = hub.flows[0].steps;
+  assert.deepEqual(steps.map((s) => s.when), ["success", "error", "always", "keyword", "manual", "otherwise", "keyword", "keyword"]);
+  assert.equal(steps[2].note, "다시 봐");
+  assert.deepEqual([steps[3].keyword, steps[3].note], ["수정 필요", "고쳐"]);
+  assert.equal(steps[6].keyword, "성공");
+  assert.deepEqual([steps[7].keyword, steps[7].note], ["a|b", "지시"]);
   assert.ok(hub.warnings.some((w) => w.includes('역할 "c"')));
   // 권한을 에이전트보다 먼저 적어도 에이전트 기준으로 검사한다.
   assert.ok(hub.warnings.some((w) => w.includes('역할 "d"') && w.includes("plan")));

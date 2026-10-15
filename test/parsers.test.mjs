@@ -154,3 +154,30 @@ test("discover: AgentHub가 붙인 안내를 걷어내고 실제 요청으로 �
   assert.equal(userPrompt("[중요] 사용자가 쓴 대괄호"), "[중요] 사용자가 쓴 대괄호");
   assert.equal(userPrompt("그냥 요청"), "그냥 요청");
 });
+
+test("args: AgentHub MCP 서버를 붙인다", () => {
+  const mcp = { url: "http://127.0.0.1:4517/mcp/abc", configFile: "C:/d/mcp/s.json" };
+  const c = claude.buildArgs({ permission: "acceptEdits" }, { mcp });
+  assert.deepEqual(c.slice(c.indexOf("--mcp-config"), c.indexOf("--mcp-config") + 4), ["--mcp-config", "C:/d/mcp/s.json", "--allowedTools", "mcp__agenthub"]);
+  assert.ok(!claude.buildArgs({ permission: "acceptEdits" }).includes("--mcp-config"));
+  const x = codex.buildArgs({ agentSessionId: "t1", permission: "read-only", cwd: "C:/x" }, { mcp });
+  assert.ok(x.includes("mcp_servers.agenthub.url=http://127.0.0.1:4517/mcp/abc"));
+  assert.ok(x.includes("mcp_servers.agenthub.tool_timeout_sec=660"));
+  assert.ok(x.includes("mcp_servers.agenthub.default_tools_approval_mode=approve")); // exec는 승인을 물을 수 없다.
+  assert.equal(x.at(-1), "-"); // 요청은 여전히 stdin으로 보낸다.
+});
+
+test("codex: MCP 도구 결과와 실패를 보인다", () => {
+  const done = (extra) => JSON.stringify({ type: "item.completed", item: { type: "mcp_tool_call", server: "agenthub", tool: "board_post", ...extra } });
+  assert.deepEqual(codex.parseLine(done({ result: { content: [{ type: "text", text: "남겼다" }] }, error: null })), [{ kind: "tool_result", text: "남겼다" }]);
+  assert.deepEqual(codex.parseLine(done({ result: null, error: { message: "MCP tool call requires approval" } })),
+    [{ kind: "tool_result", text: "MCP tool call requires approval", isError: true }]);
+});
+
+test("claude: 일시중지는 Esc처럼 interrupt 요청을 보낸다", () => {
+  const msg = JSON.parse(claude.interruptLine());
+  assert.equal(msg.type, "control_request");
+  assert.equal(msg.request.subtype, "interrupt");
+  assert.match(msg.request_id, /^interrupt-/);
+  assert.equal(codex.interruptLine, undefined); // Codex는 프로세스를 멈추고 다음 턴에 같은 스레드로 이어 간다.
+});

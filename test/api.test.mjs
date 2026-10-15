@@ -48,7 +48,12 @@ test("api: 세션 수정·연결·삭제", async () => {
   assert.deepEqual(edited.body.graphPos, { x: 10, y: 20 });
 
   const link = (await api("POST", "/links", { from: a.id, to: b.id, when: "keyword", keyword: "끝" })).body;
-  assert.equal((await api("PUT", `/links/${link.id}`, { when: "always" })).body.when, "always");
+  const changed = (await api("PUT", `/links/${link.id}`, { when: "always" })).body;
+  assert.equal(changed.when, "always");
+  assert.equal(changed.keyword, ""); // 키워드 조건이 아니면 키워드를 남기지 않는다.
+  assert.equal((await api("PUT", `/links/${link.id}`, { when: "otherwise", enabled: 0 })).body.enabled, false);
+  assert.equal((await api("PUT", `/links/${link.id}`, { when: "keyword", keyword: " " })).status, 400);
+  assert.equal((await api("PUT", `/links/${link.id}`, { when: "가끔" })).status, 400);
   assert.equal((await api("POST", "/links", { from: a.id, to: b.id })).status, 409);
 
   assert.equal((await api("DELETE", `/sessions/${b.id}`)).status, 200);
@@ -118,5 +123,40 @@ test("api: 스킬을 만들고 세션에 이은 뒤 지우면 세션에서도 �
 
   assert.equal((await api("DELETE", `/skills/review?path=${encodeURIComponent(repo)}`)).status, 200);
   assert.deepEqual((await api("GET", `/sessions/${s.id}`)).body.skills, []);
+  await api("DELETE", `/sessions/${s.id}`);
+});
+
+test("api: 공유 노트·메시지 목록과 MCP 주소 검사", async () => {
+  assert.deepEqual((await api("GET", `/board?path=${encodeURIComponent(repo)}`)).body, { text: "" });
+  assert.equal((await api("PUT", "/board", { path: repo, text: "## 약속\nstatus는 string" })).body.text, "## 약속\nstatus는 string\n");
+  assert.match((await api("GET", `/board?path=${encodeURIComponent(repo)}`)).body.text, /status는 string/);
+  assert.equal((await api("PUT", "/board", { path: repo, text: "" })).body.text, "");
+  assert.equal((await api("GET", "/board")).status, 400);
+  assert.deepEqual((await api("GET", `/messages?path=${encodeURIComponent(repo)}`)).body, []);
+
+  const rpc = (headers = {}) => fetch(`http://127.0.0.1:45177/mcp/${"0".repeat(48)}`, {
+    method: "POST", headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }),
+  });
+  assert.equal((await rpc()).status, 404); // 모르는 토큰
+  assert.equal((await rpc({ Origin: "http://evil.example" })).status, 403); // 브라우저에서 온 요청
+});
+
+test("api: 쉬고 있는 세션을 일시중지·재개·중지한다", async () => {
+  const s = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "P", permission: "acceptEdits" })).body;
+  const paused = await api("POST", `/sessions/${s.id}/pause`);
+  assert.equal(paused.body.state, "paused");
+  assert.equal(paused.body.paused, true);
+  assert.equal((await api("POST", `/sessions/${s.id}/pause`)).status, 409);
+  const resumed = await api("POST", `/sessions/${s.id}/resume`);
+  assert.equal(resumed.body.state, "idle");
+  assert.equal(resumed.body.paused, undefined);
+  assert.equal((await api("POST", `/sessions/${s.id}/resume`)).status, 409);
+
+  await api("POST", `/sessions/${s.id}/pause`);
+  assert.equal((await api("POST", `/sessions/${s.id}/stop`)).body.stopped, true); // 일시중지를 풀고 중지
+  const after = (await api("GET", `/sessions/${s.id}`)).body;
+  assert.equal(after.state, "idle");
+  assert.match(after.events.at(-1).text, /중지했습니다/);
   await api("DELETE", `/sessions/${s.id}`);
 });

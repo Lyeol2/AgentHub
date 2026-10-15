@@ -36,7 +36,8 @@ export function efforts() {
 export const CHAT_INTRO = "[일반 대화] 코딩 작업이 아니라 사용자와 나누는 일반 대화다. " +
   "파일을 읽거나 명령을 실행하지 말고 바로 답한다. 사용자가 쓴 언어로 답한다.";
 
-export function buildArgs(session) {
+// mcp: AgentHub MCP 서버(세션끼리 소통하는 도구). ask_session은 답을 몇 분까지 기다리므로 도구 제한 시간을 늘린다.
+export function buildArgs(session, { mcp = null } = {}) {
   const sandbox = session.permission ?? "workspace-write";
   const args = ["exec"];
   if (session.agentSessionId) {
@@ -47,6 +48,11 @@ export function buildArgs(session) {
   }
   if (session.model) args.push("--model", session.model);
   if (session.effort) args.push("-c", `model_reasoning_effort=${session.effort}`);
+  // exec는 승인을 물을 수 없어 승인이 필요한 MCP 도구를 거절하므로, AgentHub 도구는 묻지 않고 쓰게 한다.
+  if (mcp) {
+    args.push("-c", `mcp_servers.agenthub.url=${mcp.url}`, "-c", "mcp_servers.agenthub.tool_timeout_sec=660",
+      "-c", "mcp_servers.agenthub.default_tools_approval_mode=approve");
+  }
   // 일반 채팅은 git 저장소가 아닌 빈 폴더에서 실행한다.
   if (session.chat) args.push("--skip-git-repo-check");
   args.push("-");
@@ -79,7 +85,14 @@ function itemEvents(phase, item) {
       if (phase !== "completed") return [];
       return [{ kind: "tool", text: `파일 변경: ${(item.changes ?? []).map((c) => `${c.kind} ${c.path}`).join(", ")}` }];
     case "mcp_tool_call":
-      return phase === "started" ? [{ kind: "tool", text: `MCP ${item.server}.${item.tool}` }] : [];
+      if (phase === "started") return [{ kind: "tool", text: `MCP ${item.server}.${item.tool}` }];
+      if (phase === "completed") {
+        // 승인 거절 같은 실패도 보이게 한다. 성공 결과는 글 부분만 보인다.
+        if (item.error) return [{ kind: "tool_result", text: truncate(item.error.message ?? item.error), isError: true }];
+        const text = (item.result?.content ?? []).map((c) => (c.type === "text" ? c.text : `[${c.type}]`)).join("\n");
+        return [{ kind: "tool_result", text: truncate(text || "(결과 없음)") }];
+      }
+      return [];
     case "web_search":
       return phase === "started" ? [{ kind: "tool", text: `웹 검색: ${item.query}` }] : [];
     case "todo_list":

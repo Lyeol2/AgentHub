@@ -24,8 +24,10 @@ export const efforts = () => EFFORTS;
 const CHAT_PROMPT = "You are Claude, a helpful AI assistant having a conversation with the user. " +
   "Answer directly and conversationally, using Markdown where it helps. Reply in the language the user writes in.";
 
-export function buildArgs(session) {
+// mcp: AgentHub MCP 서버(세션끼리 소통하는 도구). 설정 파일로 넘기고 도구는 묻지 않고 쓰게 한다.
+export function buildArgs(session, { mcp = null } = {}) {
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio"];
+  if (mcp) args.push("--mcp-config", mcp.configFile, "--allowedTools", "mcp__agenthub");
   args.push("--permission-mode", session.permission ?? "acceptEdits");
   if (session.model) args.push("--model", session.model);
   if (session.effort) args.push("--effort", session.effort);
@@ -45,6 +47,9 @@ export function buildArgs(session) {
 // ── 실행 중 대화(control 프로토콜) ──────────────────────────────
 // stdin을 열어 둔 채 요청을 보낸다. 턴이 끝나면(result) stdin을 닫아 CLI를 끝낸다.
 export const interactive = true;
+
+// 지금 턴을 멈춘다(Claude Code에서 Esc를 누른 것과 같다). CLI는 턴을 끝내고 대화 기록을 남긴다.
+export const interruptLine = () => JSON.stringify({ type: "control_request", request_id: `interrupt-${randomUUID()}`, request: { subtype: "interrupt" } });
 
 export const initLine = () => JSON.stringify({ type: "control_request", request_id: `init-${randomUUID()}`, request: { subtype: "initialize" } });
 
