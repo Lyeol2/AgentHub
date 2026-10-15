@@ -206,6 +206,7 @@ export function createSessionService({
       createdBy: createdBy ?? null, // 이 세션을 만든 오케스트레이터
       agent,
       chat,
+      locked: false,
       model,
       effort,
       permission,
@@ -326,7 +327,7 @@ export function createSessionService({
       projectName: project.name, projectPath: project.path, cwd, worktree: null,
       baseCommit: git ? await headCommit(project.path) : null,
       agentSessionId: found.agentSessionId, cliSessionIds: [found.agentSessionId],
-      imported: true, state: "idle", runningStartedAt: null,
+      imported: true, locked: false, state: "idle", runningStartedAt: null,
       createdAt: now, updatedAt: now,
       compactions: history.compactions, context: history.context, events: history.events,
     };
@@ -338,6 +339,7 @@ export function createSessionService({
 
   function detail(id) {
     const session = getSession(id);
+    if (session.locked) throw new HttpError(423, "잠긴 세션입니다. 좌물쇠를 눌러 잠금을 해제하세요.", "locked");
     return { ...settleState(session), queue: chain.list(session.id), canInject: !!AGENTS[session.agent].interactive || AGENTS[session.agent].transport === "app-server" };
   }
 
@@ -406,6 +408,7 @@ export function createSessionService({
 
   async function update(id, body) {
     const session = getSession(id);
+    if (body.locked !== undefined && typeof body.locked !== "boolean") throw new HttpError(400, "locked는 true 또는 false여야 합니다.");
     if (body.agent !== undefined && body.agent !== session.agent) await switchAgent(session, body);
     if (body.title !== undefined) session.title = String(body.title).trim() || session.title;
     if (body.model !== undefined) session.model = checkModel(body.model);
@@ -424,7 +427,9 @@ export function createSessionService({
       session.graphPos = Number.isFinite(x) && Number.isFinite(y) ? { x: Math.max(0, x), y: Math.max(0, y) } : null;
     }
     if (body.skills !== undefined && !session.chat) setSessionSkills(session, body.skills);
+    if (body.locked !== undefined) session.locked = body.locked;
     store.touch(session);
+    if (body.locked !== undefined) store.flush(session.id);
     broadcast("sessions", {});
     return summary(session);
   }
@@ -539,6 +544,7 @@ export function createSessionService({
     }, { worktree: session.worktree });
     Object.assign(created, {
       baseCommit: session.baseCommit ?? created.baseCommit, graphPos: session.graphPos ?? null,
+      locked: !!session.locked,
       previousCwd: session.previousCwd, previousWorktree: session.previousWorktree,
     });
     store.touch(created);

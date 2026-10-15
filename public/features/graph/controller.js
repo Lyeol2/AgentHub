@@ -5,7 +5,7 @@ import { samePath } from "../../shared/store.js";
 import { linkLabel } from "../../shared/flow.js";
 import { openContextMenu, closeContextMenu } from "../../shared/context-menu.js";
 
-export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, skillChips, openSkillsManager, renderFlow, restartSession, openSessionMenu, openNew, cancelNodeCreation, data, navigation }) {
+export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, data, navigation }) {
   const ui = {
     "graph": null,
     "graphSelected": new Set(),
@@ -13,7 +13,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     "deletingGraphNodes": null,
     "editingLink": null
   };
-  const view = createGraphView({ skillChips, restartSession, commandNode });
+  const view = createGraphView({ skillChips, restartSession, toggleSessionLock, commandNode });
 
   // ── 세션 흐름 그래프 ────────────────────────────────────────────
 
@@ -97,8 +97,12 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const cmd = card && commandById(card.dataset.id);
     if (cmd) {
       const running = cmd.state === "running";
-      openContextMenu(e, `명령 ${cmd.title}`, [
-        running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
+      const kind = cmd.kind ?? "command";
+      const label = kind === "button" ? "버튼" : kind === "markdown" ? "Markdown 출력" : "명령";
+      openContextMenu(e, `${label} ${cmd.title}`, [
+        kind === "markdown"
+          ? ["결과 보기", () => openCommandOutput(cmd), { disabled: !cmd.lastRun?.output }]
+          : running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
         ["편집", () => openCommandDialog(cmd)],
         null,
         ["삭제", () => removeCommand(cmd), { danger: true }],
@@ -121,9 +125,17 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const inProject = (action) => () => {
       if (navigation.view === "project" && samePath(projectPath, navigation.project)) action();
     };
-    openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [
+    const source = commandById(connectFrom);
+    const entries = [
       ["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom }))],
-      ["새 명령", inProject(() => openCommandDialog(null, pos, connectFrom))],
+    ];
+    if (source?.kind !== "button") entries.push(
+      ["새 명령", inProject(() => openCommandDialog(null, pos, connectFrom))]);
+    if (!connectFrom) entries.push(
+      ["새 버튼", inProject(() => openCommandDialog(null, pos, null, "button"))]);
+    if (!source) entries.push(
+      ["새 Markdown 출력", inProject(() => openCommandDialog(null, pos, connectFrom, "markdown"))]);
+    openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [...entries,
       null,
       ["스킬 관리", inProject(() => openSkillsManager())],
     ]);
@@ -423,7 +435,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       return;
     }
     // 카드 안의 버튼(다시 시작, 스킬 칩, 명령 실행·중지)은 카드 선택·끌기와 따로 동작한다.
-    if (e.target.closest(".gcard-restart, .gcard-skills, .gcmd-btn")) return;
+    if (e.target.closest(".gcard-restart, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn")) return;
     e.preventDefault();
     const id = card.dataset.id;
     const start = canvasPoint(e);
@@ -629,7 +641,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   // 카드를 두 번 누르면 연다. Ctrl·Shift를 누르고 두 번 누르면 세션을 새 창으로 연다.
   $("p-graph").addEventListener("dblclick", (e) => {
     const card = e.target.closest(".gcard, .gcmd");
-    if (!card || e.target.closest(".gcard-restart, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
+    if (!card || e.target.closest(".gcard-restart, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
     const cmd = commandById(card.dataset.id);
     if (cmd) openCommandDialog(cmd);
     else if (e.ctrlKey || e.metaKey || e.shiftKey) openSessionWindow(card.dataset.id);
@@ -676,6 +688,12 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   // link가 없으면 from → to 새 연결을 만든다.
   function openLinkDialog(link, from = link?.from, to = link?.to) {
+    const source = commandById(from);
+    const target = commandById(to);
+    if (source?.kind === "markdown") return alert("Markdown 출력 노드는 완료 메시지를 받는 노드입니다.");
+    if (target?.kind === "button") return alert("버튼 노드는 연결을 받지 않고, 버튼을 눌러 실행합니다.");
+    if (source?.kind === "button" && target) return alert("버튼은 실행할 세션에 연결해 주세요.");
+    if (target?.kind === "markdown" && source) return alert("Markdown 출력은 완료 메시지를 보낼 세션에 연결해 주세요.");
     ui.editingLink = { link, from, to };
     $("link-names").textContent = `${nodeTitle(from)} → ${nodeTitle(to)}`;
     const initial = link ?? defaultLinkCondition(from);

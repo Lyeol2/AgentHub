@@ -489,24 +489,27 @@
   <dialog id="command-dialog" class="wide">
     <form method="dialog" id="command-form" class="dialog-form">
       <h3 id="command-heading">새 명령</h3>
-      <div class="command-gen">
+      <div id="command-generator" class="command-gen">
         <input id="command-prompt" placeholder="하고 싶은 일을 적고 '명령 만들기' (예: 테스트 돌리고 실패하면 멈추기)">
         <button type="button" id="command-generate" class="ghost">명령 만들기</button>
       </div>
       <p class="hint" id="command-explain"></p>
       <label>이름 <input id="command-title" placeholder="비워 두면 명령 첫 줄로 정합니다"></label>
-      <div class="three">
-        <label>셸 <select id="command-shell"></select></label>
-        <label>실행 폴더
+      <div id="command-settings" class="three">
+        <label id="command-shell-row">셸 <select id="command-shell"></select></label>
+        <label><span id="command-cwd-label">실행 폴더</span>
           <select id="command-cwd">
             <option value="source">보낸 세션의 작업 폴더</option>
             <option value="project">프로젝트 폴더</option>
           </select>
         </label>
-        <label>시간 제한(초) <input id="command-timeout" type="number" min="1" max="3600" value="600"></label>
+        <label id="command-timeout-row">시간 제한(초) <input id="command-timeout" type="number" min="1" max="3600" value="600"></label>
       </div>
-      <label>명령 <textarea id="command-text" rows="8" spellcheck="false" placeholder="npm test"></textarea></label>
-      <p class="hint">연결로 넘어오면 실행합니다. 종료 코드 0이면 "성공 시", 아니면 "실패 시" 연결로 넘어가고, 받는 세션에는 출력 마지막 부분이 함께 갑니다. 실행 전에 확인하려면 들어오는 연결에 "넘기기 전에 승인 받기"를 켜세요.</p>
+      <label id="command-text-row">명령 <textarea id="command-text" rows="8" spellcheck="false" placeholder="npm test"></textarea></label>
+      <label id="button-prompt-row" hidden>연결된 세션에 보낼 프롬프트
+        <textarea id="button-prompt" rows="6" maxlength="20000" placeholder="예: 작업을 시작하고 완료한 내용을 알려 주세요."></textarea>
+      </label>
+      <p class="hint" id="command-kind-hint">연결로 넘어오면 실행합니다. 종료 코드 0이면 "성공 시", 아니면 "실패 시" 연결로 넘어가고, 받는 세션에는 출력 마지막 부분이 함께 갑니다. 실행 전에 확인하려면 들어오는 연결에 "넘기기 전에 승인 받기"를 켜세요.</p>
       <div id="command-last" class="command-last" hidden>
         <p id="command-last-meta" class="hint"></p>
         <pre id="command-output" class="diff"></pre>
@@ -519,6 +522,23 @@
         <button value="cancel" formnovalidate class="ghost">취소</button>
         <button value="ok" class="primary">저장</button>
       </menu>
+    </form>
+  </dialog>
+
+  <dialog id="command-result-dialog" class="wide" aria-labelledby="command-result-heading">
+    <form method="dialog" class="dialog-form">
+      <h3 id="command-result-heading">MD 출력 결과</h3>
+      <p id="command-result-path" class="hint mono"></p>
+      <div class="command-result-tools" role="group" aria-label="출력 보기 방식">
+        <button type="button" id="command-result-rendered" class="ghost" aria-pressed="true">미리보기</button>
+        <button type="button" id="command-result-source" class="ghost" aria-pressed="false">원문</button>
+        <span class="spacer"></span>
+        <a id="command-result-download" class="command-result-download" download hidden>MD 다운로드</a>
+      </div>
+      <p id="command-result-status" class="hint" role="status"></p>
+      <div id="command-result-preview" class="md command-result-content" tabindex="0" aria-label="저장된 마크다운 미리보기"></div>
+      <pre id="command-result-raw" class="diff command-result-content" tabindex="0" aria-label="저장된 메시지 원문" hidden></pre>
+      <menu><span class="spacer"></span><button value="close" class="primary">닫기</button></menu>
     </form>
   </dialog>
 

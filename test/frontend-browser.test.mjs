@@ -91,13 +91,21 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
       if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
       else if (url.pathname === "/api/sessions") value = sessions;
       else if (/^\/api\/sessions\/[^/]+\/diff$/.test(url.pathname)) value = { status: "M fixture.txt", diff: "+fixture change" };
-      else if (url.pathname.startsWith("/api/sessions/")) { const s = sessions.find((s) => s.id === url.pathname.split("/")[3]); if (req.method === "PUT") Object.assign(s, body); if (req.method === "DELETE") sessions.splice(sessions.indexOf(s), 1); value = s; }
+      else if (url.pathname.startsWith("/api/sessions/")) {
+        const s = sessions.find((s) => s.id === url.pathname.split("/")[3]);
+        if (req.method === "GET" && s.locked) { res.statusCode = 423; value = { error: "잠긴 세션입니다.", reason: "locked" }; }
+        else { if (req.method === "PUT") Object.assign(s, body); if (req.method === "DELETE") sessions.splice(sessions.indexOf(s), 1); value = s; }
+      }
       else if (url.pathname === "/api/projects/all") value = [project];
       else if (url.pathname === "/api/projects/discover") value = [];
       else if (url.pathname === "/api/links") value = [{ id: "l1", from: "s1", to: "s2", enabled: true, when: "success" }];
       else if (url.pathname.startsWith("/api/commands/") && req.method === "DELETE") throw Error("locked");
       else if (url.pathname.startsWith("/api/commands/") && req.method === "PUT") value = {};
-      else if (url.pathname === "/api/commands") value = { shells: [{ id: "powershell", label: "PowerShell" }], commands: [{ id: "cmd-a", title: "Check", projectPath: project.path, command: "echo fixture", shell: "powershell", state: "idle", pos: { x: 20, y: 200 } }] };
+      else if (url.pathname === "/api/commands") value = { shells: [{ id: "powershell", label: "PowerShell" }], commands: [
+        { id: "cmd-a", title: "Check", projectPath: project.path, command: "echo fixture", shell: "powershell", state: "idle", pos: { x: 20, y: 200 } },
+        { id: "cmd-button", kind: "button", title: "작업 시작", prompt: "작업을 시작하세요.", projectPath: project.path, state: "idle", pos: { x: 360, y: 200 } },
+        { id: "cmd-md", kind: "markdown", title: "완료 보고서", cwdMode: "source", projectPath: project.path, state: "idle", pos: { x: 700, y: 200 } },
+      ] };
       else if (url.pathname === "/api/skills" || url.pathname === "/api/messages") value = [];
       else if (url.pathname === "/api/hub") value = { exists: false, roles: [] };
       else if (url.pathname === "/api/limits") value = { claude: { windows: [] }, codex: { windows: [] } };

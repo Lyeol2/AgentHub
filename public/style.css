@@ -668,6 +668,20 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .gcmd.error { border-color: rgb(240 100 100 / .6); }
 .gcmd .gcard-handle { border-color: var(--warn); }
 .gcmd .gcard-handle:hover { background: var(--warn); }
+.session-lock { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; background: transparent; color: var(--muted); }
+.session-lock svg { width: 14px; height: 14px; }
+.session-lock[aria-pressed="true"] { color: var(--warn); }
+.session-item-row { display: flex; align-items: stretch; gap: 2px; }
+.session-item-row > .session-item { flex: 1; min-width: 0; }
+.session-item-row > .session-lock { align-self: center; flex-shrink: 0; margin-right: 4px; }
+.gcard-top > .session-lock { flex-shrink: 0; margin-left: auto; }
+.title-cell > .session-lock { margin-left: 6px; vertical-align: middle; }
+.gcard.locked { border-style: dashed; }
+.gcmd-button { border-color: rgb(91 157 255 / .6); }
+.gcmd-button:hover, .gcmd-button .gcard-handle { border-color: var(--accent); }
+.gcmd-button .gcard-handle:hover { background: var(--accent); }
+.gcmd-markdown { border-color: rgb(170 120 255 / .6); }
+.gcmd-markdown:hover { border-color: var(--orch); }
 .gcmd-shell { margin-right: auto; margin-left: 6px; font-size: 10.5px; color: var(--faint); }
 .gcmd-code { color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gcmd-foot { display: flex; align-items: center; gap: 6px; min-width: 0; align-self: end; }
@@ -675,6 +689,8 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .gcmd-btn { flex: none; padding: 0 8px; font-size: 11px; line-height: 20px; color: var(--ok); border-color: rgb(76 194 138 / .45); }
 .gcmd-btn.stop { color: var(--danger); border-color: rgb(240 100 100 / .45); }
 .pill.cmd { color: var(--warn); border-color: rgb(229 180 75 / .5); background: rgb(229 180 75 / .1); font-size: 10px; padding: 0 6px; }
+.pill.cmd.button { color: var(--accent); border-color: rgb(91 157 255 / .5); background: rgb(91 157 255 / .1); }
+.pill.cmd.markdown { color: var(--orch); border-color: rgb(170 120 255 / .5); background: rgb(170 120 255 / .1); }
 .pill.cmd-running { color: var(--warn); border-color: rgb(229 180 75 / .5); }
 .pill.cmd-success { color: var(--ok); border-color: rgb(76 194 138 / .45); }
 .pill.cmd-error { color: var(--danger); border-color: rgb(240 100 100 / .45); }
@@ -684,6 +700,15 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .three { display: grid; grid-template-columns: 1fr 1.3fr 0.8fr; gap: 10px; }
 #command-text { font-family: var(--mono); font-size: 12.5px; }
 .command-last pre { max-height: 260px; margin: 0; }
+.command-result-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.command-result-tools > .spacer { flex: 1; }
+.command-result-tools button[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+.command-result-download { color: var(--accent); font-size: 12px; text-decoration: none; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; }
+.command-result-download:hover { border-color: var(--accent); }
+#command-result-path { margin: 0; overflow-wrap: anywhere; }
+#command-result-status:empty { display: none; }
+.command-result-content { min-height: 120px; max-height: min(55vh, 600px); overflow: auto; padding: 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); line-height: 1.65; overflow-wrap: anywhere; }
+#command-result-raw { margin: 0; white-space: pre-wrap; }
 .ok-text { color: var(--ok); }
 
 /* ── CLI 설치·로그인 ──────────────────────────────────────── */

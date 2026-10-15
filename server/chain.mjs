@@ -2,7 +2,8 @@
 import { randomBytes } from "node:crypto";
 import { changedFiles } from "./git.mjs";
 import { withRole } from "./role.mjs";
-import { isCommandId, runShell, outputTail, commandHandoffText } from "./commands.mjs";
+import { isCommandId, commandKind, runShell, outputTail, commandHandoffText } from "./commands.mjs";
+import { finalAnswer, writeMessageOutput } from "./utility-output.mjs";
 
 import { canContact } from "./policies/messaging.mjs";
 import { MAX_HOPS, lastAnswer, verdictLine, pickLinks, noMatchNote, handoffText } from "./policies/workflows.mjs";
@@ -59,6 +60,7 @@ export class Chain {
     if (!session.waiting && !started?.message) {
       // 사용자에게 질문하고 답을 기다리는 턴은 끝난 작업이 아니므로 넘기지 않는다.
       const answer = lastAnswer(session);
+      const completion = finalAnswer(session);
       const verdict = verdictLine(answer);
       const outgoing = this.links.from(session.id);
       const picked = pickLinks(outgoing, ok, verdict);
@@ -67,8 +69,9 @@ export class Chain {
         if (text) this.note(session, text);
       }
       for (const link of picked) {
-        if (link.approve) this.hold(link, session, answer, session.chainDepth ?? 0);
-        else await this.deliver(link, session.chainDepth ?? 0, answer);
+        const message = commandKind(this.node(link.to)) === "markdown" ? completion : answer;
+        if (link.approve) this.hold(link, session, message, session.chainDepth ?? 0);
+        else await this.deliver(link, session.chainDepth ?? 0, message);
       }
     }
     this.flush(session);
@@ -114,8 +117,23 @@ export class Chain {
     const source = this.node(link.from);
     const target = this.node(link.to);
     if (!source || !target) return;
+    // Utility nodes keep their direction even when an old or hand-edited link bypasses API validation.
+    if (commandKind(source) === "markdown" || commandKind(target) === "button") return;
+    if (commandKind(source) === "button" && isCommandId(target.id)) return;
+    if (commandKind(target) === "markdown" && isCommandId(source.id)) return;
+    // Saving a terminal message does not launch another turn, so it must still work at the hop limit.
+    if (commandKind(target) === "markdown") {
+      this.printMessage(target, source, answer ?? finalAnswer(source));
+      return;
+    }
     if (depth >= MAX_HOPS) {
       this.note(source, `자동 연결이 ${MAX_HOPS}단계를 넘어 "${target.title}"(으)로 넘기지 않았습니다.`);
+      return;
+    }
+    if (commandKind(source) === "button") {
+      const prompt = answer ?? source.prompt;
+      const text = [prompt, link.note?.trim()].filter(Boolean).join("\n\n");
+      this.enqueue(target, text, { from: source.id, fromTitle: source.title }, depth + 1);
       return;
     }
     // 명령 노드로 넘기면 명령을 실행한다. 실행 폴더는 명령을 처음 실행시킨 세션을 따른다.
@@ -146,6 +164,8 @@ export class Chain {
   // 실행 중에 또 넘어오면 끝난 뒤 마지막 것만 한 번 더 실행한다. 실행이 끝나면 resolve되는 Promise를 돌려준다.
   runCommand(cmd, { origin = null, depth = 0 } = {}) {
     if (this.disposed) return null;
+    if (commandKind(cmd) === "button") return this.runButton(cmd, depth);
+    if (commandKind(cmd) === "markdown") throw new Error("MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
     if (this.runs.has(cmd.id)) {
       this.commands.update(cmd, { queued: { originId: origin?.id ?? null, depth } });
       this.notify("commands");
@@ -168,6 +188,57 @@ export class Chain {
     });
     this.runs.set(cmd.id, run);
     return run.done.then((result) => this.afterCommand(cmd, result, { origin, depth, cwd, startedAt }));
+  }
+
+  // A button is only a manual graph source; it never starts a shell or an AI of its own.
+  async runButton(cmd, depth = 0) {
+    if (this.disposed || this.runs.has(cmd.id)) return null;
+    const started = Date.now();
+    const startedAt = new Date(started).toISOString();
+    const prompt = cmd.prompt;
+    let stopped = false;
+    this.runs.set(cmd.id, { stop: () => { stopped = true; } });
+    this.commands.update(cmd, { state: "running", live: { startedAt, tail: "" }, queued: null });
+    this.notify("commands");
+    const picked = pickLinks(this.links.from(cmd.id), true, verdictLine(prompt));
+    let error = null;
+    try {
+      for (const link of picked) {
+        if (stopped || this.disposed) break;
+        if (link.approve) this.hold(link, cmd, prompt, depth);
+        else await this.deliver(link, depth, prompt);
+      }
+    } catch (caught) {
+      error = caught.message;
+    } finally {
+      this.runs.delete(cmd.id);
+      if (this.commands.get(cmd.id)) {
+        this.commands.update(cmd, { state: stopped ? "idle" : error ? "error" : "success", live: null, lastRun: {
+          ok: !error && !stopped, exitCode: error || stopped ? 1 : 0, stopped, timedOut: false,
+          startedAt, durationMs: Date.now() - started, cwd: cmd.projectPath,
+          originId: null, originTitle: null, tail: error || `연결 ${picked.length}개에 실행 요청을 보냈습니다.`,
+          ...(error ? { error } : {}),
+        } });
+        this.notify("commands");
+      }
+    }
+  }
+
+  printMessage(cmd, source, text) {
+    const started = Date.now();
+    const cwd = cmd.cwdMode === "project" ? cmd.projectPath : source.cwd;
+    const lastRun = { startedAt: new Date(started).toISOString(), cwd, originId: source.id, originTitle: source.title, stopped: false, timedOut: false };
+    try {
+      lastRun.output = writeMessageOutput({ cwd, title: cmd.title, text });
+      Object.assign(lastRun, { ok: true, exitCode: 0, tail: outputTail(text) });
+      this.note(source, `완료 메시지를 ${lastRun.output.relativePath}에 저장했습니다.`);
+    } catch (error) {
+      Object.assign(lastRun, { ok: false, exitCode: 1, error: error.message, tail: error.message });
+      this.note(source, `MD 출력 "${cmd.title}" 실패: ${error.message}`);
+    }
+    lastRun.durationMs = Date.now() - started;
+    this.commands.update(cmd, { state: lastRun.ok ? "success" : "error", lastRun, live: null, queued: null });
+    this.notify("commands");
   }
 
   async afterCommand(cmd, result, { origin, depth, cwd, startedAt }) {

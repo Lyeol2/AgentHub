@@ -1,0 +1,85 @@
+(async () => {
+  const checks = [];
+  const $ = (id) => document.getElementById(id);
+  const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
+  const until = async (predicate) => {
+    const end = Date.now() + 8000;
+    while (!predicate()) { if (Date.now() > end) throw Error("Timed out: " + predicate); await new Promise((resolve) => setTimeout(resolve, 20)); }
+  };
+  const context = (element) => element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 500, clientY: 300 }));
+  const menuItem = (text) => [...document.querySelectorAll(".context-menu button")].find((button) => button.textContent === text);
+  const lock = () => document.querySelector('#session-list .session-lock');
+  const locked = () => lock()?.getAttribute("aria-pressed") === "true";
+  await until(() => !$('view-project').hidden && document.querySelector('.gcard.locked') && locked());
+  check($('view-session').hidden && !document.body.classList.contains('popup'), 'locked direct URL exposes project unlock controls instead of chat');
+  check(!$('s-events').textContent, 'locked popup never renders conversation content');
+
+  const windows = [], alerts = [];
+  window.open = (...args) => windows.push(args);
+  window.alert = (text) => alerts.push(text);
+  context(document.querySelector('.gcard'));
+  check(menuItem('열기').disabled && menuItem('새 창으로 열기').disabled, 'locked graph menu disables both chat open actions');
+  menuItem('🔓 세션 잠금 해제').click();
+  await until(() => !locked() && !document.querySelector('.gcard.locked'));
+  check(!$('view-project').hidden, 'context menu unlock keeps the project visible');
+  document.querySelector('.gcard').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+  await until(() => !$('view-session').hidden && $('s-events').textContent.includes('Private fixture conversation'));
+  check(true, 'unlocked graph opens the original chat');
+
+  $('s-prompt').value = 'private draft';
+  lock().click();
+  await until(() => locked() && !$('view-project').hidden);
+  check(!$('s-events').textContent && !$('s-prompt').value, 'sidebar lock clears an already open conversation and draft');
+  document.querySelector('#session-list .session-item').dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true, button: 0 }));
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  check(windows.length === 0 && $('view-session').hidden, 'locked sidebar modifier click cannot open a popup');
+  lock().click();
+  await until(() => !locked());
+  $('p-tabs').querySelector('[data-tab="sessions"]').click();
+  await until(() => $('p-sessions').querySelector('.session-lock'));
+  $('p-sessions').querySelector('.session-lock').click();
+  await until(() => locked() && $('p-sessions').querySelector('.session-lock[aria-pressed="true"]'));
+  check(!$('view-project').hidden && $('view-session').hidden, 'table lock does not bubble into chat opening');
+  context($('p-sessions').querySelector('tbody tr'));
+  check(menuItem('열기').disabled && menuItem('새 창으로 열기').disabled, 'table context menu reflects the locked state');
+  document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+
+  // Delay the response after the UI has started opening a session. Observe JSON
+  // completion after the application's continuation so assertions never race it.
+  const originalJson = Response.prototype.json;
+  let detailSettled = 0;
+  Response.prototype.json = async function () {
+    const value = await originalJson.call(this);
+    if (this.headers.has('X-Fixture-Held')) setTimeout(() => detailSettled++, 0);
+    return value;
+  };
+  const holdDetail = (mode) => fetch('/fixture/hold-detail', { method: 'POST', body: JSON.stringify({ mode }) });
+  const releaseDetail = () => fetch('/fixture/release-detail', { method: 'POST' });
+
+  lock().click();
+  await until(() => !locked());
+  await holdDetail('locked');
+  document.querySelector('#session-list .session-item').click();
+  await fetch('/fixture/await-detail');
+  $('nav-dashboard').click();
+  check(!$('view-dashboard').hidden, 'navigation remains available while session detail is pending');
+  await releaseDetail();
+  await until(() => detailSettled === 1);
+  check(!$('view-dashboard').hidden && $('view-project').hidden && $('view-session').hidden, 'delayed locked response cannot undo navigation to dashboard');
+
+  // The late rejection updated the summary; refresh via the user's unlock action.
+  const oldLock = lock();
+  oldLock.click();
+  await until(() => lock() !== oldLock && !locked());
+  await holdDetail('unlocked');
+  document.querySelector('#session-list .session-item').click();
+  await fetch('/fixture/await-detail');
+  lock().click();
+  await until(() => locked());
+  await releaseDetail();
+  await until(() => detailSettled === 2);
+  check($('view-session').hidden && !$('s-events').textContent && locked(), 'delayed unlocked response cannot reopen a session locked while it was loading');
+  Response.prototype.json = originalJson;
+  check(alerts.length === 0, 'lock interactions show no unexpected alerts');
+  return checks;
+})()
