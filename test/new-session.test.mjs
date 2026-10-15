@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createCreationController } from "../public/features/creation/controller.js";
+import { workBranchType } from "../public/shared/workbranches.js";
 
 function element() {
   return {
-    value: "", textContent: "", children: [], checked: false, disabled: false, hidden: false, required: false, handlers: {},
+    value: "", textContent: "", children: [], checked: false, disabled: false, hidden: false, required: false, handlers: {}, dataset: {},
     addEventListener(type, fn) { this.handlers[type] = fn; },
     querySelectorAll() { return []; },
     replaceChildren(...children) { this.children = children; this.value = children[0]?.value ?? ""; },
@@ -42,6 +43,24 @@ function setup() {
 }
 function submit(h, fields) {
   return h.get("new-form").handlers.submit({ submitter: { value: "ok" }, preventDefault() {}, target: { fields, reset() {} } });
+}
+
+const flushPicker = () => new Promise(resolve => setImmediate(resolve));
+
+test("기존 작업 유형은 GitFlow 접두사와 슬래시를 함께 확인한다", () => {
+  for (const name of ["hotfix", "release", "agenthub/legacy", "topic"]) assert.equal(workBranchType(name), "feature", name);
+  assert.equal(workBranchType("hotfix/login"), "hotfix");
+  assert.equal(workBranchType("release/0.5.0"), "release");
+  assert.equal(workBranchType("feature/login"), "feature");
+});
+
+async function chooseExistingMode(h) {
+  await h.controller.openNew("C:/repo");
+  h.get("new-isolate").checked = true;
+  h.get("new-isolate").handlers.change();
+  h.get("new-worktree-mode").value = "existing";
+  h.get("new-worktree-mode").handlers.change();
+  await flushPicker();
 }
 
 test("권한 목록에 자동 검토·전체 접근이 있어도 새 세션은 기존 수정 권한이 기본이다", async () => {
@@ -185,4 +204,138 @@ test("생성 요청 실패는 같은 창에 오류를 남기고 생성 성공 �
   await submit(h, [["projectPath", "C:/repo"]]);
   assert.equal(h.get("new-dialog").open, false);
   assert.equal(h.calls.filter((call) => call[0] === "connect").length, 1);
+});
+
+test("원본과 새 작업 브랜치 모드에서는 기존 브랜치 목록을 요청하지 않는다", async () => {
+  const h = setup();
+  await h.controller.openNew("C:/repo");
+  assert.equal(h.get("new-worktree-mode").value, "new");
+  h.get("new-isolate").checked = true;
+  h.get("new-isolate").handlers.change();
+  assert.equal(h.get("new-worktree-mode-row").hidden, false);
+  assert.equal(h.get("new-worktree-name").required, true);
+  assert.equal(h.get("new-worktree-branch-row").hidden, true);
+  assert.equal(h.calls.length, 0);
+  h.get("new-worktree-mode").value = "existing";
+  h.controller.cancelCreation();
+  await h.controller.openNew("C:/repo");
+  assert.equal(h.get("new-worktree-mode").value, "new");
+  assert.equal(h.get("new-isolate").checked, false);
+  assert.equal(h.calls.length, 0);
+});
+
+test("기존 작업 브랜치는 선택 가능 상태를 확인하고 이름 생성 없이 세션에 전달한다", async () => {
+  const h = setup();
+  h.service.api = async (...args) => {
+    h.calls.push(args);
+    if (args[0] === "GET") return { branches: [
+      { name: "main", selectable: false },
+      { name: "feature/original", original: true },
+      { name: "feature/locked", locked: true },
+      { name: "feature/missing", missing: true },
+      { name: "feature/task", taskId: "task-a", selectableForTask: false, selectableForSession: true, cwd: "C:/repo.agenthub/task" },
+    ] };
+    return { id: "created" };
+  };
+  await chooseExistingMode(h);
+  assert.equal(h.calls[0][1], "/api/workbranches?path=C%3A%2Frepo");
+  assert.equal(h.get("new-worktree-name").disabled, true);
+  assert.equal(h.get("new-worktree-name").required, false);
+  assert.equal(h.get("new-worktree-branch").required, true);
+  assert.equal(h.get("new-submit").disabled, true);
+  const options = h.get("new-worktree-branch").children;
+  assert.deepEqual(options.slice(1).map(option => option.disabled), [true, true, true, true, false]);
+  h.get("new-worktree-branch").value = "main";
+  h.get("new-worktree-branch").handlers.change();
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeMode", "existing"], ["workBranch", "main"]]);
+  assert.equal(h.calls.filter(call => call[0] === "POST").length, 0);
+  h.get("new-worktree-branch").value = "feature/task";
+  h.get("new-worktree-branch").handlers.change();
+  assert.equal(h.get("new-submit").disabled, false);
+  assert.match(h.get("new-worktree-branch-status").textContent, /C:\/repo.agenthub\/task/);
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeMode", "existing"], ["workBranch", "feature/task"], ["worktreeName", "stale-name"]]);
+  const body = h.calls.find(call => call[0] === "POST")[2];
+  assert.equal(body.isolate, false);
+  assert.equal(body.workBranch, "feature/task");
+  assert.equal(Object.hasOwn(body, "worktreeName"), false);
+  assert.equal(Object.hasOwn(body, "worktreeMode"), false);
+});
+
+test("기존 브랜치 조회 실패 중에는 제출을 차단하고 명시적인 목록 재조회로 복구한다", async () => {
+  const h = setup();
+  let fail = true;
+  h.service.api = async (...args) => {
+    h.calls.push(args);
+    if (args[0] === "GET") {
+      if (fail) throw Error("branch lookup failed");
+      return { branches: [{ name: "agenthub/existing", selectable: true }] };
+    }
+    return { id: "created" };
+  };
+  await chooseExistingMode(h);
+  assert.equal(h.get("new-submit").disabled, true);
+  assert.equal(h.get("new-worktree-branch").disabled, true);
+  assert.equal(h.get("new-worktree-branch-status").textContent, "branch lookup failed");
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeMode", "existing"]]);
+  assert.equal(h.calls.filter(call => call[0] === "POST").length, 0);
+  fail = false;
+  h.get("new-worktree-branch-refresh").handlers.click();
+  await flushPicker();
+  h.get("new-worktree-branch").value = "agenthub/existing";
+  h.get("new-worktree-branch").handlers.change();
+  assert.equal(h.get("new-submit").disabled, false);
+});
+
+test("취소 뒤 같은 프로젝트에서 새 창을 열어도 이전 브랜치 응답은 반영하지 않는다", async () => {
+  const h = setup();
+  let resolveBranches;
+  h.service.api = async (...args) => {
+    h.calls.push(args);
+    return new Promise(resolve => { resolveBranches = resolve; });
+  };
+  await chooseExistingMode(h);
+  assert.equal(h.get("new-submit").disabled, true);
+  h.controller.cancelCreation();
+  await h.controller.openNew("C:/repo");
+  resolveBranches({ branches: [{ name: "feature/stale", selectable: true }] });
+  await flushPicker();
+  assert.equal(h.get("new-isolate").checked, false);
+  assert.equal(h.get("new-worktree-mode").value, "new");
+  assert.deepEqual(h.get("new-worktree-branch").children.map(option => option.value), [""]);
+});
+
+test("기존 브랜치 조회 중 프로젝트를 바꾸면 새 프로젝트 응답만 선택할 수 있다", async () => {
+  const h = setup();
+  const pending = [];
+  h.service.api = async (...args) => {
+    h.calls.push(args);
+    return new Promise(resolve => pending.push(resolve));
+  };
+  await chooseExistingMode(h);
+  h.get("new-project").value = "C:/other";
+  h.get("new-project").handlers.change();
+  pending[0]({ branches: [{ name: "feature/stale", selectable: true }] });
+  await flushPicker();
+  assert.equal(h.get("new-worktree-branch").disabled, true);
+  pending[1]({ branches: [{ name: "feature/current", selectable: true }] });
+  await flushPicker();
+  assert.equal(h.calls[1][1], "/api/workbranches?path=C%3A%2Fother");
+  assert.deepEqual(h.get("new-worktree-branch").children.map(option => option.value), ["", "feature/current"]);
+});
+
+test("생성 요청이 진행 중이면 반복 제출해도 세션을 한 번만 만든다", async () => {
+  const h = setup();
+  let resolveCreate;
+  h.service.api = (...args) => {
+    h.calls.push(args);
+    return new Promise(resolve => { resolveCreate = resolve; });
+  };
+  await h.controller.openNew("C:/repo");
+  const creating = submit(h, [["projectPath", "C:/repo"]]);
+  assert.equal(h.get("new-submit").disabled, true);
+  await submit(h, [["projectPath", "C:/repo"]]);
+  assert.equal(h.calls.length, 1);
+  resolveCreate({ id: "created" });
+  await creating;
+  assert.equal(h.get("new-dialog").open, false);
 });

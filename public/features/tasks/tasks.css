@@ -78,6 +78,9 @@
 .task-pull-link { color: var(--accent, #8fa6ff); text-decoration: none; }
 .task-pull-link:hover { text-decoration: underline; }
 .task-inline-error { margin: 10px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.workbranch-status { overflow-wrap: anywhere; }
+.workbranch-status[data-state="error"] { color: var(--danger); }
+#new-worktree-branch-row, #task-workbranch-row { margin-bottom: 14px; }
 .task-note { margin: 8px 0 0; color: var(--muted, #9ca3af); font-size: 12px; line-height: 1.6; }
 .task-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; }
 .task-dialog .task-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
@@ -86,6 +89,10 @@
 .task-dialog input, .task-dialog select, .task-dialog textarea { width: 100%; box-sizing: border-box; }
 .task-dialog textarea { min-height: 84px; resize: vertical; }
 .task-branch-preview { padding: 10px 12px; margin: 0 0 16px; border-radius: 6px; background: var(--bg, #161b24); color: var(--muted, #9ca3af); font-size: 12px; overflow-wrap: anywhere; line-height: 1.6; }
+.task-gitflow-controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin: -4px 0 16px; }
+.task-gitflow-controls .hint { margin: 0; overflow-wrap: anywhere; min-width: 0; }
+#task-settings-dialog .hint { overflow-wrap: anywhere; line-height: 1.6; }
+#task-settings-dialog input { font-family: var(--mono); }
 .task-finish-summary { margin: 0 0 16px; color: var(--muted, #9ca3af); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
 .task-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
 .tasks-toolbar button:disabled, .task-actions button:disabled, .task-dialog button:disabled { opacity: .5; cursor: wait; }

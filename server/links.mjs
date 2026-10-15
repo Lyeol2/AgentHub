@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "./config.mjs";
+import { readJsonFile, writeJsonAtomic } from "./infrastructure/persistence/json-file.mjs";
 
 export { hasSessionLink } from "./policies/messaging.mjs";
 
@@ -8,7 +8,7 @@ export { hasSessionLink } from "./policies/messaging.mjs";
 export class LinkStore {
   constructor({ dataDir = DATA_DIR } = {}) {
     this.file = path.join(dataDir, "links.json");
-    this.links = fs.existsSync(this.file) ? JSON.parse(fs.readFileSync(this.file, "utf8")) : [];
+    this.links = readJsonFile(this.file, { dataDir, fallback: () => [], valid: Array.isArray });
   }
 
   list() {
@@ -45,7 +45,6 @@ export class LinkStore {
   }
 
   save() {
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify(this.links, null, 2));
+    writeJsonAtomic(this.file, this.links);
   }
 }

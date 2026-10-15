@@ -1,0 +1,115 @@
+(async function () {
+  const { createCommandsController } = await import("/features/commands/controller.js");
+  const $ = (id) => document.getElementById(id);
+  const checks = [], requests = [], connected = [], revokedDownloads = [];
+  const originalRevoke = URL.revokeObjectURL.bind(URL);
+  URL.revokeObjectURL = (url) => { revokedDownloads.push(url); originalRevoke(url); };
+  const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
+  const until = async (predicate) => { const end = Date.now() + 8000; while (!predicate()) { if (Date.now() > end) throw Error("Timed out: " + predicate); await tick(); } };
+  const project = "C:/fixture";
+  const button = { id: "cmd-button", kind: "button", title: "작업 시작", prompt: "첫 번째 작업을 시작해 주세요.", state: "idle", projectPath: project };
+  const outputInfo = { path: project + "/docs/agenthub/outputs/result.md", relativePath: "docs/agenthub/outputs/result.md", fileName: "result.md" };
+  const markdown = { id: "cmd-markdown", kind: "markdown", title: "완료 보고서", cwdMode: "source", state: "success", projectPath: project, lastRun: { ok: true, startedAt: new Date().toISOString(), output: outputInfo, originTitle: "검토 세션" } };
+  const shell = { id: "cmd-shell", title: "테스트", command: "npm test", shell: "powershell", state: "idle", projectPath: project };
+  const text = "# 완료 보고서\r\n\r\n**검증 완료**\r\n\r\n- 첫 번째 결과\r\n- 두 번째 결과\r\n\r\n<script>window.__unsafe = true</script>\r\n[unsafe](javascript:alert(1))\r\n\r\n";
+  let savedOutput = { ...outputInfo, text };
+  const data = { commands: [button, markdown, shell], shells: [{ id: "powershell", label: "PowerShell" }] };
+  const navigation = { project, view: "project" };
+  let releaseRun, releaseOutput, failOutput = false, holdOutput = false;
+  const api = async (method, url, body) => {
+    requests.push({ method, url, body });
+    if (method === "GET" && url.startsWith("/api/commands?")) return { shells: data.shells, commands: data.commands };
+    if (method === "POST" && url.endsWith("/run")) { await new Promise((resolve) => releaseRun = resolve); return {}; }
+    if (method === "GET" && url.endsWith("/output")) {
+      if (holdOutput) { holdOutput = false; await new Promise((resolve) => releaseOutput = resolve); }
+      if (failOutput) { failOutput = false; throw Error("저장한 파일을 찾을 수 없습니다."); }
+      return { ...savedOutput };
+    }
+    if (method === "POST" && url === "/api/commands") { const node = { ...body, id: "cmd-new-" + data.commands.length, state: "idle" }; data.commands.push(node); return node; }
+    if (method === "PUT") { Object.assign(data.commands.find((node) => url.endsWith(node.id)), body); return {}; }
+    throw Error("Unexpected API " + method + " " + url);
+  };
+  let controller;
+  const renderGraph = () => {
+    const cards = data.commands.map((node, i) => {
+      const card = controller.commandNode(node); card.style.left = (24 + i * 250) + "px"; card.style.top = "24px"; return card;
+    });
+    $("p-graph").replaceChildren(...cards);
+  };
+  controller = createCommandsController({ api, loadLinks: async () => {}, renderGraph, connectCreatedGraphNode: async (...args) => connected.push(args), commandById: (id) => data.commands.find((node) => node.id === id), data, navigation });
+  $("view-dashboard").hidden = true; $("view-project").hidden = false; renderGraph();
+  const buttonCard = $("p-graph").querySelector('[data-id="cmd-button"]');
+  const outputCard = $("p-graph").querySelector('[data-id="cmd-markdown"]');
+  check(buttonCard.textContent.includes("수동 실행") && buttonCard.querySelector(".gcmd-btn").textContent === "실행", "button card exposes manual execution");
+  check(buttonCard.querySelector(".gcard-handle") && !outputCard.querySelector(".gcard-handle"), "only source button has outgoing handle");
+  check(outputCard.querySelector(".gcmd-code").textContent === outputInfo.relativePath, "output card shows saved Markdown path");
+  const emptyOutput = controller.commandNode({ ...markdown, lastRun: null });
+  check(emptyOutput.querySelector(".gcmd-btn").disabled, "preview disabled before the first saved answer");
+
+  controller.openCommandDialog(null, { x: 15, y: 30 }, null, "button");
+  check(!$("button-prompt-row").hidden && $("command-generator").hidden && $("command-settings").hidden && $("command-text-row").hidden, "button editor contains prompt and no shell or AI controls");
+  $("command-prompt").value = "must not generate"; $("command-generate").click();
+  check(requests.length === 0, "utility kind cannot call hidden AI generator");
+  $("command-title").value = "검토 시작"; $("button-prompt").value = "검토를 시작해 주세요.\n결과를 알려 주세요.";
+  $("command-form").querySelector('[value="ok"]').click();
+  await until(() => !$("command-dialog").open); await tick();
+  const createdButton = requests.find((r) => r.method === "POST" && r.url === "/api/commands");
+  check(createdButton.body.kind === "button" && createdButton.body.prompt.includes("\n") && !Object.hasOwn(createdButton.body, "command"), "button creation preserves prompt and excludes shell fields");
+  check(createdButton.body.pos.x === 15 && createdButton.body.projectPath === project, "new utility node preserves graph location and project");
+
+  controller.openCommandDialog(null, { x: 300, y: 40 }, "session-a", "markdown");
+  check($("command-cwd-label").textContent === "저장 기준 폴더" && !$("command-settings").hidden && $("command-shell-row").hidden && $("button-prompt-row").hidden, "Markdown editor provides output folder mode only");
+  $("command-title").value = "최종 출력"; $("command-cwd").value = "project";
+  $("command-form").querySelector('[value="ok"]').click();
+  await until(() => !$("command-dialog").open); await tick();
+  const createdOutput = requests.filter((r) => r.method === "POST" && r.url === "/api/commands").at(-1);
+  check(createdOutput.body.kind === "markdown" && createdOutput.body.cwdMode === "project" && !Object.hasOwn(createdOutput.body, "prompt"), "Markdown creation saves folder mode without prompt");
+  check(connected.at(-1)[0].connectFrom === "session-a", "new output retains connection source");
+
+  controller.openCommandDialog(button);
+  check($("button-prompt").value === button.prompt && $("command-run").textContent === "지금 실행", "editing infers existing button kind");
+  $("button-prompt").value = "새로운 요청"; $("command-form").querySelector('[value="ok"]').click();
+  await until(() => !$("command-dialog").open); await tick();
+  check(requests.find((r) => r.method === "PUT")?.body.prompt === "새로운 요청", "button prompt can be updated");
+  const firstRun = controller.runCommand(button);
+  const secondRun = controller.runCommand(button);
+  check(requests.filter((r) => r.url.endsWith("/run")).length === 1 && $("p-graph").querySelector('[data-id="cmd-button"] .gcmd-btn').disabled, "duplicate manual dispatch is blocked while request is pending");
+  releaseRun(); await Promise.all([firstRun, secondRun]);
+  check(!$("p-graph").querySelector('[data-id="cmd-button"] .gcmd-btn').disabled, "manual button becomes available after dispatch");
+
+  await controller.openCommandOutput(markdown);
+  check($("command-result-dialog").open && $("command-result-preview").querySelector("h1")?.textContent === "완료 보고서", "saved result renders as Markdown");
+  check(!$("command-result-preview").querySelector("script") && !window.__unsafe && !$("command-result-preview").querySelector('a[href^="javascript:"]'), "Markdown preview escapes script and unsafe links");
+  check($("command-result-raw").textContent === text, "raw preview preserves exact CRLF and trailing newlines");
+  $("command-result-source").click();
+  check($("command-result-preview").hidden && !$("command-result-raw").hidden && $("command-result-source").getAttribute("aria-pressed") === "true", "raw source tab switches accessibly");
+  const firstDownload = $("command-result-download").href;
+  check(firstDownload.startsWith("blob:") && $("command-result-download").download === "result.md", "download uses a snapshot with the displayed filename");
+  savedOutput = { ...outputInfo, path: project + "/docs/agenthub/outputs/next.md", fileName: "next.md", text: "# 다음 완료\n\n새 메시지\n" };
+  check(await fetch(firstDownload).then((response) => response.text()) === text && $("command-result-raw").textContent === text && $("command-result-download").download === "result.md", "next completion cannot change the downloaded preview, filename, CRLF, or trailing newlines");
+  await controller.openCommandOutput(markdown);
+  const nextDownload = $("command-result-download").href;
+  check(revokedDownloads.includes(firstDownload) && nextDownload !== firstDownload, "replacing the preview revokes its previous download URL");
+  check(await fetch(nextDownload).then((response) => response.text()) === savedOutput.text && $("command-result-download").download === "next.md", "opening the next result downloads its own exact snapshot");
+  $("command-result-dialog").close(); await tick();
+  check(revokedDownloads.includes(nextDownload) && !$("command-result-download").hasAttribute("href") && $("command-result-download").hidden, "closing the viewer revokes and removes its download URL");
+  savedOutput = { ...outputInfo, text };
+  failOutput = true; await controller.openCommandOutput(markdown);
+  check($("command-result-status").textContent.includes("찾을 수 없습니다") && $("command-result-download").hidden && !$("command-result-preview").textContent, "missing file clears stale preview and download");
+  $("command-result-dialog").close(); await tick();
+  holdOutput = true; const lateOutput = controller.openCommandOutput(markdown); controller.cancelCreation(); releaseOutput(); await lateOutput;
+  check(!$("command-result-dialog").open && !$("command-result-preview").textContent, "cancelled result request cannot restore preview");
+  await tick();
+  await controller.openCommandOutput(markdown);
+  const canceledDownload = $("command-result-download").href;
+  controller.cancelCreation(); await tick();
+  check(revokedDownloads.includes(canceledDownload) && !$("command-result-download").hasAttribute("href"), "navigation cancellation also revokes an already loaded snapshot");
+  controller.openCommandDialog(shell);
+  check(!$("command-generator").hidden && !$("command-text-row").hidden && $("button-prompt-row").hidden && $("command-settings").classList.contains("three"), "legacy command editor retains shell controls");
+  controller.cancelCreation(); await tick();
+  check(!requests.some((r) => r.url.includes("generate") || r.url.includes("/sessions/") || (r.url.includes("cmd-markdown") && r.method !== "GET")), "preview performs no AI, session execution, or output mutation requests");
+  await controller.openCommandOutput(markdown);
+  URL.revokeObjectURL = originalRevoke;
+  return checks;
+})()

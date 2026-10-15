@@ -8,6 +8,7 @@ import { assetRoutes } from "./routes/assets.mjs";
 import { gitRoutes } from "./routes/git.mjs";
 import { messagingRoutes } from "./routes/messaging.mjs";
 import { taskRoutes } from "./routes/tasks.mjs";
+import { teamRoutes } from "./routes/team.mjs";
 
 export function createApiHandler({ services, events }) {
   const routes = [
@@ -19,6 +20,7 @@ export function createApiHandler({ services, events }) {
     ...gitRoutes(services.git),
     ...messagingRoutes(services.messaging),
     ...taskRoutes(services.tasks),
+    ...(services.account && services.issues ? teamRoutes(services.account, services.issues) : []),
   ].map(([method, pattern, run, options = {}]) => ({ method, parts: pattern.split("/"), run, ...options }));
 
   return async function handleApi(req, res, url) {

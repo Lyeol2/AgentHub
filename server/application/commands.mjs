@@ -1,5 +1,6 @@
 import { spawnCli } from "../cli.mjs";
-import { newCommandId, checkCommand, shells, generatePrompt, parseGenerated } from "../commands.mjs";
+import { newCommandId, checkCommand, commandKind, shells, generatePrompt, parseGenerated } from "../commands.mjs";
+import { readMessageOutput } from "../utility-output.mjs";
 import { HttpError } from "./errors.mjs";
 
 export function createCommandService({ commands, chain, links, store, projects, cliPaths, notify: broadcast }) {
@@ -81,7 +82,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   function update(id, body) {
     const command = getCommand(id);
-    const editing = ["title", "command", "shell", "cwdMode", "timeoutSec"].some((key) => body[key] !== undefined);
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec"].some((key) => body[key] !== undefined);
     try {
       if (editing) Object.assign(command, checkCommand(body, command));
     } catch (error) {
@@ -103,17 +104,28 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { ok: true };
   }
 
-  function run(id) {
+  async function run(id) {
     const command = getCommand(id);
+    if (commandKind(command) === "markdown") throw new HttpError(400, "MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
     if (chain.runs.has(id)) throw new HttpError(409, "이미 실행 중입니다.");
     const origin = links.list().filter((link) => link.to === id).map((link) => store.get(link.from)).find(Boolean) ?? null;
-    chain.runCommand(command, { origin, depth: 0 });
+    const pending = chain.runCommand(command, { origin, depth: 0 });
+    if (commandKind(command) === "button") await pending;
     return command;
+  }
+
+  function output(id) {
+    const command = getCommand(id);
+    if (commandKind(command) !== "markdown") throw new HttpError(400, "MD 출력 노드에서만 완료 메시지를 볼 수 있습니다.");
+    try { return readMessageOutput(command); }
+    catch (error) {
+      throw new HttpError(["OUTPUT_NOT_FOUND", "ENOENT"].includes(error.code) ? 404 : 400, error.message);
+    }
   }
 
   function stop(id) {
     return { stopped: chain.stopCommand(getCommand(id)) };
   }
 
-  return { list, generate, create, update, remove, run, stop };
+  return { list, generate, create, update, remove, run, stop, output };
 }

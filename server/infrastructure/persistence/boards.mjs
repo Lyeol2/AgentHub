@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { DATA_DIR } from "../../config.mjs";
+import { writeFileAtomic } from "./json-file.mjs";
 
 // 프로젝트별 공유 노트 저장소. 파일 형식은 기존 SHA-1 이름의 Markdown을 유지한다.
 export class FileBoardRepository {
@@ -20,8 +21,7 @@ export class FileBoardRepository {
   }
 
   write(projectPath, text) {
-    fs.mkdirSync(this.directory, { recursive: true });
-    fs.writeFileSync(this.file(projectPath), text);
+    writeFileAtomic(this.file(projectPath), text);
   }
 
   clear(projectPath) {

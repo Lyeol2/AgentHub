@@ -10,6 +10,8 @@ import { randomBytes } from "node:crypto";
 const isWindows = process.platform === "win32";
 export const COMMAND_PREFIX = "cmd-";
 export const isCommandId = (id) => typeof id === "string" && id.startsWith(COMMAND_PREFIX);
+export const commandKind = (command) => command?.kind ?? "command";
+export const COMMAND_KINDS = ["command", "button", "markdown"];
 export const CWD_MODES = ["source", "project"]; // 보낸 세션의 작업 폴더 | 프로젝트 폴더
 const OUTPUT_MAX = 200_000; // 메모리에 남기는 출력
 const TAIL_LINES = 60; // 다음 세션에 넘기는 출력 줄 수
@@ -141,14 +143,24 @@ export const newCommandId = () => `${COMMAND_PREFIX}${randomBytes(4).toString("h
 
 // 입력을 검사해 저장할 값만 돌려준다. 틀리면 오류를 던진다.
 export function checkCommand(body, current = {}) {
+  const kind = body.kind === undefined ? commandKind(current) : body.kind;
+  if (!COMMAND_KINDS.includes(kind)) throw new Error("노드 종류가 올바르지 않습니다.");
+  if (current.id && kind !== commandKind(current)) throw new Error("만든 노드의 종류는 바꿀 수 없습니다.");
   const title = String(body.title ?? current.title ?? "").trim().slice(0, 100);
+  const cwdMode = body.cwdMode ?? current.cwdMode ?? "source";
+  if (!CWD_MODES.includes(cwdMode)) throw new Error("실행 폴더 설정이 올바르지 않습니다.");
+  if (kind === "button") {
+    const prompt = String(body.prompt ?? current.prompt ?? "").trim();
+    if (!prompt) throw new Error("버튼을 눌렀을 때 보낼 요청을 적으세요.");
+    if (prompt.length > 20000) throw new Error("요청은 20,000자까지 입력할 수 있습니다.");
+    return { kind, title: title || "실행 버튼", prompt };
+  }
+  if (kind === "markdown") return { kind, title: title || "MD 출력", cwdMode };
   const command = String(body.command ?? current.command ?? "").replace(/\s+$/, "");
   if (!command.trim()) throw new Error("실행할 명령을 적으세요.");
   if (command.length > 20000) throw new Error("명령이 너무 깁니다.");
   const shell = body.shell ?? current.shell ?? shells()[0].id;
   if (!shells().some((s) => s.id === shell)) throw new Error("이 PC에서 쓸 수 없는 셸입니다.");
-  const cwdMode = body.cwdMode ?? current.cwdMode ?? "source";
-  if (!CWD_MODES.includes(cwdMode)) throw new Error("실행 폴더 설정이 올바르지 않습니다.");
   const timeoutSec = Math.round(Number(body.timeoutSec ?? current.timeoutSec ?? TIMEOUT_DEFAULT));
   if (!Number.isFinite(timeoutSec) || timeoutSec < 1 || timeoutSec > TIMEOUT_MAX) throw new Error(`시간 제한은 1~${TIMEOUT_MAX}초입니다.`);
   return { title: title || command.trim().split(/\r?\n/)[0].slice(0, 60), command, shell, cwdMode, timeoutSec };

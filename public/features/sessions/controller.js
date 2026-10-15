@@ -8,7 +8,7 @@ import { composerAction } from "../../composer.js";
 import { createAttachmentComposer, uploadAttachments, renderAttachmentLinks } from "./image-composer.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 
-export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation }) {
+export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, data, navigation }) {
   const ui = {
     "chatDraft": null
   };
@@ -65,6 +65,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("s-diff").disabled = !s.baseCommit;
     $("s-diff").hidden = !!s.chat;
     $("s-export").hidden = !!s.chat;
+    $("s-import").hidden = !!s.chat;
     $("s-back").hidden = !!s.chat || !!POPUP;
     $("s-popout").hidden = !!POPUP;
     if (POPUP) document.title = `${s.title} · AgentHub`;
@@ -343,6 +344,26 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   // ── 세션 우클릭 메뉴 ────────────────────────────────────────────
   // 흐름 그래프 카드와 사이드바 세션 목록에서 쓴다.
 
+  const lockRequests = new Set();
+  async function toggleSessionLock(s) {
+    if (!s || lockRequests.has(s.id)) return;
+    lockRequests.add(s.id);
+    try {
+      const current = sessionById(s.id) ?? s;
+      const updated = await api("PUT", `/api/sessions/${s.id}`, { locked: !current.locked });
+      Object.assign(s, updated);
+      if (data.current?.id === s.id) {
+        data.current.locked = updated.locked;
+        if (updated.locked) await onSessionLocked(updated);
+      }
+      await loadSessions();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      lockRequests.delete(s.id);
+    }
+  }
+
   function openSessionMenu(e, s) {
     e.preventDefault();
     closeContextMenu();
@@ -359,8 +380,9 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     }, label);
     const menu = el("div", { class: "context-menu", role: "menu" },
       el("div", { class: "menu-title" }, s.title),
-      item("열기", () => selectSession(s.id)),
-      item("새 창으로 열기", () => openSessionWindow(s.id)),
+      item("열기", () => selectSession(s.id), { disabled: !!s.locked, title: s.locked ? "잠금을 해제하면 채팅을 열 수 있습니다." : "" }),
+      item("새 창으로 열기", () => openSessionWindow(s.id), { disabled: !!s.locked, title: s.locked ? "잠금을 해제하면 채팅을 열 수 있습니다." : "" }),
+      item(s.locked ? "🔓 세션 잠금 해제" : "🔒 세션 잠금", () => toggleSessionLock(s), { title: "채팅 열기만 잠급니다. 연결된 실행은 계속됩니다." }),
       item("다시 시작", () => restartSession(s), {
         disabled: running, title: "CLI 대화만 새로 시작해 컨텍스트를 비웁니다. 화면 기록·역할·연결은 그대로 둡니다.",
       }),
@@ -368,6 +390,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         disabled: running, title: "같은 설정(역할·모델·권한·연결)으로 새 세션을 만들고 지금 세션은 지웁니다. 화면 기록도 비워집니다.",
       }),
       s.chat ? null : item("스킬 장착…", () => openEquipDialog(s)),
+      s.chat ? null : item("팀원에게 넘기기…", () => sendSessionToTeam(s), { title: "세션 요약으로 GitHub 이슈를 만들어 팀원에게 작업을 보냅니다" }),
       el("hr"),
       item("삭제", () => confirmDeleteSession(s), { danger: true }));
     document.body.append(menu);
@@ -424,7 +447,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   function askDeleteOptions(s) {
     if (!confirm(`"${s.title}" ${s.chat ? "채팅" : "세션"}을 삭제할까요?`)) return null;
     let removeWorktree = false;
-    if (s.worktree && !s.taskId) {
+    if (s.worktree && !s.taskId && !s.worktree.shared) {
       removeWorktree = confirm(
         `작업 폴더도 지울까요?\n${s.cwd}\n\n커밋하지 않은 변경이 있으면 지우지 않고 중단합니다. 브랜치 ${s.worktree.branch}는 남습니다.`);
     }
@@ -736,5 +759,5 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
 
   $("c-popout").addEventListener("click", () => openWindow(`chat=${data.current?.id ?? "new"}`));
 
-  return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom };
+  return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, toggleSessionLock, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom };
 }

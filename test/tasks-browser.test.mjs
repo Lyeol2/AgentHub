@@ -59,6 +59,9 @@ async function browser(temp, url, expression) {
     const output = path.join(root, "data/tasks-qa"); await fs.mkdir(output, { recursive: true });
     const desktop = await command("Page.captureScreenshot", { format: "png" });
     await fs.writeFile(path.join(output, "desktop.png"), Buffer.from(desktop.data, "base64"));
+    const settingsOutput = path.join(root, ".tmp", "gitflow-settings-ui.png");
+    await fs.mkdir(path.dirname(settingsOutput), { recursive: true });
+    await fs.writeFile(settingsOutput, Buffer.from(desktop.data, "base64"));
     await command("Runtime.evaluate", { expression: "document.documentElement.dataset.theme='light'" });
     const light = await command("Page.captureScreenshot", { format: "png" });
     await fs.writeFile(path.join(output, "light.png"), Buffer.from(light.data, "base64"));
@@ -69,16 +72,10 @@ async function browser(temp, url, expression) {
     assert.ok(mobile.result.value.scroll <= 390, JSON.stringify(mobile.result.value));
     const taskFit = await command("Runtime.evaluate", { expression: "new Promise(resolve => { document.getElementById('tab-tasks').scrollIntoView({block:'start'}); requestAnimationFrame(() => resolve([...document.querySelectorAll('.task-card')].every(card => card.getBoundingClientRect().right <= innerWidth))); })", awaitPromise: true, returnByValue: true });
     assert.equal(taskFit.result.value, true, "Task cards must fit the mobile viewport");
+    const settingsFit = await command("Runtime.evaluate", { expression: "new Promise(resolve => requestAnimationFrame(() => { const dialog = document.getElementById('task-settings-dialog'); const rect = dialog.getBoundingClientRect(); resolve(dialog.open && rect.left >= 0 && rect.right <= innerWidth && dialog.scrollWidth <= dialog.clientWidth); }))", awaitPromise: true, returnByValue: true });
+    assert.equal(settingsFit.result.value, true, "GitFlow settings must fit the mobile viewport");
     const shot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     await fs.writeFile(path.join(output, "mobile.png"), Buffer.from(shot.data, "base64"));
-    await command("Runtime.evaluate", { expression: "document.querySelector('[data-task-action=delete]').click()" });
-    const modalFit = await command("Runtime.evaluate", { expression: "new Promise(resolve => requestAnimationFrame(() => { const dialog = document.getElementById('delete-task-dialog'), rect = dialog.getBoundingClientRect(); resolve(dialog.open && rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight); }))", awaitPromise: true, returnByValue: true });
-    assert.equal(modalFit.result.value, true, "Delete confirmation must fit the mobile viewport");
-    const mobileDelete = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
-    await fs.writeFile(path.join(output, "delete-mobile.png"), Buffer.from(mobileDelete.data, "base64"));
-    await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
-    const desktopDelete = await command("Page.captureScreenshot", { format: "png" });
-    await fs.writeFile(path.join(output, "delete-desktop.png"), Buffer.from(desktopDelete.data, "base64"));
     return { checks: result.result.value, errors, mobile: mobile.result.value };
   } finally {
     socket?.close(); child.kill();
@@ -86,15 +83,19 @@ async function browser(temp, url, expression) {
   }
 }
 
-test("browser: GitFlow tasks create, finish, recover uncertain writes, and delete safely", { timeout: 60000 }, async (t) => {
+test("browser: GitFlow tasks and per-project branch settings retain state and isolate delayed responses", { timeout: 60000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(chromium).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-tasks-browser-"));
   const streams = new Set(), requests = [], tasks = [], sessions = [];
   const project = { path: "C:/fixture", name: "Fixture", registered: true, claude: 0, codex: 0 };
+  const secondProject = { ...project, path: "C:/other", name: "Other" };
+  const projects = [project, secondProject];
+  const defaults = { main: "main", develop: "develop", featurePrefix: "feature/", hotfixPrefix: "hotfix/", releasePrefix: "release/" };
+  const settings = new Map(projects.map((item) => [item.path, { ...defaults }]));
   const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
   const context = { mainSha: "a".repeat(40), developSha: "a".repeat(40), mainInDevelop: true, needsSetup: false, checkedAt: "2026-10-15T12:00:00Z", freshness: { state: "current", checkedAt: "2026-10-15T12:00:00Z" } };
-  const mode = { uncertain: false, contextFailure: false, holdCreate: false, deleteFailure: false, holdDelete: false };
-  let releaseCreate, releaseDelete;
+  const mode = { uncertain: false, contextFailure: false, holdCreate: false, holdSettingsRead: false, holdSettingsSave: false, settingsReadFailure: false, settingsSaveFailure: false };
+  let releaseCreate, releaseSettingsRead, releaseSettingsSave;
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
@@ -105,30 +106,46 @@ test("browser: GitFlow tasks create, finish, recover uncertain writes, and delet
       let value;
       if (url.pathname === "/fixture/mode") { Object.assign(mode, body); value = {}; }
       else if (url.pathname === "/fixture/release") { releaseCreate?.(); value = {}; }
-      else if (url.pathname === "/fixture/release-delete") { releaseDelete?.(); value = {}; }
+      else if (url.pathname === "/fixture/release-settings") { if (body.read) releaseSettingsRead?.(); if (body.save) releaseSettingsSave?.(); value = {}; }
       else if (url.pathname === "/fixture/requests") value = requests;
       else if (url.pathname === "/fixture/emit") { for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n"); value = {}; }
-      else if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
-      else if (url.pathname === "/api/tasks/context") { if (mode.contextFailure) throw Object.assign(Error("원격 확인 실패"), { status: 400 }); value = context; }
+      else if (url.pathname === "/api/status") value = { agents, projects, cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
+      else if (url.pathname === "/api/tasks/context") { if (mode.contextFailure) throw Object.assign(Error("원격 확인 실패"), { status: 400 }); value = { ...context, settings: settings.get(url.searchParams.get("path")) }; }
+      else if (url.pathname === "/api/tasks/settings") {
+        const projectPath = url.searchParams.get("path");
+        if (!settings.has(projectPath)) throw Error("Unknown project settings");
+        if (req.method === "PUT") {
+          if (mode.settingsSaveFailure) throw Object.assign(Error("브랜치 이름을 확인해 주세요."), { status: 400 });
+          settings.set(projectPath, { ...body.settings });
+          if (mode.holdSettingsSave) { mode.holdSettingsSave = false; await new Promise((resolve) => releaseSettingsSave = resolve); }
+        }
+        const snapshot = { ...settings.get(projectPath) };
+        if (req.method === "GET") {
+          if (mode.holdSettingsRead) { mode.holdSettingsRead = false; await new Promise((resolve) => releaseSettingsRead = resolve); }
+          if (mode.settingsReadFailure) throw Object.assign(Error("프로젝트 설정 읽기 실패"), { status: 400 });
+        }
+        value = { settings: snapshot };
+      }
+      else if (url.pathname === "/api/workbranches") value = { currentBranch: 'main', branches: [
+        { name: 'main', cwd: project.path, original: true, selectable: false, reason: '원본 작업 폴더' },
+        { name: 'feature/selected', cwd: 'C:/fixture.agenthub/selected', selectable: true, selectableForTask: !tasks.some((task) => task.branch === 'feature/selected'), selectableForSession: true },
+        { name: 'feature/locked', cwd: 'C:/fixture.agenthub/locked', selectable: false, locked: true, reason: '잠긴 작업 폴더' },
+        ...tasks.filter((task) => task.branch !== 'feature/selected').map((task) => ({ name: task.branch, cwd: task.cwd, selectable: true, selectableForTask: false, selectableForSession: true, taskId: task.id })),
+      ] };
       else if (url.pathname === "/api/tasks") {
         if (req.method === "POST") {
           if (mode.holdCreate) { mode.holdCreate = false; await new Promise((resolve) => releaseCreate = resolve); }
           const id = "task-" + (tasks.length + 1), sessionId = "session-" + id;
-          const type = body.type ?? "feature", branch = type + "/" + id, baseBranch = type === "hotfix" ? "main" : "develop";
-          const task = { id, title: body.title, projectPath: project.path, type, branch, baseBranch, targetBranch: type === "feature" ? "develop" : "main", cwd: "C:/fixture.agenthub/" + id, sessionIds: [sessionId], state: "working", pull: null, createdAt: context.checkedAt, updatedAt: context.checkedAt, freshness: { state: "current", checkedAt: context.checkedAt } };
+          const flow = { ...settings.get(body.projectPath) };
+          const type = body.type ?? "feature", branch = body.workBranch ?? flow[type + "Prefix"] + (type === "release" ? body.version : id), baseBranch = type === "hotfix" ? flow.main : flow.develop;
+          const task = { id, title: body.title, projectPath: body.projectPath, type, branch, baseBranch, targetBranch: type === "feature" ? flow.develop : flow.main, gitflow: flow, cwd: "C:/fixture.agenthub/" + id, sessionIds: [sessionId], state: "working", pull: null, createdAt: context.checkedAt, updatedAt: context.checkedAt, freshness: { state: "current", checkedAt: context.checkedAt } };
           const session = { id: sessionId, title: body.title, taskId: id, projectPath: project.path, projectName: project.name, cwd: task.cwd, worktree: { dir: task.cwd, branch }, agent: body.agent, permission: body.permission, state: "idle", events: [], skills: [], queue: [], createdAt: context.checkedAt, updatedAt: context.checkedAt };
           tasks.unshift(task); sessions.push(session); value = { task, session };
-        } else value = { tasks };
+        } else value = { tasks: tasks.filter((task) => task.projectPath === url.searchParams.get("path")) };
       } else if (url.pathname.startsWith("/api/tasks/")) {
         const [, , , id, action] = url.pathname.split("/"); const task = tasks.find((item) => item.id === id);
         if (!task) throw Error("Task not found");
-        if (req.method === "DELETE" && !action) {
-          if (mode.deleteFailure) throw Object.assign(Error("실행 중인 세션을 먼저 중지하세요."), { status: 409, reason: "running" });
-          if (mode.holdDelete) { mode.holdDelete = false; await new Promise((resolve) => releaseDelete = resolve); }
-          tasks.splice(tasks.indexOf(task), 1);
-          for (let index = sessions.length - 1; index >= 0; index--) if (sessions[index].taskId === id) sessions.splice(index, 1);
-          value = { ok: true };
-        } else if (action === "finish") {
+        if (action === "finish") {
           task.pull = { number: 42, url: "https://github.com/fixture/repo/pull/42", state: "OPEN", headRefName: task.branch, baseRefName: task.targetBranch, headRefOid: "b".repeat(40) };
           if (mode.uncertain) { mode.uncertain = false; task.pendingAction = { action: "pull", expectedHead: "b".repeat(40), outcomeUnknown: true }; throw Object.assign(Error("완료 여부를 확인한 뒤 다시 시도하세요."), { status: 504, reason: "github-timeout", outcomeUnknown: true }); }
           task.state = "review"; value = { task, pull: task.pull };
@@ -136,9 +153,18 @@ test("browser: GitFlow tasks create, finish, recover uncertain writes, and delet
         else if (action === "sync") value = { task };
         else if (action === "cleanup") { task.state = "cleaned"; value = { task }; }
         else value = { task };
-      } else if (url.pathname === "/api/sessions") value = sessions;
+      } else if (url.pathname === "/api/sessions") {
+        if (req.method === 'POST') {
+          const owner = tasks.find((task) => task.branch === body.workBranch);
+          const session = { id: 'selected-session-' + sessions.length, title: body.title || 'Existing branch session', taskId: owner?.id,
+            projectPath: project.path, projectName: project.name, cwd: owner?.cwd || 'C:/fixture.agenthub/selected',
+            worktree: { dir: owner?.cwd || 'C:/fixture.agenthub/selected', branch: body.workBranch, shared: true },
+            agent: body.agent, permission: body.permission, state: 'idle', events: [], skills: [], queue: [], createdAt: context.checkedAt, updatedAt: context.checkedAt };
+          sessions.push(session); owner?.sessionIds.push(session.id); value = session;
+        } else value = sessions;
+      }
       else if (url.pathname.startsWith("/api/sessions/")) value = sessions.find((item) => item.id === url.pathname.split("/")[3]);
-      else if (url.pathname === "/api/projects/all") value = [project];
+      else if (url.pathname === "/api/projects/all") value = projects;
       else if (["/api/projects/discover", "/api/links", "/api/skills", "/api/messages"].includes(url.pathname)) value = [];
       else if (url.pathname === "/api/commands") value = { shells: [], commands: [] };
       else if (url.pathname === "/api/hub") value = { exists: false, roles: [] };
@@ -160,11 +186,11 @@ test("browser: GitFlow tasks create, finish, recover uncertain writes, and delet
   try {
     const expression = await fs.readFile(new URL("./fixtures/tasks-browser.js.txt", import.meta.url), "utf8");
     const report = await browser(temp, "http://127.0.0.1:" + server.address().port, expression);
-    assert.ok(report.checks.length >= 25); assert.deepEqual(report.errors, []);
+    assert.ok(report.checks.length >= 35); assert.deepEqual(report.errors, []);
     assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"));
     await fs.writeFile(path.join(root, "data/tasks-qa/checks.json"), JSON.stringify(report, null, 2));
   } finally {
-    releaseCreate?.(); releaseDelete?.(); for (const stream of streams) stream.end();
+    releaseCreate?.(); releaseSettingsRead?.(); releaseSettingsSave?.(); for (const stream of streams) stream.end();
     await new Promise((resolve) => server.close(resolve));
     assert.equal(path.dirname(path.resolve(temp)), path.resolve(os.tmpdir()));
     await fs.rm(temp, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });

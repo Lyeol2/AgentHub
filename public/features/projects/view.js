@@ -1,8 +1,9 @@
 import { $, el, table, lifePill, timeAgo, sessionLabel, sessionBadge, pill, AGENT_LABEL } from "../../shared/dom.js";
 import { samePath, firstLine } from "../../shared/store.js";
 import { openContextMenu } from "../../shared/context-menu.js";
+import { sessionLockButton } from "../../shared/session-lock.js";
 
-export function createProjectsView({ data, navigation, getFilter, sortedProjects, hubSessions, lastActive, currentProject, goProject, openRemoveProject, sessionOpener, openSessionMenu }) {
+export function createProjectsView({ data, navigation, getFilter, sortedProjects, hubSessions, lastActive, currentProject, goProject, openRemoveProject, sessionOpener, openSessionMenu, toggleSessionLock }) {
   function renderProjectNav() {
     const projects = sortedProjects();
     $("project-nav").replaceChildren(
@@ -31,8 +32,10 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
   function renderSessionList() {
     const q = getFilter().toLowerCase();
     const items = data.sessions.filter((s) => !q || `${s.title} ${s.projectName}`.toLowerCase().includes(q));
-    const item = (s, sub) => el("button", {
+    const item = (s, sub) => el("div", { class: `session-item-row${s.locked ? " locked" : ""}` }, el("button", {
       class: `session-item${data.current?.id === s.id ? " active" : ""}`,
+      title: s.locked ? "잠긴 세션입니다. 좌물쇠를 눌러 잠금을 해제하세요." : s.title,
+      "aria-disabled": String(!!s.locked),
       onclick: sessionOpener(s.id),
       onauxclick: sessionOpener(s.id),
       oncontextmenu: (e) => openSessionMenu(e, s),
@@ -42,7 +45,7 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
       el("span", { class: "name" }, s.title),
       s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : null,
       s.compactions ? lifePill(s) : null),
-    el("span", { class: "sub" }, sub));
+    el("span", { class: "sub" }, sub)), sessionLockButton(s, toggleSessionLock));
     const chats = items.filter((s) => s.chat);
     $("chat-list").replaceChildren(...chats.map((s) => item(s, `${sessionLabel(s)}${s.model ? ` · ${s.model}` : ""} · ${timeAgo(s.updatedAt)}`)));
     if (!chats.length) $("chat-list").append(el("div", { class: "hint", style: "padding:4px 10px" }, q ? "찾는 채팅이 없습니다." : "채팅이 없습니다."));
@@ -85,8 +88,8 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
   }
 
   function sessionRow(s, withProject) {
-    return el("tr", { class: "click", onclick: sessionOpener(s.id), onauxclick: sessionOpener(s.id) },
-      el("td", { class: "title-cell", title: s.title }, s.title),
+    return el("tr", { class: "click", onclick: sessionOpener(s.id), onauxclick: sessionOpener(s.id), oncontextmenu: (e) => openSessionMenu(e, s) },
+      el("td", { class: "title-cell", title: s.title }, s.title, sessionLockButton(s, toggleSessionLock)),
       el("td", {}, sessionBadge(s)),
       withProject ? el("td", {}, s.projectName) : el("td", { class: "path" }, s.worktree ? "작업 폴더" : "원본"),
       el("td", {}, pill(s.state)),
@@ -105,7 +108,7 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
     const rows = shown.map((s) => el("tr", {
       class: "click", onclick: sessionOpener(s.id), onauxclick: sessionOpener(s.id), oncontextmenu: (e) => openSessionMenu(e, s),
     },
-    el("td", { class: "title-cell", title: s.title }, s.title, s.kind === "orchestrator" ? el("span", { class: "pill orch" }, "지휘") : null),
+    el("td", { class: "title-cell", title: s.title }, s.title, s.kind === "orchestrator" ? el("span", { class: "pill orch" }, "지휘") : null, sessionLockButton(s, toggleSessionLock)),
     el("td", {}, sessionBadge(s), s.model ? el("span", { class: "muted" }, ` ${s.model}`) : null),
     el("td", { class: "role-cell", title: s.role ?? "" }, [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ") || "—"),
     el("td", { class: "path", title: s.cwd }, s.worktree ? s.worktree.branch : "원본"),

@@ -2,7 +2,7 @@ import { createProjectsView } from "./view.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 
-export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation }) {
+export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, toggleSessionLock, openNew, data, navigation }) {
   const ui = {
     "filter": "",
     "removingProject": null,
@@ -10,7 +10,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   };
   const { renderProjectNav, renderSessionList, renderDashboard, renderProjectSessionTable } = createProjectsView({
     data, navigation, getFilter: () => ui.filter, sortedProjects, hubSessions: (project) => hubSessions(project),
-    lastActive, currentProject, goProject, openRemoveProject, sessionOpener, openSessionMenu,
+    lastActive, currentProject, goProject, openRemoveProject, sessionOpener, openSessionMenu, toggleSessionLock,
   });
 
   // ── 사이드바 ────────────────────────────────────────────────────
@@ -60,9 +60,9 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   }
 
   // ── 프로젝트 탭 ─────────────────────────────────────────────────
-  // 프로젝트 탭. 마지막에 본 탭을 이 브라우저에 기억한다.
+  // 프로젝트 탭(세션 흐름 / 세션 목록 / 작업 / Git / 팀 작업). 마지막에 본 탭을 이 브라우저에 기억한다.
   const TAB_KEY = "agenthub-project-tab";
-  const PROJECT_TABS = ["flow", "sessions", "tasks", "git"];
+  const PROJECT_TABS = ["flow", "sessions", "tasks", "git", "issues"];
   const projectTab = () => (PROJECT_TABS.includes(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "flow");
 
   function showProjectTab(tab) {
@@ -75,6 +75,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     for (const panel of document.querySelectorAll("#view-project .tab-panel")) panel.hidden = panel.dataset.panel !== tab;
     if (tab === "git") loadGit();
     if (tab === "tasks") loadTasks?.(navigation.project);
+    if (tab === "issues") loadIssues(navigation.project);
   }
 
   $("p-tabs").addEventListener("click", (e) => {
@@ -91,7 +92,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   function openRemoveProject(p) {
     const sessions = hubSessions(p).filter((s) => !s.chat);
     const running = sessions.filter((s) => s.state === "running").length;
-    const worktrees = sessions.filter((s) => s.worktree && !s.taskId).length;
+    const worktrees = sessions.filter((s) => s.worktree && !s.taskId && !s.worktree.shared).length;
     const commandCount = data.commandsProject && samePath(data.commandsProject, p.path) ? (data.commands ?? []).length : 0;
     ui.removingProject = p;
     $("project-remove-name").textContent = p.name;
@@ -149,6 +150,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     $("p-path").textContent = p.path;
     $("p-registered").hidden = p.registered;
     renderProjectSessions();
+    renderIssueCount();
     showProjectTab(projectTab());
     loadSkills(p.path);
     loadCommands(p.path);
@@ -225,5 +227,5 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   });
   $("p-new").addEventListener("click", () => openNew(navigation.project));
 
-  return { loadSessions, loadProjects, renderProjectNav, renderSessionList, renderDashboard, currentProject, projectTab, renderProjectSessions, renderProject, sortedProjects };
+  return { loadSessions, loadProjects, renderProjectNav, renderSessionList, renderDashboard, currentProject, projectTab, showProjectTab, renderProjectSessions, renderProject, sortedProjects };
 }

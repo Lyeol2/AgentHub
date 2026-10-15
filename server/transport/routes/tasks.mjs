@@ -1,7 +1,10 @@
 export function taskRoutes(s) {
   return [
+    ["GET", "workbranches", ({ query }) => s.workbranches(query.get("path"))],
     ["GET", "tasks", ({ query }) => s.list(query.get("path"))],
     ["GET", "tasks/context", ({ query }) => s.context(query.get("path"))],
+    ["GET", "tasks/settings", ({ query }) => s.settings(query.get("path"))],
+    ["PUT", "tasks/settings", ({ query, body }) => s.updateSettings(query.get("path"), body)],
     ["POST", "tasks", ({ body }) => s.create(body)],
     ["DELETE", "tasks/:id", ({ params }) => s.remove(params.id)],
     ["POST", "tasks/:id/finish", ({ params, body }) => s.finish(params.id, body)],

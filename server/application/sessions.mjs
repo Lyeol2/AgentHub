@@ -13,9 +13,10 @@ import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
 import { HttpError } from "./errors.mjs";
-import { AttachmentStore, isImageAttachment } from "../attachments.mjs";
+import { AttachmentStore, isImageAttachment, publicAttachment } from "../attachments.mjs";
 import { unsupportedChatAttachment } from "../attachment-input.mjs";
 import { exportSession } from "../session-export.mjs";
+import { parseSessionMarkdown, listRecords as listRecords_, readRecord, readRecordImage, RECORD_MAX_BYTES } from "../session-import.mjs";
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
@@ -207,6 +208,7 @@ export function createSessionService({
       createdBy: createdBy ?? null, // 이 세션을 만든 오케스트레이터
       agent,
       chat,
+      locked: false,
       model,
       effort,
       permission,
@@ -305,6 +307,12 @@ export function createSessionService({
   }
 
   async function create(body) {
+    if (body.workBranch !== undefined) {
+      if (body.isolate === true) throw new HttpError(400, "새 작업 브랜치 생성과 기존 브랜치 선택 중 하나만 지정하세요.");
+      const session = await tasks().createBranchSession(body);
+      broadcast("sessions", {});
+      return session;
+    }
     const session = await createSession({ ...body, project: body.chat ? null : ensureProject(body.projectPath) });
     broadcast("sessions", {});
     return summary(session);
@@ -328,7 +336,7 @@ export function createSessionService({
       projectName: project.name, projectPath: project.path, cwd, worktree: null,
       baseCommit: git ? await headCommit(project.path) : null,
       agentSessionId: found.agentSessionId, cliSessionIds: [found.agentSessionId],
-      imported: true, state: "idle", runningStartedAt: null,
+      imported: true, locked: false, state: "idle", runningStartedAt: null,
       createdAt: now, updatedAt: now,
       compactions: history.compactions, context: history.context, events: history.events,
     };
@@ -340,6 +348,7 @@ export function createSessionService({
 
   function detail(id) {
     const session = getSession(id);
+    if (session.locked) throw new HttpError(423, "잠긴 세션입니다. 좌물쇠를 눌러 잠금을 해제하세요.", "locked");
     return { ...settleState(session), queue: chain.list(session.id), canInject: !!AGENTS[session.agent].interactive || AGENTS[session.agent].transport === "app-server" };
   }
 
@@ -385,6 +394,75 @@ export function createSessionService({
     }
   }
 
+  // ── 기록 가져오기 ───────────────────────────────────────────────
+  // 내보낸 기록 문서를 찾는 곳: 프로젝트 원본, 그리고 세션을 고르면 그 세션의 작업 폴더(워크트리)
+  function recordFolders(projectPath, sessionId) {
+    const project = path.resolve(String(projectPath ?? ""));
+    const folders = [{ location: "project", dir: project }];
+    if (sessionId) {
+      const session = getSession(sessionId);
+      if (session.cwd && !session.chat && !samePath(session.cwd, project)) folders.push({ location: "session", dir: session.cwd });
+    }
+    return folders;
+  }
+
+  async function listRecords({ projectPath, sessionId }) {
+    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+    const groups = await Promise.all(recordFolders(projectPath, sessionId).map(async ({ location, dir }) =>
+      (await listRecords_(dir).catch(() => [])).map((record) => ({ ...record, location }))));
+    return groups.flat();
+  }
+
+  async function importRecord(body = {}) {
+    const project = ensureProject(body.projectPath);
+    let source;
+    try {
+      if (typeof body.markdown === "string") {
+        if (Buffer.byteLength(body.markdown) > RECORD_MAX_BYTES) throw Object.assign(new Error("기록 문서는 5MB까지 가져올 수 있습니다."), { code: "IMPORT_TOO_LARGE" });
+        source = { markdown: body.markdown, folder: null, name: String(body.fileName ?? "기록 문서").replace(/[\x00-\x1f]/g, "").slice(0, 200) };
+      } else {
+        const folder = recordFolders(project.path, body.sessionId).find((f) => f.location === (body.location ?? "project"));
+        if (!folder) throw Object.assign(new Error("기록 위치가 올바르지 않습니다."), { code: "IMPORT_PATH" });
+        const read = await readRecord(folder.dir, body.fileName);
+        source = { ...read, name: body.fileName };
+      }
+    } catch (err) {
+      throw new HttpError(err.code === "IMPORT_MISSING" ? 404 : 400, err.message);
+    }
+    let parsed;
+    try { parsed = parseSessionMarkdown(source.markdown); }
+    catch (err) { throw new HttpError(400, err.message); }
+
+    const session = await createSession({
+      project, agent: body.agent ?? parsed.meta.agent ?? "claude", permission: body.permission,
+      title: String(body.title ?? "").trim() || parsed.title || "가져온 기록",
+    });
+    // 이미지는 문서 옆 .assets에서 읽어 이 세션의 첨부로 다시 저장한다. 업로드한 문서는 이미지 파일이 없다.
+    let missingImages = 0;
+    const now = new Date().toISOString();
+    for (const [seq, { images, ...event }] of parsed.events.entries()) {
+      const attached = [];
+      for (const image of images ?? []) {
+        const file = source.folder ? await readRecordImage(source.folder, image.href) : null;
+        try {
+          if (!file) throw new Error("missing");
+          attached.push(publicAttachment(attachments.save(session.id, { name: image.name, mimeType: file.mimeType, data: file.bytes.toString("base64") })));
+        } catch {
+          missingImages++;
+        }
+      }
+      session.events.push({ ...event, seq, ts: event.ts ?? now, ...(attached.length ? { attachments: attached } : {}) });
+    }
+    session.importedFrom = { name: source.name, sessionId: parsed.meta.sessionId, exportedAt: parsed.meta.exportedAt, at: now };
+    if (body.carry !== false && session.events.some((e) => e.kind === "user")) session.handover = handoverText(session, "", { importedFrom: source.name });
+    runner.append(session, { kind: "status", text: `작업 기록 ${source.name}에서 ${parsed.events.length}건을 가져왔습니다.`
+      + (session.handover ? " 첫 요청에 기록을 붙여 이어서 작업합니다." : "")
+      + (missingImages ? ` 이미지 ${missingImages}장은 찾지 못해 빠졌습니다.` : "") });
+    store.touch(session);
+    broadcast("sessions", {});
+    return summary(session);
+  }
+
   function queueAction(id, itemId, action) {
     const session = getSession(id);
     const found = chain.list(session.id).find((item) => item.id === itemId);
@@ -408,6 +486,7 @@ export function createSessionService({
 
   async function update(id, body) {
     const session = getSession(id);
+    if (body.locked !== undefined && typeof body.locked !== "boolean") throw new HttpError(400, "locked는 true 또는 false여야 합니다.");
     if (body.agent !== undefined && body.agent !== session.agent) await switchAgent(session, body);
     if (body.title !== undefined) session.title = String(body.title).trim() || session.title;
     if (body.model !== undefined) session.model = checkModel(body.model);
@@ -426,7 +505,9 @@ export function createSessionService({
       session.graphPos = Number.isFinite(x) && Number.isFinite(y) ? { x: Math.max(0, x), y: Math.max(0, y) } : null;
     }
     if (body.skills !== undefined && !session.chat) setSessionSkills(session, body.skills);
+    if (body.locked !== undefined) session.locked = body.locked;
     store.touch(session);
+    if (body.locked !== undefined) store.flush(session.id);
     broadcast("sessions", {});
     return summary(session);
   }
@@ -541,7 +622,7 @@ export function createSessionService({
   async function recreateSession(id) {
     const session = getSession(id);
     if (runner.isRunning(id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
-    if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, session.taskId
+    if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, session.taskId || session.worktree.shared
       ? "작업 폴더가 없습니다. 작업 탭에서 상태를 확인하세요. 대화 기록은 보관되며 작업 폴더 복구 또는 새 작업이 필요합니다."
       : "워크트리 폴더가 없습니다. 서버를 다시 시작해 원본 폴더로 전환한 뒤 재생성하세요.");
     const created = await createSession({
@@ -552,6 +633,7 @@ export function createSessionService({
     }, { worktree: session.worktree, taskId: session.taskId });
     Object.assign(created, {
       baseCommit: session.baseCommit ?? created.baseCommit, graphPos: session.graphPos ?? null,
+      locked: !!session.locked,
       previousCwd: session.previousCwd, previousWorktree: session.previousWorktree,
     });
     store.touch(created);
@@ -581,7 +663,7 @@ export function createSessionService({
 
   async function remove(id, { force = false, removeWorktree: removeFolder = false, deleteRecords = false } = {}) {
     const session = getSession(id);
-    if (removeFolder && session.taskId) throw new HttpError(409, "작업의 폴더는 작업 탭에서 병합 상태를 확인한 뒤 정리하세요.", "task-worktree");
+    if (removeFolder && (session.taskId || session.worktree?.shared)) throw new HttpError(409, "공유하는 작업 브랜치의 폴더는 세션 삭제와 함께 지울 수 없습니다. 작업 탭에서 정리 상태를 확인하세요.", "task-worktree");
     if (runner.isRunning(id)) {
       if (!force) throw new HttpError(409, "실행 중인 세션입니다.", "running");
       runner.stop(session);
@@ -607,7 +689,7 @@ export function createSessionService({
 
   return {
     list: () => store.list().map((s) => summary(settleState(s))), detail,
-    create, importSession, update, sendMessage, uploadAttachment, attachmentContent, exportRecord, queueAction, decidePlan, answerQuestion, answerPermission,
+    create, importSession, update, sendMessage, uploadAttachment, attachmentContent, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
     stop, pause, resume, restart, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,

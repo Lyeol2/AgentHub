@@ -6,7 +6,7 @@ import { processMessageBlocks } from "./messaging.mjs";
 
 // One ordered pipeline owns turn completion. Preprocessing must finish before the
 // chain can start queued work, because that would change the last answer.
-export function createTurnLifecycle({ runner, mailbox, sessions, workflows, chain, notify }) {
+export function createTurnLifecycle({ runner, mailbox, sessions, workflows, chain, notify, issues = null }) {
   function recordQuestions(session, ok) {
     if (session.chat || !ok || AGENTS[session.agent].interactive) return;
     const found = extractQuestions(lastAnswer(session));
@@ -33,6 +33,8 @@ export function createTurnLifecycle({ runner, mailbox, sessions, workflows, chai
     mailbox.onTurnEnd(session);
     sessions.finishHandover(session);
     notify("sessions", {});
+    // 팀 작업 진행 댓글은 GitHub 응답을 기다리지 않는다.
+    issues?.onTurnEnd(session, ok);
     await chain.onTurnEnd(session, ok);
   };
 }

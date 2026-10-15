@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readJsonFile, writeJsonAtomic } from "./infrastructure/persistence/json-file.mjs";
 
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 export const DATA_DIR = process.env.AGENTHUB_DATA ?? path.join(ROOT, "data");
@@ -18,22 +19,24 @@ const DEFAULTS = {
   hiddenProjects: [],
   // 흐름 그래프에서 옮긴 스킬 노드 위치. 프로젝트 경로(소문자) → 스킬 이름 → { x, y }
   skillLayout: {},
+  // Git 저장소 경로(소문자) → GitFlow 브랜치 이름과 작업 브랜치 접두어.
+  gitflow: {},
 };
 
 export function loadConfig(dataDir = DATA_DIR) {
   const configPath = path.join(dataDir, "config.json");
   fs.mkdirSync(dataDir, { recursive: true });
-  if (!fs.existsSync(configPath)) {
+  // 설정 파일이 깨졌으면 data/corrupted로 옮기고 기본값으로 다시 만든다.
+  const raw = readJsonFile(configPath, { dataDir, fallback: () => null, valid: (value) => value !== null && typeof value === "object" && !Array.isArray(value) });
+  if (!raw) {
     saveConfig(DEFAULTS, dataDir);
     return structuredClone(DEFAULTS);
   }
-  const raw = JSON.parse(fs.readFileSync(configPath, "utf8"));
   const defaults = structuredClone(DEFAULTS);
   return { ...defaults, ...raw, cli: { ...defaults.cli, ...raw.cli } };
 }
 
 export function saveConfig(config, dataDir = DATA_DIR) {
   const configPath = path.join(dataDir, "config.json");
-  fs.mkdirSync(dataDir, { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeJsonAtomic(configPath, config);
 }

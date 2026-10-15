@@ -174,7 +174,7 @@ test("setup: 강제 확인은 경로와 버전·로그인 상태를 함께 갱�
   const f = fixture(t), file = f.file(executable("cli"));
   let version = "CLI 1.0.0";
   mocks(t, { launch: (child, { args }) => complete(child, args.some((arg) => arg.includes("--version")) ? version : '{"loggedIn":true}') });
-  const setup = new Setup({ cliPath: () => file });
+  const setup = new Setup({ cliPath: () => file, wingetPackages: async () => [] });
   assert.equal((await setup.status()).tools[0].version, "CLI 1.0.0");
   version = "CLI 2.0.0";
   const result = await setup.status({ fresh: true });

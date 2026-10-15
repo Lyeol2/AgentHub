@@ -1,9 +1,10 @@
 import { el, badge, pill, lifePill } from "../../shared/dom.js";
 import { elapsedElement } from "../../shared/elapsed.js";
 import { firstLine } from "../../shared/store.js";
+import { sessionLockButton } from "../../shared/session-lock.js";
 import { SVG_NS } from "./model.js";
 
-export function createGraphView({ skillChips, restartSession, commandNode }) {
+export function createGraphView({ skillChips, restartSession, commandNode, toggleSessionLock }) {
     function createCanvas(sessions, commands) {
     const canvas = el("div", { class: "graph-canvas" });
     const svg = document.createElementNS(SVG_NS, "svg");
@@ -15,9 +16,10 @@ export function createGraphView({ skillChips, restartSession, commandNode }) {
     for (const s of sessions) {
       const role = [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ");
       const orchestrator = s.kind === "orchestrator";
-      const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}`, "data-id": s.id, title: s.role || s.title },
+      const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}${s.locked ? " locked" : ""}`, "data-id": s.id, title: s.role || s.title },
         el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null,
-          s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : pill(s.state)),
+          s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : pill(s.state),
+          sessionLockButton(s, toggleSessionLock)),
         el("div", { class: "gcard-title" }, s.title),
         el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
         skillChips(s),
