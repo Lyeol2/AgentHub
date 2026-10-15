@@ -1,0 +1,98 @@
+.tasks-card > .card-head { align-items: flex-start; flex-wrap: wrap; gap: 12px; }
+.tasks-card > .card-head > div:first-child { min-width: 0; flex: 1 1 230px; }
+.tasks-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.tasks-toolbar h2 { margin: 0; font-size: 17px; }
+.tasks-toolbar-actions, .task-actions, .task-session-links {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.tasks-context {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted, #9ca3af);
+  font-size: 12px;
+}
+.tasks-context strong { color: var(--text, #e5e7eb); font-weight: 500; }
+.tasks-context[data-state="error"], .task-inline-error {
+  color: var(--danger, #f87171);
+}
+.tasks-context[data-state="stale"] { color: var(--warn); }
+.tasks-list { display: grid; gap: 12px; }
+.tasks-empty {
+  padding: 36px 20px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  text-align: center;
+  color: var(--muted, #9ca3af);
+  line-height: 1.8;
+}
+.tasks-empty strong { display: block; color: var(--text, #e5e7eb); font-weight: 500; }
+.task-card {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel, transparent);
+  min-width: 0;
+}
+.task-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.task-title { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.task-state {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border-radius: 20px;
+  background: var(--bg, #161b24);
+  color: var(--muted, #9ca3af);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.task-state[data-state="working"] { color: var(--accent, #8fa6ff); }
+.task-state[data-state="review"] { color: var(--warn); }
+.task-state[data-state="merged"] { color: var(--ok); }
+.task-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0; font-size: 12px; color: var(--muted, #9ca3af); }
+.task-branch { overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; }
+.task-freshness { font-size: 12px; color: var(--muted, #9ca3af); }
+.task-freshness[data-state="current"] { color: var(--ok); }
+.task-freshness[data-state="needs-update"], .task-freshness[data-state="behind"], .task-freshness[data-state="stale"], .task-freshness[data-state="diverged"] { color: var(--warn); }
+.task-freshness[data-state="error"], .task-freshness[data-state="failed"] { color: var(--danger, #f87171); }
+.task-actions { margin-top: 14px; }
+.task-actions button, .task-actions a { font-size: 12px; }
+.task-pull-link { color: var(--accent, #8fa6ff); text-decoration: none; }
+.task-pull-link:hover { text-decoration: underline; }
+.task-inline-error { margin: 10px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.task-note { margin: 8px 0 0; color: var(--muted, #9ca3af); font-size: 12px; line-height: 1.6; }
+.task-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; }
+.task-dialog .task-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.task-dialog label { display: block; margin-bottom: 12px; }
+.task-dialog label > span { display: block; margin-bottom: 6px; font-size: 12px; }
+.task-dialog input, .task-dialog select, .task-dialog textarea { width: 100%; box-sizing: border-box; }
+.task-dialog textarea { min-height: 84px; resize: vertical; }
+.task-branch-preview { padding: 10px 12px; margin: 0 0 16px; border-radius: 6px; background: var(--bg, #161b24); color: var(--muted, #9ca3af); font-size: 12px; overflow-wrap: anywhere; line-height: 1.6; }
+.task-finish-summary { margin: 0 0 16px; color: var(--muted, #9ca3af); font-size: 12px; line-height: 1.7; overflow-wrap: anywhere; }
+.task-dialog-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.tasks-toolbar button:disabled, .task-actions button:disabled, .task-dialog button:disabled { opacity: .5; cursor: wait; }
+@media (max-width: 600px) {
+  .tasks-toolbar { align-items: flex-start; }
+  .task-card { padding: 12px; }
+  .task-card-header { flex-direction: column; gap: 8px; }
+  .task-dialog .task-form-grid { grid-template-columns: 1fr; gap: 0; }
+  .task-dialog-actions > button { flex: 1 1 auto; }
+}

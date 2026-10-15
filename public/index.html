@@ -7,6 +7,7 @@
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/features/tasks/tasks.css">
 </head>
 <body>
   <aside id="sidebar" class="sidebar">
@@ -103,6 +104,7 @@
         <nav class="tabs" id="p-tabs" role="tablist" aria-label="프로젝트 보기">
           <button type="button" role="tab" data-tab="flow">세션 흐름</button>
           <button type="button" role="tab" data-tab="sessions">세션 목록 <span class="tab-count" id="p-tab-sessions"></span></button>
+          <button type="button" role="tab" data-tab="tasks" aria-controls="tab-tasks">작업</button>
           <button type="button" role="tab" data-tab="git">Git <span class="tab-count" id="p-tab-git"></span></button>
         </nav>
         <div class="tab-panel" data-panel="flow">
@@ -125,6 +127,18 @@
           <div class="hub-bar" id="p-hub"></div>
           <div class="graph" id="p-graph" role="region" aria-label="세션 흐름 그래프. 휠로 확대·축소, 휠 버튼을 끌어 이동, 빈 곳을 끌어 선택 후 Delete로 삭제"></div>
         </div>
+        </div>
+
+        <div class="tab-panel" data-panel="tasks" id="tab-tasks" role="tabpanel" hidden>
+          <div class="card tasks-card">
+            <div class="card-head">
+              <div><h3>작업</h3><p class="hint">작업마다 브랜치와 폴더를 만들고, 마무리하면 Pull Request로 연결합니다.</p></div>
+              <div class="actions"><button type="button" class="ghost sm" id="tasks-refresh">최신 상태 확인</button><button type="button" class="primary sm" id="tasks-new">새 작업</button></div>
+            </div>
+            <div id="tasks-context" class="tasks-context" role="status"></div>
+            <p class="error" id="tasks-error" role="alert"></p>
+            <div id="tasks-list" class="tasks-list" aria-live="polite"></div>
+          </div>
         </div>
 
         <div class="tab-panel" data-panel="sessions" hidden>
@@ -658,6 +672,38 @@
       <pre id="diff-status" class="diff-status"></pre>
       <pre id="diff-body" class="diff"></pre>
       <menu><button class="primary">닫기</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="new-task-dialog" class="task-dialog" aria-labelledby="task-create-heading">
+    <form id="new-task-form" class="dialog-form">
+      <h3 id="task-create-heading">새 작업</h3>
+      <label>작업 제목 <input id="task-title" maxlength="160" required placeholder="예: 로그인 버튼 수정" autocomplete="off"></label>
+      <label>작업 유형 <select id="task-type"><option value="feature">기능 개발 · 일반 수정</option><option value="hotfix">긴급 수정</option><option value="release">배포 준비</option></select></label>
+      <label id="task-version-row" hidden>배포 버전 <input id="task-version" maxlength="64" placeholder="예: 0.4.0" disabled></label>
+      <p class="hint task-branch-preview" id="task-branch-preview"></p>
+      <div class="task-form-grid">
+        <label>담당 AI <select id="task-agent"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
+        <label>권한 <select id="task-permission"></select></label>
+      </div>
+      <label>모델 <input id="task-model" list="task-models" placeholder="CLI 기본값"><datalist id="task-models"></datalist></label>
+      <label>작업 지침 <textarea id="task-role" rows="3" maxlength="12000" placeholder="맡길 범위와 완료 기준을 적어 주세요"></textarea></label>
+      <p class="hint">원격 main과 기준 브랜치를 확인한 뒤 전용 브랜치·폴더·세션을 만듭니다.</p>
+      <p class="error" id="task-create-error" role="alert"></p>
+      <menu><button type="button" class="ghost" id="task-create-cancel">취소</button><button type="submit" class="primary" id="task-create-submit">작업 만들기</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="finish-task-dialog" class="task-dialog" aria-labelledby="task-finish-heading">
+    <form id="finish-task-form" class="dialog-form">
+      <h3 id="task-finish-heading">작업 마무리</h3>
+      <p class="hint task-finish-summary" id="task-finish-summary"></p>
+      <label>커밋 메시지 <input id="task-finish-message" maxlength="256" required placeholder="예: fix: 로그인 버튼 수정"></label>
+      <label>PR 설명 <textarea id="task-finish-description" rows="4" maxlength="40000" placeholder="작업 목적과 주요 변경 내용을 적어 주세요"></textarea></label>
+      <label>검증 결과 <textarea id="task-finish-verification" rows="3" maxlength="10000" placeholder="실행한 테스트와 확인 결과를 적어 주세요"></textarea></label>
+      <p class="hint">이 작업 폴더의 변경을 커밋하고 GitHub에 게시한 뒤 PR을 만듭니다.</p>
+      <p class="error" id="task-finish-error" role="alert"></p>
+      <menu><button type="button" class="ghost" id="task-finish-cancel">취소</button><button type="submit" class="primary" id="task-finish-submit">커밋·게시·PR 만들기</button></menu>
     </form>
   </dialog>
 

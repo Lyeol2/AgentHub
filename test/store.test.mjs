@@ -94,6 +94,16 @@ test("store: 이전 폴더가 없어도 원본으로 전환하고 실행 중 상
   assert.deepEqual(persisted("missing"), session);
 });
 
+test("store: 작업 소유 폴더가 정리되어도 세션을 원본 브랜치로 옮기지 않는다", () => {
+  const cwd = path.join(tmp, "cleaned-task-worktree");
+  const before = fixture("cleaned-task", { taskId: "task-1", cwd, worktree: { dir: cwd, branch: "feature/task-1" } });
+  const session = new SessionStore().get(before.id);
+  assert.deepEqual(session, before);
+  assert.equal(session.cwd, cwd);
+  assert.equal(useProjectFolder(session), false);
+  assert.deepEqual(persisted(before.id), before);
+});
+
 test("store: worktree 메타데이터가 없는 가져온 세션도 원본에서 새 CLI 대화를 시작한다", () => {
   const previousCwd = path.join(project, ".claude", "worktrees", "imported");
   fixture("imported", { cwd: previousCwd, worktree: null, imported: true });

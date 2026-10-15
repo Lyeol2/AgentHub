@@ -6,7 +6,7 @@ import { githubPulls, GitHubError } from "../github.mjs";
 import { samePath } from "./projects.mjs";
 import { HttpError } from "./errors.mjs";
 
-export function createGitService({ sessions, projects, runner, notify }) {
+export function createGitService({ sessions, projects, runner, notify, tasks }) {
   const { getSession } = sessions;
 
   async function gitRepo(projectPath) {
@@ -29,6 +29,9 @@ export function createGitService({ sessions, projects, runner, notify }) {
     const repo = await gitRepo(projectPath);
     const directory = sessionId ? sessionWorktree(sessionId, repo) : repo;
     try {
+      if (sessionId && ["stage", "unstage", "commit", "push", "createPull", "closePull"].includes(action)) {
+        tasks?.()?.assertSession?.(getSession(sessionId));
+      }
       if (action === "overview") return await gitOverview(repo, projects.projectSessions(repo));
       if (action === "diff") return { diff: await fileDiff(directory, file ?? "", area) };
       if (action === "show") return { diff: await showCommit(repo, hash) };

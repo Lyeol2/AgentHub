@@ -21,6 +21,17 @@ test("HTTP client handles empty responses and non-JSON server failures", async (
   await assert.rejects(api("GET", "/api/status"), /503/);
 });
 
+test("HTTP client preserves uncertain write outcomes for reconciliation without retry", async () => {
+  let calls = 0;
+  const api = createApiClient({ fetch: async () => {
+    calls++;
+    return { ok: false, status: 504, json: async () => ({ error: "완료 여부 확인 필요", reason: "github-timeout", outcomeUnknown: true }) };
+  } });
+  await assert.rejects(api("POST", "/api/tasks/task-1/finish", {}), (error) =>
+    error.reason === "github-timeout" && error.outcomeUnknown === true);
+  assert.equal(calls, 1);
+});
+
 test("SSE transport forwards registered events unchanged and can be closed", () => {
   const sources = [];
   class Source {
