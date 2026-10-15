@@ -503,7 +503,8 @@ async function renderFound(p) {
     renderFound(p);
   };
   const rows = shown.map((f) => el("tr", { class: f.hidden ? "hidden-found" : "" },
-    el("td", { class: "title-cell", title: `${f.title}\n${f.cwd}\n${f.agentSessionId}` }, f.title || "(제목 없음)"),
+    el("td", { class: "title-cell", title: `${f.linkedTitle ? `AgentHub: ${f.linkedTitle}\n기록: ` : ""}${f.title}\n${f.cwd}\n${f.agentSessionId}` },
+      f.linkedTitle || f.title || "(제목 없음)"),
     el("td", {}, badge(f.agent)),
     el("td", { class: "num" }, String(f.turns)),
     el("td", { class: "num" }, timeAgo(f.updatedAt)),
@@ -2395,17 +2396,14 @@ $("new-form").addEventListener("submit", async (e) => {
     const created = await api("POST", "/api/sessions", body);
     $("new-dialog").close();
     e.target.reset();
-    // 흐름 그래프에서 우클릭으로 만들었으면 그 자리에 놓고 그래프에 머문다.
+    // 만든 세션을 바로 열지 않고 보던 화면에 머문다. 새 세션은 사이드바 목록과 흐름 그래프에 나타난다.
+    // 흐름 그래프에서 우클릭으로 만들었으면 그 자리에 놓는다.
     const pos = state.newSessionPos;
     state.newSessionPos = null;
     if (pos && !body.chat && state.view === "project") {
       await api("PUT", `/api/sessions/${created.id}`, { graphPos: pos }).catch(() => {});
-      await Promise.all([loadSessions(), loadProjects()]);
-      return;
     }
     await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 세션을 만들면서 등록된다.
-    await selectSession(created.id);
-    $("s-prompt").focus();
   } catch (err) {
     $("new-error").textContent = err.message;
   }

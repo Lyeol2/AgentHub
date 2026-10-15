@@ -601,11 +601,11 @@ async function handleApi(req, res, url) {
       // 다시 시작하기 전의 CLI 대화도 그 세션에 연결된 것으로 본다.
       const linked = new Map(store.list().flatMap((s) => cliSessionIds(s).map((id) => [id, s.id])));
       const hidden = new Set(config.hiddenSessions);
-      return send(res, 200, discoverSessions(project.path).map(({ file, ...found }) => ({
-        ...found,
-        linkedId: linked.get(found.agentSessionId) ?? null,
-        hidden: hidden.has(found.agentSessionId),
-      })));
+      return send(res, 200, discoverSessions(project.path).map(({ file, ...found }) => {
+        const linkedId = linked.get(found.agentSessionId) ?? null;
+        // 연결된 기록은 AgentHub 세션 이름으로 보인다(흐름 그래프 카드와 같게).
+        return { ...found, linkedId, linkedTitle: linkedId ? store.get(linkedId)?.title ?? null : null, hidden: hidden.has(found.agentSessionId) };
+      }));
     }
     // 기록 목록에서 숨기거나 다시 보인다. Claude Code·Codex의 기록 파일은 그대로 둔다.
     if (parts[1] === "hide" && method === "POST") {

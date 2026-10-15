@@ -55,7 +55,6 @@
         "provider": "github",
         "owner": "Lyeol2",
         "repo": "AgentHub",
-        "private": true,
         "releaseType": "release"
       }
     ]

@@ -90,6 +90,19 @@ const oneLine = (text, max = 80) => {
 // CLI가 프롬프트 앞뒤에 붙이는 시스템 텍스트는 사용자 입력으로 보지 않는다.
 const isInjected = (text) => /^\s*<[\w-]+[\s>]/.test(text) || /^# AGENTS\.md/.test(text);
 
+// AgentHub가 첫 요청 앞에 붙이는 안내(공통 지침, 역할, 스킬, 질문 규칙 등). 제목은 그 뒤의 실제 요청으로 정한다.
+const AGENTHUB_BLOCK = /^\s*\[(AgentHub [^\]\n]+|이 세션의 역할[^\]\n]*|이 세션에 이은 스킬[^\]\n]*|일반 대화|현재 세션|역할 템플릿)\]/;
+export function userPrompt(text) {
+  if (!AGENTHUB_BLOCK.test(text)) return text;
+  // 역할을 붙인 요청은 "[요청]" 뒤가 실제 요청이다.
+  const marker = text.lastIndexOf("[요청]\n");
+  if (marker >= 0) return text.slice(marker + "[요청]\n".length);
+  // 그 밖에는 안내 블록을 빈 줄 단위로 걷어낸다.
+  let rest = text;
+  while (AGENTHUB_BLOCK.test(rest) && rest.includes("\n\n")) rest = rest.slice(rest.indexOf("\n\n") + 2);
+  return AGENTHUB_BLOCK.test(rest) ? "" : rest;
+}
+
 // ── Claude ──────────────────────────────────────────────────────
 function claudeUserText(msg) {
   const content = msg.message?.content;
@@ -123,7 +136,7 @@ function summarizeClaude(file, stat) {
     const text = claudeUserText(msg);
     if (!text || isInjected(text)) continue;
     turns++;
-    firstPrompt ??= text;
+    firstPrompt ??= userPrompt(text) || null;
   }
   if (!turns) return null;
   return {
@@ -164,7 +177,7 @@ function claudeHistory(file) {
     if (!msg || msg.isSidechain || msg.isMeta) continue;
     if (msg.type === "user") {
       const text = claudeUserText(msg);
-      if (text && !isInjected(text)) events.push({ kind: "user", text, ts: msg.timestamp });
+      if (text && !isInjected(text)) events.push({ kind: "user", text: userPrompt(text) || text, ts: msg.timestamp });
       else events.push(...claude.parseLine(line).map((e) => ({ ...e, ts: msg.timestamp })));
     } else if (msg.type === "assistant" || (msg.type === "system" && msg.subtype === "compact_boundary")) {
       events.push(...claude.parseLine(line).map((e) => ({ ...e, ts: msg.timestamp })));
@@ -223,7 +236,7 @@ function codexHistory(file) {
     const ts = msg.timestamp;
     if (p.type === "message" && p.role === "user") {
       const text = codexText(p.content);
-      if (text && !isInjected(text)) events.push({ kind: "user", text, ts });
+      if (text && !isInjected(text)) events.push({ kind: "user", text: userPrompt(text) || text, ts });
     } else if (p.type === "message" && p.role === "assistant") {
       const text = codexText(p.content);
       if (text) events.push({ kind: "text", text, ts });
@@ -271,7 +284,7 @@ function allCodex() {
         return {
           agent: "codex",
           agentSessionId: meta.id,
-          firstPrompt: prompts[0].text,
+          firstPrompt: userPrompt(prompts[0].text) || prompts[0].text,
           cwd: meta.cwd,
           turns: prompts.length,
           updatedAt: stat.mtime.toISOString(),

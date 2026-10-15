@@ -145,3 +145,12 @@ test("discover: AgentHub 작업 폴더와 하위 폴더는 원래 저장소로 �
   assert.equal(projectRoot(path.join(repo, "server", "agents")), repo);
   assert.equal(projectRoot(path.join(repo, ".claude", "worktrees", "feature-x")), repo);
 });
+
+test("discover: AgentHub가 붙인 안내를 걷어내고 실제 요청으로 제목을 정한다", async () => {
+  const { userPrompt } = await import("../server/discover.mjs");
+  assert.equal(userPrompt("[이 세션의 역할]\n릴리스 담당\n\n규칙\n\n[요청]\n릴리스 준비해 줘"), "릴리스 준비해 줘");
+  assert.equal(userPrompt("[이 세션에 이은 스킬]\n아래 작업을…\n- a: b\n\n테스트 고쳐"), "테스트 고쳐");
+  assert.equal(userPrompt("[AgentHub 질문 규칙]\n규칙\n\n[이 세션에 이은 스킬]\n- a\n\n빌드해"), "빌드해");
+  assert.equal(userPrompt("[중요] 사용자가 쓴 대괄호"), "[중요] 사용자가 쓴 대괄호");
+  assert.equal(userPrompt("그냥 요청"), "그냥 요청");
+});
