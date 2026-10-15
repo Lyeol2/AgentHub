@@ -38,7 +38,7 @@ AgentHub 서버는 `server/`의 ES 모듈(`.mjs`)이다. `node server/index.mjs`
 - 실패 응답은 `{ error, reason }`. 화면은 `error`를 그대로 사용자에게 보여 주므로(대화상자의 `…-error` 칸, `alert`) **한국어 문장**으로 쓴다. 스택이나 내부 정보를 그대로 내보내지 않는다. 화면은 상태 코드로 분기하지 않으므로, 화면이 구분해야 하는 실패는 `reason`으로 나눈다.
 - 화면이 실패 종류에 따라 다음 선택지를 물어야 하면 `HttpError`의 세 번째 인자 `reason`에 짧은 영문 값을 붙인다(예: 세션 삭제의 `"running"` → 멈추고 삭제할지, `"worktree"` → 작업 폴더를 남기고 삭제할지). 새 `reason`을 만들면 `app.js`에서 그 값을 처리하는 곳도 같이 만든다.
 - 필드 이름은 camelCase(`projectPath`, `sessionId`, `graphPos`). 기존 필드의 이름·의미·형식을 바꾸지 않는다. 바꿔야 하면 `app.js`에서 그 필드를 쓰는 곳을 모두 찾아 고친다. 필드를 더하는 것은 괜찮다.
-- 화면에서 고를 수 있는 값(권한 모드, 모델, 추론 강도, 연결 조건 등)은 서버가 목록으로 내려 주고(`/api/status`의 `permissions`·`models`·`efforts`) 같은 목록으로 검사한다. 화면에 값을 따로 박아 두게 만들지 않는다.
+- 화면에서 고를 수 있는 값(권한 모드, 모델, 추론 강도, 연결 조건 등)은 서버가 목록으로 내려 주고(`/api/status`의 `agents.<에이전트>.permissions`·`models`·`efforts`) 같은 목록으로 검사한다. 화면에 값을 따로 박아 두게 만들지 않는다.
 
 ### 실시간 알림(SSE)
 - 화면은 `/api/stream` 하나를 열어 두고 이벤트 이름별로 다시 불러온다(`connectStream`). 서버는 `broadcast(이름, 데이터)`로 보낸다.
