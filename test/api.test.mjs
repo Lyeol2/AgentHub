@@ -81,6 +81,40 @@ test("api: 세션 수정·연결·삭제", async () => {
   assert.equal((await api("DELETE", `/sessions/${a.id}`)).status, 200);
 });
 
+test("api: 권한을 생략한 세션은 Claude 수정 허용·Codex 작업 폴더 쓰기를 기본으로 쓴다", async () => {
+  for (const [agent, permission] of [["claude", "acceptEdits"], ["codex", "workspace-write"]]) {
+    const made = await api("POST", "/sessions", { agent, projectPath: repo });
+    assert.equal(made.status, 200);
+    try {
+      assert.equal(made.body.permission, permission);
+      assert.equal((await api("GET", `/sessions/${made.body.id}`)).body.permission, permission);
+    } finally {
+      await api("DELETE", `/sessions/${made.body.id}`);
+    }
+  }
+});
+
+test("api: Codex 자동 검토·전체 접근 권한으로 세션을 만들고 수정·조회한다", async () => {
+  for (const permission of ["auto-review", "danger-full-access"]) {
+    const made = await api("POST", "/sessions", { agent: "codex", projectPath: repo, permission });
+    assert.equal(made.status, 200);
+    try {
+      assert.equal(made.body.permission, permission);
+      assert.equal((await api("GET", `/sessions/${made.body.id}`)).body.permission, permission);
+      const other = permission === "auto-review" ? "danger-full-access" : "auto-review";
+      const edited = await api("PUT", `/sessions/${made.body.id}`, { permission: other });
+      assert.equal(edited.status, 200);
+      assert.equal(edited.body.permission, other);
+      assert.equal((await api("GET", `/sessions/${made.body.id}`)).body.permission, other);
+      assert.equal((await api("PUT", `/sessions/${made.body.id}`, { permission: "unknown" })).status, 400);
+      assert.equal((await api("GET", `/sessions/${made.body.id}`)).body.permission, other);
+    } finally {
+      await api("DELETE", `/sessions/${made.body.id}`);
+    }
+  }
+  assert.equal((await api("POST", "/sessions", { agent: "codex", projectPath: repo, permission: "unknown" })).status, 400);
+});
+
 test("api: 새 세션은 기본으로 원본을 쓰며 이름만 보내도 워크트리를 만들지 않는다", async () => {
   fs.writeFileSync(path.join(repo, "uncommitted.txt"), "원본의 현재 수정\n");
   for (const agent of ["claude", "codex"]) {
@@ -239,6 +273,28 @@ test("api: AGENTHUB.md 만들기와 흐름 시작", async () => {
   for (const s of created.body) await api("DELETE", `/sessions/${s.id}?removeWorktree=1`);
 });
 
+test("api: 역할 템플릿의 Codex 새 권한과 에이전트별 기본 권한으로 흐름을 만든다", async () => {
+  const folder = fs.mkdtempSync(path.join(tmp, "permission-roles-"));
+  fs.writeFileSync(path.join(folder, "AGENTHUB.md"), [
+    "## 역할: 자동 검토", "- 에이전트: codex", "- 권한: auto-review",
+    "## 역할: 전체 접근", "- 에이전트: codex", "- 권한: danger-full-access",
+    "## 역할: Codex 기본", "- 에이전트: codex",
+    "## 역할: Claude 기본", "- 에이전트: claude",
+    "## 흐름: 권한", "- 자동 검토 -> 전체 접근: 수동", "- 전체 접근 -> Codex 기본: 수동", "- Codex 기본 -> Claude 기본: 수동",
+  ].join("\n"));
+  const hub = (await api("GET", `/hub?path=${encodeURIComponent(folder)}`)).body;
+  assert.deepEqual(hub.warnings, []);
+  assert.deepEqual(hub.roles.map((role) => role.permission), ["auto-review", "danger-full-access", "workspace-write", "acceptEdits"]);
+  const made = await api("POST", "/hub/flows", { projectPath: folder, flowName: "권한", name: "권한 테스트" });
+  assert.equal(made.status, 200);
+  try {
+    assert.deepEqual(made.body.map((session) => session.permission).sort(), ["auto-review", "danger-full-access", "workspace-write", "acceptEdits"].sort());
+    for (const session of made.body) assert.equal((await api("GET", `/sessions/${session.id}`)).body.permission, session.permission);
+  } finally {
+    for (const session of made.body) await api("DELETE", `/sessions/${session.id}`);
+  }
+});
+
 test("api: 오케스트레이터 세션과 계획 처리 경로", async () => {
   const orc = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, permission: "default", orchestrator: true })).body;
   assert.equal(orc.kind, "orchestrator");
@@ -333,6 +389,25 @@ test("api: 세션의 AI를 바꾸고 진행 상황을 넘긴다", async () => {
   const full = (await api("GET", `/sessions/${s.id}`)).body;
   assert.match(full.events.at(-1).text, /Codex에서 Claude\(으\)로 바꿨습니다/);
   await api("DELETE", `/sessions/${s.id}`);
+});
+
+test("api: AI를 바꾸면 자동 검토는 수정 허용으로, 전체 접근은 같은 범위로 옮긴다", async () => {
+  for (const [agent, permission, to, expected] of [
+    ["codex", "auto-review", "claude", "acceptEdits"],
+    ["codex", "danger-full-access", "claude", "bypassPermissions"],
+    ["claude", "bypassPermissions", "codex", "danger-full-access"],
+  ]) {
+    const made = await api("POST", "/sessions", { agent, projectPath: repo, permission });
+    assert.equal(made.status, 200);
+    try {
+      const changed = await api("PUT", `/sessions/${made.body.id}`, { agent: to });
+      assert.equal(changed.status, 200);
+      assert.deepEqual([changed.body.agent, changed.body.permission], [to, expected]);
+      assert.equal((await api("GET", `/sessions/${made.body.id}`)).body.permission, expected);
+    } finally {
+      await api("DELETE", `/sessions/${made.body.id}`);
+    }
+  }
 });
 
 test("api: 프로젝트를 제거하면 AgentHub 세션·연결은 지우고 폴더는 남기며, 다시 쓰면 다시 보인다", async () => {

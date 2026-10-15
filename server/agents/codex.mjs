@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-export const PERMISSION_MODES = ["read-only", "workspace-write"];
+export const PERMISSION_MODES = ["read-only", "workspace-write", "auto-review", "danger-full-access"];
 export const CHAT_PERMISSION = "read-only";
 const DEFAULT_EFFORTS = ["minimal", "low", "medium", "high", "xhigh"];
 const CODEX_HOME = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
@@ -93,9 +93,20 @@ export const CHAT_INTRO = "[일반 대화] 코딩 작업이 아니라 사용자�
 
 // app-server는 기존 CLI 로그인·설정을 쓰며 실행 중 승인을 JSON-RPC로 주고받는다.
 export const transport = "app-server";
+// AgentHub 권한 선택을 CLI 설정과 대화 시작·재개에 같은 정책으로 넘긴다.
+export function permissionSettings(session = {}) {
+  const permission = session.chat ? CHAT_PERMISSION : session.permission ?? "workspace-write";
+  return {
+    sandbox: permission === "auto-review" ? "workspace-write" : permission,
+    approvalPolicy: session.chat || permission === "danger-full-access" ? "never" : "on-request",
+    approvalsReviewer: permission === "auto-review" ? "auto_review" : "user",
+  };
+}
+
 export function buildArgs(session, { mcp = null, resolved = resolveModel(session) } = {}) {
   const args = ["app-server", "--listen", "stdio://"];
-  const settings = { approval_policy: session.chat ? "never" : "on-request", approvals_reviewer: "user", sandbox_mode: session.permission ?? "workspace-write" };
+  const policy = permissionSettings(session);
+  const settings = { approval_policy: policy.approvalPolicy, approvals_reviewer: policy.approvalsReviewer, sandbox_mode: policy.sandbox };
   if (resolved.model) settings.model = resolved.model;
   if (resolved.effort) settings.model_reasoning_effort = resolved.effort;
   if (session.addDirs?.length) settings["sandbox_workspace_write.writable_roots"] = session.addDirs;

@@ -4,10 +4,11 @@ import { createCreationController } from "../public/features/creation/controller
 
 function element() {
   return {
-    value: "", checked: false, disabled: false, hidden: false, required: false, handlers: {},
+    value: "", textContent: "", children: [], checked: false, disabled: false, hidden: false, required: false, handlers: {},
     addEventListener(type, fn) { this.handlers[type] = fn; },
     querySelectorAll() { return []; },
     replaceChildren(...children) { this.children = children; this.value = children[0]?.value ?? ""; },
+    append(...children) { this.children.push(...children); },
     setCustomValidity(message) { this.validationMessage = message; },
     focus() { this.focused = true; },
     showModal() { this.open = true; },
@@ -19,7 +20,10 @@ function setup() {
   const get = (id) => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
   globalThis.document = { getElementById: get };
   globalThis.FormData = class extends Map { constructor(form) { super(form.fields); } };
-  const data = { status: { agents: { claude: { permissions: ["default", "acceptEdits"] }, codex: { permissions: ["read-only", "workspace-write"] } } } };
+  const data = { status: { agents: {
+    claude: { permissions: ["default", "plan", "acceptEdits", "bypassPermissions"] },
+    codex: { permissions: ["read-only", "workspace-write", "auto-review", "danger-full-access"] },
+  } } };
   const navigation = { view: "project", project: "C:/repo" };
   const service = { api: async (...args) => { calls.push(args); return { id: "created" }; } };
   const controller = createCreationController({
@@ -32,13 +36,38 @@ function setup() {
     openChat: () => {}, openSettings: () => {},
   });
   // The view's element helper uses the same minimal DOM as the real controller.
-  document.createElement = (_tag) => ({ ...element(), setAttribute(key, value) { this[key] = value; }, append() {} });
+  document.createElement = (_tag) => ({ ...element(), setAttribute(key, value) { this[key] = value; } });
   get("new-agent").value = "codex";
   return { data, navigation, calls, roles, get, controller, service };
 }
 function submit(h, fields) {
   return h.get("new-form").handlers.submit({ submitter: { value: "ok" }, preventDefault() {}, target: { fields, reset() {} } });
 }
+
+test("권한 목록에 자동 검토·전체 접근이 있어도 새 세션은 기존 수정 권한이 기본이다", async () => {
+  const h = setup();
+  await h.controller.openNew("C:/repo");
+  assert.equal(h.get("new-permission").value, "workspace-write");
+  const options = h.get("new-permission").children;
+  assert.deepEqual(options.map((option) => option.value), ["read-only", "workspace-write", "auto-review", "danger-full-access"]);
+  assert.match(options.find((option) => option.value === "auto-review").children.join(""), /자동 검토.*AI/);
+  assert.match(options.find((option) => option.value === "danger-full-access").children.join(""), /전체 접근.*승인 없이.*샌드박스/);
+  h.get("new-agent").value = "claude";
+  h.get("new-agent").handlers.change();
+  assert.equal(h.get("new-permission").value, "acceptEdits");
+  await h.controller.openNew("C:/repo", { kind: "codex", orchestrator: true });
+  assert.equal(h.get("new-permission").value, "read-only");
+});
+
+test("새 Codex 권한은 선택한 ID 그대로 세션 생성에 전달한다", async () => {
+  const h = setup();
+  for (const permission of ["auto-review", "danger-full-access"]) {
+    await h.controller.openNew("C:/repo", { kind: "codex" });
+    h.get("new-permission").value = permission;
+    await submit(h, [["projectPath", "C:/repo"], ["permission", h.get("new-permission").value]]);
+    assert.equal(h.calls.at(-1)[2].permission, permission);
+  }
+});
 
 test("새 세션은 취소 후 다시 열거나 오케스트레이터를 만들어도 원본 폴더가 기본이다", async () => {
   const h = setup();

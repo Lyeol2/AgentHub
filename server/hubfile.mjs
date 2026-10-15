@@ -52,8 +52,8 @@ function parseRole(name, lines, warnings) {
     warnings.push(`역할 "${name}": ${role.agent} 권한은 ${modes.join(", ")} 중 하나입니다 (${role.permission}).`);
     role.permission = null;
   }
-  // Claude의 bypassPermissions는 기본값으로 두지 않는다.
-  role.permission ??= role.agent === "claude" ? "acceptEdits" : modes.at(-1);
+  // 새 권한 모드가 추가되어도 기본 권한은 그대로 둔다.
+  role.permission ??= role.agent === "claude" ? "acceptEdits" : "workspace-write";
   return role;
 }
 

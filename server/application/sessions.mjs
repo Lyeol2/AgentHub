@@ -157,7 +157,7 @@ export function createSessionService({
     model = checkModel(model);
     effort = checkEffort(agent, effort);
     if (chat) permission = AGENTS[agent].CHAT_PERMISSION;
-    permission ??= AGENTS[agent].PERMISSION_MODES.at(-1);
+    permission ??= agent === "claude" ? "acceptEdits" : "workspace-write";
     if (!AGENTS[agent].PERMISSION_MODES.includes(permission)) throw new HttpError(400, "권한 모드가 올바르지 않습니다.");
     return { agent, model, effort, permission };
   }

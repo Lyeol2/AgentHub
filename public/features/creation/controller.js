@@ -1,5 +1,6 @@
 import { $, AGENT_LABEL, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
+import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 
 export function createCreationController({ api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, loadHub, fillModels, fillEfforts, openChat, openSettings, data, navigation }) {
   const ui = {
@@ -56,10 +57,8 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   function fillPermissions() {
     const { agent } = newKind();
     const modes = data.status.agents[agent].permissions;
-    $("new-permission").replaceChildren(...modes.map((m) => el("option", { value: m }, m)));
-    $("new-permission").value = modes.at(-1);
-    // Claude의 bypassPermissions는 기본값으로 두지 않는다.
-    if (agent === "claude") $("new-permission").value = "acceptEdits";
+    $("new-permission").replaceChildren(...modes.map((m) => el("option", { value: m }, permissionLabel(m))));
+    $("new-permission").value = defaultPermission(agent, modes);
   }
 
   // 고른 프로젝트의 AGENTHUB.md 역할 템플릿을 채운다.
@@ -74,7 +73,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     if ($("new-project").value !== projectPath) return;
     ui.templateRoles = roles;
     $("new-template").replaceChildren(el("option", { value: "" }, "직접 입력"),
-      ...roles.map((r) => el("option", { value: r.name }, `${r.name} · ${AGENT_LABEL[r.agent]} · ${r.permission}`)));
+      ...roles.map((r) => el("option", { value: r.name }, `${r.name} · ${AGENT_LABEL[r.agent]} · ${permissionLabel(r.permission)}`)));
     $("new-template-row").hidden = !roles.length || newKind().chat;
     applyTemplate();
   }

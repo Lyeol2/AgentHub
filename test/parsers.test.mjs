@@ -73,6 +73,29 @@ test("codex: app-server를 띄우고 샌드박스와 사용자 승인 설정을 
   assert.ok(args.includes('approvals_reviewer="user"'));
 });
 
+test("codex: 권한별 샌드박스·승인·검토자 설정을 CLI에 함께 넘긴다", () => {
+  const cases = [
+    [undefined, "workspace-write", "on-request", "user"],
+    ["read-only", "read-only", "on-request", "user"],
+    ["workspace-write", "workspace-write", "on-request", "user"],
+    ["auto-review", "workspace-write", "on-request", "auto_review"],
+    ["danger-full-access", "danger-full-access", "never", "user"],
+  ];
+  for (const [permission, sandbox, policy, reviewer] of cases) {
+    const args = codex.buildArgs({ permission }, { resolved: {} });
+    assert.ok(args.includes(`sandbox_mode="${sandbox}"`), String(permission));
+    assert.ok(args.includes(`approval_policy="${policy}"`), String(permission));
+    assert.ok(args.includes(`approvals_reviewer="${reviewer}"`), String(permission));
+    if (permission) assert.ok(codex.PERMISSION_MODES.includes(permission));
+  }
+  for (const permission of ["auto-review", "danger-full-access"]) {
+    const args = codex.buildArgs({ permission, chat: true }, { resolved: {} });
+    assert.ok(args.includes('sandbox_mode="read-only"'));
+    assert.ok(args.includes('approval_policy="never"'));
+    assert.ok(args.includes('approvals_reviewer="user"'));
+  }
+});
+
 test("claude: 추론 강도와 일반 채팅(도구 없음) 인자를 넘긴다", () => {
   const args = claude.buildArgs({ permission: "acceptEdits", model: "opus", effort: "high", chat: true });
   assert.equal(args[args.indexOf("--effort") + 1], "high");

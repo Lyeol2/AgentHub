@@ -42,6 +42,19 @@ test("hubfile: 설정이 없는 역할은 기본값을 쓰고 본문 첫 줄의 
   assert.equal(hub.roles[1].permission, "workspace-write");
 });
 
+test("hubfile: Codex 자동 검토·전체 접근 권한을 그대로 읽고 잘못된 권한은 기본값으로 돌린다", () => {
+  const hub = parseHubFile([
+    "## 역할: 자동 검토", "- agent: codex", "- permission: auto-review", "", "자동 검토로 구현한다.",
+    "## 역할: 전체 접근", "- permission: danger-full-access", "- agent: codex", "", "전체 접근으로 구현한다.",
+    "## 역할: 기본 권한", "- agent: codex", "- permission: unknown",
+  ].join("\n"));
+  assert.deepEqual(hub.roles.map((role) => role.permission), ["auto-review", "danger-full-access", "workspace-write"]);
+  assert.equal(hub.roles[0].body, "자동 검토로 구현한다.");
+  assert.equal(hub.roles[1].body, "전체 접근으로 구현한다.");
+  assert.equal(hub.warnings.length, 1);
+  assert.match(hub.warnings[0], /기본 권한.*unknown/);
+});
+
 test("hubfile: 조건 표기를 읽고 따옴표 없는 말은 키워드로 둔다", () => {
   const hub = parseHubFile([
     "## 역할: a", "## 역할: b",

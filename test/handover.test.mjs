@@ -45,6 +45,11 @@ test("handover: 권한은 비슷한 것으로 옮긴다", () => {
   assert.equal(mapPermission("plan", "codex"), "read-only");
   assert.equal(mapPermission("read-only", "claude"), "plan");
   assert.equal(mapPermission("workspace-write", "claude"), "acceptEdits");
+  assert.equal(mapPermission("auto-review", "claude"), "acceptEdits");
+  assert.equal(mapPermission("danger-full-access", "claude"), "bypassPermissions");
+  assert.equal(mapPermission("bypassPermissions", "codex"), "danger-full-access");
   assert.equal(mapPermission("read-only", "claude", { orchestrator: true }), "default");
   assert.equal(mapPermission("default", "codex", { orchestrator: true }), "read-only");
+  assert.equal(mapPermission("danger-full-access", "claude", { orchestrator: true }), "default");
+  assert.equal(mapPermission("bypassPermissions", "codex", { orchestrator: true }), "read-only");
 });

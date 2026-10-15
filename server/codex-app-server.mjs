@@ -51,7 +51,7 @@ export class CodexAppServer extends EventEmitter {
       await this.request("initialize", { clientInfo: { name: "agenthub", title: "AgentHub", version: "0.2.0" }, capabilities: {} });
       if (this.stopping || this.closed) return this.shutdown();
       this.write({ method: "initialized", params: {} });
-      const params = { cwd: this.session.cwd, sandbox: this.session.permission ?? "workspace-write", approvalPolicy: this.session.chat ? "never" : "on-request", approvalsReviewer: "user" };
+      const params = { cwd: this.session.cwd, ...codex.permissionSettings(this.session) };
       if (this.resolved.model) params.model = this.resolved.model;
       let result;
       if (this.session.agentSessionId) result = await this.resumeThread(params);

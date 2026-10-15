@@ -53,6 +53,34 @@ test("app-server: initialization, resume and native text/image turn input are or
   f.protocol.close();
 });
 
+test("app-server: selected permission settings apply to new, resumed and forked threads", async () => {
+  for (const [permission, sandbox, approvalPolicy, approvalsReviewer] of [
+    ["read-only", "read-only", "on-request", "user"],
+    ["workspace-write", "workspace-write", "on-request", "user"],
+    ["auto-review", "workspace-write", "on-request", "auto_review"],
+    ["danger-full-access", "danger-full-access", "never", "user"],
+  ]) {
+    for (const mode of ["new", "resume", "fork"]) {
+      const f = fixture({
+        resume: mode === "new" ? null : "previous",
+        response: (message) => mode === "fork" && message.method === "thread/resume"
+          ? { error: { code: -1, message: "thread already has an active writer" } } : null,
+      });
+      f.session.permission = permission;
+      try {
+        await f.protocol.start("작업");
+        const requests = f.sent.filter((message) => message.method?.startsWith("thread/"));
+        assert.equal(requests.at(-1).method, `thread/${mode === "new" ? "start" : mode}`);
+        for (const { params } of requests) {
+          assert.deepEqual({ sandbox: params.sandbox, approvalPolicy: params.approvalPolicy, approvalsReviewer: params.approvalsReviewer },
+            { sandbox, approvalPolicy, approvalsReviewer }, `${permission}: ${mode}`);
+        }
+        assert.equal(f.sent.filter((message) => message.method === "turn/start").length, 1);
+      } finally { f.protocol.close(); }
+    }
+  }
+});
+
 test("app-server: command/file/permissions approvals use scoped opaque IDs and native decisions", async () => {
   for (const method of ["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval"]) {
     for (const decision of ["allow", "always", "deny"]) {

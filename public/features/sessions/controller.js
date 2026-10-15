@@ -6,6 +6,7 @@ import { firstLine } from "../../shared/store.js";
 import { closeContextMenu } from "../../shared/context-menu.js";
 import { composerAction } from "../../composer.js";
 import { createImageComposer, uploadImages, renderAttachmentLinks } from "./image-composer.js";
+import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 
 export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation }) {
   const ui = {
@@ -54,7 +55,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
 
     const meta = [
       s.chat ? "도구 없이 대화만" : s.worktree ? `작업 폴더 ${s.cwd} (브랜치 ${s.worktree.branch})` : `원본 폴더 ${s.cwd}`,
-      s.chat ? null : `권한 ${s.permission}`,
+      s.chat ? null : `권한 ${permissionLabel(s.permission)}`,
       `모델 ${s.model || "기본값"}`,
       `추론 ${s.effort || "기본값"}`,
       s.agentSessionId ? `CLI 세션 ${s.agentSessionId.slice(0, 8)}` : null,
@@ -489,10 +490,10 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   });
 
   // 고른 AI에 맞춰 모델 후보·추론 강도·권한 목록을 채운다. AI를 바꾸면 이어받기 선택을 보인다.
-  // 권한은 비슷한 것으로 옮긴다(읽기만 ↔ 읽기만, 수정 허용 ↔ 수정 허용). 서버의 handover.mjs와 같다.
+  // 권한은 비슷한 것으로 옮긴다. 서버의 handover.mjs와 같다.
   const PERMISSION_MAP = {
-    claude: { "read-only": "plan", "workspace-write": "acceptEdits" },
-    codex: { default: "read-only", plan: "read-only", acceptEdits: "workspace-write", bypassPermissions: "workspace-write" },
+    claude: { "read-only": "plan", "workspace-write": "acceptEdits", "auto-review": "acceptEdits", "danger-full-access": "bypassPermissions" },
+    codex: { default: "read-only", plan: "read-only", acceptEdits: "workspace-write", bypassPermissions: "danger-full-access" },
   };
 
   function fillConfigAgent(agent, effort = $("config-effort").value, permission = $("config-permission").value) {
@@ -502,9 +503,9 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     fillModels("config-models", agent);
     fillEfforts("config-effort", agent, $("config-model").value.trim(), effort);
     const modes = data.status.agents[agent].permissions;
-    $("config-permission").replaceChildren(...modes.map((m) => el("option", { value: m }, m)));
+    $("config-permission").replaceChildren(...modes.map((m) => el("option", { value: m }, permissionLabel(m))));
     const mapped = modes.includes(permission) ? permission : PERMISSION_MAP[agent]?.[permission];
-    $("config-permission").value = mapped && modes.includes(mapped) ? mapped : modes.at(-1);
+    $("config-permission").value = mapped && modes.includes(mapped) ? mapped : defaultPermission(agent, modes);
   }
 
   $("config-agent").addEventListener("change", () => {

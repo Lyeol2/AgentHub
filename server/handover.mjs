@@ -75,10 +75,10 @@ export function handoverText(session, files = "", { previousCwd, previousBranch 
   ].join("\n\n").replace(/\n{3,}/g, "\n\n");
 }
 
-// 권한 모드는 에이전트마다 다르므로 비슷한 것으로 옮긴다(읽기만 ↔ 읽기만, 수정 허용 ↔ 수정 허용).
+// 권한 모드는 에이전트마다 다르므로 읽기·수정·전체 접근 범위가 비슷한 것으로 옮긴다.
 const PERMISSION_MAP = {
-  claude: { "read-only": "plan", "workspace-write": "acceptEdits" },
-  codex: { default: "read-only", plan: "read-only", acceptEdits: "workspace-write", bypassPermissions: "workspace-write" },
+  claude: { "read-only": "plan", "workspace-write": "acceptEdits", "auto-review": "acceptEdits", "danger-full-access": "bypassPermissions" },
+  codex: { default: "read-only", plan: "read-only", acceptEdits: "workspace-write", bypassPermissions: "danger-full-access" },
 };
 
 export function mapPermission(permission, to, { orchestrator = false } = {}) {
