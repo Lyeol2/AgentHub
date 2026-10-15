@@ -16,6 +16,9 @@ execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm
 
 process.env.AGENTHUB_DATA = path.join(tmp, "data");
 process.env.PORT = "45177";
+// 실제 개인 스킬(~/.claude/skills, ~/.agents/skills)을 읽지 않도록 홈 폴더도 임시 폴더로 바꾼다.
+process.env.USERPROFILE = process.env.HOME = path.join(tmp, "home");
+process.env.CLAUDE_CONFIG_DIR = path.join(tmp, "home", ".claude");
 const server = await import("../server/index.mjs");
 await server.listening;
 

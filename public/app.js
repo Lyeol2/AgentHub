@@ -549,19 +549,16 @@ $("p-new").addEventListener("click", () => openNew(state.project));
 
 // ── 세션 흐름 그래프 ────────────────────────────────────────────
 const CARD_W = 230;
-const CARD_H = 108;
+const CARD_H = 128; // 장착한 스킬 칩 한 줄을 포함한 높이(style.css의 .gcard와 같다)
 const GAP_X = 96;
 const GAP_Y = 24;
 const PAD = 20;
 const SVG_NS = "http://www.w3.org/2000/svg";
 const CARD_SIZE = { w: CARD_W, h: CARD_H };
-// 스킬 노드. 그래프 안에서는 "skill:<이름>"을 id로 쓴다.
-const SKILL_SIZE = { w: 200, h: 64 };
-const SKILL_PREFIX = "skill:";
-const isSkillNode = (id) => id.startsWith(SKILL_PREFIX);
 // 명령 노드는 id가 "cmd-"로 시작한다(서버의 commands.mjs와 같다).
 const isCommandNode = (id) => id.startsWith("cmd-");
-const nodeSize = (id) => (isSkillNode(id) ? SKILL_SIZE : CARD_SIZE);
+const CMD_SIZE = { w: CARD_W, h: 108 }; // style.css의 .gcmd와 같다
+const nodeSize = (id) => (isCommandNode(id) ? CMD_SIZE : CARD_SIZE);
 const WHEN_LABEL = { success: "성공 시", error: "실패 시", always: "항상", manual: "수동" };
 const linkLabel = (l) => `${l.when === "keyword" ? `"${l.keyword}" 있으면` : WHEN_LABEL[l.when]}${l.approve ? " · 승인 후" : ""}`;
 const sessionById = (id) => state.sessions.find((s) => s.id === id);
@@ -624,9 +621,8 @@ function renderGraph() {
   const sessions = state.sessions
     .filter((s) => samePath(s.projectPath, state.project))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-  const skills = samePath(state.skillsProject, state.project) ? state.skills ?? [] : [];
   const cmdNodes = samePath(state.commandsProject, state.project) ? state.commands ?? [] : [];
-  if (!sessions.length && !skills.length && !cmdNodes.length) {
+  if (!sessions.length && !cmdNodes.length) {
     state.graph = null;
     box.replaceChildren(el("div", { class: "graph-empty" },
       "이 프로젝트에서 만든 세션이 없습니다. 여기서 우클릭하거나 새 세션을 만들면 카드로 보입니다."));
@@ -638,12 +634,6 @@ function renderGraph() {
   // 오케스트레이터가 만든 세션은 지휘선으로 잇고, 배치도 오케스트레이터를 앞에 둔다.
   const commands = sessions.filter((s) => ids.has(s.createdBy)).map((s) => ({ from: s.createdBy, to: s.id }));
   const pos = layoutGraph([...sessions, ...cmdNodes], [...commands, ...links]);
-  // 옮기지 않은 스킬 노드는 세션 카드 아래에 한 줄로 놓는다.
-  const bottom = Math.max(0, ...[...pos.values()].map((p) => p.y + CARD_H + GAP_Y * 2));
-  skills.filter((k) => !k.pos).forEach((k, i) => pos.set(`${SKILL_PREFIX}${k.name}`, { x: PAD + i * (SKILL_SIZE.w + GAP_Y), y: bottom || PAD }));
-  for (const k of skills) if (k.pos) pos.set(`${SKILL_PREFIX}${k.name}`, k.pos);
-  const skillNames = new Set(skills.map((k) => k.name));
-  const skillEdges = sessions.flatMap((s) => (s.skills ?? []).filter((n) => skillNames.has(n)).map((skill) => ({ skill, session: s.id })));
 
   const canvas = el("div", { class: "graph-canvas" });
   const svg = document.createElementNS(SVG_NS, "svg");
@@ -660,6 +650,7 @@ function renderGraph() {
         s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : pill(s.state)),
       el("div", { class: "gcard-title" }, s.title),
       el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
+      skillChips(s),
       el("div", { class: "gcard-foot" }, el("span", {}, timeAgo(s.updatedAt)),
         el("span", { class: "gcard-life" }, lifePill(s),
           el("button", {
@@ -673,32 +664,22 @@ function renderGraph() {
     cards.set(s.id, card);
     canvas.append(card);
   }
-  for (const k of skills) {
-    const id = `${SKILL_PREFIX}${k.name}`;
-    const node = el("div", { class: "gskill", "data-id": id, title: `${k.name}\n${k.description}\n\n누르면 편집, ● 손잡이를 세션에 끌어 놓으면 그 세션이 이 스킬을 씁니다.` },
-      el("div", { class: "gskill-top" }, el("span", { class: "pill skill" }, "스킬"), el("span", { class: "gskill-name" }, k.name)),
-      el("div", { class: "gskill-desc" }, k.description),
-      el("span", { class: "gcard-handle", title: "끌어서 세션에 이으면 그 세션이 이 스킬을 씁니다" }));
-    cards.set(id, node);
-    canvas.append(node);
-  }
-
   for (const c of cmdNodes) {
     const node = commandNode(c);
     cards.set(c.id, node);
     canvas.append(node);
   }
 
-  state.graph = { canvas, svg, cards, pos, links, commands, skillEdges };
+  state.graph = { canvas, svg, cards, pos, links, commands };
   placeCards();
   box.replaceChildren(canvas);
   canvas.addEventListener("pointerdown", onGraphPointerDown);
 }
 
-// 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 스킬 노드는 스킬 메뉴, 빈 곳은 그 자리에 새 세션·새 스킬을 만든다.
+// 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 명령 노드는 명령 메뉴, 빈 곳은 그 자리에 새 세션·명령을 만든다.
 $("p-graph").addEventListener("contextmenu", (e) => {
   if (e.target.closest(".edge-label")) return;
-  const card = e.target.closest(".gcard, .gskill, .gcmd");
+  const card = e.target.closest(".gcard, .gcmd");
   const cmd = card && commandById(card.dataset.id);
   if (cmd) {
     const running = cmd.state === "running";
@@ -710,27 +691,18 @@ $("p-graph").addEventListener("contextmenu", (e) => {
     ]);
     return;
   }
-  if (card && !isSkillNode(card.dataset.id)) {
+  if (card) {
     const s = sessionById(card.dataset.id);
     if (s) openSessionMenu(e, s);
-    return;
-  }
-  if (card) {
-    const skill = skillByName(card.dataset.id.slice(SKILL_PREFIX.length));
-    if (skill) openContextMenu(e, `스킬 ${skill.name}`, [
-      ["편집", () => openSkillDialog(skill)],
-      ["세션 연결 모두 끊기", () => detachSkillEverywhere(skill.name)],
-      null,
-      ["삭제", () => removeSkill(skill), { danger: true }],
-    ]);
     return;
   }
   const at = state.graph ? canvasPoint(e) : { x: PAD, y: PAD };
   const pos = { x: Math.max(0, Math.round(at.x)), y: Math.max(0, Math.round(at.y)) };
   openContextMenu(e, "여기에 만들기", [
     ["새 세션", () => openNew(state.project, { pos })],
-    ["새 스킬", () => openSkillDialog(null, pos)],
     ["새 명령", () => openCommandDialog(null, pos)],
+    null,
+    ["스킬 관리", () => openSkillsManager()],
   ]);
 });
 
@@ -936,22 +908,53 @@ async function loadSkills(projectPath = state.project) {
   } catch {
     return;
   }
+  $("p-skills").textContent = `스킬 ${state.skills.length}`;
   if (state.view === "project") renderGraph();
+  if ($("skills-dialog").open) renderSkillsManager();
+}
+
+// 스킬 범위: project(AgentHub 전용) | claude(프로젝트의 .claude/skills, 예전 위치) | personal(~/.claude·~/.agents 두 곳)
+const SKILL_SCOPE_LABEL = { project: "스킬", claude: "Claude 스킬", personal: "개인 스킬" };
+const SKILL_SCOPE_HINT = {
+  project: "이 프로젝트의 .agenthub\\skills에 저장합니다. 흐름 그래프에서 ● 손잡이를 세션 카드에 끌어 놓은 세션만 씁니다(Claude·Codex 모두).",
+  claude: "프로젝트의 .claude\\skills에 있는 스킬입니다. Claude는 노드를 잇지 않아도 이 프로젝트에서 저절로 씁니다. 우클릭으로 AgentHub 전용이나 개인으로 옮길 수 있습니다.",
+  personal: "~\\.claude\\skills(Claude)와 ~\\.agents\\skills(Codex) 두 곳에 같은 내용으로 저장합니다. 모든 프로젝트에서 노드를 잇지 않아도 두 CLI가 저절로 찾고, 이은 세션에는 한 번 더 알려 줍니다.",
+};
+
+function syncSkillScope() {
+  const skill = state.editingSkill?.skill;
+  const scope = skill?.scope ?? $("skill-scope").value;
+  const name = $("skill-name").value.trim() || "<이름>";
+  $("skill-scope-hint").textContent = SKILL_SCOPE_HINT[scope];
+  $("skill-file").textContent = skill
+    ? skill.file
+    : scope === "personal"
+      ? `~\\.claude\\skills\\${name}\\SKILL.md, ~\\.agents\\skills\\${name}\\SKILL.md`
+      : `${state.project}\\.agenthub\\skills\\${name}\\SKILL.md`;
 }
 
 // skill이 없으면 새로 만든다. pos는 새 스킬 노드를 놓을 자리.
 function openSkillDialog(skill, pos = null) {
   state.editingSkill = { skill, pos };
-  $("skill-heading").textContent = skill ? `스킬 ${skill.name}` : "새 스킬";
+  $("skill-heading").textContent = skill ? `${SKILL_SCOPE_LABEL[skill.scope] ?? "스킬"} ${skill.name}` : "새 스킬";
   $("skill-name").value = skill?.name ?? "";
   $("skill-name").disabled = !!skill;
+  $("skill-scope-row").hidden = !!skill; // 범위는 만들 때 고르고, 바꿀 때는 우클릭의 옮기기를 쓴다.
+  $("skill-scope").value = "project";
   $("skill-description").value = skill?.description ?? "";
   $("skill-body").value = skill?.body ?? "";
-  $("skill-file").textContent = skill ? skill.file : `${state.project}\\.claude\\skills\\<이름>\\SKILL.md 로 저장합니다.`;
+  // 두 곳의 내용이 다른 개인 스킬은 덮어쓰지 않도록 읽기만 한다.
+  const locked = !!skill?.locked;
+  $("skill-description").disabled = locked;
+  $("skill-body").disabled = locked;
+  $("skill-form").querySelector('button[value="ok"]').hidden = locked;
   $("skill-delete").hidden = !skill;
-  $("skill-error").textContent = "";
+  $("skill-error").textContent = locked ? "~\\.claude와 ~\\.agents에 서로 다른 내용으로 있는 개인 스킬이라 AgentHub에서는 읽기만 합니다." : "";
+  syncSkillScope();
   $("skill-dialog").showModal();
 }
+$("skill-scope").addEventListener("change", syncSkillScope);
+$("skill-name").addEventListener("input", syncSkillScope);
 
 $("skill-form").addEventListener("submit", async (e) => {
   const action = e.submitter?.value;
@@ -965,7 +968,7 @@ $("skill-form").addEventListener("submit", async (e) => {
   const body = { projectPath: state.project, description: $("skill-description").value, body: $("skill-body").value };
   try {
     if (skill) await api("PUT", `/api/skills/${skill.name}`, body);
-    else await api("POST", "/api/skills", { ...body, name: $("skill-name").value.trim(), pos });
+    else await api("POST", "/api/skills", { ...body, name: $("skill-name").value.trim(), scope: $("skill-scope").value, pos });
     $("skill-dialog").close();
     await loadSkills();
   } catch (err) {
@@ -974,9 +977,26 @@ $("skill-form").addEventListener("submit", async (e) => {
 });
 
 async function removeSkill(skill) {
-  if (!confirm(`스킬 "${skill.name}"을(를) 삭제할까요?\n\n${skill.file} 폴더째 지우고, 이 스킬을 이어 둔 세션에서도 뺍니다.`)) return;
+  const where = skill.scope === "personal"
+    ? `~\\.claude\\skills와 ~\\.agents\\skills 두 곳의 "${skill.name}" 폴더를 지웁니다. 다른 프로젝트와 AgentHub 밖의 Claude·Codex에서도 사라집니다.`
+    : `${skill.file} 폴더째 지웁니다.`;
+  if (!confirm(`스킬 "${skill.name}"을(를) 삭제할까요?\n\n${where}\n이 스킬을 이어 둔 세션에서도 뺍니다.`)) return;
   try {
     await api("DELETE", `/api/skills/${skill.name}?path=${encodeURIComponent(state.project)}`);
+  } catch (err) {
+    alert(err.message);
+  }
+  await Promise.all([loadSkills(), loadSessions()]);
+}
+
+// 다른 범위로 옮긴다. to: project | personal
+async function moveSkill(skill, to) {
+  const note = to === "personal"
+    ? "개인 스킬로 옮기면 ~\\.claude\\skills와 ~\\.agents\\skills에 두고, 모든 프로젝트에서 Claude·Codex가 저절로 찾습니다."
+    : "이 프로젝트의 AgentHub 전용 스킬(.agenthub\\skills)로 옮기면 노드로 이은 세션만 씁니다.";
+  if (!confirm(`스킬 "${skill.name}"을(를) 옮길까요?\n\n${note}`)) return;
+  try {
+    await api("POST", `/api/skills/${skill.name}/move`, { projectPath: state.project, to });
   } catch (err) {
     alert(err.message);
   }
@@ -997,12 +1017,113 @@ async function setSessionSkills(sessionId, change) {
   if (state.view === "project") renderGraph();
 }
 
-const attachSkill = (sessionId, name) => setSessionSkills(sessionId, (list) => [...new Set([...list, name])]);
 const detachSkill = (sessionId, name) => setSessionSkills(sessionId, (list) => list.filter((n) => n !== name));
+
+// ── 스킬 장착 ───────────────────────────────────────────────────
+// 세션 카드의 스킬 칩. 누르면 장착할 스킬을 고른다. 칩은 3개까지 보이고 나머지는 +n으로 줄인다.
+function skillChips(s) {
+  const names = s.skills ?? [];
+  const chip = (name) => el("span", { class: `skill-chip ${skillByName(name)?.scope ?? "missing"}` }, name);
+  return el("div", {
+    class: "gcard-skills",
+    title: names.length ? `장착한 스킬: ${names.join(", ")}\n누르면 바꿉니다` : "누르면 스킬을 장착합니다",
+    onclick: () => openEquipDialog(s),
+  },
+  ...names.slice(0, 3).map(chip),
+  names.length > 3 ? el("span", { class: "skill-chip more" }, `+${names.length - 3}`) : null,
+  names.length ? null : el("span", { class: "skill-chip add" }, "+ 스킬"));
+}
+
+// 사이드바에서 우클릭해 열 수도 있으므로 보고 있는 프로젝트와 상관없이 그 세션의 프로젝트 스킬을 읽는다.
+async function openEquipDialog(s) {
+  let skills;
+  try {
+    skills = await api("GET", `/api/skills?path=${encodeURIComponent(s.projectPath)}`);
+  } catch (err) {
+    return alert(err.message);
+  }
+  state.equipping = s;
+  const on = new Set(s.skills ?? []);
+  $("equip-session").textContent = s.title;
+  $("equip-error").textContent = "";
+  const groups = ["project", "claude", "personal"]
+    .map((scope) => [scope, skills.filter((k) => (k.scope ?? "project") === scope)])
+    .filter(([, list]) => list.length);
+  $("equip-list").replaceChildren(
+    ...groups.map(([scope, list]) => el("fieldset", { class: "equip-group" },
+      el("legend", {}, SKILL_GROUP_LABEL[scope]),
+      ...list.map((k) => {
+        const box = el("input", { type: "checkbox", value: k.name });
+        box.checked = on.has(k.name);
+        return el("label", { class: "check equip-item", title: k.file }, box,
+          el("span", { class: "equip-name mono" }, k.name),
+          el("span", { class: "muted" }, k.description));
+      }))),
+    skills.length ? null : el("p", { class: "hint" }, "아직 스킬이 없습니다. '스킬 관리'에서 만드세요."));
+  $("equip-dialog").showModal();
+}
+
+const SKILL_GROUP_LABEL = { project: "이 프로젝트 (AgentHub 전용)", claude: "Claude 프로젝트 스킬 (.claude/skills)", personal: "개인 스킬 (모든 프로젝트)" };
+
+$("equip-form").addEventListener("submit", async (e) => {
+  const action = e.submitter?.value;
+  if (action === "cancel") return;
+  e.preventDefault();
+  if (action === "manage") {
+    $("equip-dialog").close();
+    return openSkillsManager();
+  }
+  const names = [...$("equip-list").querySelectorAll("input:checked")].map((b) => b.value);
+  await setSessionSkills(state.equipping.id, () => names);
+  $("equip-dialog").close();
+});
+
+// ── 스킬 관리 ───────────────────────────────────────────────────
+// 만들기·편집·옮기기·삭제. 스킬에 마우스를 올리면 그 스킬을 장착한 카드를 강조한다.
+async function openSkillsManager() {
+  await loadSkills();
+  renderSkillsManager();
+  if (!$("skills-dialog").open) $("skills-dialog").showModal();
+}
+
+function renderSkillsManager() {
+  const skills = state.skills ?? [];
+  const usedBy = (name) => state.sessions.filter((s) => samePath(s.projectPath, state.project) && s.skills?.includes(name));
+  const highlight = (name) => {
+    const ids = new Set(name ? usedBy(name).map((s) => s.id) : []);
+    for (const [id, card] of state.graph?.cards ?? []) card.classList.toggle("skill-hit", ids.has(id));
+  };
+  $("skills-list").replaceChildren(
+    ...skills.map((k) => {
+      const using = usedBy(k.name);
+      const scope = k.scope ?? "project";
+      const button = (label, action, cls = "ghost sm") => el("button", { type: "button", class: cls, onclick: action }, label);
+      return el("div", { class: "skills-row", onmouseenter: () => highlight(k.name), onmouseleave: () => highlight(null) },
+        el("span", { class: `skill-chip ${scope}` }, SKILL_SCOPE_LABEL[scope]),
+        el("div", { class: "skills-main" },
+          el("div", {}, el("b", { class: "mono" }, k.name), k.locked ? el("span", { class: "muted" }, " · 읽기 전용") : null),
+          el("div", { class: "muted", title: k.file }, k.description)),
+        el("span", { class: "muted skills-used", title: using.map((s) => s.title).join("\n") }, using.length ? `세션 ${using.length}` : "장착 없음"),
+        el("div", { class: "skills-actions" },
+          button(k.locked ? "보기" : "편집", () => openSkillDialog(k)),
+          scope !== "project" && !k.locked ? button("프로젝트로", () => moveSkill(k, "project")) : null,
+          scope !== "personal" ? button("개인으로", () => moveSkill(k, "personal")) : null,
+          using.length ? button("장착 해제", () => detachSkillEverywhere(k.name)) : null,
+          button("삭제", () => removeSkill(k), "ghost sm danger")));
+    }),
+    skills.length ? null : el("p", { class: "hint" }, "스킬이 없습니다. '새 스킬'로 만드세요."));
+}
+
+$("skills-new").addEventListener("click", () => openSkillDialog(null));
+$("p-skills").addEventListener("click", () => openSkillsManager());
+$("skills-dialog").addEventListener("close", () => {
+  for (const card of state.graph?.cards.values() ?? []) card.classList.remove("skill-hit");
+});
 
 async function detachSkillEverywhere(name) {
   const using = state.sessions.filter((s) => samePath(s.projectPath, state.project) && s.skills?.includes(name));
   for (const s of using) await detachSkill(s.id, name);
+  if ($("skills-dialog").open) renderSkillsManager();
 }
 
 function placeCards() {
@@ -1022,7 +1143,7 @@ function placeCards() {
   drawEdges();
 }
 
-// sa·sb: 양 끝 노드 크기(세션 카드와 스킬 노드는 크기가 다르다)
+// sa·sb: 양 끝 노드 크기
 function edgePath(a, b, sa = CARD_SIZE, sb = CARD_SIZE) {
   const x1 = a.x + sa.w;
   const y1 = a.y + sa.h / 2;
@@ -1047,27 +1168,13 @@ function drawEdges() {
   g.canvas.querySelectorAll(".edge-label").forEach((n) => n.remove());
   for (const command of g.commands) {
     const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", edgePath(g.pos.get(command.from), g.pos.get(command.to)).d);
+    path.setAttribute("d", edgePath(g.pos.get(command.from), g.pos.get(command.to), nodeSize(command.from), nodeSize(command.to)).d);
     path.setAttribute("class", "edge command");
     g.svg.append(path);
   }
-  // 스킬 → 세션: 그 세션이 이 스킬을 쓴다. 라벨을 누르면 끊는다.
-  for (const { skill, session } of g.skillEdges) {
-    const from = `${SKILL_PREFIX}${skill}`;
-    const { d, mid } = edgePath(g.pos.get(from), g.pos.get(session), SKILL_SIZE, CARD_SIZE);
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("d", d);
-    path.setAttribute("class", "edge skill");
-    path.setAttribute("marker-end", "url(#arrow)");
-    g.svg.append(path);
-    const label = el("button", { class: "edge-label skill-label", type: "button", "data-skill-edge": `${session}|${skill}`, title: "누르면 이 스킬 연결을 끊습니다" }, "스킬");
-    label.style.left = `${mid.x}px`;
-    label.style.top = `${mid.y}px`;
-    g.canvas.append(label);
-  }
   const placed = []; // 라벨이 겹치면 아래로 비킨다.
   for (const link of g.links) {
-    const { d, mid } = edgePath(g.pos.get(link.from), g.pos.get(link.to));
+    const { d, mid } = edgePath(g.pos.get(link.from), g.pos.get(link.to), nodeSize(link.from), nodeSize(link.to));
     const halfWidth = linkLabel(link).length * 4 + 10;
     while (placed.some((p) => Math.abs(p.x - mid.x) < p.halfWidth + halfWidth && Math.abs(p.y - mid.y) < 22)) mid.y += 22;
     placed.push({ ...mid, halfWidth });
@@ -1126,7 +1233,7 @@ function notifyGate(link) {
 
 // 카드를 누르고 떼면 열고, 끌면 옮긴다. 손잡이를 끌어 다른 카드에 놓으면 연결한다.
 function onGraphPointerDown(e) {
-  if (e.button === 1 && e.target.closest(".gcard") && !e.target.closest(".gskill")) {
+  if (e.button === 1 && e.target.closest(".gcard")) {
     e.preventDefault();
     openSessionWindow(e.target.closest(".gcard").dataset.id);
     return;
@@ -1135,21 +1242,15 @@ function onGraphPointerDown(e) {
   const g = state.graph;
   const label = e.target.closest(".edge-label");
   if (label && e.target.closest(".gate-btn")) return; // 승인·거절 버튼은 자기 onclick으로 처리한다.
-  if (label?.dataset.skillEdge) {
-    const [sessionId, name] = label.dataset.skillEdge.split("|");
-    if (confirm(`"${sessionById(sessionId)?.title}" 세션에서 스킬 "${name}" 연결을 끊을까요?`)) detachSkill(sessionId, name);
-    return;
-  }
   if (label) {
     openLinkDialog(state.links.find((l) => l.id === label.dataset.link));
     return;
   }
-  const card = e.target.closest(".gcard, .gskill, .gcmd");
-  // 카드 안의 버튼(다시 시작, 명령 실행·중지)은 카드 열기·끌기와 따로 동작한다.
-  if (!card || e.target.closest(".gcard-restart, .gcmd-btn")) return;
+  const card = e.target.closest(".gcard, .gcmd");
+  // 카드 안의 버튼(다시 시작, 스킬 칩, 명령 실행·중지)은 카드 열기·끌기와 따로 동작한다.
+  if (!card || e.target.closest(".gcard-restart, .gcard-skills, .gcmd-btn")) return;
   e.preventDefault();
   const id = card.dataset.id;
-  const skill = isSkillNode(id) ? skillByName(id.slice(SKILL_PREFIX.length)) : null;
   const cmd = commandById(id);
   const start = canvasPoint(e);
   const origin = { ...g.pos.get(id) };
@@ -1191,30 +1292,20 @@ function onGraphPointerDown(e) {
     temp?.remove();
     if (!moved) {
       if (connecting) return;
-      if (skill) openSkillDialog(skill);
-      else if (cmd) openCommandDialog(cmd);
+      if (cmd) openCommandDialog(cmd);
       else sessionOpener(id)(ev);
       return;
     }
     if (connecting) {
-      // 스킬과 세션을 이으면 그 세션이 스킬을 쓴다. 세션·명령 노드끼리 이으면 넘기기 연결을 만든다.
-      const targetId = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".gcard, .gskill, .gcmd")?.dataset.id;
-      if (!targetId || targetId === id) return;
-      const isSession = (x) => !isSkillNode(x) && !isCommandNode(x);
-      if (isSkillNode(id) && isSession(targetId)) attachSkill(targetId, id.slice(SKILL_PREFIX.length));
-      else if (isSession(id) && isSkillNode(targetId)) attachSkill(id, targetId.slice(SKILL_PREFIX.length));
-      else if (!isSkillNode(id) && !isSkillNode(targetId)) openLinkDialog(null, id, targetId);
+      // 세션·명령 노드끼리 이으면 넘기기 연결을 만든다.
+      const targetId = document.elementFromPoint(ev.clientX, ev.clientY)?.closest(".gcard, .gcmd")?.dataset.id;
+      if (targetId && targetId !== id) openLinkDialog(null, id, targetId);
       return;
     }
     const p = g.pos.get(id);
     if (cmd) {
       cmd.pos = { x: Math.round(p.x), y: Math.round(p.y) };
       api("PUT", `/api/commands/${cmd.id}`, { pos: cmd.pos }).catch((err) => alert(err.message));
-      return;
-    }
-    if (skill) {
-      skill.pos = { x: Math.round(p.x), y: Math.round(p.y) };
-      api("PUT", `/api/skills/${skill.name}`, { projectPath: state.project, pos: skill.pos }).catch((err) => alert(err.message));
       return;
     }
     const s = sessionById(id);
@@ -1233,14 +1324,11 @@ function onGraphPointerDown(e) {
 $("p-relayout").addEventListener("click", async () => {
   const placed = state.sessions.filter((s) => samePath(s.projectPath, state.project) && s.graphPos);
   for (const s of placed) s.graphPos = null;
-  const placedSkills = (state.skills ?? []).filter((k) => k.pos);
-  for (const k of placedSkills) k.pos = null;
   const placedCommands = (state.commands ?? []).filter((c) => c.pos);
   for (const c of placedCommands) c.pos = null;
   renderGraph();
   await Promise.all([
     ...placed.map((s) => api("PUT", `/api/sessions/${s.id}`, { graphPos: null }).catch(() => {})),
-    ...placedSkills.map((k) => api("PUT", `/api/skills/${k.name}`, { projectPath: state.project, pos: null }).catch(() => {})),
     ...placedCommands.map((c) => api("PUT", `/api/commands/${c.id}`, { pos: null }).catch(() => {})),
   ]);
 });
@@ -1846,6 +1934,7 @@ function openSessionMenu(e, s) {
     item("재생성", () => recreateSession(s), {
       disabled: running, title: "같은 설정(역할·모델·권한·연결)으로 새 세션을 만들고 지금 세션은 지웁니다. 화면 기록도 비워집니다.",
     }),
+    s.chat ? null : item("스킬 장착…", () => openEquipDialog(s)),
     el("hr"),
     item("삭제", () => confirmDeleteSession(s), { danger: true }));
   document.body.append(menu);

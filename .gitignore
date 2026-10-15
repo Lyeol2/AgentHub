@@ -3,3 +3,4 @@ data/
 *.log
 dist/
 .claude/worktrees/
+.claude/settings.local.json

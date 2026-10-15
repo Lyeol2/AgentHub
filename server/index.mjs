@@ -16,7 +16,7 @@ import { Chain, CONDITIONS, lastAnswer } from "./chain.mjs";
 import { orchestratorInput, extractPlan, normalizePlan } from "./orchestrator.mjs";
 import { HUB_FILE, HUB_TEMPLATE, hubFilePath, readHubFile } from "./hubfile.mjs";
 import { QUESTION_GUIDE, extractQuestions, answerPrompt, hasAnswer } from "./question.mjs";
-import { listSkills, checkSkill, writeSkill, deleteSkill, withSkills, skillsDir } from "./skills.mjs";
+import { listSkills, checkSkill, writeSkill, deleteSkill, moveSkill, withSkills, SCOPES } from "./skills.mjs";
 import { CommandStore, isCommandId, newCommandId, checkCommand, shells, generatePrompt, parseGenerated } from "./commands.mjs";
 
 const config = loadConfig();
@@ -265,16 +265,28 @@ function composeInput(session, prompt) {
 }
 
 // 세션에 이은 스킬을 바꾼다. 대화 중에 바꾸면 다음 요청에 바뀐 목록을 다시 알린다.
-// 작업 폴더를 분리한 세션은 원래 프로젝트의 스킬 폴더가 작업 폴더 밖이므로 읽을 수 있게 열어 준다.
+// 작업 폴더를 분리한 Claude 세션은 원래 프로젝트의 스킬 폴더가 작업 폴더 밖이므로 읽을 수 있게 열어 준다.
+// 개인 스킬은 Claude가 Skill 도구로 저절로 불러오므로 열지 않는다.
 function setSessionSkills(session, names) {
-  const known = new Set(listSkills(session.projectPath).map((s) => s.name));
+  const skills = listSkills(session.projectPath);
+  const known = new Set(skills.map((s) => s.name));
   const next = [...new Set((Array.isArray(names) ? names : []).map(String))].filter((n) => known.has(n));
   if (next.join() === (session.skills ?? []).join()) return;
   if (session.agentSessionId) session.skillsChanged = true;
   session.skills = next;
-  const dir = skillsDir(session.projectPath);
-  if (next.length && !samePath(session.cwd, session.projectPath) && session.agent === "claude") {
-    session.addDirs = [...new Set([...(session.addDirs ?? []), dir])];
+  if (session.agent !== "claude" || samePath(session.cwd, session.projectPath)) return;
+  const dirs = skills
+    .filter((s) => next.includes(s.name) && s.scope !== "personal")
+    .map((s) => path.dirname(path.dirname(s.file)));
+  if (dirs.length) session.addDirs = [...new Set([...(session.addDirs ?? []), ...dirs])];
+}
+
+// 스킬이 없어진 세션에서는 그 스킬 연결을 뺀다(개인 스킬은 모든 프로젝트의 세션을 본다).
+function dropMissingSkills(name) {
+  for (const s of store.list()) {
+    if (!s.skills?.includes(name) || listSkills(s.projectPath).some((k) => k.name === name)) continue;
+    setSessionSkills(s, s.skills.filter((n) => n !== name));
+    store.touch(s);
   }
 }
 
@@ -695,10 +707,12 @@ async function handleApi(req, res, url) {
     if (method === "GET" && parts.length === 1) {
       return send(res, 200, listSkills(project.path).map((s) => ({ ...s, pos: layout[key]?.[s.name] ?? null })));
     }
+    // scope: project(AgentHub 전용, 기본) | personal(~/.claude·~/.agents 두 곳). claude 범위는 예전 스킬을 보여 주기만 하고 새로 만들지 않는다.
     if (method === "POST" && parts.length === 1) {
+      const scope = body.scope === "personal" ? "personal" : "project";
       let skill;
       try {
-        skill = writeSkill(project.path, checkSkill(body), { create: true });
+        skill = writeSkill(project.path, checkSkill(body), { create: true, scope });
       } catch (err) {
         throw new HttpError(400, err.message);
       }
@@ -713,7 +727,7 @@ async function handleApi(req, res, url) {
       // 위치만 옮길 때는 파일을 다시 쓰지 않는다.
       if (body.description !== undefined || body.body !== undefined) {
         try {
-          writeSkill(project.path, checkSkill({ ...existing, ...body, name }));
+          writeSkill(project.path, checkSkill({ ...existing, ...body, name }), { scope: existing.scope });
         } catch (err) {
           throw new HttpError(400, err.message);
         }
@@ -722,16 +736,24 @@ async function handleApi(req, res, url) {
       broadcast("skills", { projectPath: project.path });
       return send(res, 200, { ok: true });
     }
-    if (method === "DELETE") {
-      deleteSkill(project.path, name);
-      savePos(name, null);
-      // 이 스킬을 이어 둔 세션에서도 뺀다.
-      for (const s of projectSessions(project.path)) {
-        if (s.skills?.includes(name)) {
-          setSessionSkills(s, s.skills.filter((n) => n !== name));
-          store.touch(s);
-        }
+    // 다른 범위로 옮긴다(Claude 프로젝트 스킬 → AgentHub 전용, 프로젝트 ↔ 개인).
+    if (method === "POST" && parts[2] === "move") {
+      if (!SCOPES.includes(body.to) || body.to === "claude") throw new HttpError(400, "옮길 곳은 project 또는 personal입니다.");
+      let moved;
+      try {
+        moved = moveSkill(project.path, name, body.to);
+      } catch (err) {
+        throw new HttpError(400, err.message);
       }
+      dropMissingSkills(name);
+      broadcast("skills", { projectPath: project.path });
+      broadcast("sessions", {});
+      return send(res, 200, moved);
+    }
+    if (method === "DELETE") {
+      deleteSkill(project.path, name, { scope: existing.scope });
+      savePos(name, null);
+      dropMissingSkills(name); // 이 스킬을 이어 둔 세션에서도 뺀다.
       broadcast("skills", { projectPath: project.path });
       broadcast("sessions", {});
       return send(res, 200, { ok: true });
