@@ -16,13 +16,15 @@ import { HttpError } from "./errors.mjs";
 import { AttachmentStore, isImageAttachment, publicAttachment } from "../attachments.mjs";
 import { unsupportedChatAttachment } from "../attachment-input.mjs";
 import { exportSession } from "../session-export.mjs";
-import { parseSessionMarkdown, listRecords as listRecords_, readRecord, readRecordImage, RECORD_MAX_BYTES } from "../session-import.mjs";
+import { exportBundle, isBundleName, BUNDLE_MAX_BYTES, recordReadText } from "../session-bundle.mjs";
+import { expandPrompt, projectFiles, rankFiles } from "../prompt-refs.mjs";
+import { parseRecord, listRecords as listRecords_, readRecord, readRecordImage, recordLimitText, RECORD_MAX_BYTES } from "../session-import.mjs";
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
 export function createSessionService({
   config, dataDir, store, runner, chain, links, mailbox, mcpTokens, mcpDir, chatDir,
-  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks
+  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks, commands = null
 }) {
   const { ensureProject, projectSessions } = projects;
   const attachments = new AttachmentStore({ dataDir: dataDir ?? path.dirname(mcpDir) });
@@ -64,9 +66,15 @@ export function createSessionService({
 
   // CLI에 실제로 넘길 내용. 오케스트레이터에는 지휘 규칙과 세션 상태를 함께 넣는다.
   // AI를 바꾼 뒤 새 대화의 첫 요청에는 이전 AI의 진행 상황을 붙인다. 새 대화가 시작되면(아래 turnEnd) 지운다.
-  function composeInput(session, prompt) {
+  // expand: 사용자가 쓴 요청이면 /스킬과 @참조를 풀어 쓴다(다른 세션에서 넘어온 글은 그대로 둔다).
+  // 읽힌 기록(pendingReads)은 다음 요청 하나에만 붙인다.
+  function composeInput(session, prompt, { expand = false } = {}) {
     tasks?.()?.assertSession?.(session);
-    const input = composeBase(session, prompt);
+    let input = composeBase(session, expand ? expandPrompt(session, prompt) : prompt);
+    if (session.pendingReads?.length) {
+      input = `${session.pendingReads.map((r) => r.text).join("\n\n")}\n\n${input}`;
+      delete session.pendingReads;
+    }
     return session.handover && !session.agentSessionId ? `${session.handover}\n\n${input}` : input;
   }
 
@@ -274,7 +282,7 @@ export function createSessionService({
   }
 
   // 사용자가 직접 보낸 요청은 새 흐름(0단계)이다. 흐름 중간의 질문에 답한 것처럼 같은 흐름을 잇는 요청은 depth를 넘긴다.
-  function startTurn(session, prompt, depth = 0, meta = {}) {
+  function startTurn(session, prompt, depth = 0, meta = {}, { expand = false } = {}) {
     if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
     session.chainDepth = depth;
     delete session.awaitingReply;
@@ -283,15 +291,28 @@ export function createSessionService({
     const interrupted = clearPause(session);
     const input = interrupted ? `${INTERRUPTED_NOTE}\n\n${prompt}` : prompt;
     try {
-      runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, input), meta);
+      runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, input, { expand }), meta);
     } catch (err) {
       throw new HttpError(409, err.message);
     }
   }
 
 
+  // 세션 묶음 노드의 세션 목록에서 지우거나(to 없음) 재생성한 세션으로 바꾼다.
+  function replaceGroupMember(id, to = null) {
+    let changed = false;
+    for (const group of commands?.list() ?? []) {
+      if (group.kind !== "group" || !group.members?.includes(id)) continue;
+      const members = group.members.flatMap((m) => m === id ? (to ? [to] : []) : [m]);
+      commands.update(group, { members: [...new Set(members)] });
+      changed = true;
+    }
+    if (changed) broadcast("commands", {});
+  }
+
   function cleanupSession(session, { deleteRecords = false } = {}) {
     links.removeForSession(session.id);
+    replaceGroupMember(session.id);
     chain.queue.delete(session.id);
     mailbox.removeForSession(session.id);
     mcpTokens.forget(session.id);
@@ -361,14 +382,21 @@ export function createSessionService({
     const meta = files.length ? { attachments: files } : {};
     if (runner.isRunning(session.id)) {
       if (body.mode === "steer" && runner.canInject(session)) {
-        runner.inject(session, prompt, meta);
+        runner.inject(session, prompt, meta, expandPrompt(session, prompt));
         return { injected: true };
       }
       chain.enqueue(session, prompt, { user: true, ...meta }, 0);
       return { queued: true };
     }
-    startTurn(session, prompt, 0, meta);
+    startTurn(session, prompt, 0, meta, { expand: true });
     return { ok: true };
+  }
+
+  // 작성창의 @ 자동 완성: 세션 작업 폴더의 파일·폴더를 이름으로 찾는다.
+  async function files(id, query) {
+    const session = getSession(id);
+    if (session.chat || !session.cwd || !fs.existsSync(session.cwd)) return { files: [] };
+    return { files: rankFiles(await projectFiles(session.cwd), String(query ?? "").slice(0, 200)) };
   }
 
   function uploadAttachment(id, body) {
@@ -382,10 +410,18 @@ export function createSessionService({
     return { bytes: fs.readFileSync(image.path), mimeType: image.mimeType, name: image.name };
   }
 
-  async function exportRecord(id) {
+  // format: "markdown"(기본, 사람이 읽는 문서) | "agenthub"(다른 세션에서 불러오거나 읽힐 수 있는 .agenthub 파일)
+  async function exportRecord(id, { format = "markdown" } = {}) {
     const session = getSession(id);
+    if (!["agenthub", "markdown"].includes(format)) throw new HttpError(400, "format은 agenthub 또는 markdown입니다.");
     try {
       const snapshot = structuredClone(session);
+      if (format === "agenthub") {
+        const result = await exportBundle(snapshot, { readAttachment: (attachment) => fs.readFileSync(attachments.resolve(id, attachment.id).path) });
+        const omitted = result.omittedAttachments ? ` 첨부 ${result.omittedAttachments}개는 크기 제한으로 이름만 남겼습니다.` : "";
+        runner.append(session, { kind: "status", text: `세션을 ${result.relativePath}에 내보냈습니다.${omitted}` });
+        return { path: result.path, relativePath: result.relativePath, fileName: result.fileName, format };
+      }
       const result = await exportSession(snapshot, { resolveAttachment: (image) => attachments.resolve(id, image.id).path });
       runner.append(session, { kind: "status", text: `작업 기록을 ${result.relativePath}에 내보냈습니다.` });
       return { path: result.path, relativePath: result.relativePath, fileName: result.fileName, format: "markdown" };
@@ -413,35 +449,61 @@ export function createSessionService({
     return groups.flat();
   }
 
-  async function importRecord(body = {}) {
-    const project = ensureProject(body.projectPath);
-    let source;
+  // 업로드한 내용(content, 예전 화면은 markdown)이나 docs/agenthub의 파일 이름으로 기록을 읽는다.
+  async function readSource(project, body) {
     try {
-      if (typeof body.markdown === "string") {
-        if (Buffer.byteLength(body.markdown) > RECORD_MAX_BYTES) throw Object.assign(new Error("기록 문서는 5MB까지 가져올 수 있습니다."), { code: "IMPORT_TOO_LARGE" });
-        source = { markdown: body.markdown, folder: null, name: String(body.fileName ?? "기록 문서").replace(/[\x00-\x1f]/g, "").slice(0, 200) };
-      } else {
-        const folder = recordFolders(project.path, body.sessionId).find((f) => f.location === (body.location ?? "project"));
-        if (!folder) throw Object.assign(new Error("기록 위치가 올바르지 않습니다."), { code: "IMPORT_PATH" });
-        const read = await readRecord(folder.dir, body.fileName);
-        source = { ...read, name: body.fileName };
+      const uploaded = typeof body.content === "string" ? body.content : typeof body.markdown === "string" ? body.markdown : null;
+      if (uploaded !== null) {
+        const name = String(body.fileName ?? "기록 문서").replace(/[\x00-\x1f]/g, "").slice(0, 200);
+        const limit = isBundleName(name) ? BUNDLE_MAX_BYTES : RECORD_MAX_BYTES;
+        if (Buffer.byteLength(uploaded) > limit) throw Object.assign(new Error(recordLimitText(name)), { code: "IMPORT_TOO_LARGE" });
+        return { content: uploaded, folder: null, name };
       }
+      const folder = recordFolders(project.path, body.sessionId).find((f) => f.location === (body.location ?? "project"));
+      if (!folder) throw Object.assign(new Error("기록 위치가 올바르지 않습니다."), { code: "IMPORT_PATH" });
+      const read = await readRecord(folder.dir, body.fileName);
+      return { ...read, name: body.fileName };
     } catch (err) {
       throw new HttpError(err.code === "IMPORT_MISSING" ? 404 : 400, err.message);
     }
-    let parsed;
-    try { parsed = parseSessionMarkdown(source.markdown); }
-    catch (err) { throw new HttpError(400, err.message); }
+  }
 
+  function parseSource(source) {
+    try { return parseRecord(source.content, source.name); }
+    catch (err) { throw new HttpError(400, err.message); }
+  }
+
+  async function importRecord(body = {}) {
+    const project = ensureProject(body.projectPath);
+    const source = await readSource(project, body);
+    const parsed = parseSource(source);
+    const bundle = parsed.format === "agenthub";
+    const agent = body.agent ?? parsed.meta.agent ?? "claude";
+    // .agenthub 파일은 같은 AI면 모델·추론 강도·권한·역할까지 되살린다. 이 PC에 없는 값이면 기본값을 쓴다.
+    const same = bundle && agent === parsed.meta.agent;
+    let options = { agent, permission: body.permission ?? (same && parsed.meta.permission ? parsed.meta.permission : undefined), model: same ? parsed.meta.model ?? "" : "", effort: same ? parsed.meta.effort : "" };
+    try { checkSessionOptions(options); }
+    catch { options = { agent, permission: body.permission }; }
     const session = await createSession({
-      project, agent: body.agent ?? parsed.meta.agent ?? "claude", permission: body.permission,
+      project, ...options,
+      ...(bundle ? { role: parsed.meta.role, roleName: parsed.meta.roleName } : {}),
       title: String(body.title ?? "").trim() || parsed.title || "가져온 기록",
     });
+    if (bundle && parsed.meta.skills.length) setSessionSkills(session, parsed.meta.skills);
     // 이미지는 문서 옆 .assets에서 읽어 이 세션의 첨부로 다시 저장한다. 업로드한 문서는 이미지 파일이 없다.
+    // .agenthub 파일은 첨부 데이터를 담고 있으므로 이미지 외 파일도 되살린다.
     let missingImages = 0;
     const now = new Date().toISOString();
-    for (const [seq, { images, ...event }] of parsed.events.entries()) {
+    for (const [seq, { images, files, ...event }] of parsed.events.entries()) {
       const attached = [];
+      for (const file of files ?? []) {
+        try {
+          if (!file.data) throw new Error("missing");
+          attached.push(publicAttachment(attachments.save(session.id, file)));
+        } catch {
+          missingImages++;
+        }
+      }
       for (const image of images ?? []) {
         const file = source.folder ? await readRecordImage(source.folder, image.href) : null;
         try {
@@ -457,10 +519,28 @@ export function createSessionService({
     if (body.carry !== false && session.events.some((e) => e.kind === "user")) session.handover = handoverText(session, "", { importedFrom: source.name });
     runner.append(session, { kind: "status", text: `작업 기록 ${source.name}에서 ${parsed.events.length}건을 가져왔습니다.`
       + (session.handover ? " 첫 요청에 기록을 붙여 이어서 작업합니다." : "")
-      + (missingImages ? ` 이미지 ${missingImages}장은 찾지 못해 빠졌습니다.` : "") });
+      + (missingImages ? ` 첨부 ${missingImages}개는 찾지 못해 빠졌습니다.` : "") });
     store.touch(session);
     broadcast("sessions", {});
     return summary(session);
+  }
+
+  // 기록 읽히기: 다른 세션의 기록(.agenthub·.md)을 이 세션의 다음 요청 앞에 붙여 AI가 읽게 한다.
+  // 세션 기록에는 상태 줄만 남기고, 붙일 글은 다음 요청을 보낼 때 한 번만 넘긴다.
+  const READ_MAX = 3;
+  async function readRecordInto(id, body = {}) {
+    const session = getSession(id);
+    if (session.chat) throw new HttpError(400, "일반 채팅에는 기록을 읽힐 수 없습니다.");
+    const project = ensureProject(session.projectPath);
+    const source = await readSource(project, { ...body, sessionId: id });
+    const parsed = parseSource(source);
+    const reads = (session.pendingReads ?? []).filter((r) => r.name !== source.name);
+    if (reads.length >= READ_MAX) throw new HttpError(409, `다음 요청에 붙일 기록은 ${READ_MAX}개까지입니다. 요청을 보낸 뒤 더 읽히세요.`);
+    session.pendingReads = [...reads, { name: source.name, text: recordReadText(source.name, parsed) }];
+    runner.append(session, { kind: "status", text: `기록 ${source.name}("${parsed.title}", ${parsed.events.length}건)을 읽혔습니다. 다음 요청에 함께 보냅니다.` });
+    store.touch(session);
+    broadcast("session", { sessionId: id });
+    return { ok: true, title: parsed.title, events: parsed.events.length, pending: session.pendingReads.map((r) => r.name) };
   }
 
   function queueAction(id, itemId, action) {
@@ -476,7 +556,7 @@ export function createSessionService({
     if (action === "send" && runner.isRunning(id)) throw new HttpError(409, "실행 중입니다. 끝나면 차례로 보냅니다.");
     const item = chain.take(id, itemId);
     if (!chain.canDeliver(session, item)) throw new HttpError(409, "보낸 세션과의 활성 연결이 없어 메시지를 전달할 수 없습니다.");
-    if (action === "steer") runner.inject(session, item.text, item.meta);
+    if (action === "steer") runner.inject(session, item.text, item.meta, item.meta.user ? expandPrompt(session, item.text) : item.text);
     else {
       if (clearPause(session) || session.state === "paused") runner.setState(session, "idle");
       chain.enqueue(session, item.text, item.meta, item.depth);
@@ -642,6 +722,7 @@ export function createSessionService({
       if (link.from === id) links.update(link, { from: created.id, pending: null });
       if (link.to === id) links.update(link, { to: created.id, pending: null });
     }
+    replaceGroupMember(id, created.id);
     for (const other of store.list()) {
       if (other.createdBy !== id) continue;
       other.createdBy = created.id;
@@ -689,7 +770,7 @@ export function createSessionService({
 
   return {
     list: () => store.list().map((s) => summary(settleState(s))), detail,
-    create, importSession, update, sendMessage, uploadAttachment, attachmentContent, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
+    create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
     stop, pause, resume, restart, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,

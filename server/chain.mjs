@@ -6,8 +6,8 @@ import { isCommandId, commandKind, runShell, outputTail, commandHandoffText } fr
 import { finalAnswer, writeMessageOutput } from "./utility-output.mjs";
 
 import { canContact } from "./policies/messaging.mjs";
-import { MAX_HOPS, lastAnswer, verdictLine, pickLinks, noMatchNote, handoffText } from "./policies/workflows.mjs";
-export { CONDITIONS, CONDITION_LABELS, MAX_HOPS, lastAnswer, verdictLine, keywordList, hasKeyword, matches, pickLinks, noMatchNote, handoffText } from "./policies/workflows.mjs";
+import { MAX_HOPS, lastAnswer, verdictLine, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
+export { CONDITIONS, CONDITION_LABELS, MAX_HOPS, lastAnswer, verdictLine, keywordList, hasKeyword, matches, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
 
 export class Chain {
   // compose: CLI에 실제로 넘길 내용을 만든다(역할·공통 지침·오케스트레이터 맥락).
@@ -57,7 +57,8 @@ export class Chain {
     }
     // 다른 세션의 메시지로 시작한 턴은 곁가지 대화이므로 연결로 넘기지 않는다(대화가 흐름을 건드리지 않게).
     const started = session.events.findLast((e) => e.kind === "user" && !e.injected);
-    if (!session.waiting && !started?.message) {
+    const settled = !session.waiting && !started?.message;
+    if (settled) {
       // 사용자에게 질문하고 답을 기다리는 턴은 끝난 작업이 아니므로 넘기지 않는다.
       const answer = lastAnswer(session);
       const completion = finalAnswer(session);
@@ -75,6 +76,8 @@ export class Chain {
       }
     }
     this.flush(session);
+    // 넘긴 작업과 대기열을 시작한 뒤에 확인해야 아직 이어지는 세션을 끝난 것으로 보지 않는다.
+    if (settled) await this.checkGroups(session);
   }
 
   // 승인을 받아야 넘기는 연결은 연결선 위에 승인 대기로 올려 둔다. 같은 연결에 다시 쌓이면 마지막 것만 남긴다.
@@ -117,47 +120,152 @@ export class Chain {
     const source = this.node(link.from);
     const target = this.node(link.to);
     if (!source || !target) return;
+    const sourceKind = isCommandId(source.id) ? commandKind(source) : "session";
+    const targetKind = isCommandId(target.id) ? commandKind(target) : "session";
     // Utility nodes keep their direction even when an old or hand-edited link bypasses API validation.
-    if (commandKind(source) === "markdown" || commandKind(target) === "button") return;
-    if (commandKind(source) === "button" && isCommandId(target.id)) return;
-    if (commandKind(target) === "markdown" && isCommandId(source.id)) return;
+    if (sourceKind === "markdown" || targetKind === "button") return;
+    if (sourceKind === "button" && !["session", "group"].includes(targetKind)) return;
+    if (targetKind === "markdown" && !["session", "group"].includes(sourceKind)) return;
     // Saving a terminal message does not launch another turn, so it must still work at the hop limit.
-    if (commandKind(target) === "markdown") {
-      this.printMessage(target, source, answer ?? finalAnswer(source));
+    if (targetKind === "markdown") {
+      if (sourceKind === "group") this.printMessage(target, this.groupOrigin(source), answer ?? this.groupFinal(source));
+      else this.printMessage(target, source, answer ?? finalAnswer(source));
       return;
     }
     if (depth >= MAX_HOPS) {
       this.note(source, `자동 연결이 ${MAX_HOPS}단계를 넘어 "${target.title}"(으)로 넘기지 않았습니다.`);
       return;
     }
-    if (commandKind(source) === "button") {
-      const prompt = answer ?? source.prompt;
-      const text = [prompt, link.note?.trim()].filter(Boolean).join("\n\n");
-      this.enqueue(target, text, { from: source.id, fromTitle: source.title }, depth + 1);
+    // 세션 묶음으로 넘기면 묶은 세션 모두에 같은 내용을 보낸다.
+    if (targetKind === "group") {
+      const members = this.groupMembers(target);
+      if (!members.length) return this.note(source, `세션 묶음 "${target.title}"에 세션이 없어 넘기지 않았습니다.`);
+      if (sourceKind === "group" && answer === null) answer = await this.groupText(source, link);
+      for (const member of members) await this.sendSession(link, source, sourceKind, member, depth, answer);
       return;
     }
     // 명령 노드로 넘기면 명령을 실행한다. 실행 폴더는 명령을 처음 실행시킨 세션을 따른다.
-    if (isCommandId(target.id)) {
-      const origin = isCommandId(source.id) ? this.store.get(source.lastRun?.originId) : source;
+    if (targetKind === "command") {
+      const origin = sourceKind === "group" ? this.groupMembers(source)[0] ?? null
+        : isCommandId(source.id) ? this.store.get(source.lastRun?.originId) : source;
       this.note(source, `명령 "${target.title}" 실행`);
       this.runCommand(target, { origin, depth: depth + 1 });
       return;
     }
-    // 명령 노드에서 세션으로: 명령 결과(종료 코드·출력)를 넘긴다.
-    if (isCommandId(source.id)) {
-      const origin = this.store.get(source.lastRun?.originId);
-      this.enqueue(target, commandHandoffText(source, source.lastRun, link, origin), { from: source.id, fromTitle: source.title }, depth + 1);
+    await this.sendSession(link, source, sourceKind, target, depth, answer);
+  }
+
+  // 세션 하나에 넘어온 작업을 넣는다. 보낸 쪽 종류에 따라 넘기는 내용이 다르다.
+  async sendSession(link, source, sourceKind, target, depth, answer) {
+    const from = { from: source.id, fromTitle: source.title };
+    if (sourceKind === "button") {
+      const prompt = answer ?? source.prompt;
+      this.enqueue(target, [prompt, link.note?.trim()].filter(Boolean).join("\n\n"), from, depth + 1);
       return;
     }
-    // Claude는 작업 폴더 밖을 읽으려면 허락이 필요하므로 보낸 세션의 폴더를 실행 인자로 열어 준다.
-    if (target.agent === "claude" && source.cwd.toLowerCase() !== target.cwd.toLowerCase()) {
-      target.addDirs = [...new Set([...(target.addDirs ?? []), source.cwd])];
+    // 명령 노드에서 세션으로: 명령 결과(종료 코드·출력)를 넘긴다.
+    if (sourceKind === "command") {
+      const origin = this.store.get(source.lastRun?.originId);
+      this.enqueue(target, commandHandoffText(source, source.lastRun, link, origin), from, depth + 1);
+      return;
     }
+    if (sourceKind === "group") {
+      const members = this.groupMembers(source);
+      for (const member of members) this.openDir(target, member);
+      const text = answer ?? await this.groupText(source, link, members);
+      if (this.disposed) return;
+      this.enqueue(target, text, from, depth + 1);
+      return;
+    }
+    this.openDir(target, source);
     const files = source.baseCommit ? await changedFiles(source.cwd, source.baseCommit).catch(() => "") : "";
     if (this.disposed) return;
     const waiting = this.runner.isRunning(target.id);
     this.runner.append(source, { kind: "status", text: `"${target.title}"(으)로 넘김${waiting ? " · 실행이 끝나면 시작" : ""}` });
-    this.enqueue(target, handoffText(source, link, answer ?? lastAnswer(source), files), { from: source.id, fromTitle: source.title }, depth + 1);
+    this.enqueue(target, handoffText(source, link, answer ?? lastAnswer(source), files), from, depth + 1);
+  }
+
+  // Claude는 작업 폴더 밖을 읽으려면 허락이 필요하므로 보낸 세션의 폴더를 실행 인자로 열어 준다.
+  openDir(target, source) {
+    if (target.agent === "claude" && source.cwd && source.cwd.toLowerCase() !== target.cwd.toLowerCase()) {
+      target.addDirs = [...new Set([...(target.addDirs ?? []), source.cwd])];
+    }
+  }
+
+  // ── 세션 묶음 ─────────────────────────────────────────────────
+  // 묶은 세션이 모두 진행 중이 아닐 때(실행·일시중지·답 대기·대기열이 없을 때) 다음 노드로 넘어간다.
+  groupMembers(group) {
+    return (group.members ?? []).map((id) => this.store.get(id)).filter(Boolean);
+  }
+
+  groupsOf(sessionId) {
+    return (this.commands?.list?.() ?? []).filter((c) => commandKind(c) === "group" && c.members?.includes(sessionId));
+  }
+
+  busy(session) {
+    return this.runner.isRunning(session.id) || !!session.paused || !!session.waiting || this.pending(session.id) > 0;
+  }
+
+  groupBusy(group) {
+    return this.groupMembers(group).filter((s) => this.busy(s));
+  }
+
+  async groupText(group, link, members = this.groupMembers(group)) {
+    const items = await Promise.all(members.map(async (session) => ({
+      session,
+      answer: lastAnswer(session),
+      files: session.baseCommit ? await changedFiles(session.cwd, session.baseCommit).catch(() => "") : "",
+    })));
+    return groupHandoffText(group, items, link);
+  }
+
+  // MD 출력으로 넘길 때는 각 세션의 마지막 완료 메시지 원문을 차례로 붙인다.
+  groupFinal(group) {
+    return this.groupMembers(group)
+      .map((s) => ({ title: s.title, text: finalAnswer(s) }))
+      .filter((m) => m.text.trim())
+      .map((m) => `## ${m.title}\n\n${m.text}`)
+      .join("\n\n");
+  }
+
+  groupOrigin(group) {
+    return { id: group.id, title: group.title, cwd: this.groupMembers(group)[0]?.cwd ?? group.projectPath };
+  }
+
+  // 세션의 턴이 끝날 때 그 세션이 든 묶음을 확인한다.
+  async checkGroups(session) {
+    for (const group of this.groupsOf(session.id)) {
+      if (this.groupBusy(group).length) {
+        this.notify("commands");
+        continue;
+      }
+      await this.fireGroup(group);
+    }
+  }
+
+  // 묶음에서 나가는 연결을 따라 넘긴다. 진행 중인 세션이 있으면 넘기지 않고 그 세션 목록을 돌려준다.
+  async fireGroup(group) {
+    if (this.disposed) return { busy: [] };
+    const busy = this.groupBusy(group);
+    if (busy.length) return { busy };
+    const members = this.groupMembers(group);
+    const { ok, verdict } = groupOutcome(members);
+    const depth = Math.max(0, ...members.map((s) => s.chainDepth ?? 0));
+    const picked = pickLinks(this.links.from(group.id), ok, verdict);
+    const startedAt = new Date().toISOString();
+    this.commands.update(group, { state: ok ? "success" : "error", live: null, queued: null, lastRun: {
+      ok, exitCode: ok ? 0 : 1, stopped: false, timedOut: false, startedAt, durationMs: 0,
+      cwd: group.projectPath, originId: null, originTitle: null,
+      tail: picked.length ? `세션 ${members.length}개 완료 · 연결 ${picked.length}개로 넘김` : `세션 ${members.length}개 완료 · 조건에 맞는 연결 없음`,
+    } });
+    this.notify("commands");
+    for (const link of picked) {
+      const text = commandKind(this.node(link.to)) === "markdown" ? this.groupFinal(group) : await this.groupText(group, link, members);
+      if (this.disposed) break;
+      if (link.approve) this.hold(link, group, text, depth);
+      else await this.deliver(link, depth, text);
+    }
+    return { busy: [], picked: picked.length };
   }
 
   // ── 명령 노드 실행 ────────────────────────────────────────────
@@ -165,6 +273,7 @@ export class Chain {
   runCommand(cmd, { origin = null, depth = 0 } = {}) {
     if (this.disposed) return null;
     if (commandKind(cmd) === "button") return this.runButton(cmd, depth);
+    if (commandKind(cmd) === "group") return this.fireGroup(cmd);
     if (commandKind(cmd) === "markdown") throw new Error("MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
     if (this.runs.has(cmd.id)) {
       this.commands.update(cmd, { queued: { originId: origin?.id ?? null, depth } });
@@ -332,7 +441,9 @@ export class Chain {
       if (!this.canDeliver(session, item)) continue;
       session.chainDepth = item.depth;
       try {
-        this.runner.send(session, item.text, this.cliPaths()[session.agent], this.compose(session, item.text), item.meta);
+        // 사용자가 대기열에 넣은 요청과 버튼 프롬프트는 /스킬·@참조를 풀어 쓴다.
+        const expand = !!item.meta.user || commandKind(this.commands?.get(item.meta.from)) === "button";
+        this.runner.send(session, item.text, this.cliPaths()[session.agent], this.compose(session, item.text, { expand }), item.meta);
       } catch (err) {
         this.runner.append(session, { kind: "error", text: `넘어온 작업을 시작하지 못했습니다: ${err.message}` });
       }

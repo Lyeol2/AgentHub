@@ -2,6 +2,7 @@
 // 내보낸 문서는 보이는 내용만 담으므로, 대화 흐름(요청·답변·도구·오류 등)을 화면용으로 되살린다.
 import fs from "node:fs/promises";
 import path from "node:path";
+import { BUNDLE_MAX_BYTES, isBundleName, bundleHead, parseBundle } from "./session-bundle.mjs";
 
 export const RECORD_MAX_BYTES = 5 * 1024 * 1024;
 const BACKTICK = String.fromCharCode(96);
@@ -206,7 +207,10 @@ function within(root, target) {
   return relative === "" || (!relative.startsWith(".." + path.sep) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-// 폴더의 docs/agenthub에 있는 내보낸 기록 목록. 심볼릭 링크와 폴더 밖 파일은 건너뛴다.
+const recordLimit = (fileName) => isBundleName(fileName) ? BUNDLE_MAX_BYTES : RECORD_MAX_BYTES;
+export const recordLimitText = (fileName) => isBundleName(fileName) ? "세션 파일(.agenthub)은 30MB까지 가져올 수 있습니다." : "기록 문서는 5MB까지 가져올 수 있습니다.";
+
+// 폴더의 docs/agenthub에 있는 내보낸 기록(.md 문서와 .agenthub 세션 파일) 목록. 심볼릭 링크와 폴더 밖 파일은 건너뛴다.
 export async function listRecords(dir) {
   const folder = path.join(dir, "docs", "agenthub");
   let entries;
@@ -214,15 +218,15 @@ export async function listRecords(dir) {
   catch (error) { if (error.code === "ENOENT") return []; throw error; }
   const records = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !/\.md$/i.test(entry.name)) continue;
+    if (!entry.isFile() || !/\.(md|agenthub)$/i.test(entry.name)) continue;
     const file = path.join(folder, entry.name);
     try {
       const stat = await fs.stat(file);
-      if (stat.size > RECORD_MAX_BYTES) continue;
-      const head = (await fs.readFile(file, "utf8")).slice(0, 4000);
-      const { title, meta } = parseHead(head);
+      if (stat.size > recordLimit(entry.name)) continue;
+      const bundle = isBundleName(entry.name);
+      const { title, meta } = bundle ? bundleHead(await fs.readFile(file, "utf8")) : parseHead((await fs.readFile(file, "utf8")).slice(0, 4000));
       if (!title) continue;
-      records.push({ fileName: entry.name, title, agent: meta.agent, exportedAt: meta.exportedAt, size: stat.size, modifiedAt: stat.mtime.toISOString() });
+      records.push({ fileName: entry.name, title, format: bundle ? "agenthub" : "markdown", agent: meta.agent, exportedAt: meta.exportedAt, size: stat.size, modifiedAt: stat.mtime.toISOString() });
     } catch {}
   }
   return records.sort((a, b) => String(b.exportedAt ?? b.modifiedAt).localeCompare(String(a.exportedAt ?? a.modifiedAt)));
@@ -240,15 +244,22 @@ function parseHead(head) {
 
 // 목록에서 고른 기록 파일을 읽는다. 이름만 받고 docs/agenthub 밖은 열지 않는다.
 export async function readRecord(dir, fileName) {
-  if (typeof fileName !== "string" || !/^[^\\/:*?"<>|\x00-\x1f]+\.md$/i.test(fileName) || fileName.startsWith(".")) throw failure("IMPORT_PATH", "기록 파일 이름이 올바르지 않습니다.");
+  if (typeof fileName !== "string" || !/^[^\\/:*?"<>|\x00-\x1f]+\.(md|agenthub)$/i.test(fileName) || fileName.startsWith(".")) throw failure("IMPORT_PATH", "기록 파일 이름이 올바르지 않습니다.");
   const folder = path.join(dir, "docs", "agenthub");
   const file = path.join(folder, fileName);
   const [realFolder, realFile] = await Promise.all([fs.realpath(folder), fs.realpath(file)]).catch(() => { throw failure("IMPORT_MISSING", "기록 파일을 찾지 못했습니다."); });
   if (!within(realFolder, realFile)) throw failure("IMPORT_PATH", "docs/agenthub 안의 기록만 가져올 수 있습니다.");
   const stat = await fs.stat(realFile);
   if (!stat.isFile()) throw failure("IMPORT_PATH", "기록 파일이 아닙니다.");
-  if (stat.size > RECORD_MAX_BYTES) throw failure("IMPORT_TOO_LARGE", "기록 문서는 5MB까지 가져올 수 있습니다.");
-  return { markdown: await fs.readFile(realFile, "utf8"), folder: realFolder, file: realFile };
+  if (stat.size > recordLimit(fileName)) throw failure("IMPORT_TOO_LARGE", recordLimitText(fileName));
+  const content = await fs.readFile(realFile, "utf8");
+  return { content, markdown: content, folder: realFolder, file: realFile };
+}
+
+// .md 문서와 .agenthub 세션 파일을 같은 모양({ title, meta, events })으로 읽는다. 형식은 이름(없으면 내용)으로 정한다.
+export function parseRecord(content, fileName = "") {
+  const bundle = isBundleName(fileName) || (!/\.md$/i.test(fileName) && /^\uFEFF?\s*\{/.test(String(content ?? "")));
+  return bundle ? { ...parseBundle(content), format: "agenthub" } : { ...parseSessionMarkdown(content), format: "markdown" };
 }
 
 // 문서 옆 .assets 폴더의 이미지를 읽는다. 문서 폴더 밖이나 지원하지 않는 형식은 null.

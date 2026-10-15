@@ -59,6 +59,16 @@ npm run release
   - Claude: AgentHub에서 Claude 세션을 실행할 때 `stream-json`의 `rate_limit_event`를 받아 데이터 폴더의 `limits.json`에 저장한다. 로그인한 계정의 사용량 API(Claude Code의 `/usage`와 같은 곳)에서도 1분마다 사용률을 읽고, 요청이 많아 거절(429)되면 몇 분 쉬었다가 다시 읽는다.
   - Codex: `~/.codex/sessions` 기록에 남는 `rate_limits` 중 가장 최근 값을 읽는다.
 
+### 작성창 명령과 세션 파일
+
+- 작성창의 `/이름`·`@경로`는 `server/prompt-refs.mjs`가 CLI에 넘길 내용으로 풀어 쓴다(화면 기록에는 입력 그대로). 사용자가 직접 보낸 요청·대기열 요청·작업 중 붙인 요청·버튼 프롬프트만 풀어 쓰고, 연결로 넘어온 글은 그대로 둔다. `/스킬`은 스킬 실행 지시로 바꾸고, 워크트리에서 일하는 Claude에는 프로젝트 스킬 폴더를 `--add-dir`로 연다. `@`는 작업 폴더 안의 실제 파일·폴더만 받으며(심볼릭 링크로 밖을 가리키면 무시), 64KiB 이하 텍스트는 내용을, 그 밖은 경로를 붙인다. 요청 하나에 10개, 붙이는 내용 합계 256KiB까지다. 자동 완성 목록은 `GET /api/sessions/:id/files?q=`가 `git ls-files --cached --others --exclude-standard`(git이 아니면 폴더 탐색) 결과를 15초 동안 캐시해 이름순 점수로 고른다.
+- `.agenthub` 파일(`server/session-bundle.mjs`)은 `{ format: "agenthub-session", version: 1, exportedAt, session, events, attachments }` JSON이다. `events`는 보이는 필드만 담고 비밀값을 가리며, 기다리던 질문·계획·권한 카드는 끝난 상태로 바꾼다. 첨부는 base64로 합계 20MB까지 넣고 넘치면 이름만 남긴다(`omittedAttachments`). 더 새 `version`은 거절한다.
+- `POST /api/sessions/:id/export`의 `format`은 `markdown`(기본, 예전 호출과 호환)·`agenthub`이고, 화면은 `.agenthub`를 먼저 보인다. `POST /api/sessions/import-record`와 `POST /api/sessions/:id/read-record`는 `docs/agenthub`의 `fileName`이나 업로드한 `content`(예전 `markdown`도 받음)를 받는다. 읽힌 기록은 세션의 `pendingReads`에 두었다가 다음 요청 하나에만 붙인다.
+
+### 세션 묶음 노드
+
+명령 노드 저장소(`commands.json`)에 `kind: "group"`, `members: [세션 ID]`로 둔다(20개까지, 같은 프로젝트의 일반 세션만). `Chain.onTurnEnd`가 연결·대기열 처리 뒤 그 세션이 든 묶음을 확인해, 묶은 세션이 모두 실행·일시중지·답 대기·대기열이 없으면 `fireGroup`으로 나가는 연결을 고른다(성공: 오류로 끝난 세션 없음, 키워드: 세션들의 판정 줄 중 하나). 넘기는 단계 수는 묶은 세션 중 가장 깊은 값을 잇는다. 묶음으로 들어오는 연결은 묶은 세션마다 같은 내용을 넣는다. 세션을 지우거나 재생성하면 `members`도 고친다.
+
 ### 세션끼리 소통하는 MCP 도구
 
 모든 세션(일반 채팅 제외)의 CLI에 AgentHub MCP 서버가 붙고, 첫 요청에 사용법이 붙는다.

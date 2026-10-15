@@ -78,9 +78,11 @@
   await until(() => alerts.filter((text) => text === "fixture message failure").length === 2 && !$("c-send").disabled);
   check($("c-prompt").value === "review this document" && $("c-attachments").querySelector(".attachment-name").textContent === "chat-document.pdf", "API-rejected chat file preserves the text and attachment draft");
   $("c-attachments").querySelector("button").click(); input("c", "");
-  await open("First"); await post("/fixture/mode", { exportError: true }); $("s-export").click();
+  // 기록 내보내기는 형식 메뉴를 연다. 첫 항목은 .agenthub 세션 파일, 둘째는 Markdown 문서다.
+  const exportAs = (index) => { $("s-export").click(); document.querySelectorAll(".context-menu .menu-item")[index].click(); };
+  await open("First"); await post("/fixture/mode", { exportError: true }); exportAs(1);
   await until(() => $("s-export-result").textContent.includes("내보내기 실패"));
-  $("s-export").click(); await until(() => $("s-export-result").textContent.includes("저장됨"));
+  exportAs(1); await until(() => $("s-export-result").textContent.includes("저장됨"));
   check($("s-export-result").textContent.includes("docs/agenthub/first.md"), "project export reports saved Markdown path and supports retry");
   const emitPermission = async (requestId) => { const current = await fetch("/api/sessions/s1").then((r) => r.json()); await post("/fixture/emit", { type: "event", payload: { sessionId: "s1", event: { seq: current.events.length, kind: "permission", requestId, promptId: requestId, text: "Read fixture file", reason: "Access outside workspace", status: "pending", canRemember: false } } }); await until(() => $("s-events").querySelectorAll(".permission").length === (requestId === "p1" ? 1 : 2)); };
   await emitPermission("p1"); const permission = $("s-events").querySelector(".permission");

@@ -49,13 +49,14 @@ export class Runner extends EventEmitter {
   }
 
   // meta: 요청 이벤트에 덧붙일 값(보낸 세션 등)
-  inject(session, text, meta = {}) {
+  // input: CLI에 실제로 넘길 내용(@참조를 풀어 쓴 요청 등). 화면에는 text만 남긴다.
+  inject(session, text, meta = {}, input = text) {
     const child = this.running.get(session.id);
     const agent = AGENTS[session.agent];
     if (!child) throw new Error("실행 중이 아닙니다.");
     if (!agent.interactive && !child.appServer) throw new Error(`${session.agent}는 실행 중인 작업에 요청을 붙일 수 없습니다. 대기열에 넣으세요.`);
-    if (child.appServer) child.appServer.inject(text, meta.attachments);
-    else child.stdin.write(`${agent.userLine(text, meta.attachments)}\n`);
+    if (child.appServer) child.appServer.inject(input, meta.attachments);
+    else child.stdin.write(`${agent.userLine(input, meta.attachments)}\n`);
     child.injected = (child.injected ?? 0) + 1;
     this.append(session, { kind: "user", text, ...publicMeta(meta), injected: true });
   }

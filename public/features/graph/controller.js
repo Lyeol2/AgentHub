@@ -65,13 +65,16 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const links = data.links.filter((l) => ids.has(l.from) && ids.has(l.to));
     // 오케스트레이터가 만든 세션은 지휘선으로 잇고, 배치도 오케스트레이터를 앞에 둔다.
     const commands = sessions.filter((s) => ids.has(s.createdBy)).map((s) => ({ from: s.createdBy, to: s.id }));
-    const pos = layoutGraph([...sessions, ...cmdNodes], [...commands, ...links]);
+    // 세션 묶음은 묶은 세션에서 점선 묶음선으로 잇고, 배치도 묶은 세션 뒤에 둔다.
+    const members = cmdNodes.filter((c) => c.kind === "group")
+      .flatMap((c) => (c.members ?? []).filter((id) => ids.has(id)).map((id) => ({ from: id, to: c.id })));
+    const pos = layoutGraph([...sessions, ...cmdNodes], [...commands, ...members, ...links]);
 
     const { canvas, svg, cards } = view.createCanvas(sessions, cmdNodes);
     // 캔버스를 배율에 맞춰 그리고, 프로젝트별 화면 이동 위치를 유지한다.
     const sizer = el("div", { class: "graph-sizer" }, canvas);
     const pan = samePath(ui.graph?.projectPath, navigation.project) ? { ...ui.graph.pan } : { x: 0, y: 0 };
-    ui.graph = { canvas, sizer, svg, cards, pos, links, commands, zoom: graphZoomFor(navigation.project), pan, projectPath: navigation.project };
+    ui.graph = { canvas, sizer, svg, cards, pos, links, commands, members, zoom: graphZoomFor(navigation.project), pan, projectPath: navigation.project };
     placeCards();
     syncGraphSelection();
     box.replaceChildren(sizer);
@@ -98,11 +101,12 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     if (cmd) {
       const running = cmd.state === "running";
       const kind = cmd.kind ?? "command";
-      const label = kind === "button" ? "버튼" : kind === "markdown" ? "Markdown 출력" : "명령";
+      const label = kind === "button" ? "버튼" : kind === "markdown" ? "Markdown 출력" : kind === "group" ? "세션 묶음" : "명령";
       openContextMenu(e, `${label} ${cmd.title}`, [
         kind === "markdown"
           ? ["결과 보기", () => openCommandOutput(cmd), { disabled: !cmd.lastRun?.output }]
-          : running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
+          : kind === "group" ? ["지금 넘기기", () => runCommand(cmd), { title: "묶은 세션이 모두 끝났을 때만 넘깁니다" }]
+            : running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
         ["편집", () => openCommandDialog(cmd)],
         null,
         ["삭제", () => removeCommand(cmd), { danger: true }],
@@ -133,8 +137,12 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       ["새 명령", inProject(() => openCommandDialog(null, pos, connectFrom))]);
     if (!connectFrom) entries.push(
       ["새 버튼", inProject(() => openCommandDialog(null, pos, null, "button"))]);
-    if (!source) entries.push(
+    if (!source || source.kind === "group") entries.push(
       ["새 Markdown 출력", inProject(() => openCommandDialog(null, pos, connectFrom, "markdown"))]);
+    // 고른 세션 카드가 있으면 그 세션들을 미리 골라 둔다.
+    const picked = [...ui.graphSelected].filter((id) => sessionById(id) && !sessionById(id).chat);
+    entries.push([picked.length > 1 && !connectFrom ? `선택한 세션 ${picked.length}개 묶기` : "새 세션 묶음",
+      inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked }))]);
     openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [...entries,
       null,
       ["스킬 관리", inProject(() => openSkillsManager())],
@@ -345,6 +353,15 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       const path = document.createElementNS(SVG_NS, "path");
       path.setAttribute("d", edgePath(g.pos.get(command.from), g.pos.get(command.to), nodeSize(command.from), nodeSize(command.to)).d);
       path.setAttribute("class", "edge command");
+      g.svg.append(path);
+    }
+    for (const member of g.members ?? []) {
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", edgePath(g.pos.get(member.from), g.pos.get(member.to), nodeSize(member.from), nodeSize(member.to)).d);
+      path.setAttribute("class", "edge member");
+      const title = document.createElementNS(SVG_NS, "title");
+      title.textContent = `${nodeTitle(member.from)} → 세션 묶음 ${nodeTitle(member.to)}`;
+      path.append(title);
       g.svg.append(path);
     }
     const placed = []; // 라벨이 겹치면 아래로 비킨다.
@@ -692,8 +709,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const target = commandById(to);
     if (source?.kind === "markdown") return alert("Markdown 출력 노드는 완료 메시지를 받는 노드입니다.");
     if (target?.kind === "button") return alert("버튼 노드는 연결을 받지 않고, 버튼을 눌러 실행합니다.");
-    if (source?.kind === "button" && target) return alert("버튼은 실행할 세션에 연결해 주세요.");
-    if (target?.kind === "markdown" && source) return alert("Markdown 출력은 완료 메시지를 보낼 세션에 연결해 주세요.");
+    if (source?.kind === "button" && target && target.kind !== "group") return alert("버튼은 실행할 세션이나 세션 묶음에 연결해 주세요.");
+    if (target?.kind === "markdown" && source && source.kind !== "group") return alert("Markdown 출력은 완료 메시지를 보낼 세션이나 세션 묶음에 연결해 주세요.");
     ui.editingLink = { link, from, to };
     $("link-names").textContent = `${nodeTitle(from)} → ${nodeTitle(to)}`;
     const initial = link ?? defaultLinkCondition(from);

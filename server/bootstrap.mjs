@@ -93,7 +93,7 @@ export function createHub(options = {}) {
     tasks: () => tasks,
   });
   sessions = createSessionService({
-    config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects,
+    config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects, commands,
     saveConfig: persistConfig,
     workflows: () => workflows,
     tasks: () => tasks,

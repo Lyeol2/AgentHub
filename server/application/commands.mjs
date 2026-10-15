@@ -1,3 +1,4 @@
+import path from "node:path";
 import { spawnCli } from "../cli.mjs";
 import { newCommandId, checkCommand, commandKind, shells, generatePrompt, parseGenerated } from "../commands.mjs";
 import { readMessageOutput } from "../utility-output.mjs";
@@ -65,11 +66,25 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return generateCommand({ prompt: prompt.slice(0, 4000), shell: body.shell ?? shells()[0].id, projectPath: project.path });
   }
 
+  // 세션 묶음에는 같은 프로젝트의 세션(일반 채팅 제외)만 넣는다.
+  function checkMembers(fields, projectPath) {
+    if (fields.kind !== "group") return fields;
+    for (const id of fields.members) {
+      const session = store.get(id);
+      if (!session) throw new HttpError(400, "묶으려는 세션이 없습니다. 목록을 새로 고쳐 다시 고르세요.");
+      if (session.chat || !session.projectPath || path.resolve(session.projectPath).toLowerCase() !== path.resolve(projectPath).toLowerCase()) {
+        throw new HttpError(400, `"${session.title}"은 이 프로젝트의 세션이 아니라 묶을 수 없습니다.`);
+      }
+    }
+    return fields;
+  }
+
   function create(body) {
     const project = ensureProject(body.projectPath);
     let fields;
     try { fields = checkCommand(body); }
     catch (error) { throw new HttpError(400, error.message); }
+    checkMembers(fields, project.path);
     const command = {
       id: newCommandId(), projectPath: project.path, ...fields,
       state: "idle", lastRun: null, createdAt: new Date().toISOString(),
@@ -82,12 +97,14 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   function update(id, body) {
     const command = getCommand(id);
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec"].some((key) => body[key] !== undefined);
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members"].some((key) => body[key] !== undefined);
+    let fields = null;
     try {
-      if (editing) Object.assign(command, checkCommand(body, command));
+      if (editing) fields = checkCommand(body, command);
     } catch (error) {
       throw new HttpError(400, error.message);
     }
+    if (fields) Object.assign(command, checkMembers(fields, command.projectPath));
     savePos(command, body.pos);
     commands.update(command, {});
     broadcast("commands", {});
@@ -107,6 +124,11 @@ export function createCommandService({ commands, chain, links, store, projects, 
   async function run(id) {
     const command = getCommand(id);
     if (commandKind(command) === "markdown") throw new HttpError(400, "MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
+    if (commandKind(command) === "group") {
+      const result = await chain.fireGroup(command);
+      if (result.busy.length) throw new HttpError(409, `아직 진행 중인 세션이 있어 넘길 수 없습니다: ${result.busy.map((s) => s.title).join(", ")}`);
+      return command;
+    }
     if (chain.runs.has(id)) throw new HttpError(409, "이미 실행 중입니다.");
     const origin = links.list().filter((link) => link.to === id).map((link) => store.get(link.from)).find(Boolean) ?? null;
     const pending = chain.runCommand(command, { origin, depth: 0 });

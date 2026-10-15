@@ -37,21 +37,26 @@ function line(e) {
   }
 }
 
-// session: 바꾸기 전 세션(이전 agent·model), files: 기준 커밋 이후 바뀐 파일(git status 형식)
-// importedFrom: 내보낸 기록 문서에서 가져온 세션이면 그 문서 이름
-export function handoverText(session, files = "", { previousCwd, previousBranch, importedFrom } = {}) {
-  const parts = session.events.map(line).filter(Boolean);
+// 기록을 예산 안의 글 덩어리 목록으로 줄인다. 첫 요청(작업의 목표)은 꼭 남기고, 나머지는 최근 것부터 채운다.
+export function recordDigest(events, budget = BUDGET) {
+  const parts = (events ?? []).map(line).filter(Boolean);
   const firstUser = parts.findIndex((p) => p.startsWith("[사용자"));
-  // 첫 요청(작업의 목표)은 꼭 남기고, 나머지는 최근 것부터 예산 안에서 채운다.
   const head = firstUser >= 0 ? [parts[firstUser]] : [];
   const tail = [];
   let used = head.join("\n\n").length;
   for (let i = parts.length - 1; i > firstUser; i--) {
-    if (used + parts[i].length > BUDGET) break;
+    if (used + parts[i].length > budget) break;
     tail.unshift(parts[i]);
     used += parts[i].length + 2;
   }
   const skipped = parts.length - head.length - tail.length;
+  return [...head, ...(skipped > 0 && tail.length ? [`(… 중간 기록 ${skipped}건 생략)`] : []), ...tail];
+}
+
+// session: 바꾸기 전 세션(이전 agent·model), files: 기준 커밋 이후 바뀐 파일(git status 형식)
+// importedFrom: 내보낸 기록 문서에서 가져온 세션이면 그 문서 이름
+export function handoverText(session, files = "", { previousCwd, previousBranch, importedFrom } = {}) {
+  const digest = recordDigest(session.events);
   const from = `${AGENT_NAME[session.agent] ?? session.agent}${session.model ? ` (${session.model})` : ""}`;
   const branch = session.worktree ? ` (브랜치 ${session.worktree.branch})` : "";
   if (importedFrom) return [
@@ -60,9 +65,7 @@ export function handoverText(session, files = "", { previousCwd, previousBranch,
     `작업 폴더: ${session.cwd}${branch}`,
     "",
     "--- 가져온 기록 ---",
-    ...head,
-    ...(skipped > 0 && tail.length ? [`(… 중간 기록 ${skipped}건 생략)`] : []),
-    ...tail,
+    ...digest,
     "--- 기록 끝 ---",
     "기록에서 끝나지 않은 일이 있으면 이어서 하고, 다 끝났으면 다음 요청을 따른다.",
   ].join("\n\n").replace(/\n{3,}/g, "\n\n");
@@ -80,9 +83,7 @@ export function handoverText(session, files = "", { previousCwd, previousBranch,
     files.replace(/\s+$/, "").replace(/^\n+/, "") || "(없음)", // git status의 앞 칸은 상태 표시라 남긴다.
     "",
     "--- 지금까지의 기록 ---",
-    ...head,
-    ...(skipped > 0 && tail.length ? [`(… 중간 기록 ${skipped}건 생략)`] : []),
-    ...tail,
+    ...digest,
     "--- 기록 끝 ---",
     "기록에서 끝나지 않은 일이 있으면 이어서 하고, 다 끝났으면 다음 요청을 따른다.",
   ].join("\n\n").replace(/\n{3,}/g, "\n\n");
