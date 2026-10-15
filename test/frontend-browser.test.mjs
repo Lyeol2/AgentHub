@@ -67,6 +67,14 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
   const session = (id, title, agent = "codex") => ({ id, title, agent, projectPath: project.path, projectName: project.name, cwd: project.path, state: "idle", createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", baseCommit: "a".repeat(40), skills: [], events: id === "s1" ? [{ seq: 0, kind: "text", text: "Hello **world**" }] : [], graphPos: { x: id === "s1" ? 20 : 360, y: 20 }, queue: [] });
   const sessions = [session("s1", "First"), session("s2", "Second", "claude")];
   const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: null, autoPath: null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
+  const setup = {
+    winget: { id: "winget", label: "Windows 패키지 관리자 (winget)", path: null, version: null, installable: true,
+      manual: { links: [{ label: "Microsoft 공식 설치 안내", url: "https://learn.microsoft.com/windows/package-manager/winget/" }], command: "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe", note: "PowerShell에서 직접 설치할 수 있습니다." } },
+    tools: [{ id: "codex", label: "Codex", path: "C:/fixture/codex.cmd", version: null, loggedIn: true, installable: true,
+      manual: { links: [{ label: "Codex 공식 설치 안내", url: "https://developers.openai.com/codex/cli/" }], command: "npm install -g @openai/codex", note: "Node.js를 설치한 뒤 실행하세요." } }],
+    jobs: { codex: { kind: "install", state: "error", log: "Fixture install failed" } },
+  };
+  const emit = (type, payload) => { for (const stream of streams) stream.write("event: " + type + "\ndata: " + JSON.stringify(payload) + "\n\n"); };
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
@@ -74,7 +82,7 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : undefined;
       requests.push({ method: req.method, path: url.pathname, search: url.search, body });
-      if (url.pathname === "/fixture/emit") { for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n"); res.end("{}"); return; }
+      if (url.pathname === "/fixture/emit") { emit(body.type, body.payload ?? {}); res.end("{}"); return; }
       let value;
       if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
       else if (url.pathname === "/api/sessions") value = sessions;
@@ -90,7 +98,15 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
       else if (url.pathname === "/api/hub") value = { exists: false, roles: [] };
       else if (url.pathname === "/api/limits") value = { claude: { windows: [] }, codex: { windows: [] } };
       else if (url.pathname === "/api/auth") value = { claude: false, codex: false };
-      else if (url.pathname === "/api/setup") value = { tools: [{ id: "codex", label: "Codex", path: "C:/fixture/codex.cmd", version: null, loggedIn: true }], jobs: {} };
+      else if (url.pathname === "/api/setup") value = setup;
+      else if (url.pathname === "/api/setup/winget/install" && req.method === "POST") {
+        setup.jobs.winget = { kind: "install", state: "running", log: "Fixture preparation only" };
+        emit("setup", setup.jobs); value = setup.jobs.winget;
+      }
+      else if (url.pathname === "/api/setup/winget/cancel" && req.method === "POST") {
+        setup.jobs.winget = { ...setup.jobs.winget, state: "canceled" };
+        emit("setup", setup.jobs); value = { canceled: true };
+      }
       else if (url.pathname === "/api/update") value = { current: "0.2.0", desktop: false };
       else if (url.pathname === "/api/git") value = { branch: "main", files: [], moreFiles: 0, stagedCount: 0, unstagedCount: 0, branches: [{ name: "main", current: true }], commits: [{ hash: "a".repeat(40), short: "aaaaaaa", subject: "Fixture", author: "test", date: "2026-10-01T00:00:00Z", parents: [], refs: ["main"] }] };
       else if (url.pathname.startsWith("/api/")) throw Error("Unexpected fixture request " + req.method + " " + req.url);
@@ -107,6 +123,7 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
     const report = await runBrowser(temp, "http://127.0.0.1:" + server.address().port);
     assert.ok(report?.checks.length >= 20); assert.deepEqual(report.errors, []);
     for (const endpoint of ["status", "auth", "setup"]) assert.ok(requests.some((request) => request.path === `/api/${endpoint}` && request.search === "?fresh=1"), `${endpoint} must bypass cached detection on recheck`);
+    assert.deepEqual(requests.filter((request) => request.method === "POST" && request.path.startsWith("/api/setup/")).map((request) => request.path), ["/api/setup/winget/install", "/api/setup/winget/cancel"], "winget buttons must reach only fixture install and cancel handlers");
     assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"), "Verification must not start an agent or command");
   } finally {
     for (const stream of streams) stream.end();

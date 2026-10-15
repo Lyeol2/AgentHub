@@ -51,8 +51,27 @@
     check($("project-list").children.length === 1, "settings view");
     $("settings-dialog").close();
     $("open-setup").click();
-    await until(() => $("setup-dialog").open && $("setup-list").children.length === 1);
+    await until(() => $("setup-dialog").open && $("setup-list").children.length === 2);
     check($("setup-list").textContent.includes("실행 확인 실패") && $("setup-list").textContent.includes("C:/fixture/codex.cmd") && !$("setup-list").textContent.includes("로그인됨"), "CLI execution failure shows its selected path without healthy login status");
+    const setupCard = (label) => [...$("setup-list").children].find((item) => item.querySelector("b")?.textContent === label);
+    const manualDetails = (item) => [...item.querySelectorAll("details")].find((details) => details.querySelector("summary")?.textContent === "수동 설치");
+    const wingetCard = () => setupCard("Windows 패키지 관리자 (winget)");
+    check(wingetCard() && !wingetCard().textContent.includes("로그인"), "winget has its own setup card without login actions");
+    check([...wingetCard().querySelectorAll("button")].some((button) => button.textContent === "설치·복구"), "winget offers automatic installation and repair");
+    const codexManual = manualDetails(setupCard("Codex"));
+    check(codexManual.open && codexManual.textContent.includes("자동 설치에 실패했습니다"), "failed automatic installation expands manual recovery instructions");
+    check(codexManual.textContent.includes("상단의 ‘다시 확인’"), "manual installation explains how to refresh CLI detection");
+    for (const [card, expectedUrl] of [[wingetCard(), "https://learn.microsoft.com/windows/package-manager/winget/"], [setupCard("Codex"), "https://developers.openai.com/codex/cli/"]]) {
+      const manual = manualDetails(card), link = manual.querySelector("a");
+      check(link.href === expectedUrl && link.target === "_blank" && link.rel.includes("noopener"), "manual installation keeps its official link in a safe new tab: " + expectedUrl);
+      check([...manual.querySelectorAll("button")].some((button) => button.textContent === "명령 복사") && manual.querySelector("pre").textContent.length > 0, "manual installation includes a command and copy button: " + card.querySelector("b").textContent);
+    }
+    [...wingetCard().querySelectorAll("button")].find((button) => button.textContent === "설치·복구").click();
+    await until(() => wingetCard().querySelector(".setup-job.running"));
+    check([...wingetCard().querySelectorAll("button")].find((button) => button.textContent === "설치·복구").disabled, "winget fixture installation disables repeated starts");
+    [...wingetCard().querySelectorAll("button")].find((button) => button.textContent === "취소").click();
+    await until(() => wingetCard().querySelector(".setup-job.canceled"));
+    check(true, "winget cancellation updates its job through the setup event stream");
     $("setup-refresh").click();
     check($("setup-refresh").disabled, "CLI recheck prevents duplicate requests");
     await until(() => !$("setup-refresh").disabled);
