@@ -163,7 +163,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .session-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item .sub { font-size: 11.5px; color: var(--faint); padding-left: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sidebar-foot { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
-.cli-status { display: grid; gap: 3px; padding: 0 10px; font-size: 11.5px; color: var(--muted); }
+.cli-status { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
 .cli-status div { display: flex; gap: 7px; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
 /* ── 공통 요소 ────────────────────────────────────────────── */
@@ -530,8 +530,8 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 }
 
 /* ── 화면 테마 선택 ───────────────────────────────────────── */
-.theme-switch { display: flex; gap: 2px; margin: 0 10px 2px; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
-.theme-switch button { flex: 1; border: 0; background: transparent; color: var(--muted); padding: 3px 0; font-size: 11.5px; border-radius: 5px; }
+.theme-switch { display: flex; gap: 2px; width: 240px; padding: 2px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); }
+.theme-switch button { flex: 1; border: 0; background: transparent; color: var(--muted); padding: 4px 0; font-size: 12.5px; border-radius: 5px; }
 .theme-switch button:hover:not(:disabled) { background: var(--hover); color: var(--text); }
 .theme-switch button.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
 

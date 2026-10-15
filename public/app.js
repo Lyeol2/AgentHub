@@ -157,7 +157,7 @@ async function loadAuth(fresh = false) {
   renderCliStatus();
 }
 
-// 사이드바의 CLI 상태. 없으면 "설치", 로그인이 안 됐으면 "로그인" 버튼을 보이고, 누르면 설치·로그인 창에서 진행한다.
+// 설정 창의 CLI 상태. 없으면 "설치", 로그인이 안 됐으면 "로그인" 버튼을 보이고, 누르면 설치·로그인 창에서 진행한다.
 function renderCliStatus() {
   if (!state.status) return;
   const rows = Object.entries(state.status.agents).map(([name, info]) => ({
@@ -172,7 +172,7 @@ function renderCliStatus() {
     return el("div", { title: r.path ?? "CLI를 찾지 못했습니다" },
       el("span", { class: `dot ${busy ? "running" : !r.path || r.loggedIn === false ? "error" : "ok"}` }),
       el("span", { class: "cli-text" }, `${r.label} ${busy ? (job.kind === "install" ? "설치 중…" : "로그인 중…") : r.path ? r.version ?? "버전 확인 실패" : "없음"}`),
-      action ? el("button", { class: "login-btn", onclick: () => openSetup(r.id, action), title: "앱 안에서 설치·로그인을 진행합니다" },
+      action ? el("button", { type: "button", class: "login-btn", onclick: () => openSetup(r.id, action), title: "앱 안에서 설치·로그인을 진행합니다" },
         action === "install" ? "설치" : "로그인 필요") : null);
   }));
 }

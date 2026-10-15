@@ -43,18 +43,12 @@
     </div>
 
     <footer class="sidebar-foot">
-      <div id="cli-status" class="cli-status"></div>
       <div id="limit-mini" class="limit-mini"></div>
       <div id="update-box" class="update-box"></div>
       <button id="open-settings" class="nav-item">
         <svg viewBox="0 0 24 24"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
         설정
       </button>
-      <div class="theme-switch" id="theme-switch" role="radiogroup" aria-label="화면 테마">
-        <button type="button" data-theme-pref="dark" role="radio">다크</button>
-        <button type="button" data-theme-pref="light" role="radio">라이트</button>
-        <button type="button" data-theme-pref="system" role="radio" title="Windows 설정을 따릅니다">시스템</button>
-      </div>
     </footer>
   </aside>
 
@@ -325,6 +319,14 @@
   <dialog id="settings-dialog">
     <form method="dialog" class="dialog-form" id="settings-form">
       <h3>설정</h3>
+      <h4>화면 테마</h4>
+      <div class="theme-switch" id="theme-switch" role="radiogroup" aria-label="화면 테마">
+        <button type="button" data-theme-pref="dark" role="radio">다크</button>
+        <button type="button" data-theme-pref="light" role="radio">라이트</button>
+        <button type="button" data-theme-pref="system" role="radio" title="Windows 설정을 따릅니다">시스템</button>
+      </div>
+      <h4>CLI 버전</h4>
+      <div id="cli-status" class="cli-status"></div>
       <h4>프로젝트</h4>
       <ul id="project-list" class="project-list"></ul>
       <div class="row">
