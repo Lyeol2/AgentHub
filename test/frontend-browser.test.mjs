@@ -73,7 +73,7 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
       if (url.pathname === "/api/stream") { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.write(": ready\n\n"); streams.add(res); req.on("close", () => streams.delete(res)); return; }
       const chunks = []; for await (const chunk of req) chunks.push(chunk);
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : undefined;
-      requests.push({ method: req.method, path: url.pathname, body });
+      requests.push({ method: req.method, path: url.pathname, search: url.search, body });
       if (url.pathname === "/fixture/emit") { for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n"); res.end("{}"); return; }
       let value;
       if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
@@ -90,7 +90,7 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
       else if (url.pathname === "/api/hub") value = { exists: false, roles: [] };
       else if (url.pathname === "/api/limits") value = { claude: { windows: [] }, codex: { windows: [] } };
       else if (url.pathname === "/api/auth") value = { claude: false, codex: false };
-      else if (url.pathname === "/api/setup") value = { tools: [], jobs: {} };
+      else if (url.pathname === "/api/setup") value = { tools: [{ id: "codex", label: "Codex", path: "C:/fixture/codex.cmd", version: null, loggedIn: true }], jobs: {} };
       else if (url.pathname === "/api/update") value = { current: "0.2.0", desktop: false };
       else if (url.pathname === "/api/git") value = { branch: "main", files: [], moreFiles: 0, stagedCount: 0, unstagedCount: 0, branches: [{ name: "main", current: true }], commits: [{ hash: "a".repeat(40), short: "aaaaaaa", subject: "Fixture", author: "test", date: "2026-10-01T00:00:00Z", parents: [], refs: ["main"] }] };
       else if (url.pathname.startsWith("/api/")) throw Error("Unexpected fixture request " + req.method + " " + req.url);
@@ -106,6 +106,7 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
   try {
     const report = await runBrowser(temp, "http://127.0.0.1:" + server.address().port);
     assert.ok(report?.checks.length >= 20); assert.deepEqual(report.errors, []);
+    for (const endpoint of ["status", "auth", "setup"]) assert.ok(requests.some((request) => request.path === `/api/${endpoint}` && request.search === "?fresh=1"), `${endpoint} must bypass cached detection on recheck`);
     assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"), "Verification must not start an agent or command");
   } finally {
     for (const stream of streams) stream.end();

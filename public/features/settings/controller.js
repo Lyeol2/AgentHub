@@ -23,8 +23,8 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
   const renderThemeSwitch = () => view.renderThemeSwitch();
 
   // ── CLI 상태 ────────────────────────────────────────────────────
-  async function loadStatus() {
-    data.status = await api("GET", "/api/status");
+  async function loadStatus(fresh = false) {
+    data.status = await api("GET", `/api/status${fresh === true ? "?fresh=1" : ""}`);
     renderLinkConditions();
     renderCliStatus();
     renderProjectNav();
@@ -34,7 +34,8 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
   async function loadAuth(fresh = false) {
     try {
       cache.auth = await api("GET", `/api/auth${fresh ? "?fresh=1" : ""}`);
-    } catch {
+    } catch (err) {
+      if (fresh === true) throw err;
       return;
     }
     renderCliStatus();
@@ -44,10 +45,11 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
 
   // ── CLI 설치·로그인 ─────────────────────────────────────────────
 
-  async function loadSetup() {
+  async function loadSetup(fresh = false) {
     try {
-      cache.setup = await api("GET", "/api/setup");
-    } catch {
+      cache.setup = await api("GET", `/api/setup${fresh === true ? "?fresh=1" : ""}`);
+    } catch (err) {
+      if (fresh === true) throw err;
       return;
     }
     renderCliStatus();
@@ -74,8 +76,14 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
 
   $("setup-refresh").addEventListener("click", async () => {
     $("setup-refresh").disabled = true;
-    await Promise.all([loadStatus(), loadAuth(true), loadSetup()]);
-    $("setup-refresh").disabled = false;
+    try {
+      await loadStatus(true);
+      await Promise.all([loadAuth(true), loadSetup(true)]);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      $("setup-refresh").disabled = false;
+    }
   });
   $("cli-status").addEventListener("click", (e) => {
     if (!e.target.closest("button")) openSetup();
@@ -185,7 +193,8 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
       for (const agent of ["claude", "codex"]) cli[agent] = cliManual[agent] ? $(`cli-${agent}`).value : "";
       await api("PUT", "/api/settings", { cli });
       $("settings-dialog").close();
-      await loadStatus();
+      await loadStatus(true);
+      await Promise.all([loadAuth(true), loadSetup(true)]);
     } catch (err) {
       $("settings-error").textContent = err.message;
     }

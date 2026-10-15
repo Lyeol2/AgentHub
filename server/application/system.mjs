@@ -1,6 +1,5 @@
-import fs from "node:fs";
 import { AGENTS } from "../runner.mjs";
-import { locateCli, cliVersion, cliAuth, openLogin } from "../cli.mjs";
+import { locateCli, cliVersion, cliAuth, openLogin, refreshPath, normalizeCliPath, isCliFile } from "../cli.mjs";
 import { CONDITION_LABELS } from "../chain.mjs";
 import { TOOLS } from "../setup.mjs";
 import { HttpError } from "./errors.mjs";
@@ -17,7 +16,8 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
     };
   }
 
-  async function status() {
+  async function status(fresh = false) {
+    if (fresh) refreshPath();
     const paths = cliPaths();
     const [claudeVersion, codexVersion] = await Promise.all([cliVersion(paths.claude), cliVersion(paths.codex)]);
     return {
@@ -32,6 +32,7 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
   }
 
   async function auth(fresh) {
+    if (fresh) refreshPath();
     const paths = cliPaths();
     const [claude, codex] = await Promise.all([
       cliAuth("claude", paths.claude, { fresh }),
@@ -82,14 +83,17 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
   }
 
   function settings(body) {
+    const next = {};
     for (const agent of ["claude", "codex"]) {
-      const value = (body.cli?.[agent] ?? "").trim();
-      if (value && !fs.existsSync(value)) throw new HttpError(400, agent + " 경로가 없습니다: " + value);
-      config.cli[agent] = value;
+      const value = normalizeCliPath(body.cli?.[agent] ?? "");
+      if (value && !isCliFile(value)) throw new HttpError(400, agent + " CLI 실행 파일을 선택하세요. 폴더나 바로가기 대신 .exe, .cmd, .bat 등의 실행 파일 경로가 필요합니다: " + value);
+      next[agent] = value;
     }
+    Object.assign(config.cli, next);
+    refreshPath();
     saveConfig(config);
     return { ok: true };
   }
 
-  return { status, auth, login, setupStatus: () => setup.status(), setupAction, limits: usageLimits, updateState, update, settings };
+  return { status, auth, login, setupStatus: (fresh = false) => setup.status({ fresh }), setupAction, limits: usageLimits, updateState, update, settings };
 }

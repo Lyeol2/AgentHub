@@ -21,9 +21,14 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
     $("cli-status").replaceChildren(...rows.map((r) => {
       const job = setup?.jobs?.[r.id];
       const busy = job?.state === "running";
-      const action = busy ? null : !r.path ? "install" : r.loggedIn === false ? "login" : null;
-      return el("div", { title: r.path ?? "CLI를 찾지 못했습니다" },
-        el("span", { class: `dot ${busy ? "running" : !r.path || r.loggedIn === false ? "error" : "ok"}` }),
+      const action = busy ? null : !r.path ? "install" : r.version && r.loggedIn === false ? "login" : null;
+      const health = !r.path || !r.version || r.loggedIn === false ? "error" : r.loggedIn === true ? "ok" : "";
+      const note = !r.path ? "CLI를 찾지 못했습니다. 설치했으면 설정에서 실행 파일 경로를 직접 지정하세요."
+        : !r.version ? "실행 파일은 찾았지만 버전을 확인하지 못했습니다. 설정에서 경로를 확인한 뒤 다시 확인하세요."
+        : r.loggedIn === null ? "로그인 상태를 확인하지 못했습니다. 설치·로그인 창에서 다시 확인하세요."
+        : r.loggedIn === false ? "로그인이 필요합니다." : r.loggedIn === true ? "로그인됨" : "로그인 확인 중…";
+      return el("div", { title: [r.path, note].filter(Boolean).join("\n") },
+        el("span", { class: `dot ${busy ? "running" : health}` }),
         el("span", { class: "cli-text" }, `${r.label} ${busy ? (job.kind === "install" ? "설치 중…" : "로그인 중…") : r.path ? r.version ?? "버전 확인 실패" : "없음"}`),
         action ? el("button", { type: "button", class: "login-btn", onclick: () => openSetup(r.id, action), title: "앱 안에서 설치·로그인을 진행합니다" },
           action === "install" ? "설치" : "로그인 필요") : null);
@@ -35,17 +40,20 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
     $("setup-list").replaceChildren(...tools.map((t) => {
       const job = setup.jobs?.[t.id];
       const running = job?.state === "running";
-      const status = !t.path ? "설치 안 됨"
-        : `${t.version ?? "버전 확인 실패"} · ${t.loggedIn === true ? "로그인됨" : t.loggedIn === false ? "로그인 필요" : "로그인 확인 실패"}`;
-      const ok = t.path && t.loggedIn === true;
+      const status = !t.path ? "실행 파일을 찾지 못함" : !t.version ? "실행 확인 실패"
+        : `${t.version} · ${t.loggedIn === true ? "로그인됨" : t.loggedIn === false ? "로그인 필요" : "로그인 확인 실패"}`;
+      const ok = t.path && t.version && t.loggedIn === true;
       const item = el("div", { class: `setup-item${ok ? " ok" : ""}` },
         el("div", { class: "setup-head" },
           el("b", {}, t.label),
           el("span", { class: `pill ${ok ? "setup-ok" : "setup-need"}` }, status),
           el("span", { class: "spacer" }),
           !t.path && t.installable ? el("button", { type: "button", class: "primary sm", onclick: () => setupAction(t.id, "install"), ...(running ? { disabled: "" } : {}) }, "설치") : null,
-          t.path ? el("button", { type: "button", class: `${t.loggedIn ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "login"), ...(running ? { disabled: "" } : {}) }, t.loggedIn ? "다시 로그인" : "로그인") : null),
-        !t.path && !t.installable ? el("p", { class: "hint" }, "winget이 없어 자동으로 설치할 수 없습니다. 직접 설치한 뒤 다시 확인하세요.") : null);
+          t.path && t.version ? el("button", { type: "button", class: `${t.loggedIn ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "login"), ...(running ? { disabled: "" } : {}) }, t.loggedIn ? "다시 로그인" : "로그인") : null),
+        t.path ? el("p", { class: "hint mono" }, t.path) : null,
+        !t.path ? el("p", { class: "hint" }, `${!t.installable ? "자동으로 설치할 방법이 없습니다. " : ""}이미 설치했다면 설정에서 CLI 실행 파일 경로를 직접 지정한 뒤 다시 확인하세요.`) : null,
+        t.path && !t.version ? el("p", { class: "hint" }, "이 경로의 CLI를 실행하지 못했습니다. 설정에서 실행 파일 경로를 확인하고, 터미널에서 해당 CLI의 --version이 실행되는지 확인하세요.") : null,
+        t.path && t.version && t.loggedIn === null ? el("p", { class: "hint" }, "CLI는 실행되지만 로그인 상태를 확인하지 못했습니다. 다시 확인하거나 로그인 출력을 확인하세요.") : null);
       if (job) item.append(setupJob(t, job, running));
       return item;
     }));
@@ -240,8 +248,8 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
     } else {
       input.value = info.autoPath ?? "";
       input.placeholder = "찾지 못했습니다 · 직접 지정하세요";
-      note.textContent = info.autoPath ? `자동으로 찾음${info.version ? ` · ${info.version}` : ""}` : "CLI를 찾지 못했습니다. 설치했다면 직접 지정하세요.";
-      note.className = `cli-note ${info.autoPath ? "ok" : "missing"}`;
+      note.textContent = info.autoPath ? info.version ? `자동으로 찾음 · ${info.version}` : "실행 파일은 찾았지만 실행을 확인하지 못했습니다. 경로를 확인한 뒤 다시 확인하세요." : "CLI를 찾지 못했습니다. 설치했다면 실행 파일 경로를 직접 지정한 뒤 다시 확인하세요.";
+      note.className = `cli-note ${info.autoPath && info.version ? "ok" : "missing"}`;
     }
   }
 

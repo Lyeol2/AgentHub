@@ -50,6 +50,14 @@
     await until(() => $("settings-dialog").open);
     check($("project-list").children.length === 1, "settings view");
     $("settings-dialog").close();
+    $("open-setup").click();
+    await until(() => $("setup-dialog").open && $("setup-list").children.length === 1);
+    check($("setup-list").textContent.includes("실행 확인 실패") && $("setup-list").textContent.includes("C:/fixture/codex.cmd") && !$("setup-list").textContent.includes("로그인됨"), "CLI execution failure shows its selected path without healthy login status");
+    $("setup-refresh").click();
+    check($("setup-refresh").disabled, "CLI recheck prevents duplicate requests");
+    await until(() => !$("setup-refresh").disabled);
+    check(true, "CLI recheck completes and restores its button");
+    $("setup-dialog").close();
     $("session-list").querySelector("button").click();
     await until(() => !$("view-session").hidden && $("s-title").textContent === "First");
     check($("s-events").querySelector(".md")?.textContent.includes("Hello"), "session conversation rendering");

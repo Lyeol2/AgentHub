@@ -1,8 +1,8 @@
 // CLI 설치와 로그인(Claude Code, Codex, GitHub CLI). 앱 안에서 진행 상황을 보여 주고, 로그인 주소·코드를 꺼내 화면에 띄운다.
 // 설치는 winget으로 하고, winget이 없으면 각 CLI의 다른 공식 설치 방법을 쓴다.
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { locateCli, spawnCli, refreshPath, cliVersion, cliAuth, forgetAuth } from "./cli.mjs";
+import { locateCli, locateCommand, spawnCli, refreshPath, cliVersion, cliAuth, forgetAuth } from "./cli.mjs";
 
 const isWindows = process.platform === "win32";
 
@@ -24,31 +24,12 @@ export function parseLoginOutput(text) {
   return { url: urls[0] ?? null, code: clean.match(CODE_PATTERN)?.[0] ?? null, waitsForCode: /paste code/i.test(clean) };
 }
 
-let wingetPath;
 function findWinget() {
-  if (wingetPath !== undefined) return wingetPath;
-  wingetPath = null;
-  if (!isWindows) return null;
-  try {
-    wingetPath = execFileSync("where", ["winget"], { encoding: "utf8", windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] })
-      .split(/\r?\n/).find((l) => l.trim())?.trim() ?? null;
-  } catch {
-    // winget이 없는 Windows(오래된 버전 등)
-  }
-  return wingetPath;
+  return isWindows ? locateCommand("winget.exe") : null;
 }
 
-let npmPath;
 function findNpm() {
-  if (npmPath !== undefined) return npmPath;
-  npmPath = null;
-  try {
-    npmPath = execFileSync(isWindows ? "where" : "which", [isWindows ? "npm.cmd" : "npm"], { encoding: "utf8", windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] })
-      .split(/\r?\n/).find((l) => l.trim())?.trim() ?? null;
-  } catch {
-    // Node.js가 없음
-  }
-  return npmPath;
+  return locateCommand(isWindows ? "npm.cmd" : "npm");
 }
 
 // 설치 방법. winget을 먼저 쓰고, 없으면 각 CLI의 다른 공식 방법을 쓴다. 방법이 없으면 null.
@@ -78,10 +59,11 @@ export class Setup extends EventEmitter {
     this.jobs = new Map(); // tool → { kind, state, log, url, code, waitsForCode, child }
   }
 
-  async status() {
+  async status({ fresh = false } = {}) {
+    if (fresh) refreshPath();
     const tools = await Promise.all(Object.entries(TOOLS).map(async ([id, t]) => {
       const file = this.cliPath(id);
-      const [version, loggedIn] = await Promise.all([cliVersion(file), cliAuth(id, file)]);
+      const [version, loggedIn] = await Promise.all([cliVersion(file, { fresh }), cliAuth(id, file, { fresh })]);
       return { id, label: t.label, path: file, version, loggedIn, installable: !!installPlan(id) || !!file };
     }));
     return { tools, jobs: this.jobList() };

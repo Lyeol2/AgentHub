@@ -10,48 +10,78 @@ const HOME = os.homedir();
 const APPDATA = process.env.APPDATA || path.join(HOME, "AppData", "Roaming");
 const LOCALAPPDATA = process.env.LOCALAPPDATA || path.join(HOME, "AppData", "Local");
 
-// 앱을 켠 뒤에 CLI를 설치하면 프로세스의 PATH에는 반영되지 않으므로 레지스트리의 PATH도 읽는다.
+// 앱 실행 후 설치한 CLI와 npm shim이 쓰는 Node도 같은 최신 PATH에서 찾는다.
 let registryPath = null;
+let registryAt = 0;
+const PATH_TTL = 30_000;
+const envValue = (env, name) => Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+const fallbackEnv = { USERPROFILE: HOME, HOME, APPDATA, LOCALAPPDATA };
+const systemFile = (name) => path.join(envValue(process.env, "SystemRoot") || "C:\\Windows", "System32", name);
+
+export function normalizeCliPath(value) {
+  let result = String(value ?? "").trim();
+  if (result.startsWith('"') && result.endsWith('"')) result = result.slice(1, -1).trim();
+  result = result.replace(/%([^%]+)%/g, (match, name) => envValue(process.env, name) ?? envValue(fallbackEnv, name) ?? match);
+  if (/^~(?:[\\/]|$)/.test(result)) result = HOME + result.slice(1);
+  return result;
+}
+
+export function isCliFile(file) {
+  if (!file || (isWindows && !/\.(exe|com|cmd|bat)$/i.test(file))) return false;
+  try { return fs.statSync(file).isFile(); } catch { return false; }
+}
+
 function registryPathDirs() {
   if (!isWindows) return [];
-  if (registryPath === null) {
+  if (registryPath === null || Date.now() - registryAt >= PATH_TTL) {
     registryPath = [];
+    registryAt = Date.now();
+    const reg = systemFile("reg.exe");
     for (const key of ["HKCU\\Environment", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"]) {
       try {
-        const out = execFileSync("reg", ["query", key, "/v", "Path"], { encoding: "utf8", windowsHide: true, timeout: 5000 });
+        const out = execFileSync(reg, ["query", key, "/v", "Path"], { encoding: "utf8", windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
         const value = out.match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.*)/i)?.[1] ?? "";
-        const expanded = value.replace(/%([^%]+)%/g, (m, name) => process.env[name] ?? m);
-        registryPath.push(...expanded.split(";").map((d) => d.trim()).filter(Boolean));
+        registryPath.push(...value.split(";").map(normalizeCliPath).filter(Boolean));
       } catch {
-        // 키가 없거나 reg를 실행할 수 없으면 건너뛴다.
+        // 키가 없거나 reg를 실행할 수 없으면 알려진 설치 폴더도 찾는다.
       }
     }
   }
   return registryPath;
 }
 
+function pathDirs(env = process.env) {
+  const entries = [
+    ...(envValue(env, "PATH") ?? "").split(path.delimiter),
+    ...registryPathDirs(),
+    ...(isWindows ? [path.join(APPDATA, "npm"), path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs"), path.join(LOCALAPPDATA, "Programs", "nodejs")] : []),
+    envValue(env, "NPM_CONFIG_PREFIX"),
+  ];
+  const seen = new Set();
+  return entries.filter(Boolean).map(normalizeCliPath).filter((dir) => {
+    const key = isWindows ? dir.toLowerCase() : dir;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function findIn(dirs, names) {
   for (const dir of dirs) {
     for (const name of names) {
       const candidate = path.join(dir, name);
-      try {
-        if (fs.statSync(candidate).isFile()) return candidate;
-      } catch {
-        // 없는 경로
-      }
+      if (isCliFile(candidate)) return candidate;
     }
   }
   return null;
 }
 
+export function locateCommand(names, extraDirs = []) {
+  return findIn([...pathDirs(), ...extraDirs], Array.isArray(names) ? names : [names]);
+}
+
 function findOnPath(names, extraDirs = []) {
-  const dirs = [
-    ...(process.env.PATH ?? "").split(path.delimiter).filter(Boolean),
-    ...registryPathDirs(),
-    ...(isWindows ? [path.join(APPDATA, "npm")] : []),
-    ...extraDirs,
-  ];
-  return findIn(dirs, names);
+  return locateCommand(names, extraDirs);
 }
 
 // Claude 데스크톱 앱이 내려받은 Claude Code 실행 파일 중 가장 최근 것.
@@ -73,14 +103,15 @@ function desktopClaudeDirs() {
 function findDesktopClaude() {
   if (!isWindows) return null;
   const found = [];
+  const directories = (dir) => {
+    try { return fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name)); }
+    catch { return []; } // 자동 업데이트·삭제 중이거나 접근할 수 없는 버전은 건너뛴다.
+  };
   for (const base of desktopClaudeDirs()) {
-    if (!fs.existsSync(base)) continue;
-    for (const version of fs.readdirSync(base)) {
-      const versionDir = path.join(base, version);
-      if (!fs.statSync(versionDir).isDirectory()) continue;
-      for (const build of fs.readdirSync(versionDir)) {
-        const exe = path.join(versionDir, build, "claude.exe");
-        if (fs.existsSync(exe)) found.push({ exe, mtime: fs.statSync(exe).mtimeMs });
+    for (const versionDir of directories(base)) {
+      for (const build of directories(versionDir)) {
+        const exe = path.join(build, "claude.exe");
+        try { if (fs.statSync(exe).isFile()) found.push({ exe, mtime: fs.statSync(exe).mtimeMs }); } catch {}
       }
     }
   }
@@ -100,10 +131,15 @@ const EXTRA_DIRS = {
 // 앱을 켠 뒤 설치한 CLI도 찾도록 레지스트리 PATH를 다시 읽게 한다.
 export function refreshPath() {
   registryPath = null;
+  versionCache.clear();
+  authCache.clear();
 }
 
 export function locateCli(agent, override) {
-  if (override) return fs.existsSync(override) ? override : null;
+  if (override) {
+    const file = normalizeCliPath(override);
+    return isCliFile(file) ? file : null;
+  }
   if (agent === "claude") {
     const names = isWindows ? ["claude.exe", "claude.cmd"] : ["claude"];
     return findOnPath(names, EXTRA_DIRS.claude) ?? findDesktopClaude();
@@ -123,10 +159,16 @@ function quoteForCmd(arg) {
 
 // Windows의 .cmd 셸 스크립트는 cmd.exe를 거쳐야 실행된다.
 // 사용자 입력(프롬프트)은 항상 stdin으로 넘기므로 인자에는 검증된 값만 들어간다.
-export function spawnCli(file, args, options) {
+export function spawnCli(file, args, options = {}) {
+  // 레지스트리에서 발견한 .cmd도 새 Node 설치 경로를 물려받아야 실행된다.
+  const env = { ...(options.env ?? process.env) };
+  const dirs = pathDirs(env);
+  for (const key of Object.keys(env)) if (key.toLowerCase() === "path") delete env[key];
+  env.PATH = dirs.join(path.delimiter);
+  options = { ...options, env };
   if (isWindows && /\.(cmd|bat)$/i.test(file)) {
     const line = [file, ...args].map(quoteForCmd).join(" ");
-    return spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"${line}"`], {
+    return spawn(envValue(process.env, "ComSpec") || systemFile("cmd.exe"), ["/d", "/s", "/c", `"${line}"`], {
       ...options,
       windowsVerbatimArguments: true,
     });
@@ -135,84 +177,99 @@ export function spawnCli(file, args, options) {
 }
 
 const versionCache = new Map();
+const authCache = new Map();
+const PROBE_TTL = 60_000;
+const PROBE_TIMEOUT = 15_000;
 
-// CLI를 실행해 버전을 확인하는 데 몇 초 걸리므로 파일과 수정 시각 기준으로 캐시한다.
-export function cliVersion(file) {
-  if (!file) return Promise.resolve(null);
-  const key = `${file}:${fs.statSync(file).mtimeMs}`;
-  if (!versionCache.has(key)) versionCache.set(key, readVersion(file));
-  return versionCache.get(key);
+function fileKey(file) {
+  if (!isCliFile(file)) return null;
+  try { const stat = fs.statSync(file); return file + ":" + stat.mtimeMs + ":" + stat.size; }
+  catch { return null; }
 }
 
-function readVersion(file) {
+// 실행 실패·시간 초과는 저장하지 않는다. npm shim은 그대로인 채 본체만 업데이트될 수 있어 성공도 잠시만 캐시한다.
+function cachedProbe(cache, key, fresh, read) {
+  if (!key) return Promise.resolve(null);
+  const cached = cache.get(key);
+  if (!fresh && cached && Date.now() - cached.at < PROBE_TTL) return cached.promise;
+  const entry = { at: Date.now(), promise: null };
+  entry.promise = read().then((result) => {
+    if (result === null && cache.get(key) === entry) cache.delete(key);
+    return result;
+  });
+  cache.set(key, entry);
+  return entry.promise;
+}
+
+// 프로세스가 close를 보내지 못해도 정해진 시간 안에 확인을 마친다.
+function probe(file, args) {
   return new Promise((resolve) => {
-    if (!file) return resolve(null);
-    let out = "";
-    const child = spawnCli(file, ["--version"], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
-    child.stdout.on("data", (d) => (out += d));
-    child.on("error", () => resolve(null));
-    child.on("close", () => resolve(out.trim().split(/\r?\n/)[0] || null));
-    setTimeout(() => child.kill(), 15000);
+    let child, timer, output = "", stdout = "", stderr = "", done = false;
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve(code === null ? null : { code, output: output.trim(), stdout: stdout.trim(), stderr: stderr.trim() });
+    };
+    const stop = () => {
+      finish(null);
+      if (isWindows && child?.pid) spawn(systemFile("taskkill.exe"), ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
+      else child?.kill();
+    };
+    try {
+      child = spawnCli(file, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+      const add = (data) => { output = (output + data).slice(-64_000); };
+      child.stdout.on("data", (data) => { stdout = (stdout + data).slice(-64_000); add(data); });
+      child.stderr.on("data", (data) => { stderr = (stderr + data).slice(-64_000); add(data); });
+      child.on("error", () => finish(null));
+      child.on("close", (code) => finish(code));
+      timer = setTimeout(stop, PROBE_TIMEOUT);
+      timer.unref?.();
+    } catch { finish(null); }
   });
 }
 
-// ── 로그인 ──────────────────────────────────────────────────────
-// 로그인 여부는 CLI를 실행해야 알 수 있어 잠시 캐시한다. 결과: true | false | null(확인 실패)
-const AUTH_TTL = 60_000;
-const authCache = new Map();
-
-export function cliAuth(agent, file, { fresh = false } = {}) {
-  if (!file) return Promise.resolve(null);
-  const cached = authCache.get(file);
-  if (!fresh && cached && Date.now() - cached.at < AUTH_TTL) return cached.promise;
-  const promise = readAuth(agent, file);
-  authCache.set(file, { at: Date.now(), promise });
-  return promise;
+export function cliVersion(file, { fresh = false } = {}) {
+  return cachedProbe(versionCache, fileKey(file), fresh, async () => {
+    const result = await probe(file, ["--version"]);
+    if (result?.code !== 0) return null;
+    // 경고가 stderr에 먼저 나와도 그것을 CLI 버전으로 표시하지 않는다.
+    const lines = (result.stdout || result.stderr).replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "").split(/\r?\n/);
+    return lines.find((line) => !/^\s*(warning|error)\b/i.test(line) && /\bv?\d+\.\d+(?:\.\d+)?\b/.test(line))?.trim() ?? null;
+  });
 }
 
-// 설치·로그인이 끝나면 캐시를 비워 다음 확인 때 다시 묻는다.
+// 로그인 여부: true | false | null(실행·출력 확인 실패)
+export function cliAuth(agent, file, { fresh = false } = {}) {
+  const identity = fileKey(file);
+  return cachedProbe(authCache, identity && agent + ":" + identity, fresh, async () => {
+    const result = await probe(file, agent === "codex" ? ["login", "status"] : ["auth", "status"]);
+    if (!result) return null;
+    const out = result.output;
+    if (agent === "claude") {
+      try {
+        const loggedIn = JSON.parse(result.stdout || out).loggedIn;
+        return typeof loggedIn === "boolean" && (!loggedIn || result.code === 0) ? loggedIn : null;
+      } catch { return null; }
+    }
+    if (/not logged in(?:to)?/i.test(out)) return false;
+    return result.code === 0 && /logged in(?: to)?/i.test(out) ? true : null;
+  });
+}
+
+// 설치·로그인이 끝나면 다음 확인 때 다시 묻는다.
 export function forgetAuth() {
   authCache.clear();
-}
-
-function readAuth(agent, file) {
-  const args = agent === "codex" ? ["login", "status"] : ["auth", "status"];
-  return new Promise((resolve) => {
-    let out = "";
-    const child = spawnCli(file, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (out += d));
-    const timer = setTimeout(() => child.kill(), 15000);
-    child.on("error", () => {
-      clearTimeout(timer);
-      resolve(null);
-    });
-    child.on("close", () => {
-      clearTimeout(timer);
-      // gh: 로그인했으면 종료 코드 0, 안 했으면 "not logged into"
-      if (agent === "gh") return resolve(/Logged in to/i.test(out) ? true : /not logged in/i.test(out) ? false : null);
-      if (agent === "claude") {
-        // 로그인하지 않았으면 종료 코드 2와 함께 loggedIn: false를 낸다.
-        try {
-          return resolve(!!JSON.parse(out).loggedIn);
-        } catch {
-          return resolve(null);
-        }
-      }
-      if (/not logged in/i.test(out)) return resolve(false);
-      resolve(/logged in/i.test(out) ? true : null);
-    });
-  });
 }
 
 // 로그인은 브라우저 인증이라 사용자가 직접 해야 한다. CLI의 로그인 명령을 새 콘솔 창에서 열어 준다.
 // 창은 끝난 뒤에도 남겨 두어 오류를 읽을 수 있게 한다.
 export function openLogin(agent, file) {
   const args = agent === "claude" ? "auth login" : "login";
-  authCache.delete(file);
+  forgetAuth();
   if (!isWindows) throw new Error(`터미널에서 직접 실행하세요: "${file}" ${args}`);
   const line = `start "AgentHub login" cmd /k ""${file}" ${args}"`;
-  const child = spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/c", line], {
+  const child = spawnCli(envValue(process.env, "ComSpec") || systemFile("cmd.exe"), ["/d", "/c", line], {
     detached: true,
     stdio: "ignore",
     windowsVerbatimArguments: true,
