@@ -19,13 +19,16 @@ export async function isGitRepo(dir) {
   }
 }
 
-// 저장소 옆 `<이름>.agenthub/<세션>` 폴더에 HEAD 기준 worktree를 만든다.
-// 저장소의 커밋되지 않은 수정은 worktree에 포함되지 않는다.
-export async function createWorktree(repo, sessionId) {
+// 저장소 옆 `<저장소>.agenthub/<이름>` 폴더에 `agenthub/<이름>` 브랜치로 HEAD 기준 worktree를 만든다.
+// 이름은 사용자가 정하고, 비워 두면 세션 ID를 쓴다. 저장소의 커밋되지 않은 수정은 worktree에 포함되지 않는다.
+export async function createWorktree(repo, name) {
   const root = path.join(path.dirname(repo), `${path.basename(repo)}.agenthub`);
+  const dir = path.join(root, name);
+  const branch = `agenthub/${name}`;
+  if (fs.existsSync(dir)) throw new Error(`작업 폴더 ${dir}가 이미 있습니다. 다른 이름을 쓰세요.`);
+  const exists = await git(repo, ["rev-parse", "--verify", "--quiet", `refs/heads/${branch}`]).then(() => true, () => false);
+  if (exists) throw new Error(`브랜치 ${branch}가 이미 있습니다. 다른 이름을 쓰세요.`);
   fs.mkdirSync(root, { recursive: true });
-  const dir = path.join(root, sessionId);
-  const branch = `agenthub/${sessionId}`;
   await git(repo, ["worktree", "add", "-b", branch, dir, "HEAD"]);
   return { dir, branch };
 }

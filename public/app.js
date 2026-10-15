@@ -3126,6 +3126,7 @@ function syncNewKind() {
   for (const node of $("new-form").querySelectorAll(".for-chat")) node.hidden = !chat;
   $("new-project").required = !chat;
   if (chat) $("new-orchestrator").checked = false;
+  syncIsolate();
   $("new-template-row").hidden = chat || !state.templateRoles?.length;
   $("new-title").placeholder = chat ? "예: 여행 일정 짜기" : "예: 가방 UI 버그 수정";
   $("new-role").placeholder = chat
@@ -3172,6 +3173,7 @@ function applyTemplate() {
   syncNewKind();
   $("new-permission").value = role.permission;
   $("new-isolate").checked = role.isolate;
+  syncIsolate();
   $("new-role").value = role.body;
   if (!$("new-title").value.trim()) $("new-title").value = role.name;
 }
@@ -3181,9 +3183,17 @@ function syncOrchestrator() {
   if (!$("new-orchestrator").checked) return;
   $("new-permission").value = newKind().agent === "claude" ? "default" : "read-only";
   $("new-isolate").checked = false;
+  syncIsolate();
   $("new-template").value = "";
   $("new-role-name").value = "";
   if (!$("new-title").value.trim()) $("new-title").value = "오케스트레이터";
+}
+
+// 작업 폴더 이름 칸과 안내는 분리할 때만 보인다. 폴더·브랜치는 agenthub/<이름>으로 만든다.
+function syncIsolate() {
+  const on = $("new-isolate").checked && !newKind().chat;
+  for (const node of document.querySelectorAll("#new-form .isolate-only")) node.hidden = !on;
+  $("new-worktree-name").disabled = !on;
 }
 
 // kind: claude | codex | claude-chat | codex-chat
@@ -3207,6 +3217,8 @@ async function openNew(projectPath, { orchestrator = false, kind, pos = null } =
   state.templateRoles = [];
   $("new-error").textContent = "";
   $("new-orchestrator").checked = orchestrator;
+  $("new-isolate").checked = false;
+  $("new-worktree-name").value = "";
   syncNewKind();
   syncOrchestrator();
   $("new-dialog").showModal();
@@ -3223,6 +3235,10 @@ $("new-agent").addEventListener("change", () => {
 });
 $("new-model").addEventListener("input", () => fillEfforts("new-effort", newKind().agent, $("new-model").value.trim()));
 $("new-orchestrator").addEventListener("change", syncOrchestrator);
+$("new-isolate").addEventListener("change", () => {
+  syncIsolate();
+  if ($("new-isolate").checked) $("new-worktree-name").focus();
+});
 $("p-orchestrator").addEventListener("click", () => openNew(state.project, { orchestrator: true }));
 $("new-project").addEventListener("change", fillTemplates);
 $("new-template").addEventListener("change", applyTemplate);
@@ -3234,6 +3250,7 @@ $("new-form").addEventListener("submit", async (e) => {
   const { kind, ...body } = Object.fromEntries(form);
   Object.assign(body, newKind());
   body.isolate = form.has("isolate");
+  if (!body.isolate) delete body.worktreeName;
   body.orchestrator = form.has("orchestrator") && !body.chat;
   if (body.chat) delete body.projectPath;
   try {

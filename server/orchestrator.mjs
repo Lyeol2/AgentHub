@@ -118,7 +118,7 @@ export function normalizePlan(raw, { hub, sessions, orchestratorId }) {
       agent,
       permission,
       model: str(item.model ?? role?.model, 64),
-      isolate: item.isolate ?? role?.isolate ?? true,
+      isolate: item.isolate ?? role?.isolate ?? false,
       roleName: role?.name ?? "",
       roleText: str(item.roleText ?? role?.body, 4000),
       title: str(item.title, 100) || role?.name || key,

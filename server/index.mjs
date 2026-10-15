@@ -547,8 +547,19 @@ function checkSessionOptions({ agent, model = "", effort = "", permission, chat 
   return { agent, model, effort, permission };
 }
 
+// 작업 폴더 이름은 폴더 이름과 브랜치 이름(agenthub/<이름>)에 그대로 쓰므로 둘 다에 안전한 글자만 받는다.
+function checkWorktreeName(name) {
+  name = String(name ?? "").trim();
+  if (!name) return "";
+  if (name.length > 60 || !/^[\p{L}\p{N}][\p{L}\p{N}._-]*$/u.test(name) || name.includes("..") || /\.(lock)?$/i.test(name)) {
+    throw new HttpError(400, "작업 폴더 이름은 60자 이내의 글자·숫자와 . _ - 로 쓰고, 글자나 숫자로 시작하며 . 또는 .lock으로 끝나지 않아야 합니다.");
+  }
+  return name;
+}
+
 // chat: 프로젝트 없이 빈 폴더에서 도구 없이 대화만 하는 일반 채팅(project는 null).
-async function createSession({ project, isolate, title, role, roleName, orchestrator, createdBy, chat, ...options }) {
+// worktreeName: 작업 폴더를 분리할 때 쓸 이름(비우면 세션 ID).
+async function createSession({ project, isolate, worktreeName, title, role, roleName, orchestrator, createdBy, chat, ...options }) {
   chat = !!chat;
   if (chat && orchestrator) throw new HttpError(400, "일반 채팅은 오케스트레이터로 만들 수 없습니다.");
   const { agent, model, effort, permission } = checkSessionOptions({ ...options, chat });
@@ -562,7 +573,10 @@ async function createSession({ project, isolate, title, role, roleName, orchestr
   let worktree = null;
   if (isolate && !chat) {
     if (!git) throw new HttpError(400, "git 저장소가 아니어서 작업 폴더를 분리할 수 없습니다.");
-    worktree = await createWorktree(project.path, id);
+    const name = checkWorktreeName(worktreeName) || id;
+    worktree = await createWorktree(project.path, name).catch((err) => {
+      throw new HttpError(400, err.message);
+    });
     cwd = worktree.dir;
   }
 

@@ -69,6 +69,18 @@ test("api: 작업 폴더를 직접 지운 세션도 삭제된다", async () => {
   assert.equal((await api("GET", `/sessions/${s.id}`)).status, 404);
 });
 
+test("api: 작업 폴더 이름을 정할 수 있고 겹치거나 잘못된 이름은 거절한다", async () => {
+  const body = { agent: "claude", projectPath: repo, title: "N", permission: "acceptEdits", isolate: true };
+  const s = (await api("POST", "/sessions", { ...body, worktreeName: "bag-ui" })).body;
+  assert.equal(path.basename(s.cwd), "bag-ui");
+  assert.equal(s.worktree.branch, "agenthub/bag-ui");
+  assert.equal((await api("POST", "/sessions", { ...body, worktreeName: "bag-ui" })).status, 400);
+  for (const name of ["../x", "a/b", ".x", "x.lock"]) {
+    assert.equal((await api("POST", "/sessions", { ...body, worktreeName: name })).status, 400, name);
+  }
+  assert.equal((await api("DELETE", `/sessions/${s.id}?removeWorktree=1`)).status, 200);
+});
+
 test("api: Claude Code·Codex 기록은 목록에서 숨기고 다시 보일 수 있다", async () => {
   assert.equal((await api("POST", "/projects/hide", { agentSessionId: "abc" })).status, 200);
   const config = JSON.parse(fs.readFileSync(path.join(tmp, "data", "config.json"), "utf8"));

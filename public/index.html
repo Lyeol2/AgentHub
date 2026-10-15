@@ -290,10 +290,11 @@
       <label class="check for-project"><input type="checkbox" name="orchestrator" id="new-orchestrator">
         오케스트레이터 세션 (코드를 고치지 않고 다른 세션을 만들어 지휘)
       </label>
-      <label class="check for-project"><input type="checkbox" name="isolate" id="new-isolate" checked>
+      <label class="check for-project"><input type="checkbox" name="isolate" id="new-isolate">
         별도 작업 폴더(git worktree)에서 실행
       </label>
-      <p class="hint for-project">작업 폴더는 현재 커밋(HEAD) 기준으로 만들어집니다. 커밋하지 않은 수정은 포함되지 않습니다. Unity 프로젝트는 작업 폴더에서 열면 Library를 다시 만듭니다.</p>
+      <label class="for-project isolate-only" hidden>작업 폴더 이름 <input name="worktreeName" id="new-worktree-name" maxlength="60" spellcheck="false" autocomplete="off" placeholder="비워 두면 세션 ID · 예: bag-ui-fix"></label>
+      <p class="hint for-project isolate-only" hidden>작업 폴더는 현재 커밋(HEAD) 기준으로 만들어집니다. 커밋하지 않은 수정은 포함되지 않습니다. Unity 프로젝트는 작업 폴더에서 열면 Library를 다시 만듭니다.</p>
       <p class="hint for-chat" hidden>프로젝트 없이 대화만 합니다. 파일 수정이나 명령 실행은 하지 않으며, 설치된 CLI의 로그인(구독)을 그대로 씁니다.</p>
       <p class="error" id="new-error"></p>
       <menu>

@@ -22,7 +22,7 @@ const CONDITIONS = {
 };
 
 function parseRole(name, lines, warnings) {
-  const role = { name, agent: "claude", permission: null, model: "", isolate: true, body: "" };
+  const role = { name, agent: "claude", permission: null, model: "", isolate: false, body: "" };
   let i = 0;
   // 머리의 "- 키: 값" 줄은 설정이고, 처음 나오는 다른 줄부터 역할 본문이다.
   for (; i < lines.length; i++) {
