@@ -3,3 +3,7 @@ data/
 *.log
 dist/
 .claude/
+# 릴리스 알림 설정(Discord 웹후크 주소 등). 비밀 값이라 올리지 않는다.
+release.local.json
+# 릴리스 준비 세션이 쓰는 사용자용 업데이트 내역 초안. 릴리스할 때 쓰고 지운다.
+release-notes.draft.md
