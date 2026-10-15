@@ -11,7 +11,8 @@ const isWindows = process.platform === "win32";
 export const COMMAND_PREFIX = "cmd-";
 export const isCommandId = (id) => typeof id === "string" && id.startsWith(COMMAND_PREFIX);
 export const commandKind = (command) => command?.kind ?? "command";
-export const COMMAND_KINDS = ["command", "button", "markdown"];
+export const COMMAND_KINDS = ["command", "button", "markdown", "group"];
+export const GROUP_MAX = 20; // 세션 묶음 하나에 넣을 수 있는 세션 수
 export const CWD_MODES = ["source", "project"]; // 보낸 세션의 작업 폴더 | 프로젝트 폴더
 const OUTPUT_MAX = 200_000; // 메모리에 남기는 출력
 const TAIL_LINES = 60; // 다음 세션에 넘기는 출력 줄 수
@@ -156,6 +157,12 @@ export function checkCommand(body, current = {}) {
     return { kind, title: title || "실행 버튼", prompt };
   }
   if (kind === "markdown") return { kind, title: title || "MD 출력", cwdMode };
+  if (kind === "group") {
+    const members = [...new Set((Array.isArray(body.members) ? body.members : current.members ?? []).map(String))];
+    if (!members.length) throw new Error("묶을 세션을 하나 이상 고르세요.");
+    if (members.length > GROUP_MAX) throw new Error(`세션 묶음에는 ${GROUP_MAX}개까지 넣을 수 있습니다.`);
+    return { kind, title: title || "세션 묶음", members };
+  }
   const command = String(body.command ?? current.command ?? "").replace(/\s+$/, "");
   if (!command.trim()) throw new Error("실행할 명령을 적으세요.");
   if (command.length > 20000) throw new Error("명령이 너무 깁니다.");

@@ -314,8 +314,8 @@
           <button id="s-config" class="ghost">설정</button>
           <button id="s-role" class="ghost">역할</button>
           <button id="s-diff" class="ghost">변경 보기</button>
-          <button id="s-export" class="ghost" title="작업 기록을 프로젝트 docs/agenthub에 Markdown 문서로 저장합니다">기록 내보내기</button>
-          <button id="s-import" class="ghost" title="내보낸 작업 기록 문서를 새 세션으로 가져옵니다">기록 가져오기</button>
+          <button id="s-export" class="ghost" title="세션을 docs/agenthub에 .agenthub 세션 파일이나 Markdown 문서로 저장합니다">기록 내보내기</button>
+          <button id="s-import" class="ghost" title="내보낸 기록(.agenthub·.md)을 새 세션으로 불러오거나 이 세션에 읽힙니다">기록 가져오기</button>
           <button id="s-stop" class="ghost" title="멈추고 넘어온 작업을 버립니다">중지</button>
           <button id="s-restart" class="ghost" title="CLI 대화를 새로 시작해 컨텍스트를 비웁니다. 기록·역할·연결은 그대로 둡니다.">다시 시작</button>
           <button id="s-delete" class="ghost danger">삭제</button>
@@ -327,7 +327,7 @@
       <form id="s-form" class="composer">
         <div class="composer-body">
           <ul id="s-attachments" class="attachment-tray" aria-label="첨부 파일" hidden></ul>
-          <textarea id="s-prompt" rows="3" placeholder="요청을 입력하세요 · Enter 보내기, Shift+Enter 줄바꿈"></textarea>
+          <textarea id="s-prompt" rows="3" placeholder="요청을 입력하세요 · @ 파일 참조, / 스킬·명령 · Enter 보내기, Shift+Enter 줄바꿈"></textarea>
           <p id="s-attachment-error" class="attachment-error" role="alert"></p>
         </div>
         <input type="file" id="s-files" multiple hidden>
@@ -565,6 +565,10 @@
       <label id="button-prompt-row" hidden>연결된 세션에 보낼 프롬프트
         <textarea id="button-prompt" rows="6" maxlength="20000" placeholder="예: 작업을 시작하고 완료한 내용을 알려 주세요."></textarea>
       </label>
+      <div id="group-members-row" class="group-members" hidden>
+        <span class="group-members-label">묶을 세션</span>
+        <ul id="group-members" class="group-member-list"></ul>
+      </div>
       <p class="hint" id="command-kind-hint">연결로 넘어오면 실행합니다. 종료 코드 0이면 "성공 시", 아니면 "실패 시" 연결로 넘어가고, 받는 세션에는 출력 마지막 부분이 함께 갑니다. 실행 전에 확인하려면 들어오는 연결에 "넘기기 전에 승인 받기"를 켜세요.</p>
       <div id="command-last" class="command-last" hidden>
         <p id="command-last-meta" class="hint"></p>
@@ -722,17 +726,24 @@
   <dialog id="record-dialog">
     <form method="dialog" id="record-form" class="dialog-form">
       <h3>기록 가져오기 <small id="record-project"></small></h3>
-      <p class="hint">기록 내보내기로 저장한 Markdown 문서를 새 세션으로 가져옵니다. 대화 기록과 함께 내보낸 이미지도 다시 붙입니다.</p>
-      <label>기록 문서 <select id="record-file"></select></label>
-      <div class="row record-pick"><button type="button" class="ghost sm" id="record-pick">다른 파일 선택…</button><input type="file" id="record-upload" accept=".md,text/markdown" hidden><span class="muted" id="record-picked"></span></div>
-      <label>세션 제목 <input id="record-title" maxlength="200" placeholder="비워 두면 문서 제목을 씁니다"></label>
-      <label>AI <select id="record-agent"><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
-      <label class="check"><input type="checkbox" id="record-carry" checked> 진행 상황 이어받기</label>
-      <p class="hint">켜 두면 새 세션의 첫 요청에 가져온 기록을 붙여 이어서 작업합니다. 끄면 화면에서 기록만 봅니다.</p>
+      <p class="hint">기록 내보내기로 저장한 세션 파일(.agenthub)이나 Markdown 문서를 가져옵니다. 대화 기록과 함께 내보낸 이미지·첨부도 다시 붙입니다.</p>
+      <label>기록 <select id="record-file"></select></label>
+      <div class="row record-pick"><button type="button" class="ghost sm" id="record-pick">다른 파일 선택…</button><input type="file" id="record-upload" accept=".agenthub,.md,text/markdown,application/json" hidden><span class="muted" id="record-picked"></span></div>
+      <fieldset class="record-mode" id="record-mode-row" hidden>
+        <label class="check"><input type="radio" name="record-mode" value="new" checked> 새 세션으로 불러오기</label>
+        <label class="check"><input type="radio" name="record-mode" value="read"> 이 세션에 읽히기</label>
+      </fieldset>
+      <div id="record-new-fields">
+        <label>세션 제목 <input id="record-title" maxlength="200" placeholder="비워 두면 문서 제목을 씁니다"></label>
+        <label>AI <select id="record-agent"><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+        <label class="check"><input type="checkbox" id="record-carry" checked> 진행 상황 이어받기</label>
+        <p class="hint">켜 두면 새 세션의 첫 요청에 가져온 기록을 붙여 이어서 작업합니다. 끄면 화면에서 기록만 봅니다. .agenthub 파일은 같은 AI면 모델·권한·역할·스킬도 되살립니다.</p>
+      </div>
+      <p class="hint" id="record-read-hint" hidden>지금 세션의 다음 요청 앞에 이 기록을 정리해 붙입니다. 대화는 그대로 이어지고, AI가 기록을 읽은 뒤 요청을 처리합니다.</p>
       <p class="error" id="record-error"></p>
       <menu>
         <button value="cancel" formnovalidate class="ghost">취소</button>
-        <button value="ok" class="primary">가져오기</button>
+        <button value="ok" class="primary" id="record-submit">가져오기</button>
       </menu>
     </form>
   </dialog>

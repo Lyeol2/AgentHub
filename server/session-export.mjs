@@ -293,3 +293,5 @@ export async function exportSession(session, { resolveAttachment, now = new Date
     if (handle) await handle.close();
   }
 }
+
+export { visible, exportDate, safeName, checkedDirectory, within };

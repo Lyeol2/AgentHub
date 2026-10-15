@@ -1093,3 +1093,35 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 #issue-visibility.error { color: var(--danger); }
 .account-row .spacer { flex: 1; }
 .record-pick { align-items: center; }
+
+/* ── 작성창 자동 완성(@ 파일, / 명령) ───────────────────────── */
+.composer-body { position: relative; }
+.complete-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 20; max-height: 260px; overflow-y: auto;
+  margin: 0; padding: 4px; list-style: none; border-radius: 8px;
+  background: var(--panel); border: 1px solid var(--line-strong); box-shadow: 0 10px 30px var(--shadow);
+}
+.complete-item { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 5px; font-size: 12.5px; cursor: pointer; min-width: 0; }
+.complete-item.active, .complete-item:hover { background: var(--hover); }
+.complete-item.active { box-shadow: inset 2px 0 0 var(--accent); }
+.complete-icon { flex: none; font-size: 12px; }
+.complete-name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.complete-desc { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.complete-tag { flex: none; font-size: 10.5px; color: var(--faint); }
+.record-mode { display: flex; gap: 16px; margin: 0; padding: 0; border: 0; }
+
+/* ── 세션 묶음 노드 ───────────────────────────────────────── */
+.gcmd-group { border-color: rgb(76 194 138 / .6); border-style: dashed; }
+.gcmd-group:hover, .gcmd-group .gcard-handle { border-color: var(--ok); }
+.gcmd-group .gcard-handle:hover { background: var(--ok); }
+.gcmd-group.running { box-shadow: 0 0 0 3px rgb(76 194 138 / .15); }
+.pill.cmd.group { color: var(--ok); border-color: rgb(76 194 138 / .5); background: rgb(76 194 138 / .1); }
+.group-chips { display: flex; gap: 4px; min-width: 0; overflow: hidden; }
+.group-chip { flex: none; max-width: 90px; padding: 0 6px; border-radius: 9px; font-size: 10.5px; line-height: 17px; color: var(--muted); border: 1px solid var(--line-strong); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.group-chip.busy { color: var(--warn); border-color: rgb(229 180 75 / .5); }
+.group-chip.error { color: var(--danger); border-color: rgb(240 100 100 / .45); }
+.graph-edges path.edge.member { stroke: rgb(76 194 138 / .5); stroke-dasharray: 4 4; stroke-width: 1.4; pointer-events: stroke; }
+.group-members { display: grid; gap: 6px; }
+.group-members-label { font-size: 12.5px; color: var(--muted); }
+.group-member-list { margin: 0; padding: 6px 10px; list-style: none; max-height: 200px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); }
+.group-member-list li { padding: 2px 0; }

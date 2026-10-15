@@ -180,8 +180,8 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     const to = endpoint(body.to);
     if (commandKind(to) === "button") throw new HttpError(400, "버튼 노드는 시작점이므로 들어오는 연결을 만들 수 없습니다.");
     if (commandKind(from) === "markdown") throw new HttpError(400, "MD 출력 노드는 완료 메시지를 저장하는 마지막 노드입니다.");
-    if (commandKind(from) === "button" && isCommandId(to.id)) throw new HttpError(400, "버튼은 실행할 세션에 연결하세요.");
-    if (commandKind(to) === "markdown" && isCommandId(from.id)) throw new HttpError(400, "MD 출력은 완료 메시지를 보낼 세션에 연결하세요.");
+    if (commandKind(from) === "button" && isCommandId(to.id) && commandKind(to) !== "group") throw new HttpError(400, "버튼은 실행할 세션이나 세션 묶음에 연결하세요.");
+    if (commandKind(to) === "markdown" && isCommandId(from.id) && commandKind(from) !== "group") throw new HttpError(400, "MD 출력은 완료 메시지를 보낼 세션이나 세션 묶음에 연결하세요.");
     if (from.chat || to.chat) throw new HttpError(400, "일반 채팅 세션은 연결할 수 없습니다.");
     if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");
     if (!samePath(from.projectPath, to.projectPath)) throw new HttpError(400, "같은 프로젝트의 세션끼리만 연결할 수 있습니다.");

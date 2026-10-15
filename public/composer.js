@@ -18,3 +18,46 @@ export function composerAction(session, text = "", attachmentCount = 0) {
     title: session?.state === "paused" ? "이 요청을 보내고 일시중지를 해제합니다 (Enter)." : "요청을 보냅니다 (Enter).",
   };
 }
+
+// ── 작성창 자동 완성 ─────────────────────────────────────────────
+// 요청 맨 앞의 "/이름"은 명령(스킬·기본 명령), 줄 처음이나 공백 뒤의 "@경로"는 파일 참조다.
+// 커서 앞이 그런 자리면 { type, query, start, end }를, 아니면 null을 돌려준다.
+export function completionTrigger(text, caret = text.length) {
+  const before = String(text ?? "").slice(0, caret);
+  const slash = before.match(/^\/([a-z0-9-]*)$/i);
+  if (slash) return { type: "command", query: slash[1].toLowerCase(), start: 0, end: caret };
+  const at = before.match(/(^|\s)@("?)([^\s"]*)$/);
+  if (at) return { type: "file", query: at[3], start: caret - at[3].length - at[2].length - 1, end: caret };
+  return null;
+}
+
+// 고른 항목으로 커서가 있는 낱말을 바꾼다. 폴더는 이어서 고를 수 있게 공백을 붙이지 않는다.
+export function applyCompletion(text, trigger, value) {
+  const after = text.slice(trigger.end).replace(/^[^\s"]*"?/, "");
+  const insert = trigger.type === "command" ? `/${value}`
+    : /\s/.test(value) ? `@"${value}"` : `@${value}`;
+  const space = value.endsWith("/") || /^\s/.test(after) ? "" : " ";
+  const next = text.slice(0, trigger.start) + insert + space + after;
+  return { text: next, caret: trigger.start + insert.length + space.length };
+}
+
+// 이름이 query로 시작하는 명령을 앞에, 이름이나 설명에 들어 있는 명령을 뒤에 둔다.
+export function filterCommands(commands, query = "") {
+  const q = query.toLowerCase();
+  const starts = commands.filter((c) => c.name.startsWith(q));
+  const rest = q ? commands.filter((c) => !c.name.startsWith(q) && (c.name.includes(q) || (c.description ?? "").toLowerCase().includes(q))) : [];
+  return [...starts, ...rest];
+}
+
+// AgentHub가 직접 처리하는 기본 명령. 스킬과 이름이 겹치면 기본 명령이 먼저다.
+export const BUILTIN_COMMANDS = [
+  { name: "clear", description: "다시 시작: CLI 대화를 새로 시작해 컨텍스트를 비웁니다", builtin: true },
+  { name: "export", description: "세션을 .agenthub 파일로 내보냅니다", builtin: true },
+  { name: "import", description: "내보낸 기록을 새 세션으로 불러오거나 이 세션에 읽힙니다", builtin: true },
+];
+
+// 첨부 없이 기본 명령만 입력하고 보내면 그 명령을 실행한다.
+export function builtinCommand(text) {
+  const match = String(text ?? "").trim().match(/^\/([a-z]+)$/);
+  return match && BUILTIN_COMMANDS.some((c) => c.name === match[1]) ? match[1] : null;
+}

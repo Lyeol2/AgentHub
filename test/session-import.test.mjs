@@ -112,7 +112,7 @@ test("가져오기: 내보낸 세션을 이미지와 함께 새 세션으로 가
   assert.equal(second.agent, "codex", "AI를 고르지 않으면 문서의 AI를 쓴다");
   assert.equal(second.handover, undefined);
   assert.equal(second.events[0].attachments, undefined);
-  assert.match(second.events.at(-1).text, /이미지 1장은 찾지 못해 빠졌습니다/);
+  assert.match(second.events.at(-1).text, /첨부 1개는 찾지 못해 빠졌습니다/);
 
   await assert.rejects(sessions.importRecord({ projectPath: project, markdown: "그냥 메모" }), /내보낸 기록 문서가 아닙니다/);
   await assert.rejects(sessions.importRecord({ projectPath: project, fileName: "../x.md" }), /이름이 올바르지 않습니다/);
