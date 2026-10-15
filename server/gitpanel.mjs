@@ -1,4 +1,4 @@
-// 프로젝트 화면의 Git 패널: 상태·변경 파일·커밋 기록·세션 브랜치를 보고, 커밋과 세션 브랜치 병합을 한다.
+// 프로젝트 화면의 Git 패널: 변경 파일을 스테이징하고 커밋하며, 기록·브랜치를 보고 병합한다.
 // 원격(push·pull·fetch)은 다루지 않는다. 명령은 execFile로 인자를 따로 넘기고, 사용자가 고른 값은 실제 목록에 있는지 확인한 뒤에만 쓴다.
 import fs from "node:fs";
 import path from "node:path";
@@ -23,7 +23,7 @@ export function parseStatus(out) {
     const x = entry[0];
     const y = entry[1];
     const file = { x, y, path: entry.slice(3) };
-    if (x === "R" || x === "C") file.orig = parts[++i];
+    if (x === "R" || x === "C" || y === "R" || y === "C") file.orig = parts[++i];
     files.push(file);
   }
   return files;
@@ -36,6 +36,46 @@ export function statusLabel({ x, y }) {
   const code = x !== " " ? x : y;
   return { M: "수정", A: "추가", D: "삭제", R: "이름 바꿈", C: "복사", T: "형식 바꿈" }[code] ?? code;
 }
+
+const conflicted = ({ x, y }) => x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D");
+
+function fileState(file) {
+  const conflict = conflicted(file);
+  const staged = !conflict && file.x !== " " && file.x !== "?";
+  const unstaged = conflict || file.y !== " ";
+  return {
+    ...file, label: statusLabel(file), staged, unstaged,
+    stageLabel: staged ? statusLabel({ x: file.x, y: " " }) : null,
+    workLabel: unstaged ? (conflict ? "충돌" : file.x === "?" ? "새 파일" : statusLabel({ x: " ", y: file.y })) : null,
+  };
+}
+
+// 같은 index에 대한 검증과 변경은 한 작업으로 실행한다. 다른 worktree는 별도 index를 쓴다.
+const mutations = new Map();
+const mutationDirs = new Map();
+async function mutate(dir, action) {
+  const inputDir = fs.realpathSync(dir);
+  const inputKey = process.platform === "win32" ? inputDir.toLowerCase() : inputDir;
+  // 같은 폴더의 요청은 경로 확인도 공유하여 들어온 순서를 유지한다.
+  let resolving = mutationDirs.get(inputKey);
+  if (!resolving) {
+    resolving = git(dir, ["rev-parse", "--absolute-git-dir"]).then((out) => {
+      const real = fs.realpathSync(out.trim());
+      return process.platform === "win32" ? real.toLowerCase() : real;
+    });
+    mutationDirs.set(inputKey, resolving);
+    resolving.catch(() => { if (mutationDirs.get(inputKey) === resolving) mutationDirs.delete(inputKey); });
+  }
+  const key = await resolving;
+  const previous = mutations.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(action);
+  mutations.set(key, current);
+  try { return await current; }
+  finally { if (mutations.get(key) === current) mutations.delete(key); }
+}
+
+// -- 다음의 pathspec도 해석된다. 저장소 루트 기준의 리터럴 이름으로 한정한다.
+const literalPaths = (files) => files.map((file) => `:(top,literal)${file}`);
 
 const SEP = "\x1f";
 const END = "\x1e";
@@ -112,7 +152,9 @@ export async function gitOverview(repo, sessions = []) {
     upstream,
     ahead,
     behind,
-    files: files.slice(0, FILES_MAX).map((f) => ({ ...f, label: statusLabel(f) })),
+    files: files.slice(0, FILES_MAX).map(fileState),
+    stagedCount: files.filter((f) => fileState(f).staged).length,
+    unstagedCount: files.filter((f) => fileState(f).unstaged).length,
     moreFiles: Math.max(0, files.length - FILES_MAX),
     commits: parseLog(logOut),
     graph: { commits: graphCommits.slice(0, GRAPH_COMMITS_MAX), truncated: graphCommits.length > GRAPH_COMMITS_MAX },
@@ -120,22 +162,62 @@ export async function gitOverview(repo, sessions = []) {
   };
 }
 
-// dir 작업 폴더의 파일 하나가 HEAD에서 얼마나 바뀌었는지. file은 지금 상태 목록에 있어야 한다.
-export async function fileDiff(dir, file) {
+// area를 주면 index 또는 작업 폴더 쪽의 차이만 보여 준다. 생략하면 기존 HEAD 기준 보기다.
+export async function fileDiff(dir, file, area = null) {
+  if (area !== null && area !== "staged" && area !== "unstaged") throw new Error("변경 영역이 올바르지 않습니다.");
   const files = await status(dir);
   const found = files.find((f) => f.path === file);
-  if (!found) throw new Error("변경된 파일이 아닙니다. 목록을 새로고침하세요.");
+  if (!found || (area && !fileState(found)[area])) throw new Error("변경된 파일이 아닙니다. 목록을 새로고침하세요.");
   if (found.x === "?" && found.y === "?") {
-    const full = path.join(dir, file);
+    const top = (await git(dir, ["rev-parse", "--show-toplevel"])).trim();
+    const full = path.join(top, file);
     const stat = fs.statSync(full);
     if (stat.size > UNTRACKED_MAX) return `새 파일 (${stat.size.toLocaleString()} 바이트, 너무 커서 내용을 보이지 않습니다)`;
     const text = fs.readFileSync(full, "utf8");
     if (text.includes("\0")) return "새 파일 (바이너리)";
     return [`새 파일: ${file}`, "@@ 새 파일 @@", ...text.split(/\r?\n/).map((l) => `+${l}`)].join("\n");
   }
-  const target = found.orig ? ["--", found.orig, file] : ["--", file];
-  const diff = await git(dir, ["diff", "HEAD", "--no-color", ...target]).catch(() => git(dir, ["diff", "--cached", "--no-color", ...target]));
+  const names = found.x === "R" && found.orig && area !== "unstaged" ? [found.orig, file] : [file];
+  const target = ["--", ...literalPaths(names)];
+  let diff;
+  if (area === "staged") diff = await git(dir, ["diff", "--cached", "--no-color", ...target]);
+  else if (area === "unstaged") diff = await git(dir, ["diff", "--no-color", ...target]);
+  else diff = await git(dir, ["diff", "HEAD", "--no-color", ...target]).catch(() => git(dir, ["diff", "--cached", "--no-color", ...target]));
   return cutDiff(diff || "(내용 차이 없음 · 권한이나 줄 끝만 바뀌었을 수 있습니다)");
+}
+
+// 선택 목록 전체를 현재 상태와 대조한 뒤 바꾼다. 오래된 항목이 섞이면 일부만 적용하지 않는다.
+function selectedFiles(changed, files, area) {
+  if (!Array.isArray(files) || !files.length || files.some((f) => typeof f !== "string" || !f || f.includes("\0"))) {
+    throw new Error("변경할 파일을 고르세요.");
+  }
+  return [...new Set(files)].map((file) => {
+    const found = changed.find((f) => f.path === file && fileState(f)[area]);
+    if (!found) throw new Error("파일 상태가 바뀌었습니다. 목록을 새로고침하세요.");
+    return found;
+  });
+}
+
+export async function stage(dir, files) {
+  return mutate(dir, async () => {
+    const picked = selectedFiles(await status(dir), files, "unstaged");
+    // 이미 index에서 이름이 바뀐 파일의 원래 이름은 add에 넘기지 않는다.
+    const names = [...new Set(picked.flatMap((f) => f.y === "R" && f.orig ? [f.orig, f.path] : [f.path]))];
+    await git(dir, ["add", "-A", "--", ...literalPaths(names)]);
+    return picked.length;
+  });
+}
+
+export async function unstage(dir, files) {
+  return mutate(dir, async () => {
+    const picked = selectedFiles(await status(dir), files, "staged");
+    const names = [...new Set(picked.flatMap((f) => [f.path, f.x === "R" ? f.orig : null].filter(Boolean)))];
+    const head = await git(dir, ["rev-parse", "--verify", "HEAD"]).then(() => true, () => false);
+    if (head) await git(dir, ["reset", "-q", "HEAD", "--", ...literalPaths(names)]);
+    // 첫 커밋 전에는 되돌릴 HEAD가 없다. index만 제거하여 작업 파일은 그대로 둔다.
+    else await git(dir, ["rm", "-q", "--cached", "-f", "--", ...literalPaths(names)]);
+    return picked.length;
+  });
 }
 
 export async function showCommit(repo, hash) {
@@ -159,47 +241,54 @@ export async function branchDiff(repo, branch) {
   return cutDiff(await git(repo, ["diff", "--stat", "--patch", "--no-color", `HEAD...${branch}`]) || "(현재 브랜치에 없는 커밋이 없습니다)");
 }
 
-// dir 작업 폴더에서 커밋한다. files가 있으면 그 파일만, 없으면 모든 변경을 담는다.
-export async function commit(dir, message, files = null) {
-  const text = String(message ?? "").trim();
-  if (!text) throw new Error("커밋 메시지를 입력하세요.");
-  const changed = await status(dir);
-  if (!changed.length) throw new Error("커밋할 변경이 없습니다.");
-  if (files) {
-    const wanted = new Set(files.map(String));
-    // 이름을 바꾼 파일은 새 이름만 골라도 원래 이름의 삭제까지 함께 담는다(빠지면 옛 파일 삭제가 커밋되지 않고 남는다).
-    const picked = [...new Set(changed.filter((f) => wanted.has(f.path) || (f.orig && wanted.has(f.orig)))
-      .flatMap((f) => [f.path, f.orig].filter(Boolean)))];
-    if (!picked.length) throw new Error("커밋할 파일을 고르세요.");
-    // 고른 파일만 담는다. 이미 스테이지에 있던 다른 파일은 빼서 고른 것만 커밋한다.
-    await git(dir, ["reset", "-q"]).catch(() => {});
-    await git(dir, ["add", "-A", "--", ...picked]);
-  } else {
-    await git(dir, ["add", "-A"]);
-  }
-  await git(dir, ["commit", "-q", "-m", text]);
-  return (await git(dir, ["log", "-1", "--pretty=format:%h %s"])).trim();
+// staged 옵션은 현재 index 그대로 커밋한다. 기존 호출은 선택 파일/전체 담기 동작을 유지한다.
+export async function commit(dir, message, files = null, { staged = false } = {}) {
+  return mutate(dir, async () => {
+    const text = String(message ?? "").trim();
+    if (!text) throw new Error("커밋 메시지를 입력하세요.");
+    const changed = await status(dir);
+    if (staged) {
+      if (changed.some(conflicted)) throw new Error("충돌을 해결하고 스테이징한 뒤 커밋하세요.");
+      if (!changed.some((f) => fileState(f).staged)) throw new Error("스테이징된 변경이 없습니다.");
+    } else {
+      if (!changed.length) throw new Error("커밋할 변경이 없습니다.");
+      if (files) {
+        const wanted = new Set(files.map(String));
+        const picked = [...new Set(changed.filter((f) => wanted.has(f.path) || (f.orig && wanted.has(f.orig)))
+          .flatMap((f) => [f.path, f.x === "R" || f.y === "R" ? f.orig : null].filter(Boolean)))];
+        if (!picked.length) throw new Error("커밋할 파일을 고르세요.");
+        await git(dir, ["reset", "-q"]).catch(() => {});
+        await git(dir, ["add", "-A", "--", ...literalPaths(picked)]);
+      } else {
+        await git(dir, ["add", "-A"]);
+      }
+    }
+    await git(dir, ["commit", "-q", "-m", text]);
+    return (await git(dir, ["log", "-1", "--pretty=format:%h %s"])).trim();
+  });
 }
 
 // 세션 브랜치를 현재 브랜치로 병합한다. 충돌하면 되돌리고 충돌한 파일을 알린다.
 export async function merge(repo, branch) {
-  await checkBranch(repo, branch);
-  const current = (await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
-  if (current === branch) throw new Error("현재 브랜치와 같은 브랜치입니다.");
-  // 사용자가 하던 병합(충돌 해결 중 등)이 있으면 시작하지 않는다. 아래의 실패 처리(merge --abort)가 그 병합까지 되돌리면 안 된다.
-  const merging = await git(repo, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(() => true, () => false);
-  if (merging) throw new Error("이미 진행 중인 병합이 있습니다. 먼저 그 병합을 끝내거나 취소하세요.");
-  try {
-    await git(repo, ["merge", "--no-ff", "--no-edit", branch]);
-  } catch (err) {
-    const conflicts = (await git(repo, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).trim();
-    if (conflicts) {
-      await git(repo, ["merge", "--abort"]).catch(() => {});
-      const error = new Error(`충돌이 나서 병합을 되돌렸습니다. 충돌한 파일:\n${conflicts}`);
-      error.conflict = true;
-      throw error;
+  return mutate(repo, async () => {
+    await checkBranch(repo, branch);
+    const current = (await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    if (current === branch) throw new Error("현재 브랜치와 같은 브랜치입니다.");
+    // 사용자가 하던 병합(충돌 해결 중 등)이 있으면 시작하지 않는다. 아래의 실패 처리(merge --abort)가 그 병합까지 되돌리면 안 된다.
+    const merging = await git(repo, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(() => true, () => false);
+    if (merging) throw new Error("이미 진행 중인 병합이 있습니다. 먼저 그 병합을 끝내거나 취소하세요.");
+    try {
+      await git(repo, ["merge", "--no-ff", "--no-edit", branch]);
+    } catch (err) {
+      const conflicts = (await git(repo, ["diff", "--name-only", "--diff-filter=U"]).catch(() => "")).trim();
+      if (conflicts) {
+        await git(repo, ["merge", "--abort"]).catch(() => {});
+        const error = new Error(`충돌이 나서 병합을 되돌렸습니다. 충돌한 파일:\n${conflicts}`);
+        error.conflict = true;
+        throw error;
+      }
+      throw err;
     }
-    throw err;
-  }
-  return (await git(repo, ["log", "-1", "--pretty=format:%h %s"])).trim();
+    return (await git(repo, ["log", "-1", "--pretty=format:%h %s"])).trim();
+  });
 }

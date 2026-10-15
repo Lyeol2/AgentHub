@@ -632,21 +632,52 @@ function renderProjectSessionTable() {
 $("p-session-filter").addEventListener("input", renderProjectSessionTable);
 
 // ── Git 탭 ──────────────────────────────────────────────────────
-// 전체 브랜치의 기록과 커밋 전 작업을 함께 그리고, 상세는 고른 뒤에 연다.
+const GIT_TAB_KEY = "agenthub-git-tab";
+const GIT_TABS = ["changes", "history"];
+const gitTab = () => GIT_TABS.includes(localStorage.getItem(GIT_TAB_KEY)) ? localStorage.getItem(GIT_TAB_KEY) : "changes";
+const gitBusy = () => !!(state.git?.indexBusy || state.git?.committing || state.git?.merging);
+const gitFiles = (area) => (state.git?.data?.files ?? []).filter((f) => f[area]);
+
+function closeGitDetail() {
+  if (state.git) {
+    ++state.git.viewVersion;
+    state.git.activeFile = null;
+    setGitActive(null);
+  }
+  $("g-detail").hidden = true;
+  $("g-diff-empty").hidden = false;
+  for (const row of $("g-changes").querySelectorAll(".git-file.active")) row.classList.remove("active");
+}
+
+function showGitTab(tab) {
+  if (!GIT_TABS.includes(tab)) return;
+  if (state.git?.tab !== tab) closeGitDetail();
+  if (state.git) state.git.tab = tab;
+  localStorage.setItem(GIT_TAB_KEY, tab);
+  for (const button of $("g-tabs").querySelectorAll("[data-git-tab]")) {
+    const active = button.dataset.gitTab === tab;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  }
+  for (const panel of $("g-body").querySelectorAll("[data-git-panel]")) panel.hidden = panel.dataset.gitPanel !== tab;
+  $(tab === "changes" ? "g-change-preview" : "g-history-detail").append($("g-detail"));
+}
+
 async function loadGit() {
   const p = currentProject();
   if (!p) return;
   const projectPath = p.path;
   if (!state.git || !samePath(state.git.project, projectPath)) {
-    state.git = { project: projectPath, selected: new Set(), data: null, loadVersion: 0, viewVersion: 0 };
-    $("g-detail").hidden = true;
+    state.git = { project: projectPath, selected: { staged: new Set(), unstaged: new Set() }, tab: gitTab(), data: null, loadVersion: 0, viewVersion: 0 };
+    closeGitDetail();
+    showGitTab(state.git.tab);
     $("g-body").hidden = true;
     $("g-message").value = "";
     $("g-error").textContent = "";
     $("g-branch").textContent = "";
     $("g-sync").textContent = "";
     $("p-tab-git").textContent = "";
-    $("g-changes").open = false;
   }
   const current = state.git;
   const version = ++current.loadVersion;
@@ -656,22 +687,29 @@ async function loadGit() {
     if (state.git !== current || version !== current.loadVersion || !samePath(projectPath, state.project)) return;
     $("g-note").hidden = true;
     $("g-body").hidden = false;
-    const paths = new Set(data.files.map((f) => f.path));
-    for (const f of current.selected) if (!paths.has(f)) current.selected.delete(f);
+    for (const area of ["staged", "unstaged"]) {
+      const paths = new Set(data.files.filter((f) => f[area]).map((f) => f.path));
+      for (const file of current.selected[area]) if (!paths.has(file)) current.selected[area].delete(file);
+    }
     current.data = data;
     renderGit();
+    if (current.activeFile) {
+      const { file, area } = current.activeFile;
+      if (gitFiles(area).some((f) => f.path === file)) showGitFile(file, area);
+      else closeGitDetail();
+    }
   } catch (err) {
     if (state.git !== current || version !== current.loadVersion || !samePath(projectPath, state.project)) return;
     $("g-note").hidden = false;
     $("g-note").textContent = err.reason === "not-git" ? "Git 저장소가 아닙니다." : err.message;
     $("g-body").hidden = true;
   } finally {
-    if (state.git === current && version === current.loadVersion) $("g-refresh").disabled = false;
+    if (state.git === current && version === current.loadVersion) $("g-refresh").disabled = gitBusy();
   }
 }
 
 function renderGit() {
-  const { data, selected } = state.git;
+  const { data } = state.git;
   $("g-branch").textContent = data.branch;
   $("g-branch").title = "현재 브랜치: " + data.branch;
   $("g-sync").textContent = data.upstream
@@ -681,34 +719,63 @@ function renderGit() {
   const n = data.files.length + data.moreFiles;
   $("p-tab-git").textContent = n ? String(n) : "";
   $("g-file-count").textContent = String(n);
-  $("g-files").replaceChildren(...(data.files.length ? data.files.map((f) => {
-    const box = el("input", { type: "checkbox", "aria-label": f.path + " 선택", onchange: (e) => {
-      if (e.target.checked) selected.add(f.path);
-      else selected.delete(f.path);
-      renderGitCommitButton();
-    } });
-    box.checked = selected.has(f.path);
-    return el("li", { class: "git-file" }, box,
-      el("span", { class: "git-status s-" + (f.label === "새 파일" ? "new" : f.label === "삭제" ? "del" : f.label === "충돌" ? "conflict" : "mod") }, f.label),
-      el("button", { type: "button", class: "link mono", title: f.orig ? f.orig + " → " + f.path : f.path, onclick: () => showGitFile(f.path) }, f.path));
-  }) : [el("li", { class: "muted" }, "변경 없음")]),
-  ...(data.moreFiles ? [el("li", { class: "muted" }, "외 " + data.moreFiles + "개 · 일부만 표시")] : []));
-  renderGitCommitButton();
+  for (const area of ["unstaged", "staged"]) renderGitFiles(area);
+  $("g-limit").hidden = !data.moreFiles;
+  $("g-limit").textContent = "변경 파일 중 500개만 표시합니다. '모두'는 표시된 파일에 적용됩니다. 커밋에는 스테이징된 모든 파일이 포함됩니다.";
+  renderGitControls();
   $("g-branch-count").textContent = String(data.branches.length);
   $("g-branches").replaceChildren(...data.branches.map(renderGitBranch));
   renderGitGraph();
 }
 
+function renderGitFiles(area) {
+  const files = gitFiles(area);
+  const selected = state.git.selected[area];
+  const staged = area === "staged";
+  const action = staged ? "unstage" : "stage";
+  $("g-" + area + "-count").textContent = String(state.git.data[area + "Count"] ?? files.length);
+  $("g-" + area).replaceChildren(...(files.length ? files.map((f) => {
+    const label = (staged ? f.stageLabel : f.workLabel) || f.label;
+    const box = el("input", { type: "checkbox", "aria-label": f.path + (staged ? " 스테이징됨 선택" : " 스테이징 전 선택"), onchange: (e) => {
+      if (e.target.checked) selected.add(f.path);
+      else selected.delete(f.path);
+      renderGitControls();
+    } });
+    box.checked = selected.has(f.path);
+    const active = state.git.activeFile?.file === f.path && state.git.activeFile?.area === area;
+    return el("li", { class: "git-file" + (active ? " active" : ""), "data-file": f.path, "data-area": area }, box,
+      el("span", { class: "git-status s-" + (["새 파일", "추가"].includes(label) ? "new" : label === "삭제" ? "del" : label === "충돌" ? "conflict" : "mod") }, label),
+      el("button", { type: "button", class: "link mono", title: f.orig ? f.orig + " → " + f.path : f.path, onclick: () => showGitFile(f.path, area) }, f.path),
+      el("button", { type: "button", class: "ghost sm git-file-action", "data-index-action": action, "aria-label": f.path + (staged ? " 스테이징 해제" : " 스테이징"), title: staged ? "스테이징 해제" : "스테이징", onclick: () => changeGitIndex(action, [f.path]) }, staged ? "−" : "+"));
+  }) : [el("li", { class: "muted git-list-empty" }, staged ? "스테이징된 파일이 없습니다." : "스테이징 전 변경이 없습니다.")]));
+}
+
 const gitBranchName = (b) => b.sessionTitle || b.name;
 
-function renderGitCommitButton() {
+function renderGitControls() {
   const current = state.git;
-  const files = current.data?.files ?? [];
-  const picked = files.filter((f) => current.selected.has(f.path)).length;
-  $("g-all").checked = files.length > 0 && picked === files.length;
-  $("g-all").indeterminate = picked > 0 && picked < files.length;
-  $("g-commit").disabled = !picked || !!current.committing;
-  $("g-commit").textContent = current.committing ? "커밋 중…" : picked ? "커밋 (" + picked + ")" : "커밋";
+  if (!current?.data) return;
+  const busy = gitBusy();
+  for (const area of ["unstaged", "staged"]) {
+    const files = gitFiles(area);
+    const picked = files.filter((f) => current.selected[area].has(f.path)).length;
+    const all = $("g-" + area + "-all");
+    all.checked = files.length > 0 && picked === files.length;
+    all.indeterminate = picked > 0 && picked < files.length;
+    all.disabled = !files.length || busy;
+    const action = area === "staged" ? "unstage" : "stage";
+    $("g-" + action + "-selected").disabled = !picked || busy;
+    $("g-" + action + "-selected").textContent = (area === "staged" ? "선택 해제" : "선택 스테이징") + (picked ? " (" + picked + ")" : "");
+    $("g-" + action + "-all").disabled = !files.length || busy;
+    $("g-" + action + "-all").title = current.data.moreFiles ? "표시된 파일 모두" : "모든 파일";
+  }
+  for (const input of $("g-changes").querySelectorAll(".git-file input, [data-index-action]")) input.disabled = busy;
+  const staged = current.data.stagedCount ?? gitFiles("staged").length;
+  $("g-commit").disabled = !staged || busy || !$("g-message").value.trim();
+  $("g-commit").textContent = current.committing ? "커밋 중…" : staged ? "커밋 (" + staged + ")" : "커밋";
+  $("g-commit-note").textContent = current.indexBusy ? "목록을 업데이트하는 중…" : "스테이징된 내용만 커밋합니다.";
+  $("g-message").disabled = !!current.committing;
+  $("g-refresh").disabled = busy;
 }
 
 function renderGitBranch(b) {
@@ -776,7 +843,7 @@ function renderGitGraph() {
         setGitActive(c.hash);
         if (!c.work) showGitCommit(c);
         else if (c.branch.sessionId) showSessionChanges(c.branch);
-        else { ++state.git.viewVersion; $("g-detail").hidden = true; $("g-changes").open = true; $("g-changes").scrollIntoView({ block: "nearest" }); }
+        else { showGitTab("changes"); $("g-changes").scrollIntoView({ block: "nearest" }); }
       } }, svg,
       el("span", { class: "git-graph-subject" }, title),
       el("span", { class: "git-graph-refs" }, ...chips),
@@ -797,6 +864,7 @@ function setGitActive(hash) {
 }
 
 function showGitView(title, text) {
+  $("g-diff-empty").hidden = true;
   $("g-detail").hidden = false;
   $("g-view-title").textContent = title;
   $("g-view").replaceChildren(...renderDiff(text));
@@ -816,7 +884,12 @@ async function gitGet(url, title) {
 }
 
 const gitQuery = (extra) => new URLSearchParams({ path: state.git.project, ...extra });
-const showGitFile = (file) => gitGet("/api/git/diff?" + gitQuery({ file }), file);
+function showGitFile(file, area = "unstaged") {
+  showGitTab("changes");
+  state.git.activeFile = { file, area };
+  for (const row of $("g-changes").querySelectorAll(".git-file")) row.classList.toggle("active", row.dataset.file === file && row.dataset.area === area);
+  return gitGet("/api/git/diff?" + gitQuery({ file, area }), file + (area === "staged" ? " · 스테이징됨" : " · 스테이징 전"));
+}
 const showGitCommit = (c) => gitGet("/api/git/show?" + gitQuery({ hash: c.hash }), c.short + " · " + c.subject);
 const showGitBranch = (b) => gitGet("/api/git/branch?" + gitQuery({ branch: b.name }), gitBranchName(b) + " · 병합할 변경");
 
@@ -834,6 +907,7 @@ async function showSessionChanges(b) {
 }
 
 function openBranchCommit(li, b) {
+  if (gitBusy()) return;
   li.querySelector(".git-inline")?.remove();
   const current = state.git;
   const input = el("input", { placeholder: "커밋 메시지", "aria-label": gitBranchName(b) + " 커밋 메시지", value: gitBranchName(b) + " 작업" });
@@ -867,10 +941,11 @@ function openBranchCommit(li, b) {
 
 async function mergeGitBranch(b) {
   const current = state.git;
-  if (current.merging) return;
+  if (gitBusy()) return;
   const into = current.data.branch;
   if (!confirm(gitBranchName(b) + " → " + into + " 병합할까요?\n충돌하면 자동 취소됩니다.")) return;
   current.merging = true;
+  renderGitControls();
   try {
     const { result } = await api("POST", "/api/git/merge", { path: current.project, branch: b.name });
     if (state.git === current && samePath(current.project, state.project)) { ++current.viewVersion; showGitView("병합 완료", result); }
@@ -878,43 +953,81 @@ async function mergeGitBranch(b) {
     alert(err.message);
   } finally {
     current.merging = false;
+    if (state.git === current) renderGitControls();
   }
   if (state.git === current && samePath(current.project, state.project)) await loadGit();
 }
 
-$("g-detail-close").addEventListener("click", () => {
-  ++state.git.viewVersion;
-  $("g-detail").hidden = true;
-  setGitActive(null);
+$("g-tabs").addEventListener("click", (e) => {
+  const button = e.target.closest("[data-git-tab]");
+  if (button) showGitTab(button.dataset.gitTab);
 });
+$("g-tabs").addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+  const active = GIT_TABS.indexOf(state.git?.tab ?? gitTab());
+  const index = e.key === "Home" ? 0 : e.key === "End" ? GIT_TABS.length - 1 : (active + (e.key === "ArrowRight" ? 1 : -1) + GIT_TABS.length) % GIT_TABS.length;
+  e.preventDefault();
+  showGitTab(GIT_TABS[index]);
+  $("g-tab-" + GIT_TABS[index]).focus();
+});
+$("g-detail-close").addEventListener("click", closeGitDetail);
 $("g-refresh").addEventListener("click", loadGit);
-$("g-all").addEventListener("change", (e) => {
-  for (const f of state.git?.data?.files ?? []) {
-    if (e.target.checked) state.git.selected.add(f.path);
-    else state.git.selected.delete(f.path);
+$("g-message").addEventListener("input", renderGitControls);
+for (const area of ["unstaged", "staged"]) {
+  const action = area === "staged" ? "unstage" : "stage";
+  $("g-" + area + "-all").addEventListener("change", (e) => {
+    for (const f of gitFiles(area)) {
+      if (e.target.checked) state.git.selected[area].add(f.path);
+      else state.git.selected[area].delete(f.path);
+    }
+    renderGitFiles(area);
+    renderGitControls();
+  });
+  $("g-" + action + "-selected").addEventListener("click", () => changeGitIndex(action, [...state.git.selected[area]]));
+  $("g-" + action + "-all").addEventListener("click", () => changeGitIndex(action, gitFiles(area).map((f) => f.path)));
+}
+
+async function changeGitIndex(action, files) {
+  const current = state.git;
+  if (!files.length || gitBusy()) return;
+  $("g-error").textContent = "";
+  current.indexBusy = true;
+  renderGitControls();
+  try {
+    await api("POST", "/api/git/" + action, { path: current.project, files });
+    if (state.git === current && samePath(current.project, state.project)) closeGitDetail();
+  } catch (err) {
+    if (state.git === current && samePath(current.project, state.project)) $("g-error").textContent = err.message;
+  } finally {
+    if (state.git === current && samePath(current.project, state.project)) await loadGit();
+    current.indexBusy = false;
+    if (state.git === current) renderGitControls();
   }
-  renderGit();
-});
+}
+
 $("g-commit").addEventListener("click", async () => {
   const current = state.git;
-  if (!current.selected.size || current.committing) return;
+  const staged = current?.data?.stagedCount ?? gitFiles("staged").length;
+  if (!staged || !$("g-message").value.trim() || gitBusy()) return;
   $("g-error").textContent = "";
   current.committing = true;
-  renderGitCommitButton();
+  renderGitControls();
+  let result;
   try {
-    const { result } = await api("POST", "/api/git/commit", { path: current.project, message: $("g-message").value, files: [...current.selected] });
+    ({ result } = await api("POST", "/api/git/commit", { path: current.project, message: $("g-message").value, staged: true }));
     if (state.git === current && samePath(current.project, state.project)) {
       $("g-message").value = "";
-      current.selected.clear();
-      ++current.viewVersion;
-      showGitView("커밋 완료", result);
+      current.selected.staged.clear();
+      closeGitDetail();
     }
   } catch (err) {
     if (state.git === current && samePath(current.project, state.project)) $("g-error").textContent = err.message;
   } finally {
+    if (state.git === current && samePath(current.project, state.project)) await loadGit();
     current.committing = false;
+    if (state.git === current) renderGitControls();
   }
-  if (state.git === current && samePath(current.project, state.project)) await loadGit();
+  if (result && state.git === current && samePath(current.project, state.project) && current.tab === "changes") showGitView("커밋 완료", result);
 });
 
 // 창을 다시 열어 보면 외부 Git 작업도 반영한다.

@@ -1,14 +1,16 @@
 # 기능 문서: 저장소 화면 (Fork·SourceTree 같은 git 클라이언트)
 
-- 상태: 초안 (2026-10-15). 프로젝트 화면의 **Git** 탭(변경 파일 커밋, 브랜치, 최근 커밋, 세션 브랜치 병합)이 먼저 들어갔다. 커밋 노선도도 추가되었다. 이 문서는 저장소 화면을 단계적으로 넓히는 기준이다.
+- 상태: 초안 (2026-10-15). 프로젝트 화면의 **Git** 탭에 **변경사항 / History** 탭, 파일 스테이징·해제, 스테이징된 내용 커밋, 브랜치, 커밋 노선도와 세션 브랜치 병합이 들어갔다. 이 문서는 저장소 화면을 단계적으로 넓히는 기준이다.
 - 범위: 서버 `server/git.mjs`·`server/gitgraph.mjs`(새로) · `server/index.mjs`의 `/api/git` 경로 · 화면 `public/`의 저장소 화면
 
 ## 현재 구현
 
 - 프로젝트 **Git** 탭에서 전체 로컬 브랜치와 HEAD의 최근 100개 커밋을 색 선으로 연결한다. 분기·병합과 세션 이름 칩을 표시하고, 세션의 실행 중 상태·커밋 전 변경은 점선 노드로 구분한다.
-- 기본 화면은 노선도와 짧은 상태만 보여 준다. 파일 목록과 브랜치 동작은 펼쳐 보고, 커밋을 누르면 아래에 상세가 열린다.
+- Git 안의 **변경사항** 탭에서 스테이징 전·후 파일 목록과 diff, 커밋 메시지를 다룬다. 파일별·선택·표시된 파일 전체 스테이징/해제를 지원하고, 커밋은 인덱스에 담긴 내용만 쓴다. 일부 스테이징된 파일은 두 목록에 따로 보인다.
+- **History** 탭에는 브랜치와 노선도를 표시하고, 커밋을 누르면 아래에 상세가 열린다. 현재 작업 노드를 누르면 변경사항 탭으로 이동한다. 마지막에 본 내부 탭도 기억한다.
+- `GET /api/git?path=`의 파일에는 `staged`, `unstaged`, `stageLabel`, `workLabel`이 있고 전체 개수 `stagedCount`, `unstagedCount`도 보낸다. 파일 diff는 `GET /api/git/diff?path=&file=&area=staged|unstaged`, 파일 이동은 `POST /api/git/stage`·`/api/git/unstage`의 `{ path, files }`, 인덱스 커밋은 `POST /api/git/commit`의 `{ path, message, staged: true }`로 한다. 목록은 500개까지 표시하며 전체 스테이징/해제는 표시된 파일, 커밋은 전체 인덱스에 적용한다.
 - 기존 `GET /api/git?path=` 응답에 `graph: { commits, truncated }`와 `branches[].tip`을 추가했다. 그래프 커밋은 `hash`·`short`·`parents`·`author`·`date`·`subject`·`refs`(로컬 브랜치 이름)를 담고, 화면의 순수 함수 `public/gitgraph.js`에서 노선 배치를 계산한다.
-- 아래의 페이지별 로그 API·원격·스테이징·충돌 편집은 다음 단계의 설계다.
+- 아래의 페이지별 로그 API·원격·덩어리/줄 스테이징·충돌 편집은 다음 단계의 설계다.
 
 ## 1. 왜 만드는가
 

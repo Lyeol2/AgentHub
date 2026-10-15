@@ -9,7 +9,7 @@ import { SessionStore, summary, useProjectFolder } from "./store.mjs";
 import { Runner, AGENTS } from "./runner.mjs";
 import { isGitRepo, removeWorktree, headCommit, diffSince, changedFiles } from "./git.mjs";
 import { AGENT_NAME, handoverText, mapPermission } from "./handover.mjs";
-import { gitOverview, fileDiff, showCommit, branchDiff, commit, merge } from "./gitpanel.mjs";
+import { gitOverview, fileDiff, showCommit, branchDiff, stage, unstage, commit, merge } from "./gitpanel.mjs";
 import { discoverProjects, discoverSessions, loadHistory, deleteSessionRecords } from "./discover.mjs";
 import { readLimits, recordClaudeLimit, refreshClaudeUsage } from "./limits.mjs";
 import { ROLE_MAX, withRole } from "./role.mjs";
@@ -1152,7 +1152,7 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // 프로젝트 화면의 Git 패널. 조회는 GET(path 쿼리), 커밋·병합은 POST(본문의 path).
+  // 프로젝트 화면의 Git 패널. 조회는 GET(path 쿼리), 스테이징·커밋·병합은 POST(본문의 path).
   // session을 주면 그 세션의 분리한 작업 폴더(브랜치)에서 한다.
   if (parts[0] === "git") {
     const body = method === "POST" ? await readJson(req) : {};
@@ -1163,13 +1163,19 @@ async function handleApi(req, res, url) {
       if (method === "GET" && parts.length === 1) {
         return send(res, 200, await gitOverview(repo, projectSessions(repo)));
       }
-      if (method === "GET" && parts[1] === "diff") return send(res, 200, { diff: await fileDiff(dir, url.searchParams.get("file") ?? "") });
+      if (method === "GET" && parts[1] === "diff") return send(res, 200, { diff: await fileDiff(dir, url.searchParams.get("file") ?? "", url.searchParams.get("area")) });
       if (method === "GET" && parts[1] === "show") return send(res, 200, { diff: await showCommit(repo, url.searchParams.get("hash")) });
       if (method === "GET" && parts[1] === "branch") return send(res, 200, { diff: await branchDiff(repo, url.searchParams.get("branch")) });
+      if (method === "POST" && (parts[1] === "stage" || parts[1] === "unstage")) {
+        if (sessionId && runner.isRunning(sessionId)) throw new HttpError(409, "세션이 실행 중입니다. 끝나거나 일시중지한 뒤 변경하세요.");
+        const count = await (parts[1] === "stage" ? stage : unstage)(dir, body.files);
+        broadcast("git", { projectPath: repo });
+        return send(res, 200, { ok: true, count });
+      }
       if (method === "POST" && parts[1] === "commit") {
         if (sessionId && runner.isRunning(sessionId)) throw new HttpError(409, "세션이 실행 중입니다. 끝나거나 일시중지한 뒤 커밋하세요.");
         const files = Array.isArray(body.files) ? body.files : null;
-        const result = await commit(dir, body.message, files);
+        const result = await commit(dir, body.message, files, { staged: body.staged === true });
         broadcast("git", { projectPath: repo });
         return send(res, 200, { ok: true, result });
       }
