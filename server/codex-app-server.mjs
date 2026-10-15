@@ -2,18 +2,23 @@ import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
 import * as codex from "./agents/codex.mjs";
 
+const ACTIVE_WRITER = /\bthread\b[^\r\n]*\balready has an active writer\b/i;
+const MISSING_THREAD = /no (?:conversation|thread|rollout)(?: found)?|thread[^\r\n]*(?:not found|does not exist)|unable to (?:find|load)[^\r\n]*(?:thread|rollout)/i;
 const APPROVALS = new Set(["item/commandExecution/requestApproval", "item/fileChange/requestApproval", "item/permissions/requestApproval", "item/tool/requestUserInput"]);
 const snippet = (value, max = 4000) => { const text = typeof value === "string" ? value : JSON.stringify(value ?? ""); return text.length > max ? text.slice(0, max) + "\n…" : text; };
 export const codexInput = (text, attachments = []) => [{ type: "text", text }, ...attachments.map(({ path }) => ({ type: "localImage", path }))];
 
 // 한 CLI 프로세스의 요청·응답·승인 수명만 담당한다. 세션 상태와 기록은 Runner가 관리한다.
 export class CodexAppServer extends EventEmitter {
-  constructor(child, session, { resolved = codex.resolveModel(session), timeoutMs = 60000 } = {}) {
+  constructor(child, session, { resolved = codex.resolveModel(session), timeoutMs = 60000, resumeRetryMs = 300 } = {}) {
     super();
     this.child = child;
     this.session = session;
     this.resolved = resolved;
     this.timeoutMs = timeoutMs;
+    this.resumeRetryMs = resumeRetryMs;
+    this.resumeWait = null;
+    this.missingConversation = false;
     this.requests = new Map();
     this.approvals = new Map();
     this.items = new Map();
@@ -49,14 +54,8 @@ export class CodexAppServer extends EventEmitter {
       const params = { cwd: this.session.cwd, sandbox: this.session.permission ?? "workspace-write", approvalPolicy: this.session.chat ? "never" : "on-request", approvalsReviewer: "user" };
       if (this.resolved.model) params.model = this.resolved.model;
       let result;
-      if (this.session.agentSessionId) {
-        try { result = await this.request("thread/resume", { ...params, threadId: this.session.agentSessionId }); }
-        catch (err) {
-          // 기존 Runner의 대화 복구 재시도를 그대로 사용한다.
-          if (/not found|no (?:conversation|thread|rollout)|unable to (?:find|load)|does not exist/i.test(err.message)) err.message = "No conversation found with session ID: " + err.message;
-          throw err;
-        }
-      } else result = await this.request("thread/start", params);
+      if (this.session.agentSessionId) result = await this.resumeThread(params);
+      else result = await this.request("thread/start", params);
       if (this.stopping || this.closed) return this.shutdown();
       this.threadId = result.thread?.id;
       if (!this.threadId) throw new Error("Codex가 대화 ID를 반환하지 않았습니다.");
@@ -69,9 +68,48 @@ export class CodexAppServer extends EventEmitter {
     } catch (err) {
       if (!this.closed && !this.stopping) this.emit("event", { kind: "error", text: "Codex 연결 실패: " + err.message });
       // 대화를 찾지 못한 경우 Runner가 stderr를 보고 새 대화로 한 번 다시 시작한다.
-      if (/No conversation found with session ID/.test(err.message)) this.child.stderr.emit("data", err.message);
+      if (err.missingConversation) { this.missingConversation = true; this.child.stderr.emit("data", err.message); }
       this.shutdown();
     }
+  }
+
+  async resumeThread(params) {
+    const threadId = this.session.agentSessionId;
+    const resume = () => this.request("thread/resume", { ...params, threadId });
+    try { return await resume(); }
+    catch (err) {
+      if (!ACTIVE_WRITER.test(err.message)) {
+        // 없는 대화만 Runner의 기존 복구를 사용한다. 미지원 RPC·인증 오류는 대화를 버리지 않는다.
+        if (err.code !== -32601 && !/method[^\r\n]*not found/i.test(err.message) && MISSING_THREAD.test(err.message)) {
+          err.missingConversation = true;
+          err.message = "No conversation found with session ID: " + err.message;
+        }
+        throw err;
+      }
+    }
+    if (this.stopping || this.closed) return null;
+    this.emit("event", { kind: "status", text: "다른 Codex 연결이 이 대화를 사용 중입니다. 잠시 후 다시 연결합니다." });
+    if (this.stopping || this.closed) return null;
+    await new Promise((resolve) => {
+      const timer = setTimeout(() => { this.resumeWait = null; resolve(); }, this.resumeRetryMs);
+      this.resumeWait = { timer, resolve };
+    });
+    if (this.stopping || this.closed) return null;
+    try { return await resume(); }
+    catch (err) { if (!ACTIVE_WRITER.test(err.message)) throw err; }
+    if (this.stopping || this.closed) return null;
+    // 원래 연결을 끊거나 빈 대화로 바꾸지 않고 저장된 기록을 이어받는다.
+    const result = await this.request("thread/fork", { ...params, threadId });
+    if (!this.stopping && !this.closed) this.emit("event", { kind: "status", text: "기존 대화가 다른 Codex 연결에서 열려 있어, 저장된 기록을 복사한 새 대화로 이어갑니다. 원래 대화는 그대로 남습니다." });
+    return result;
+  }
+
+  cancelResumeWait() {
+    if (!this.resumeWait) return;
+    const { timer, resolve } = this.resumeWait;
+    this.resumeWait = null;
+    clearTimeout(timer);
+    resolve();
   }
 
   handleLine(line) {
@@ -83,7 +121,7 @@ export class CodexAppServer extends EventEmitter {
       const pending = this.requests.get(msg.id);
       if (!pending) return;
       this.requests.delete(msg.id); clearTimeout(pending.timer);
-      if (msg.error) pending.reject(new Error(msg.error.message || "Codex RPC 오류"));
+      if (msg.error) pending.reject(Object.assign(new Error(msg.error.message || "Codex RPC 오류"), { code: msg.error.code }));
       else pending.resolve(msg.result ?? {});
       return;
     }
@@ -216,12 +254,14 @@ export class CodexAppServer extends EventEmitter {
     if (this.closed || this.ending) return;
     this.ending = true;
     this.stopping = true;
+    this.cancelResumeWait();
     this.clearApprovals();
     this.child.stdin.end();
     this.emit("shutdown");
   }
 
   close() {
+    this.cancelResumeWait();
     this.clearApprovals(false);
     this.closed = true;
     for (const pending of this.requests.values()) { clearTimeout(pending.timer); pending.reject(new Error("Codex 연결이 끝났습니다.")); }

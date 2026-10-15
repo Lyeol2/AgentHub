@@ -10,11 +10,11 @@ import { Runner } from "../server/runner.mjs";
 import * as codex from "../server/agents/codex.mjs";
 import * as claude from "../server/agents/claude.mjs";
 
-function fixture({ resume = null, failMethod = null } = {}) {
+function fixture({ resume = null, failMethod = null, response = null, resumeRetryMs = 0 } = {}) {
   const session = { id: "s", agent: "codex", cwd: process.cwd(), permission: "workspace-write", events: [], agentSessionId: resume };
   const child = new EventEmitter();
   child.stdin = new PassThrough(); child.stderr = new PassThrough();
-  const protocol = new CodexAppServer(child, session, { resolved: { model: "test-model", effort: "medium" } });
+  const protocol = new CodexAppServer(child, session, { resolved: { model: "test-model", effort: "medium" }, resumeRetryMs });
   child.appServer = protocol;
   const sent = [], events = [], controls = [], cancelled = [];
   protocol.on("event", (event) => events.push(event));
@@ -24,6 +24,9 @@ function fixture({ resume = null, failMethod = null } = {}) {
     const message = JSON.parse(data.toString()); sent.push(message);
     if (!message.method || !message.id) return;
     queueMicrotask(() => {
+      const override = response?.(message, sent);
+      if (override === false) return;
+      if (override) return protocol.handleLine(JSON.stringify({ id: message.id, ...override }));
       if (message.method === failMethod) return protocol.handleLine(JSON.stringify({ id: message.id, error: { code: -1, message: "thread not found" } }));
       if (message.method === "turn/start") protocol.handleLine(JSON.stringify({ method: "turn/started", params: { threadId: "thread", turn: { id: "turn", status: "inProgress" } } }));
       const result = message.method.startsWith("thread/") ? { thread: { id: "thread" } } : message.method === "turn/start" ? { turn: { id: "turn", status: "inProgress" } } : {};
@@ -184,8 +187,8 @@ test("native images: Claude streams base64 and Runner keeps server filesystem pa
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-function runnerFixture({ missing = false } = {}) {
-  const session = { id: "runtime", agent: "codex", cwd: process.cwd(), permission: "workspace-write", state: "idle", events: [], agentSessionId: missing ? "deleted" : null };
+function runnerFixture({ missing = false, activeWriter = false, forkError = null } = {}) {
+  const session = { id: "runtime", agent: "codex", cwd: process.cwd(), permission: "workspace-write", state: "idle", events: [], agentSessionId: missing ? "deleted" : activeWriter ? "previous" : null };
   const children = [];
   const runner = new Runner({ touch() {}, get: () => session }, { spawn() {
     const child = new EventEmitter(); child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); children.push(child);
@@ -198,6 +201,8 @@ function runnerFixture({ missing = false } = {}) {
       if (!message.method || !message.id) return;
       queueMicrotask(() => {
         if (message.method === "thread/resume" && missing && children.length === 1) return child.stdout.write(JSON.stringify({ id: message.id, error: { message: "thread not found" } }) + "\n");
+        if (message.method === "thread/resume" && activeWriter) return child.stdout.write(JSON.stringify({ id: message.id, ...writerConflict }) + "\n");
+        if (message.method === "thread/fork" && forkError) return child.stdout.write(JSON.stringify({ id: message.id, error: { code: -32601, message: forkError } }) + "\n");
         const result = message.method.startsWith("thread/") ? { thread: { id: "thread" } } : message.method === "turn/start" ? { turn: { id: "turn", status: "inProgress" } } : {};
         if (message.method === "turn/start") child.send("turn/started", { turn: result.turn });
         child.reply(message.id, result);
@@ -296,4 +301,139 @@ test("app-server: declined or failed file changes are not displayed as applied c
   assert.equal(f.events.at(-1).kind, "tool");
   assert.match(f.events.at(-1).text, /파일 변경: add written.txt/);
   f.protocol.close();
+});
+
+const writerConflict = { error: { code: -32600, message: "thread previous already has an active writer" } };
+
+test("app-server: a temporary writer conflict resumes the same history with one turn", async () => {
+  let resumes = 0;
+  const f = fixture({ resume: "previous", response: (msg) => msg.method === "thread/resume" && ++resumes === 1 ? writerConflict : null });
+  await f.protocol.start("작업");
+  assert.equal(resumes, 2);
+  assert.equal(f.sent.filter((m) => m.method === "thread/fork").length, 0);
+  assert.equal(f.sent.filter((m) => m.method === "turn/start").length, 1);
+  assert.ok(!f.events.some((e) => e.kind === "error"));
+  f.protocol.close();
+});
+
+test("app-server: a persistent writer conflict forks saved history instead of starting an empty conversation", async () => {
+  const f = fixture({ resume: "previous", response: (msg) => msg.method === "thread/resume" ? writerConflict : null });
+  await f.protocol.start("사진", [{ path: "C:/image.png" }]);
+  assert.equal(f.sent.filter((m) => m.method === "thread/resume").length, 2);
+  const fork = f.sent.find((m) => m.method === "thread/fork");
+  assert.equal(fork.params.threadId, "previous");
+  assert.equal(fork.params.cwd, f.session.cwd);
+  assert.equal(fork.params.sandbox, "workspace-write");
+  assert.equal(fork.params.approvalPolicy, "on-request");
+  assert.equal(fork.params.model, "test-model");
+  assert.equal(f.sent.filter((m) => m.method === "thread/start").length, 0);
+  const turns = f.sent.filter((m) => m.method === "turn/start");
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].params.threadId, "thread");
+  assert.deepEqual(turns[0].params.input, codexInput("사진", [{ path: "C:/image.png" }]));
+  assert.ok(f.events.some((e) => e.kind === "status" && /기록을 복사/.test(e.text)));
+  assert.equal(f.events.find((e) => e.agentSessionId).agentSessionId, "thread");
+  f.protocol.close();
+});
+
+test("app-server: fork failures never trigger missing-conversation recovery or an empty paid turn", async () => {
+  const f = fixture({ resume: "previous", response: (msg) => msg.method === "thread/resume" ? writerConflict : msg.method === "thread/fork" ? { error: { code: -32601, message: "method thread/fork not found" } } : null });
+  let stderr = ""; f.child.stderr.on("data", (s) => { stderr += s; });
+  await f.protocol.start("작업");
+  assert.equal(f.sent.filter((m) => m.method === "thread/fork").length, 1);
+  assert.ok(!f.sent.some((m) => ["thread/start", "turn/start"].includes(m.method)));
+  assert.doesNotMatch(stderr, /No conversation found/);
+  assert.match(f.events.at(-1).text, /method thread\/fork not found/);
+  f.protocol.close();
+});
+
+test("app-server: auth, timeout and unsupported-resume errors never discard the original history", async () => {
+  for (const message of ["authentication required", "Codex 응답 시간 초과: thread/resume", "method thread/resume not found"]) {
+    const f = fixture({ resume: "previous", response: (msg) => msg.method === "thread/resume" ? { error: { code: message.startsWith("method") ? -32601 : -1, message } } : null });
+    let stderr = ""; f.child.stderr.on("data", (s) => { stderr += s; });
+    await f.protocol.start("작업");
+    assert.equal(f.sent.filter((m) => m.method === "thread/resume").length, 1);
+    assert.ok(!f.sent.some((m) => ["thread/fork", "thread/start", "turn/start"].includes(m.method)));
+    assert.doesNotMatch(stderr, /No conversation found/);
+    assert.equal(f.session.agentSessionId, "previous");
+    f.protocol.close();
+  }
+});
+
+test("app-server: stopping or closing during writer retry clears its wait and starts no turn", async () => {
+  for (const action of ["interrupt", "close"]) {
+    const f = fixture({ resume: "previous", resumeRetryMs: 60_000, response: (msg) => msg.method === "thread/resume" ? writerConflict : null });
+    const started = f.protocol.start("작업");
+    await tick(); assert.ok(f.protocol.resumeWait);
+    f.protocol[action](); await started;
+    assert.equal(f.protocol.resumeWait, null);
+    assert.equal(f.sent.filter((m) => m.method === "thread/resume").length, 1);
+    assert.ok(!f.sent.some((m) => ["thread/fork", "turn/start"].includes(m.method)));
+    f.protocol.close();
+  }
+});
+
+test("app-server: stopping after retry or fork was sent never launches a turn from the late response", async () => {
+  for (const stopAt of ["retry", "fork"]) {
+    let resumes = 0, blocked;
+    const f = fixture({ resume: "previous", response: (msg) => {
+      if (msg.method === "thread/resume") {
+        resumes++;
+        if (resumes === 1 || stopAt === "fork") return writerConflict;
+        blocked = msg; return false;
+      }
+      if (msg.method === "thread/fork") { blocked = msg; return false; }
+      return null;
+    } });
+    const started = f.protocol.start("작업");
+    while (!blocked) await new Promise((resolve) => setTimeout(resolve, 1));
+    f.protocol.interrupt();
+    f.protocol.handleLine(JSON.stringify({ id: blocked.id, result: { thread: { id: "forked" } } }));
+    await started;
+    assert.ok(!f.sent.some((m) => m.method === "turn/start"));
+    f.protocol.close();
+  }
+});
+
+
+test("runner app-server integration: writer conflict preserves both history IDs and one visible request", async () => {
+  const f = runnerFixture({ activeWriter: true });
+  const ended = new Promise((resolve) => f.runner.once("turnEnd", (...args) => resolve(args)));
+  f.runner.send(f.session, "이어가기", "fake-codex");
+  const began = f.session.runningStartedAt;
+  while (!f.children[0].messages.some((m) => m.method === "turn/start")) await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(f.children.length, 1);
+  assert.equal(f.session.runningStartedAt, began);
+  assert.equal(f.session.agentSessionId, "thread");
+  assert.deepEqual(f.session.cliSessionIds, ["previous", "thread"]);
+  assert.equal(f.session.events.filter((e) => e.kind === "user").length, 1);
+  f.children[0].send("turn/completed", { turn: { id: "turn", status: "completed" } });
+  const [, ok] = await ended;
+  assert.equal(ok, true);
+  assert.equal(f.session.state, "idle");
+});
+
+test("runner app-server integration: unsupported fork does not retry in an empty conversation", async () => {
+  const f = runnerFixture({ activeWriter: true, forkError: "method thread/fork not found" });
+  const ended = new Promise((resolve) => f.runner.once("turnEnd", (...args) => resolve(args)));
+  f.runner.send(f.session, "이어가기", "fake-codex");
+  const [, ok] = await ended;
+  assert.equal(ok, false);
+  assert.equal(f.children.length, 1);
+  assert.equal(f.session.agentSessionId, "previous");
+  assert.ok(!f.children[0].messages.some((m) => ["thread/start", "turn/start"].includes(m.method)));
+});
+
+
+test("runner app-server integration: even a missing-history error from fork cannot discard the source conversation", async () => {
+  const f = runnerFixture({ activeWriter: true, forkError: "No conversation found with session ID: previous" });
+  const ended = new Promise((resolve) => f.runner.once("turnEnd", (...args) => resolve(args)));
+  f.runner.send(f.session, "이어가기", "fake-codex");
+  f.children[0].stderr.write("No conversation found with session ID: previous\n");
+  const [, ok] = await ended;
+  assert.equal(ok, false);
+  assert.equal(f.children.length, 1);
+  assert.equal(f.session.agentSessionId, "previous");
+  assert.equal(f.children[0].appServer.missingConversation, false);
+  assert.ok(!f.children[0].messages.some((m) => ["thread/start", "turn/start"].includes(m.method)));
 });

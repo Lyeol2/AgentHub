@@ -206,7 +206,7 @@ npm start
 
 Claude Code·Codex 기록에 남은 작업 폴더를 모아 프로젝트 목록을 만든다. 작업 폴더는 git 저장소 루트로 묶고, AgentHub 작업 폴더(`<저장소>.agenthub/...`)와 Claude Code 작업 트리(`<저장소>/.claude/worktrees/...`)는 원래 저장소로 합친다. 임시 폴더, 홈 폴더, 지금은 없는 폴더는 뺀다. 첫 검색은 기록 양에 따라 1~2초 걸리고, 이후에는 바뀐 파일만 다시 읽는다.
 
-프로젝트를 누르면 **Claude Code · Codex 세션**에 Claude Code·Codex 앱이나 CLI에서 그 프로젝트로 연 세션이 나온다. 감지만 된 프로젝트는 세션을 가져오거나 새로 만들 때 AgentHub 프로젝트로 등록된다. **가져오기**를 누르면 대화 기록(최근 400개 항목)을 보여 주고, 다음 요청부터 그 CLI 세션을 `--resume`으로 이어서 실행한다.
+프로젝트를 누르면 **Claude Code · Codex 세션**에 Claude Code·Codex 앱이나 CLI에서 그 프로젝트로 연 세션이 나온다. 감지만 된 프로젝트는 세션을 가져오거나 새로 만들 때 AgentHub 프로젝트로 등록된다. **가져오기**를 누르면 대화 기록(최근 400개 항목)을 보여 주고, 다음 요청부터 같은 CLI 대화를 이어서 실행한다.
 
 - Claude: `~/.claude/projects/<인코딩된 경로>/*.jsonl`
 - Codex: `~/.codex/sessions/**/rollout-*.jsonl` (하위 에이전트·검토용 스레드는 제외)
@@ -237,6 +237,7 @@ Claude Code·Codex 기록에 남은 작업 폴더를 모아 프로젝트 목록�
 | Codex | `codex app-server --listen stdio://`에서 `thread/start`·`turn/start` | 저장된 스레드를 `thread/resume`한 뒤 `turn/start` |
 
 - 프롬프트는 명령줄 인자가 아니라 stdin으로 넘긴다. Codex는 JSON-RPC App Server 프로토콜로 대화·이미지·실행 중 승인 응답을 주고받으며 기존 CLI 로그인을 재사용한다. `app-server`를 지원하는 CLI가 필요하다(0.162.1에서 초기화·설정·대화 생성 확인). [OpenAI App Server 문서](https://learn.chatgpt.com/docs/app-server)를 따른다.
+- Codex 대화가 다른 연결에서 열려 있어 `already has an active writer`가 나면 잠시 후 한 번 다시 연결한다. 충돌이 계속되면 저장된 대화 기록을 복사한 새 스레드로 이어가고 그 사실을 세션에 표시한다. 원래 대화는 보존하며, 복구 실패 시 빈 대화로 몰래 전환하지 않는다.
 - 모델을 고르지 않은 Codex 세션은 `~/.codex/config.toml`의 기본 모델을 쓴다. 이 기본 모델이나 세션에 저장한 모델이 Codex 모델 목록(`~/.codex/models_cache.json`, 숨은 모델 포함)에 아예 없으면 지금 계정에서 쓸 수 없는 모델이다(예: "model is not supported when using Codex with a ChatGPT account"). 그때는 목록의 첫 모델로 바꿔 실행하고, 세션 기록과 모델 입력칸에 그 사실을 알린다. 추론 강도를 바꾼 모델이 지원하지 않으면 그 모델의 기본 강도를 쓴다. 이 목록은 마지막으로 받아 온 Codex 버전이 아는 모델만 담으므로, Codex 앱에는 있는 새 모델이 빠져 보이면 CLI를 업데이트한다(`npm i -g @openai/codex@latest`).
 - 새 프로젝트 세션은 **프로젝트 원본 폴더**가 기본이다. 새 세션 창은 열 때마다 워크트리 미사용으로 시작한다. **워크트리에서 작업하기**를 직접 선택하고 이름을 입력하면 `<저장소>.agenthub/<이름>` 폴더와 `agenthub/<이름>` 브랜치를 현재 커밋에서 만든다. 커밋하지 않은 원본 수정은 포함하지 않는다. 이름은 영문·숫자·한글로 시작하는 1~64자의 영문·숫자·한글·하이픈·밑줄이며 Windows 예약어는 쓸 수 없다. 원본 폴더에서 같은 파일을 고치는 세션은 동시에 실행하지 않는다.
 - 워크트리를 선택한 세션은 앱을 다시 시작하거나 재생성해도 같은 작업 폴더와 브랜치를 이어 쓴다. 이전 버전에서 원본으로 전환된 세션의 작업 폴더나 브랜치를 자동 복원하거나 합치지는 않는다. 가져온 CLI 기록은 원본 폴더에서 이어 쓴다.

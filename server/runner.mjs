@@ -187,9 +187,10 @@ export class Runner extends EventEmitter {
         if (session.stopRequested && event.final && event.kind === "error") event.kind = "log";
         if (event.agentSessionId) {
           startedConversation = true;
+          const previousId = session.agentSessionId;
           session.agentSessionId = event.agentSessionId;
           // 다시 시작하거나 새 대화로 바뀌어도 이 세션이 쓴 CLI 대화를 모두 기억한다(기록 목록 연결·삭제에 쓴다).
-          session.cliSessionIds = [...new Set([...(session.cliSessionIds ?? []), event.agentSessionId])];
+          session.cliSessionIds = [...new Set([...(session.cliSessionIds ?? []), previousId, event.agentSessionId].filter(Boolean))];
           delete event.agentSessionId;
         }
         if (event.rateLimit) {
@@ -270,7 +271,7 @@ export class Runner extends EventEmitter {
       // 단, 대화가 시작된 뒤(init) 사용자가 멈춘 턴은 기록이 남아 있으므로 이어 간다(일시중지 후 재개).
       if (!resuming && !completedTurn && !(startedConversation && session.stopRequested)) session.agentSessionId = null;
       // CLI 쪽 대화가 지워졌으면(다른 앱에서 삭제 등) 이어 갈 수 없으므로 새 대화로 한 번 다시 보낸다.
-      if (resuming && !completedTurn && !retry && !session.stopRequested && MISSING_CONVERSATION.test(stderrTail.join(""))) {
+      if (resuming && !completedTurn && !retry && !session.stopRequested && (child.appServer ? child.appServer.missingConversation : MISSING_CONVERSATION.test(stderrTail.join("")))) {
         session.agentSessionId = null;
         this.append(session, { kind: "status", text: "CLI에서 원래 대화를 찾지 못해 새 대화로 다시 보냅니다. 이전 대화 내용은 이어지지 않습니다." });
         try {
