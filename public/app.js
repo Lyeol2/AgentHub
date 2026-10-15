@@ -664,20 +664,20 @@ function showGitTab(tab) {
   }
   for (const panel of $("g-body").querySelectorAll("[data-git-panel]")) panel.hidden = panel.dataset.gitPanel !== tab;
   $(tab === "changes" ? "g-change-preview" : "g-history-detail").append($("g-detail"));
+  if (tab === "pulls" && state.git) pullRequests.activate(state.git.project);
 }
 
 async function loadGit() {
-  if (tab === "pulls" && state.git) pullRequests.activate(state.git.project);
   const p = currentProject();
   if (!p) return;
   const projectPath = p.path;
   if (!state.git || !samePath(state.git.project, projectPath)) {
     state.git = { project: projectPath, selected: { staged: new Set(), unstaged: new Set() }, tab: gitTab(), data: null, loadVersion: 0, viewVersion: 0 };
     closeGitDetail();
+    pullRequests.setProject(projectPath);
     showGitTab(state.git.tab);
     $("g-body").hidden = true;
     $("g-message").value = "";
-    pullRequests.setProject(projectPath);
     $("g-error").textContent = "";
     $("g-branch").textContent = "";
     $("g-sync").textContent = "";
@@ -697,10 +697,10 @@ async function loadGit() {
     }
     current.data = data;
     renderGit();
+    if (current.tab === "pulls") pullRequests.activate(current.project);
     if (current.activeFile) {
       const { file, area } = current.activeFile;
       if (gitFiles(area).some((f) => f.path === file)) showGitFile(file, area);
-    if (current.tab === "pulls") pullRequests.activate(current.project);
       else closeGitDetail();
     }
   } catch (err) {
