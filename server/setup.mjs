@@ -3,7 +3,7 @@
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { locateCli, locateCommand, spawnCli, refreshPath, cliVersion, cliAuth, forgetAuth } from "./cli.mjs";
-import { findWinget, wingetBootstrapPlan } from "./winget.mjs";
+import { findWinget, installedWingetPaths, resolveWinget, wingetBootstrapPlan } from "./winget.mjs";
 
 const isWindows = process.platform === "win32";
 
@@ -81,29 +81,35 @@ export const MANUAL_INSTALL = {
 
 // 도구마다 한 번에 하나의 작업(설치 또는 로그인)만 돈다.
 export class Setup extends EventEmitter {
-  constructor({ cliPath, wingetPath = findWinget, npmPath = findNpm, version = cliVersion, platform = process.platform, installTimeoutMs = INSTALL_TIMEOUT_MS }) {
+  constructor({ cliPath, wingetPath = findWinget, wingetPackages = installedWingetPaths, npmPath = findNpm, version = cliVersion, platform = process.platform, installTimeoutMs = INSTALL_TIMEOUT_MS }) {
     super();
     this.cliPath = cliPath; // (tool) → 실행 파일 경로(설정에서 직접 지정한 경로 포함)
     this.wingetPath = wingetPath;
+    this.wingetPackages = wingetPackages;
     this.npmPath = npmPath;
     this.version = version;
     this.windows = platform === "win32";
     this.installTimeoutMs = installTimeoutMs;
     this.wingetPreparation = null;
+    this.stopRuns = new WeakMap();
     this.jobs = new Map(); // tool → { kind, state, log, url, code, waitsForCode, child }
   }
 
   async status({ fresh = false } = {}) {
     if (fresh) refreshPath();
+    const wingetState = this.windows ? await this.detectWinget({ fresh }) : null;
     const tools = await Promise.all(Object.entries(TOOLS).map(async ([id, t]) => {
       const file = this.cliPath(id);
       const [version, loggedIn] = await Promise.all([this.version(file, { fresh }), cliAuth(id, file, { fresh })]);
-      const plan = installPlan(id, { winget: this.windows ? this.wingetPath() : null, npm: this.npmPath(), windows: this.windows });
+      const plan = installPlan(id, { winget: wingetState?.version ? wingetState.path : null, npm: this.npmPath(), windows: this.windows });
       return { id, label: t.label, path: file, version, loggedIn, installable: this.windows || !!plan, manual: MANUAL_INSTALL[id] };
     }));
-    const file = this.windows ? this.wingetPath() : null;
-    const winget = this.windows ? { id: "winget", label: "Windows 패키지 관리자 (winget)", path: file, version: await this.version(file, { fresh }), installable: true, manual: MANUAL_INSTALL.winget } : null;
+    const winget = wingetState ? { id: "winget", label: "Windows 패키지 관리자 (winget)", ...wingetState, installable: true, manual: MANUAL_INSTALL.winget } : null;
     return { tools, winget, jobs: this.jobList() };
+  }
+
+  detectWinget(options = {}) {
+    return resolveWinget({ ...options, find: this.wingetPath, version: this.version, packagePaths: this.wingetPackages });
   }
 
   jobList() {
@@ -181,6 +187,7 @@ export class Setup extends EventEmitter {
         if (ended) return;
         ended = true;
         clearTimeout(timer);
+        this.stopRuns.delete(job);
         if (job.child === child) delete job.child;
         if (error) reject(error); else resolve(code);
       };
@@ -189,6 +196,7 @@ export class Setup extends EventEmitter {
         this.kill(child);
       }, this.installTimeoutMs) : null;
       timer?.unref?.();
+      this.stopRuns.set(job, () => done(null, null));
       child.once("error", (error) => done(error));
       child.once("close", (code) => done(null, code));
     });
@@ -211,10 +219,10 @@ export class Setup extends EventEmitter {
       if (job.canceled) throw new Error("winget 준비를 취소했습니다.");
       if (code !== 0) throw new Error(`winget 준비에 실패했습니다 (종료 코드 ${code}).`);
       refreshPath();
-      const file = this.wingetPath();
-      if (!file || !await this.version(file, { fresh: true })) throw new Error("설치가 끝났지만 winget 실행을 확인하지 못했습니다.");
+      const found = await this.detectWinget({ fresh: true });
+      if (!found.version) throw new Error("설치가 끝났지만 winget 실행을 확인하지 못했습니다.");
       this.finish("winget", job, 0);
-      return file;
+      return found.path;
     })().catch((error) => {
       this.finish("winget", job, null, error);
       throw error;
@@ -228,8 +236,8 @@ export class Setup extends EventEmitter {
 
   async ensureWinget(requestJob) {
     if (this.wingetPreparation) return this.wingetPreparation.promise;
-    const file = this.wingetPath();
-    if (file && await this.version(file, { fresh: true })) return file;
+    const found = await this.detectWinget({ fresh: true });
+    if (found.version) return found.path;
     if (requestJob?.canceled || requestJob?.state !== "running") return null;
     return this.prepareWinget().promise;
   }
@@ -298,7 +306,10 @@ export class Setup extends EventEmitter {
     const job = this.jobs.get(tool);
     if (job?.state !== "running") return false;
     job.canceled = true;
-    if (job.child) this.kill(job.child);
+    const child = job.child;
+    this.stopRuns.get(job)?.();
+    if (this.wingetPreparation?.job === job) this.wingetPreparation = null;
+    if (child) this.kill(child);
     this.finish(tool, job, null);
     return true;
   }
