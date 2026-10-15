@@ -3,8 +3,9 @@ import { $, AGENT_LABEL, STATE_LABEL, el, badge, sessionLabel, pill, renderLife,
 import { renderSessionElapsed } from "../../shared/elapsed.js";
 import { linkLabel } from "../../shared/flow.js";
 import { firstLine } from "../../shared/store.js";
-import { closeContextMenu } from "../../shared/context-menu.js";
-import { composerAction } from "../../composer.js";
+import { closeContextMenu, openContextMenu } from "../../shared/context-menu.js";
+import { composerAction, builtinCommand } from "../../composer.js";
+import { createCompletion } from "./completion.js";
 import { createAttachmentComposer, uploadAttachments, renderAttachmentLinks } from "./image-composer.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 
@@ -50,6 +51,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("s-title").textContent = s.title;
     $("s-kind").hidden = s.kind !== "orchestrator";
     imageComposers.s.activate(s.id);
+    completion?.close();
     renderExportResult(s);
     renderState();
 
@@ -100,6 +102,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   }
 
   const composerBusy = new Set();
+  let completion = null;
   const imageComposers = Object.fromEntries(["s", "c"].map((prefix) => [prefix, createAttachmentComposer({ prefix, onChange: () => renderComposerAction(prefix, data.current) })]));
   let newChatDraft = 0;
   const pendingChats = new Map();
@@ -113,22 +116,40 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("s-export").disabled = exporting.has(s.id);
   }
 
-  $("s-export").addEventListener("click", async () => {
+  // format: "agenthub"(다른 세션에서 불러오거나 읽힐 수 있는 세션 파일) | "markdown"(사람이 읽는 문서)
+  async function exportRecord(format = "agenthub") {
     const s = data.current;
     if (!s || s.chat || exporting.has(s.id)) return;
     exporting.add(s.id);
-    exportResults.set(s.id, "기록을 문서로 저장하고 있습니다…");
+    exportResults.set(s.id, format === "agenthub" ? "세션을 .agenthub 파일로 저장하고 있습니다…" : "기록을 문서로 저장하고 있습니다…");
     renderExportResult(s);
     try {
-      const result = await api("POST", "/api/sessions/" + s.id + "/export", {});
-      exportResults.set(s.id, "저장됨 · " + result.relativePath);
+      const result = await api("POST", "/api/sessions/" + s.id + "/export", { format });
+      exportResults.set(s.id, "저장됨 · " + result.relativePath + (format === "agenthub" ? " · 다른 세션에서 기록 가져오기로 불러오거나 읽힐 수 있습니다" : ""));
     } catch (err) {
       exportResults.set(s.id, "내보내기 실패 · " + err.message);
     } finally {
       exporting.delete(s.id);
       if (data.current?.id === s.id) renderExportResult(s);
     }
+  }
+
+  $("s-export").addEventListener("click", (e) => {
+    const s = data.current;
+    if (!s || s.chat || exporting.has(s.id)) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    openContextMenu({ preventDefault() {}, clientX: rect.left, clientY: rect.bottom + 4 }, "기록 내보내기", [
+      ["세션 파일 (.agenthub)", () => exportRecord("agenthub"), { title: "다른 세션에서 새 세션으로 불러오거나 기록을 읽힐 수 있는 파일로 저장합니다" }],
+      ["Markdown 문서 (.md)", () => exportRecord("markdown"), { title: "사람이 읽기 좋은 문서로 저장합니다" }],
+    ]);
   });
+
+  // "/" 기본 명령: 작성창에서 고르거나 그대로 보내면 실행한다.
+  function runBuiltin(name) {
+    if (name === "clear") return restartSession();
+    if (name === "export") return exportRecord("agenthub");
+    if (name === "import") return $("s-import").click();
+  }
 
   function renderComposerAction(prefix, s) {
     const action = composerAction(s, $(prefix + "-prompt").value, imageComposers[prefix].count());
@@ -150,7 +171,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       ? "작업 중 · 입력 후 Enter 대기열에 추가, 입력을 비우면 ⏸ 일시중지"
       : s?.state === "paused"
         ? "일시중지됨 · ▶ 재개 또는 요청을 입력해 이어서 진행"
-        : (prefix === "c" ? "메시지를 입력하세요" : "요청을 입력하세요") + " · Enter 보내기, Shift+Enter 줄바꿈";
+        : (prefix === "c" ? "메시지를 입력하세요" : "요청을 입력하세요 · @ 파일 참조, / 스킬·명령") + " · Enter 보내기, Shift+Enter 줄바꿈";
     renderQueue(prefix, s);
   }
 
@@ -241,6 +262,12 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     const action = composerAction(s, raw, snapshot.items.length).action;
     if (action === "pause" || action === "resume") return togglePause();
     if (!prompt && !snapshot.items.length) return;
+    const builtin = !snapshot.items.length && builtinCommand(prompt);
+    if (builtin) {
+      input.value = "";
+      renderComposerAction("s", s);
+      return runBuiltin(builtin);
+    }
     composerBusy.add("s");
     renderComposerAction("s", s);
     try {
@@ -255,6 +282,8 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       if (navigation.view === "session") renderComposer("s", data.current);
     }
   });
+  // 자동 완성은 작성창의 Enter 처리보다 먼저 등록해야 목록이 열린 동안 Enter가 보내기로 가지 않는다.
+  completion = createCompletion({ textarea: $("s-prompt"), api, getSession: () => data.current, onBuiltin: runBuiltin });
   composerKeys("s");
 
   $("s-crumb-project").addEventListener("click", (e) => {

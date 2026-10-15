@@ -1,0 +1,105 @@
+(async function () {
+  const { createCommandsController } = await import("/features/commands/controller.js");
+  const { createCompletion } = await import("/features/sessions/completion.js");
+  const $ = (id) => document.getElementById(id);
+  const checks = [], requests = [];
+  const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 25));
+  const until = async (predicate) => { const end = Date.now() + 8000; while (!predicate()) { if (Date.now() > end) throw Error("Timed out: " + predicate); await tick(); } };
+  const project = "C:/fixture";
+  const sessions = [
+    { id: "a", title: "프런트", agent: "claude", state: "running", projectPath: project, createdAt: "2026-01-01" },
+    { id: "b", title: "서버", agent: "codex", state: "idle", projectPath: project, createdAt: "2026-01-02" },
+    { id: "x", title: "다른 프로젝트", agent: "claude", state: "idle", projectPath: "C:/other", createdAt: "2026-01-03" },
+    { id: "chat", title: "채팅", agent: "claude", state: "idle", chat: true, projectPath: null, createdAt: "2026-01-04" },
+  ];
+  const group = { id: "cmd-group", kind: "group", title: "병렬 구현", members: ["a", "b"], state: "idle", projectPath: project };
+  const data = { commands: [group], shells: [], sessions };
+  const navigation = { project, view: "project" };
+  const api = async (method, url, body) => {
+    requests.push({ method, url, body });
+    if (method === "GET" && url.startsWith("/api/commands?")) return { shells: [], commands: data.commands };
+    if (method === "POST" && url.endsWith("/run")) return {};
+    if (method === "POST" && url === "/api/commands") { const node = { ...body, id: "cmd-new", state: "idle" }; data.commands.push(node); return node; }
+    if (method === "GET" && url.startsWith("/api/skills?")) return [{ name: "code-review", description: "변경을 리뷰한다", scope: "claude" }, { name: "issue-fix", description: "이슈를 고친다", scope: "project" }];
+    if (method === "GET" && url.startsWith("/api/sessions/s1/files?q=")) {
+      const q = decodeURIComponent(url.split("q=")[1]);
+      return { files: ["src/", "src/app.js", "src/lib/", "README.md"].filter((f) => f.includes(q)) };
+    }
+    throw Error("Unexpected API " + method + " " + url);
+  };
+  let controller;
+  const renderGraph = () => $("p-graph").replaceChildren(...data.commands.map((node) => controller.commandNode(node)));
+  controller = createCommandsController({ api, loadLinks: async () => {}, renderGraph, connectCreatedGraphNode: async () => {}, commandById: (id) => data.commands.find((n) => n.id === id), data, navigation });
+  $("view-dashboard").hidden = true; $("view-project").hidden = false; renderGraph();
+
+  // ── 세션 묶음 노드 ──
+  let card = $("p-graph").querySelector('[data-id="cmd-group"]');
+  check(card.classList.contains("gcmd-group") && card.querySelectorAll(".group-chip").length === 2, "group card lists its member sessions");
+  check(card.textContent.includes("진행 중 1/2") && card.querySelector(".gcmd-btn").disabled, "group waits while a member is running");
+  check(card.querySelector(".group-chip.busy")?.textContent === "프런트", "running member is highlighted");
+  sessions[0].state = "idle"; renderGraph();
+  card = $("p-graph").querySelector('[data-id="cmd-group"]');
+  check(!card.querySelector(".gcmd-btn").disabled && card.textContent.includes("모두 끝남"), "group can hand off once every member is idle");
+  await controller.runCommand(group);
+  check(requests.some((r) => r.method === "POST" && r.url === "/api/commands/cmd-group/run"), "manual hand-off calls run");
+  sessions[1].state = "paused"; renderGraph();
+  const before = requests.length;
+  const originalAlert = window.alert; let alerted = ""; window.alert = (message) => { alerted = message; };
+  await controller.runCommand(group);
+  window.alert = originalAlert;
+  check(requests.length === before && alerted.includes("진행 중"), "paused member blocks manual hand-off");
+  sessions[1].state = "idle";
+
+  controller.openCommandDialog(null, { x: 10, y: 20 }, null, "group", { members: ["b"] });
+  const boxes = [...$("group-members").querySelectorAll("input[type=checkbox]")];
+  check(!$("group-members-row").hidden && $("command-settings").hidden && $("command-text-row").hidden && $("button-prompt-row").hidden, "group editor shows only member picker");
+  check(boxes.map((b) => b.value).join() === "a,b", "only this project's non-chat sessions can be grouped");
+  check(!boxes[0].checked && boxes[1].checked, "selected graph sessions are preselected");
+  boxes[0].checked = true; $("command-title").value = "묶음 2";
+  $("command-form").querySelector('[value="ok"]').click();
+  await until(() => !$("command-dialog").open);
+  const created = requests.find((r) => r.method === "POST" && r.url === "/api/commands");
+  check(created.body.kind === "group" && created.body.members.join() === "a,b" && !Object.hasOwn(created.body, "cwdMode"), "group creation saves members");
+
+  // ── 작성창 자동 완성 ──
+  $("view-project").hidden = true; $("view-session").hidden = false;
+  const textarea = $("s-prompt");
+  let builtin = null, submitted = 0, escaped = 0;
+  createCompletion({ textarea, api, getSession: () => ({ id: "s1", projectPath: project }), onBuiltin: (name) => { builtin = name; } });
+  // 작성창의 보내기(Enter) 처리는 자동 완성 뒤에 등록된다.
+  textarea.addEventListener("keydown", (e) => { if (e.key === "Enter") submitted++; });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented) escaped++; });
+  const menu = $("s-prompt-complete");
+  const type = (value) => { textarea.focus(); textarea.value = value; textarea.setSelectionRange(value.length, value.length); textarea.dispatchEvent(new Event("input")); };
+  const key = (k) => textarea.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }));
+
+  type("/");
+  await until(() => !menu.hidden && menu.children.length >= 5);
+  check(menu.textContent.includes("/clear") && menu.textContent.includes("/code-review") && menu.textContent.includes("Claude 스킬"), "slash lists built-in commands and skills");
+  type("/co");
+  await until(() => menu.children.length === 1);
+  key("Enter");
+  check(textarea.value === "/code-review " && submitted === 0 && menu.hidden, "Enter inserts the skill without sending");
+  type("검토 @src/a");
+  await until(() => !menu.hidden && menu.textContent.includes("src/app.js"));
+  key("Enter");
+  check(textarea.value === "검토 @src/app.js " && submitted === 0, "Enter inserts the file reference");
+  type("@sr");
+  await until(() => !menu.hidden && menu.children.length >= 2);
+  key("ArrowDown"); key("Tab");
+  check(textarea.value === "@src/app.js ", "arrow keys move the selection");
+  type("@src");
+  await until(() => !menu.hidden);
+  key("Escape");
+  check(menu.hidden && escaped === 0, "Escape closes the list without pausing the session");
+  type("/cl");
+  await until(() => !menu.hidden && menu.textContent.includes("/clear"));
+  key("Enter");
+  check(builtin === "clear" && textarea.value === "", "choosing a built-in command runs it");
+  type("평범한 요청");
+  await tick();
+  key("Enter");
+  check(menu.hidden && submitted === 1, "Enter sends when no list is open");
+  return checks;
+})()

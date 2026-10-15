@@ -6,6 +6,7 @@ export function taskRoutes(s) {
     ["GET", "tasks/settings", ({ query }) => s.settings(query.get("path"))],
     ["PUT", "tasks/settings", ({ query, body }) => s.updateSettings(query.get("path"), body)],
     ["POST", "tasks", ({ body }) => s.create(body)],
+    ["DELETE", "tasks/:id", ({ params }) => s.remove(params.id)],
     ["POST", "tasks/:id/finish", ({ params, body }) => s.finish(params.id, body)],
     ["POST", "tasks/:id/refresh", ({ params }) => s.refresh(params.id)],
     ["POST", "tasks/:id/sync", ({ params }) => s.sync(params.id)],

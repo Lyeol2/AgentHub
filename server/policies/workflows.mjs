@@ -90,6 +90,35 @@ export function noMatchNote(links, verdict) {
   return `조건에 맞는 연결이 없어 넘기지 않았습니다 (마지막 줄: "${verdict.slice(0, 80) || "없음"}")`;
 }
 
+// 세션 묶음: 묶은 세션이 모두 진행 중이 아닐 때만 다음 노드로 넘어간다.
+// 성공은 묶은 세션 중 오류로 끝난 것이 없을 때이고, 키워드는 어느 한 세션의 마지막 줄에 있으면 맞는다.
+export function groupOutcome(members) {
+  return {
+    ok: members.every((s) => s.state !== "error"),
+    verdict: members.map((s) => verdictLine(lastAnswer(s))).filter(Boolean).join("\n"),
+  };
+}
+
+// members: [{ session, answer, files }]
+export function groupHandoffText(group, members, link) {
+  return [
+    `[세션 묶음 "${group.title}"에서 넘어온 결과]`,
+    `묶은 세션 ${members.length}개가 모두 끝났다. 각 세션의 결과는 아래와 같다.`,
+    ...members.map(({ session, answer, files }) => [
+      "",
+      `--- ${session.title} (${session.agent}) ---`,
+      `작업 폴더: ${session.cwd}${session.worktree ? ` (브랜치 ${session.worktree.branch})` : ""}`,
+      `상태: ${session.state === "error" ? "실패" : "완료"}`,
+      "변경 파일:",
+      files?.trim() || "(없음)",
+      "마지막 답변:",
+      answer || "(답변 없음)",
+    ].join("\n")),
+    "",
+    link.note?.trim() || "이 결과들을 모아 네 역할에 맞게 처리하라.",
+  ].join("\n");
+}
+
 export function handoffText(source, link, answer, files) {
   const role = source.role ? `\n보낸 세션의 역할: ${source.role.split(/\r?\n/)[0]}` : "";
   const branch = source.worktree ? ` (브랜치 ${source.worktree.branch})` : "";

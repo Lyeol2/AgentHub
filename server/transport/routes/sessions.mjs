@@ -1,7 +1,7 @@
 import { ATTACHMENT_BODY_LIMIT, isImageAttachment, safeAttachmentName } from "../../attachments.mjs";
-import { RECORD_MAX_BYTES } from "../../session-import.mjs";
+import { BUNDLE_MAX_BYTES } from "../../session-bundle.mjs";
 
-const RECORD_BODY_LIMIT = RECORD_MAX_BYTES * 2 + 100_000; // JSON 이스케이프 여유
+const RECORD_BODY_LIMIT = BUNDLE_MAX_BYTES * 2 + 100_000; // JSON 이스케이프 여유(.md 문서보다 큰 .agenthub 파일 기준)
 
 export function sessionRoutes(s) {
   return [
@@ -29,7 +29,9 @@ export function sessionRoutes(s) {
       res.writeHead(200, headers);
       res.end(image.bytes);
     }],
-    ["POST", "sessions/:id/export", ({ params }) => s.exportRecord(params.id)],
+    ["POST", "sessions/:id/export", ({ params, body }) => s.exportRecord(params.id, { format: body.format ?? "markdown" })],
+    ["POST", "sessions/:id/read-record", ({ params, body }) => s.readRecordInto(params.id, body), { maxBodyBytes: RECORD_BODY_LIMIT }],
+    ["GET", "sessions/:id/files", ({ params, query }) => s.files(params.id, query.get("q") ?? "")],
     ["POST", "sessions/:id/messages", ({ params, body }) => s.sendMessage(params.id, body)],
     ["DELETE", "sessions/:id/queue/:item", ({ params }) => s.queueAction(params.id, params.item, "delete")],
     ["POST", "sessions/:id/queue/:item", ({ params, body }) => s.queueAction(params.id, params.item, body.action)],
