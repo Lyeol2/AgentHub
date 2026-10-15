@@ -1,7 +1,7 @@
 import { connectEventStream } from "../shared/stream.js";
 import { applySessionState, samePath } from "../shared/store.js";
 
-export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate }) {
+export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate }) {
   const source = connectEventStream({ handlers: {
   event: (e) => {
     const { sessionId, event } = JSON.parse(e.data);
@@ -27,6 +27,7 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     if (navigation.view === "project") renderProjectSessions();
     // 시작·종료 상태를 모두 반영해 노선도의 작업 중 표시를 갱신한다.
     if (navigation.view === "project" && projectTab() === "git" && item && samePath(item.projectPath, navigation.project)) loadGit();
+    if (navigation.view === "project" && projectTab() === "tasks" && item && samePath(item.projectPath, navigation.project)) loadTasks?.(navigation.project, { localOnly: true });
     if (data.current?.id === sessionId) {
       renderState();
     }
@@ -35,6 +36,9 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
   // 다른 창에서 커밋·병합했다.
   git: (e) => {
     if (navigation.view === "project" && projectTab() === "git" && samePath(JSON.parse(e.data).projectPath, navigation.project)) loadGit();
+  },
+  tasks: (e) => {
+    if (navigation.view === "project" && projectTab() === "tasks" && samePath(JSON.parse(e.data).projectPath, navigation.project)) loadTasks?.(navigation.project, { localOnly: true });
   },
   // 프로젝트를 더하거나 뺐다. 보고 있던 프로젝트가 빠졌으면 대시보드로 돌아간다.
   projects: async () => {
@@ -70,6 +74,7 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
   open: () => {
     loadSessions();
     if (data.current) selectSession(data.current.id);
+    if (navigation.view === "project" && projectTab() === "tasks") loadTasks?.(navigation.project);
   },
   } });
   return source;

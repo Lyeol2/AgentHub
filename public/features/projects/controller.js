@@ -2,7 +2,7 @@ import { createProjectsView } from "./view.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 
-export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation }) {
+export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation }) {
   const ui = {
     "filter": "",
     "removingProject": null,
@@ -60,12 +60,13 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   }
 
   // ── 프로젝트 탭 ─────────────────────────────────────────────────
-  // 세션 흐름 / 세션 목록 / Git. 마지막에 본 탭을 이 브라우저에 기억한다.
+  // 프로젝트 탭. 마지막에 본 탭을 이 브라우저에 기억한다.
   const TAB_KEY = "agenthub-project-tab";
-  const PROJECT_TABS = ["flow", "sessions", "git"];
+  const PROJECT_TABS = ["flow", "sessions", "tasks", "git"];
   const projectTab = () => (PROJECT_TABS.includes(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "flow");
 
   function showProjectTab(tab) {
+    navigation.viewRevision = (navigation.viewRevision ?? 0) + 1;
     localStorage.setItem(TAB_KEY, tab);
     for (const b of $("p-tabs").querySelectorAll("[data-tab]")) {
       b.classList.toggle("active", b.dataset.tab === tab);
@@ -73,6 +74,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     }
     for (const panel of document.querySelectorAll("#view-project .tab-panel")) panel.hidden = panel.dataset.panel !== tab;
     if (tab === "git") loadGit();
+    if (tab === "tasks") loadTasks?.(navigation.project);
   }
 
   $("p-tabs").addEventListener("click", (e) => {
@@ -89,7 +91,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   function openRemoveProject(p) {
     const sessions = hubSessions(p).filter((s) => !s.chat);
     const running = sessions.filter((s) => s.state === "running").length;
-    const worktrees = sessions.filter((s) => s.worktree).length;
+    const worktrees = sessions.filter((s) => s.worktree && !s.taskId).length;
     const commandCount = data.commandsProject && samePath(data.commandsProject, p.path) ? (data.commands ?? []).length : 0;
     ui.removingProject = p;
     $("project-remove-name").textContent = p.name;

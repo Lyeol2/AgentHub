@@ -13,6 +13,7 @@ import { createSkillsController } from "./features/skills/controller.js";
 import { createKnowledgeController } from "./features/knowledge/controller.js";
 import { createSessionsController } from "./features/sessions/controller.js";
 import { createCreationController } from "./features/creation/controller.js";
+import { createTasksController } from "./features/tasks/controller.js";
 
 const api = createApiClient();
 const { data, navigation } = createStore();
@@ -27,11 +28,13 @@ const sessionById = (id) => data.sessions.find((session) => session.id === id);
 const commandById = (id) => data.commands.find((command) => command.id === id);
 const nodeTitle = (id) => (sessionById(id) ?? commandById(id))?.title ?? "?";
 const { fillModels, fillEfforts } = createModelControls(() => data.status);
+let sessionSelectionRevision = 0;
 const cancelNodeCreation = () => { creation.cancelCreation(); commands.cancelCreation(); };
 
 // ── 화면 전환 ───────────────────────────────────────────────────
 function show(view) {
   navigation.viewRevision = (navigation.viewRevision ?? 0) + 1;
+  tasks.invalidateProject?.();
   clearGraphTransientState();
   navigation.view = view;
   for (const name of ["dashboard", "project", "session", "chat"]) $(`view-${name}`).hidden = name !== view;
@@ -57,7 +60,11 @@ async function goProject(projectPath) {
 
 // 일반 채팅은 채팅 화면으로, 나머지는 세션 화면으로 연다.
 async function selectSession(id) {
-  data.current = await api("GET", `/api/sessions/${id}`);
+  const request = ++sessionSelectionRevision;
+  const viewRevision = navigation.viewRevision;
+  const session = await api("GET", `/api/sessions/${id}`);
+  if (request !== sessionSelectionRevision || viewRevision !== navigation.viewRevision) return;
+  data.current = session;
   navigation.project = null;
   if (data.current.chat) {
     show("chat");
@@ -76,6 +83,7 @@ const renderProjectNav = (...args) => projects.renderProjectNav(...args);
 const currentProject = (...args) => projects.currentProject(...args);
 const renderLinkConditions = (...args) => graph.renderLinkConditions(...args);
 const loadGit = (...args) => git.loadGit(...args);
+const loadTasks = (...args) => tasks.loadTasks(...args);
 const loadLinks = (...args) => graph.loadLinks(...args);
 const renderGraph = (...args) => graph.renderGraph(...args);
 const loadMessages = (...args) => graph.loadMessages(...args);
@@ -132,7 +140,7 @@ const settings = createSettingsController({
   api, goDashboard, loadProjects, renderProjectNav, currentProject, renderLinkConditions, data, navigation
 });
 const projects = createProjectsController({
-  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation
+  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation
 });
 const git = createGitController({
   api, selectSession, openSetup, currentProject, projectTab, navigation
@@ -155,6 +163,11 @@ const sessions = createSessionsController({
 const creation = createCreationController({
   api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, loadHub, fillModels, fillEfforts, openChat, openSettings, data, navigation
 });
+const tasks = createTasksController({
+  api, data, navigation, loadStatus, loadSessions, loadProjects, fillModels, fillEfforts, selectSession,
+  getProjectPath: () => navigation.project,
+  reloadData: () => Promise.all([loadSessions(), loadProjects()]),
+});
 
 await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate(), loadProjects(), loadLinks()]);
 if (POPUP) {
@@ -164,7 +177,7 @@ if (POPUP) {
 } else goDashboard();
 
 const stream = connectLiveUpdates({
-  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate
+  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate
 });
 loadAuth();
 loadSetup();

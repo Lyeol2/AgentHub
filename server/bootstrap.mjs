@@ -21,6 +21,7 @@ import { createWorkflowService } from "./application/workflows.mjs";
 import { createCommandService } from "./application/commands.mjs";
 import { createSkillService } from "./application/skills.mjs";
 import { createGitService } from "./application/git.mjs";
+import { createTaskService } from "./application/tasks.mjs";
 import { createSystemService } from "./application/system.mjs";
 import { createTurnLifecycle } from "./application/lifecycle.mjs";
 import { createHttpServer } from "./transport/http.mjs";
@@ -62,6 +63,7 @@ export function createHub(options = {}) {
   let sessions;
   let projects;
   let workflows;
+  let tasks;
   let updater = null;
   let updateListener = null;
 
@@ -83,20 +85,24 @@ export function createHub(options = {}) {
     config, store, runner, links, commands, chain, board, notify,
     saveConfig: persistConfig,
     sessions: () => sessions,
+    tasks: () => tasks,
   });
   sessions = createSessionService({
     config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects,
     saveConfig: persistConfig,
     workflows: () => workflows,
+    tasks: () => tasks,
   });
   workflows = createWorkflowService({ store, runner, links, commands, chain, projects, sessions, notify });
+  tasks = createTaskService({ dataDir, store, runner, sessions, projects, notify, github: deps.github });
   const services = {
     sessions,
     projects,
     workflows,
+    tasks,
     commands: createCommandService({ commands, chain, links, store, projects, cliPaths, notify }),
     skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
-    git: createGitService({ sessions, projects, runner, notify }),
+    git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks }),
     system: createSystemService({
       config, setup, cliPaths, limits, saveConfig: persistConfig, version,
       getUpdater: () => updater,

@@ -20,7 +20,7 @@ const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
 export function createSessionService({
   config, dataDir, store, runner, chain, links, mailbox, mcpTokens, mcpDir, chatDir,
-  cliPaths, notify: broadcast, saveConfig, projects, workflows
+  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks
 }) {
   const { ensureProject, projectSessions } = projects;
   const attachments = new AttachmentStore({ dataDir: dataDir ?? path.dirname(mcpDir) });
@@ -63,6 +63,7 @@ export function createSessionService({
   // CLI에 실제로 넘길 내용. 오케스트레이터에는 지휘 규칙과 세션 상태를 함께 넣는다.
   // AI를 바꾼 뒤 새 대화의 첫 요청에는 이전 AI의 진행 상황을 붙인다. 새 대화가 시작되면(아래 turnEnd) 지운다.
   function composeInput(session, prompt) {
+    tasks?.()?.assertSession?.(session);
     const input = composeBase(session, prompt);
     return session.handover && !session.agentSessionId ? `${session.handover}\n\n${input}` : input;
   }
@@ -165,7 +166,7 @@ export function createSessionService({
   // chat: 프로젝트 없이 빈 폴더에서 도구 없이 대화만 하는 일반 채팅(project는 null).
   // 기본은 원본 폴더다. isolate:true와 사용자가 지정한 이름이 있을 때만 새 worktree를 만든다.
   // 두 번째 인수는 재생성할 때 기존 작업 폴더를 이어 쓰는 내부 전용 값이다.
-  async function createSession({ project, title, role, roleName, orchestrator, createdBy, chat, isolate = false, worktreeName, ...options }, { worktree: existingWorktree = null } = {}) {
+  async function createSession({ project, title, role, roleName, orchestrator, createdBy, chat, isolate = false, worktreeName, ...options }, { worktree: existingWorktree = null, taskId = null } = {}) {
     chat = !!chat;
     if (chat && orchestrator) throw new HttpError(400, "일반 채팅은 오케스트레이터로 만들 수 없습니다.");
     const { agent, model, effort, permission } = checkSessionOptions({ ...options, chat });
@@ -212,6 +213,7 @@ export function createSessionService({
       projectPath: project.path,
       cwd,
       worktree,
+      ...(taskId ? { taskId } : {}),
       baseCommit: git ? await headCommit(cwd) : null,
       agentSessionId: null,
       state: "idle",
@@ -528,18 +530,21 @@ export function createSessionService({
   async function recreate(id) {
     const session = getSession(id);
     if (runner.isRunning(id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
-    if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, "워크트리 폴더가 없습니다. 서버를 다시 시작해 원본 폴더로 전환한 뒤 재생성하세요.");
+    if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, session.taskId
+      ? "작업 폴더가 없습니다. 작업 탭에서 상태를 확인하세요. 대화 기록은 보관되며 작업 폴더 복구 또는 새 작업이 필요합니다."
+      : "워크트리 폴더가 없습니다. 서버를 다시 시작해 원본 폴더로 전환한 뒤 재생성하세요.");
     const created = await createSession({
       project: session.chat ? null : ensureProject(session.projectPath),
       title: session.title, role: session.role, roleName: session.roleName,
       orchestrator: session.kind === "orchestrator", createdBy: session.createdBy,
       chat: session.chat, agent: session.agent, model: session.model, effort: session.effort, permission: session.permission,
-    }, { worktree: session.worktree });
+    }, { worktree: session.worktree, taskId: session.taskId });
     Object.assign(created, {
       baseCommit: session.baseCommit ?? created.baseCommit, graphPos: session.graphPos ?? null,
       previousCwd: session.previousCwd, previousWorktree: session.previousWorktree,
     });
     store.touch(created);
+    tasks?.()?.replaceSession?.(id, created.id);
     for (const link of links.list()) {
       if (link.from === id) links.update(link, { from: created.id, pending: null });
       if (link.to === id) links.update(link, { to: created.id, pending: null });
@@ -565,6 +570,7 @@ export function createSessionService({
 
   async function remove(id, { force = false, removeWorktree: removeFolder = false, deleteRecords = false } = {}) {
     const session = getSession(id);
+    if (removeFolder && session.taskId) throw new HttpError(409, "작업의 폴더는 작업 탭에서 병합 상태를 확인한 뒤 정리하세요.", "task-worktree");
     if (runner.isRunning(id)) {
       if (!force) throw new HttpError(409, "실행 중인 세션입니다.", "running");
       runner.stop(session);
@@ -582,6 +588,7 @@ export function createSessionService({
       throw new HttpError(500, `세션 파일을 지우지 못했습니다: ${err.message}`);
     }
     const records = cleanupSession(session, { deleteRecords });
+    tasks?.()?.detachSession?.(id);
     broadcast("sessions", {});
     broadcast("links", {});
     return { ok: true, records };

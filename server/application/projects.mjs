@@ -5,7 +5,7 @@ import { removeWorktree } from "../git.mjs";
 import { HttpError } from "./errors.mjs";
 export const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
-export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions }) {
+export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks }) {
   const cleanupSession = (...args) => sessions().cleanupSession(...args);
   const cliSessionIds = (...args) => sessions().cliSessionIds(...args);
   const clearBoard = (...args) => board.clear(...args);
@@ -39,7 +39,7 @@ export function createProjectService({ config, store, runner, links, commands, c
     const worktreeErrors = [];
     for (const s of sessions) {
       if (runner.isRunning(s.id)) runner.stop(s);
-      if (removeWorktrees && s.worktree) {
+      if (removeWorktrees && s.worktree && !s.taskId) {
         try {
           await removeWorktree(s.projectPath, s.worktree.dir);
         } catch (err) {
@@ -48,6 +48,7 @@ export function createProjectService({ config, store, runner, links, commands, c
       }
       store.remove(s.id);
       cleanupSession(s);
+      tasks?.()?.detachSession?.(s.id);
     }
     const cmds = commands.list(dir);
     for (const c of cmds) {
