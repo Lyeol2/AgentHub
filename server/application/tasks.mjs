@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { githubPulls, normalizePull } from "../github.mjs";
 import { summary } from "../store.mjs";
 import { HttpError } from "./errors.mjs";
+import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
   taskDirty, taskWorktreeLocation, sameTaskPath, assertTaskGitIdle } from "../tasks.mjs";
 
@@ -19,17 +20,15 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   const queue = new Map();
   const busy = new Set();
   for (const file of fs.readdirSync(directory).filter((name) => /^[a-z0-9-]+\.json$/i.test(name))) {
-    const task = JSON.parse(fs.readFileSync(path.join(directory, file), "utf8"));
-    if (task.id && task.projectPath && task.cwd) records.set(task.id, task);
+    const task = readJsonFile(path.join(directory, file), { dataDir, fallback: () => null, valid: (value) => value !== null && typeof value === "object" });
+    if (task?.id && task.projectPath && task.cwd) records.set(task.id, task);
   }
   const sessionService = () => typeof sessions === "function" ? sessions() : sessions;
   const projectService = () => typeof projects === "function" ? projects() : projects;
   function save(task) {
     task.updatedAt = now();
     const file = path.join(directory, `${task.id}.json`);
-    const temp = `${file}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(task, null, 2));
-    fs.renameSync(temp, file);
+    writeJsonAtomic(file, task);
     records.set(task.id, task);
     notify("tasks", { projectPath: task.projectPath, taskId: task.id });
     return task;
