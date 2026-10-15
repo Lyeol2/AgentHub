@@ -1,5 +1,6 @@
 import { renderMarkdown } from "./markdown.js";
 import { layoutGitGraph, gitWorkRows } from "./gitgraph.js";
+import { createPullRequests } from "./gitpulls.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -633,7 +634,8 @@ $("p-session-filter").addEventListener("input", renderProjectSessionTable);
 
 // ── Git 탭 ──────────────────────────────────────────────────────
 const GIT_TAB_KEY = "agenthub-git-tab";
-const GIT_TABS = ["changes", "history"];
+const GIT_TABS = ["changes", "history", "pulls"];
+const pullRequests = createPullRequests({ api, renderMarkdown, renderDiff, onSetup: () => openSetup("gh"), isProjectCurrent: (project) => samePath(project, state.project) });
 const gitTab = () => GIT_TABS.includes(localStorage.getItem(GIT_TAB_KEY)) ? localStorage.getItem(GIT_TAB_KEY) : "changes";
 const gitBusy = () => !!(state.git?.indexBusy || state.git?.committing || state.git?.merging);
 const gitFiles = (area) => (state.git?.data?.files ?? []).filter((f) => f[area]);
@@ -665,6 +667,7 @@ function showGitTab(tab) {
 }
 
 async function loadGit() {
+  if (tab === "pulls" && state.git) pullRequests.activate(state.git.project);
   const p = currentProject();
   if (!p) return;
   const projectPath = p.path;
@@ -674,6 +677,7 @@ async function loadGit() {
     showGitTab(state.git.tab);
     $("g-body").hidden = true;
     $("g-message").value = "";
+    pullRequests.setProject(projectPath);
     $("g-error").textContent = "";
     $("g-branch").textContent = "";
     $("g-sync").textContent = "";
@@ -696,6 +700,7 @@ async function loadGit() {
     if (current.activeFile) {
       const { file, area } = current.activeFile;
       if (gitFiles(area).some((f) => f.path === file)) showGitFile(file, area);
+    if (current.tab === "pulls") pullRequests.activate(current.project);
       else closeGitDetail();
     }
   } catch (err) {
@@ -971,7 +976,7 @@ $("g-tabs").addEventListener("keydown", (e) => {
   $("g-tab-" + GIT_TABS[index]).focus();
 });
 $("g-detail-close").addEventListener("click", closeGitDetail);
-$("g-refresh").addEventListener("click", loadGit);
+$("g-refresh").addEventListener("click", () => { loadGit(); if (state.git?.tab === "pulls") pullRequests.refresh(); });
 $("g-message").addEventListener("input", renderGitControls);
 for (const area of ["unstaged", "staged"]) {
   const action = area === "staged" ? "unstage" : "stage";

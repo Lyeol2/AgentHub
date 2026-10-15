@@ -155,6 +155,7 @@
                 <button type="button" id="g-tab-history" data-git-tab="history" role="tab" aria-controls="g-history" aria-selected="false" tabindex="-1">History</button>
               </div>
               <div class="git-panel git-changes-grid" id="g-changes" data-git-panel="changes" role="tabpanel" aria-labelledby="g-tab-changes">
+                <button type="button" id="g-tab-pulls" data-git-tab="pulls" role="tab" aria-controls="g-pulls" aria-selected="false" tabindex="-1">Pull Requests</button>
                 <div class="git-work">
                   <section class="git-file-section" aria-labelledby="g-unstaged-heading">
                     <div class="git-files-head"><h4 id="g-unstaged-heading">스테이징 전 <span class="tab-count" id="g-unstaged-count"></span></h4></div>
@@ -205,6 +206,35 @@
               </div>
               <section class="git-view" id="g-detail" aria-label="선택한 항목의 상세" hidden>
                 <div class="git-view-head"><div class="git-view-title" id="g-view-title"></div><button class="ghost sm" id="g-detail-close" aria-label="상세 닫기">닫기</button></div>
+              <div class="git-panel pr-panel" id="g-pulls" data-git-panel="pulls" role="tabpanel" aria-labelledby="g-tab-pulls" hidden>
+                <div class="pr-toolbar">
+                  <a id="pr-repo" class="mono muted" target="_blank" rel="noopener noreferrer"></a>
+                  <div class="actions">
+                    <select id="pr-remote" aria-label="GitHub 원격 저장소" hidden></select>
+                    <select id="pr-filter" aria-label="Pull Request 상태"><option value="open">열림</option><option value="closed">닫힘 · 병합됨</option><option value="all">전체</option></select>
+                    <button type="button" class="ghost sm" id="pr-refresh">새로고침</button>
+                    <button type="button" class="primary sm" id="pr-new" disabled>새 PR</button>
+                  </div>
+                </div>
+                <div class="pr-notice" id="pr-notice" hidden><p id="pr-note" role="status"></p><button type="button" class="ghost sm" id="pr-setup" hidden>GitHub CLI 설치·로그인</button></div>
+                <p class="error pr-error" id="pr-error" role="alert"></p>
+                <form class="pr-create" id="pr-create" hidden>
+                  <div class="pr-create-head"><h4>새 Pull Request</h4><button type="button" class="ghost sm" id="pr-cancel">취소</button></div>
+                  <div class="pr-branch-fields">
+                    <label>대상 브랜치 <select id="pr-base" required></select></label>
+                    <span class="muted pr-branch-arrow" aria-hidden="true">←</span>
+                    <label>현재 브랜치 <input id="pr-head" readonly></label>
+                  </div>
+                  <div class="pr-publish"><p class="hint" id="pr-publish-note"></p><button type="button" class="ghost sm" id="pr-push" hidden>현재 브랜치 게시</button></div>
+                  <label>제목 <input id="pr-title" maxlength="256" required placeholder="어떤 변경인지 적어 주세요"></label>
+                  <label>설명 <textarea id="pr-description" rows="5" placeholder="변경 내용과 확인한 내용을 적어 주세요 · Markdown 지원"></textarea></label>
+                  <div class="pr-submit-row"><label class="check"><input type="checkbox" id="pr-draft" checked> 초안으로 만들기</label><button type="submit" class="primary sm" id="pr-submit" disabled>PR 만들기</button></div>
+                </form>
+                <div class="pr-grid" id="pr-grid" hidden>
+                  <div class="pr-list-side"><p class="hint pr-list-note" id="pr-list-note" role="status"></p><ul class="pr-list" id="pr-list" aria-label="Pull Requests"></ul></div>
+                  <section class="pr-detail" id="pr-detail" aria-label="Pull Request 상세"><p class="pr-empty muted">Pull Request를 선택하면 상세와 변경 내용을 볼 수 있습니다.</p></section>
+                </div>
+              </div>
                 <pre class="diff" id="g-view"></pre>
               </section>
             </div>
@@ -339,7 +369,7 @@
     <form method="dialog" class="dialog-form">
       <h3>CLI 설치·로그인 <small>AgentHub가 쓰는 CLI를 이 PC에 설치하고 로그인합니다</small></h3>
       <div id="setup-list" class="setup-list"></div>
-      <p class="hint">설치는 winget(Windows 패키지 관리자)으로 합니다. 로그인은 브라우저에서 계정을 확인하는 방식이라 비밀번호를 AgentHub에 넣지 않습니다. GitHub CLI는 릴리스 같은 GitHub 작업에만 필요하고, 앱 업데이트에는 필요 없습니다.</p>
+      <p class="hint">설치는 winget(Windows 패키지 관리자)으로 합니다. 로그인은 브라우저에서 계정을 확인하는 방식이라 비밀번호를 AgentHub에 넣지 않습니다. GitHub CLI는 Pull Request·릴리스 같은 GitHub 작업에 필요하고, 앱 업데이트에는 필요 없습니다.</p>
       <menu>
         <button type="button" class="ghost" id="setup-refresh">다시 확인</button>
         <span class="spacer"></span>

@@ -336,3 +336,45 @@ test("api: Git 영역별 diff·스테이징·취소·index 전용 커밋을 연�
   assert.deepEqual([after.stagedCount, after.unstagedCount], [0, 2]);
   assert.equal((await api("POST", "/git/commit", { path: dir, message: "empty", staged: true })).status, 400);
 });
+
+
+test("api: PR 목록·상세·생성·병합·닫기·푸시 경로와 오류를 연결한다", async () => {
+  const { githubPulls, GitHubError } = await import("../server/github.mjs");
+  const noRemote = await api("GET", "/git/pulls?path=" + encodeURIComponent(repo));
+  assert.deepEqual([noRemote.status, noRemote.body.reason], [400, "github-remote"]);
+  const names = ["list", "detail", "create", "merge", "close", "push"];
+  const original = Object.fromEntries(names.map((name) => [name, githubPulls[name]]));
+  const calls = [];
+  const pull = { number: 7, title: "PR", state: "OPEN", url: "https://github.com/acme/widget/pull/7" };
+  try {
+    for (const name of names) githubPulls[name] = async (...args) => {
+      calls.push({ name, args });
+      return name === "list" ? { context: { repo: "acme/widget" }, pulls: [pull] }
+        : name === "detail" ? { pull, diff: "+new", diffError: null } : { ok: true, pull };
+    };
+    const query = "?path=" + encodeURIComponent(repo) + "&remote=upstream";
+    assert.equal((await api("GET", "/git/pulls" + query + "&state=all")).body.pulls[0].number, 7);
+    assert.deepEqual(calls.at(-1), { name: "list", args: [repo, { remote: "upstream", state: "all" }] });
+    assert.equal((await api("GET", "/git/pulls/7" + query)).body.diff, "+new");
+    assert.deepEqual(calls.at(-1), { name: "detail", args: [repo, "7", { remote: "upstream" }] });
+    const body = { path: repo, repo: "acme/widget", remote: "upstream", title: "PR", body: "text", head: "feature", base: "main", expectedHead: "a".repeat(40) };
+    for (const [route, name] of [["/git/pulls", "create"], ["/git/pulls/7/merge", "merge"], ["/git/pulls/7/close", "close"], ["/git/push", "push"]]) {
+      assert.equal((await api("POST", route, body)).status, 200);
+      assert.equal(calls.at(-1).name, name);
+      assert.deepEqual(calls.at(-1).args, ["merge", "close"].includes(name) ? [repo, "7", body] : [repo, body]);
+    }
+    const count = calls.length;
+    for (const route of ["/git/push/7/merge", "/git/push/7/close", "/git/pulls/7/review"])
+      assert.equal((await api("POST", route, body)).status, 404);
+    assert.equal((await api("GET", "/git/push" + query)).status, 404);
+    assert.equal(calls.length, count);
+    githubPulls.create = async () => { throw new GitHubError("먼저 푸시하세요.", "branch-unpublished", 409); };
+    const unpublished = await api("POST", "/git/pulls", body);
+    assert.deepEqual([unpublished.status, unpublished.body.reason, unpublished.body.outcomeUnknown], [409, "branch-unpublished", false]);
+    githubPulls.create = async () => { throw new GitHubError("완료 여부를 확인하세요.", "github-timeout", 504, true); };
+    const unknown = await api("POST", "/git/pulls", body);
+    assert.deepEqual([unknown.status, unknown.body.reason, unknown.body.outcomeUnknown], [504, "github-timeout", true]);
+  } finally {
+    for (const name of names) githubPulls[name] = original[name];
+  }
+});

@@ -1,6 +1,6 @@
 # 기능 문서: 저장소 화면 (Fork·SourceTree 같은 git 클라이언트)
 
-- 상태: 초안 (2026-10-15). 프로젝트 화면의 **Git** 탭에 **변경사항 / History** 탭, 파일 스테이징·해제, 스테이징된 내용 커밋, 브랜치, 커밋 노선도와 세션 브랜치 병합이 들어갔다. 이 문서는 저장소 화면을 단계적으로 넓히는 기준이다.
+- 상태: 초안 (2026-10-15). 프로젝트 화면의 **Git** 탭에 **변경사항 / History / Pull Requests** 탭, 파일 스테이징·해제, 스테이징된 내용 커밋, 브랜치, 커밋 노선도와 세션 브랜치 병합이 들어갔다. 이 문서는 저장소 화면을 단계적으로 넓히는 기준이다.
 - 범위: 서버 `server/git.mjs`·`server/gitgraph.mjs`(새로) · `server/index.mjs`의 `/api/git` 경로 · 화면 `public/`의 저장소 화면
 
 ## 현재 구현
@@ -10,6 +10,7 @@
 - **History** 탭에는 브랜치와 노선도를 표시하고, 커밋을 누르면 아래에 상세가 열린다. 현재 작업 노드를 누르면 변경사항 탭으로 이동한다. 마지막에 본 내부 탭도 기억한다.
 - `GET /api/git?path=`의 파일에는 `staged`, `unstaged`, `stageLabel`, `workLabel`이 있고 전체 개수 `stagedCount`, `unstagedCount`도 보낸다. 파일 diff는 `GET /api/git/diff?path=&file=&area=staged|unstaged`, 파일 이동은 `POST /api/git/stage`·`/api/git/unstage`의 `{ path, files }`, 인덱스 커밋은 `POST /api/git/commit`의 `{ path, message, staged: true }`로 한다. 목록은 500개까지 표시하며 전체 스테이징/해제는 표시된 파일, 커밋은 전체 인덱스에 적용한다.
 - 기존 `GET /api/git?path=` 응답에 `graph: { commits, truncated }`와 `branches[].tip`을 추가했다. 그래프 커밋은 `hash`·`short`·`parents`·`author`·`date`·`subject`·`refs`(로컬 브랜치 이름)를 담고, 화면의 순수 함수 `public/gitgraph.js`에서 노선 배치를 계산한다.
+- **Pull Requests** 탭에서 GitHub.com의 PR 최근 50개를 상태별로 조회하고, 설명·검사 상태·변경 파일·diff를 확인한다. 현재 브랜치 PR/초안 생성, 명시적인 현재 브랜치 게시, SHA를 확인한 병합(Merge/Squash/Rebase), PR 닫기를 지원한다. 기존 GitHub CLI 설치·로그인 설정을 재사용한다. 원격 후보가 여러 개면 화면에서 선택한다. 포크 간 PR 생성·리뷰 작성은 다음 단계다.
 - 아래의 페이지별 로그 API·원격·덩어리/줄 스테이징·충돌 편집은 다음 단계의 설계다.
 
 ## 1. 왜 만드는가
@@ -28,7 +29,7 @@ Fork·SourceTree를 통째로 대신하는 것이 목표가 아니다. **에이�
 
 - 대화형 rebase 편집기(커밋 순서 바꾸기·squash·reword를 끌어서 하는 화면). 4단계 이후에 따로 검토한다.
 - git LFS 관리, 서브모듈 갱신·편집(표시만 한다), GPG 서명 설정, git 설정(`git config`) 편집기.
-- GitHub·GitLab PR 만들기·리뷰. 이미 있는 GitHub CLI 연동으로 나중에 붙일 수 있다.
+- GitLab PR/MR, GitHub 리뷰·댓글 작성, 포크 사이 PR 만들기. GitHub.com의 같은 저장소 안에서 현재 브랜치로 만드는 PR은 구현했다.
 - 원격 저장소 추가·삭제·URL 변경. 처음에는 기존 원격만 쓴다.
 - 자격 증명 저장. 사용자 PC의 git credential manager에 맡긴다.
 
@@ -204,6 +205,16 @@ Fork의 3단 배치를 따른다.
 - 로그는 300개씩 나눠 받고, 화면은 보이는 줄만 그린다(가상 스크롤). 커밋 1만 개 저장소에서 첫 화면 1초 안이 목표.
 - `refs`·`state`는 가볍게 유지하고, diff는 파일 하나씩 받는다.
 - 세션 브랜치 묶음은 브랜치 이름이 `agenthub/`로 시작하는 것을 `store`의 세션과 맞춰 만든다. 세션이 지워진 세션 브랜치는 "남은 세션 브랜치"로 따로 모아 정리할 수 있게 한다.
+
+### 현재 PR API
+
+- `GET /api/git/pulls?path=&state=open|closed|all&remote=`: GitHub 저장소/브랜치/게시 필요 상태와 PR 목록.
+- `GET /api/git/pulls/:number?path=&remote=`: PR 상세·검사 요약·파일·diff. diff 조회 실패는 상세와 구분해 표시한다.
+- `POST /api/git/pulls`: `{ path, remote, repo, title, body, base, head, draft, expectedHead }`로 현재 원격 브랜치의 PR을 만든다. 자동 push를 하지 않는다.
+- `POST /api/git/push`: `{ path, remote, repo, branch, expectedHead }`의 확인된 커밋만 현재 브랜치에 게시한다. 강제 push는 하지 않는다.
+- `POST /api/git/pulls/:number/merge`: `{ path, remote, repo, method, sha }`로 확인한 PR HEAD만 병합한다. `method`는 저장소가 허용하는 `merge|squash|rebase`다.
+- `POST /api/git/pulls/:number/close`: `{ path, remote, repo }`로 PR을 닫는다.
+- 원격 변경은 자동 재시도하지 않는다. 타임아웃이면 현재 원격 상태를 다시 조회하고 완료 여부를 확인한다.
 
 ## 6. 단계
 

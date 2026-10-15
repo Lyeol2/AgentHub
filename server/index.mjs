@@ -10,6 +10,7 @@ import { Runner, AGENTS } from "./runner.mjs";
 import { isGitRepo, removeWorktree, headCommit, diffSince, changedFiles } from "./git.mjs";
 import { AGENT_NAME, handoverText, mapPermission } from "./handover.mjs";
 import { gitOverview, fileDiff, showCommit, branchDiff, stage, unstage, commit, merge } from "./gitpanel.mjs";
+import { githubPulls, GitHubError } from "./github.mjs";
 import { discoverProjects, discoverSessions, loadHistory, deleteSessionRecords } from "./discover.mjs";
 import { readLimits, recordClaudeLimit, refreshClaudeUsage } from "./limits.mjs";
 import { ROLE_MAX, withRole } from "./role.mjs";
@@ -1160,6 +1161,27 @@ async function handleApi(req, res, url) {
     const sessionId = url.searchParams.get("session") ?? body.session;
     const dir = sessionId ? sessionWorktree(sessionId, repo) : repo;
     try {
+      if (parts[1] === "pulls" || parts[1] === "push") {
+        const options = { remote: url.searchParams.get("remote") ?? body.remote };
+        if (method === "GET" && parts[1] === "pulls" && parts.length === 2) {
+          return send(res, 200, await githubPulls.list(dir, { ...options, state: url.searchParams.get("state") ?? "open" }));
+        }
+        if (method === "GET" && parts[1] === "pulls" && parts.length === 3) {
+          return send(res, 200, await githubPulls.detail(dir, parts[2], options));
+        }
+        if (method === "POST") {
+          if (sessionId && runner.isRunning(sessionId)) throw new HttpError(409, "세션이 실행 중입니다. 끝나거나 일시중지한 뒤 GitHub를 변경하세요.");
+          let result;
+          if (parts[1] === "push" && parts.length === 2) result = await githubPulls.push(dir, body);
+          else if (parts[1] === "pulls" && parts.length === 2) result = await githubPulls.create(dir, body);
+          else if (parts[1] === "pulls" && parts.length === 4 && parts[3] === "merge") result = await githubPulls.merge(dir, parts[2], body);
+          else if (parts[1] === "pulls" && parts.length === 4 && parts[3] === "close") result = await githubPulls.close(dir, parts[2], body);
+          else throw new HttpError(404, "없는 API입니다.");
+          broadcast("git", { projectPath: repo });
+          return send(res, 200, result);
+        }
+        throw new HttpError(404, "없는 API입니다.");
+      }
       if (method === "GET" && parts.length === 1) {
         return send(res, 200, await gitOverview(repo, projectSessions(repo)));
       }
@@ -1185,6 +1207,7 @@ async function handleApi(req, res, url) {
         return send(res, 200, { ok: true, result });
       }
     } catch (err) {
+      if (err instanceof GitHubError) return send(res, err.status, { error: err.message, reason: err.reason, outcomeUnknown: err.outcomeUnknown });
       if (err instanceof HttpError) throw err;
       // 충돌은 상태 충돌(409), 나머지 git 실패는 입력·상태 문제로 보고 메시지를 그대로 보인다.
       throw new HttpError(err.conflict ? 409 : 400, err.message, err.conflict ? "conflict" : undefined);
