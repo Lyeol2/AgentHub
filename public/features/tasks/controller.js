@@ -30,6 +30,8 @@ export function createTasksController({
   const createForm = $('new-task-form');
   const finishDialog = $('finish-task-dialog');
   const finishForm = $('finish-task-form');
+  const deleteDialog = $('delete-task-dialog');
+  const deleteForm = $('delete-task-form');
   const taskErrors = new Map();
   const uncertainTasks = new Map();
   const uncertainCreates = new Set();
@@ -45,6 +47,9 @@ export function createTasksController({
   let createProject = null;
   let finishProject = null;
   let finishTaskId = null;
+  let deleteTaskId = null;
+  let deleteProject = null;
+  let deleteBusy = false;
 
   function node(tag, className, value) {
     const el = document.createElement(tag);
@@ -188,6 +193,9 @@ export function createTasksController({
         actions.append(actionButton('기준 변경 반영', 'sync', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
       }
       if (task.state === 'merged') actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+      const remove = actionButton('작업 삭제', 'delete', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) });
+      remove.classList.add('danger');
+      actions.append(remove);
       card.append(actions);
       if (task.state === 'merged' && task.type !== 'feature') card.append(node('p', 'task-note', 'develop에도 반영되어야 작업 폴더를 정리할 수 있습니다.'));
       if (task.state === 'cleaned') card.append(node('p', 'task-note', task.localBranchRemoved === false
@@ -213,6 +221,7 @@ export function createTasksController({
     loading = false;
     if (createDialog?.open) createDialog.close();
     if (finishDialog?.open) finishDialog.close();
+    if (deleteDialog?.open) deleteDialog.close();
     updateToolbar();
   }
 
@@ -227,6 +236,7 @@ export function createTasksController({
       context = null;
       if (createDialog?.open) createDialog.close();
       if (finishDialog?.open) finishDialog.close();
+      if (deleteDialog?.open) deleteDialog.close();
     }
     loading = true;
     showError('tasks-error');
@@ -442,6 +452,70 @@ export function createTasksController({
     }
   }
 
+  function openDelete(task) {
+    if (!task || deleteBusy || pendingTasks.has(task.id) || uncertainTasks.has(task.id) || task.pendingAction) return;
+    deleteTaskId = task.id;
+    deleteProject = projectPath;
+    if ($('task-delete-summary')) $('task-delete-summary').textContent = `“${task.title}” 작업과 연결된 세션을 삭제합니다.`;
+    showError('task-delete-error');
+    if ($('task-delete-submit')) $('task-delete-submit').disabled = false;
+    deleteDialog?.showModal();
+    $('task-delete-cancel')?.focus();
+  }
+
+  async function deleteTask(event) {
+    event.preventDefault();
+    if (deleteBusy || !sameProject(deleteProject) || !deleteTaskId) return;
+    const id = deleteTaskId;
+    const task = getTask(id);
+    if (!task || pendingTasks.has(id) || uncertainTasks.has(id) || task.pendingAction) {
+      showError('task-delete-error', '작업 상태가 변경되었습니다. 대화상자를 닫고 최신 상태를 확인해 주세요.');
+      return;
+    }
+    const path = deleteProject;
+    const epoch = projectEpoch;
+    deleteBusy = true;
+    pendingTasks.add(id);
+    taskErrors.delete(id);
+    showError('task-delete-error');
+    const submit = $('task-delete-submit');
+    if (submit) { submit.disabled = true; submit.textContent = '삭제 중…'; }
+    renderTasks();
+    try {
+      await api('DELETE', `/api/tasks/${encodeURIComponent(id)}`);
+      if (sameProject(path, epoch)) {
+        // Discard list reads started before the deletion completed.
+        generation++;
+        loading = false;
+        tasks = tasks.filter(item => item.id !== id);
+        uncertainTasks.delete(id);
+        deleteDialog?.close();
+      }
+      await reloadSessions();
+    } catch (error) {
+      // A repeated DELETE is safe when the response was lost after completion.
+      if (error.reason === 'task-missing') {
+        if (sameProject(path, epoch)) {
+          generation++;
+          loading = false;
+          tasks = tasks.filter(item => item.id !== id);
+          deleteDialog?.close();
+        }
+        await reloadSessions();
+      } else {
+        const message = requestError(error);
+        taskErrors.set(id, message);
+        if (sameProject(path, epoch)) showError('task-delete-error', message);
+        await reloadSessions();
+      }
+    } finally {
+      deleteBusy = false;
+      pendingTasks.delete(id);
+      if (submit) { submit.disabled = false; submit.textContent = '작업 삭제'; }
+      if (sameProject(path, epoch)) { updateToolbar(); renderTasks(); }
+    }
+  }
+
   async function newSession(task) {
     if (!task || pendingTasks.has(task.id) || uncertainTasks.has(task.id) || task.pendingAction) return;
     const path = projectPath;
@@ -482,13 +556,16 @@ export function createTasksController({
   $('task-model')?.addEventListener('change', () => { if ($('task-effort')) fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model').value); });
   createForm?.addEventListener('submit', createTask);
   finishForm?.addEventListener('submit', finishTask);
+  deleteForm?.addEventListener('submit', deleteTask);
   createDialog?.addEventListener('cancel', event => { if (createBusy) event.preventDefault(); });
   finishDialog?.addEventListener('cancel', event => { if (finishBusy) event.preventDefault(); });
+  deleteDialog?.addEventListener('cancel', event => { if (deleteBusy) event.preventDefault(); });
   $('task-create-cancel')?.addEventListener('click', () => { if (!createBusy) createDialog?.close(); });
   $('task-finish-cancel')?.addEventListener('click', () => { if (!finishBusy) finishDialog?.close(); });
+  $('task-delete-cancel')?.addEventListener('click', () => { if (!deleteBusy) deleteDialog?.close(); });
   document.querySelectorAll('[data-task-dialog-close]').forEach(button => button.addEventListener('click', () => {
     const dialog = button.closest('dialog');
-    if ((dialog === createDialog && createBusy) || (dialog === finishDialog && finishBusy)) return;
+    if ((dialog === createDialog && createBusy) || (dialog === finishDialog && finishBusy) || (dialog === deleteDialog && deleteBusy)) return;
     dialog?.close();
   }));
   list?.addEventListener('click', event => {
@@ -500,6 +577,7 @@ export function createTasksController({
     if (action === 'open-session') { void selectSession(button.dataset.sessionId); return; }
     if (action === 'new-session') { void newSession(task); return; }
     if (action === 'finish') { openFinish(task); return; }
+    if (action === 'delete') { openDelete(task); return; }
     if (['refresh', 'sync', 'cleanup'].includes(action)) void runTaskAction(action, task);
   });
   updateToolbar();

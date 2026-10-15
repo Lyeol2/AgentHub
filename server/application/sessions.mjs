@@ -529,7 +529,16 @@ export function createSessionService({
     return summary(session);
   }
 
-  async function recreate(id) {
+  function recreate(id) {
+    const session = getSession(id);
+    const taskService = tasks?.();
+    // Recreating a task session must serialize with task deletion and Git operations.
+    return session.taskId && taskService?.withSessionLock
+      ? taskService.withSessionLock(session.taskId, () => recreateSession(id))
+      : recreateSession(id);
+  }
+
+  async function recreateSession(id) {
     const session = getSession(id);
     if (runner.isRunning(id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
     if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, session.taskId

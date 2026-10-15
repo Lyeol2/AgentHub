@@ -71,6 +71,14 @@ async function browser(temp, url, expression) {
     assert.equal(taskFit.result.value, true, "Task cards must fit the mobile viewport");
     const shot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     await fs.writeFile(path.join(output, "mobile.png"), Buffer.from(shot.data, "base64"));
+    await command("Runtime.evaluate", { expression: "document.querySelector('[data-task-action=delete]').click()" });
+    const modalFit = await command("Runtime.evaluate", { expression: "new Promise(resolve => requestAnimationFrame(() => { const dialog = document.getElementById('delete-task-dialog'), rect = dialog.getBoundingClientRect(); resolve(dialog.open && rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight); }))", awaitPromise: true, returnByValue: true });
+    assert.equal(modalFit.result.value, true, "Delete confirmation must fit the mobile viewport");
+    const mobileDelete = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
+    await fs.writeFile(path.join(output, "delete-mobile.png"), Buffer.from(mobileDelete.data, "base64"));
+    await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    const desktopDelete = await command("Page.captureScreenshot", { format: "png" });
+    await fs.writeFile(path.join(output, "delete-desktop.png"), Buffer.from(desktopDelete.data, "base64"));
     return { checks: result.result.value, errors, mobile: mobile.result.value };
   } finally {
     socket?.close(); child.kill();
@@ -78,15 +86,15 @@ async function browser(temp, url, expression) {
   }
 }
 
-test("browser: GitFlow tasks create, finish, recover uncertain writes, and retain task state", { timeout: 60000 }, async (t) => {
+test("browser: GitFlow tasks create, finish, recover uncertain writes, and delete safely", { timeout: 60000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(chromium).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-tasks-browser-"));
   const streams = new Set(), requests = [], tasks = [], sessions = [];
   const project = { path: "C:/fixture", name: "Fixture", registered: true, claude: 0, codex: 0 };
   const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
   const context = { mainSha: "a".repeat(40), developSha: "a".repeat(40), mainInDevelop: true, needsSetup: false, checkedAt: "2026-10-15T12:00:00Z", freshness: { state: "current", checkedAt: "2026-10-15T12:00:00Z" } };
-  const mode = { uncertain: false, contextFailure: false, holdCreate: false };
-  let releaseCreate;
+  const mode = { uncertain: false, contextFailure: false, holdCreate: false, deleteFailure: false, holdDelete: false };
+  let releaseCreate, releaseDelete;
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
@@ -97,6 +105,7 @@ test("browser: GitFlow tasks create, finish, recover uncertain writes, and retai
       let value;
       if (url.pathname === "/fixture/mode") { Object.assign(mode, body); value = {}; }
       else if (url.pathname === "/fixture/release") { releaseCreate?.(); value = {}; }
+      else if (url.pathname === "/fixture/release-delete") { releaseDelete?.(); value = {}; }
       else if (url.pathname === "/fixture/requests") value = requests;
       else if (url.pathname === "/fixture/emit") { for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n"); value = {}; }
       else if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
@@ -113,7 +122,13 @@ test("browser: GitFlow tasks create, finish, recover uncertain writes, and retai
       } else if (url.pathname.startsWith("/api/tasks/")) {
         const [, , , id, action] = url.pathname.split("/"); const task = tasks.find((item) => item.id === id);
         if (!task) throw Error("Task not found");
-        if (action === "finish") {
+        if (req.method === "DELETE" && !action) {
+          if (mode.deleteFailure) throw Object.assign(Error("실행 중인 세션을 먼저 중지하세요."), { status: 409, reason: "running" });
+          if (mode.holdDelete) { mode.holdDelete = false; await new Promise((resolve) => releaseDelete = resolve); }
+          tasks.splice(tasks.indexOf(task), 1);
+          for (let index = sessions.length - 1; index >= 0; index--) if (sessions[index].taskId === id) sessions.splice(index, 1);
+          value = { ok: true };
+        } else if (action === "finish") {
           task.pull = { number: 42, url: "https://github.com/fixture/repo/pull/42", state: "OPEN", headRefName: task.branch, baseRefName: task.targetBranch, headRefOid: "b".repeat(40) };
           if (mode.uncertain) { mode.uncertain = false; task.pendingAction = { action: "pull", expectedHead: "b".repeat(40), outcomeUnknown: true }; throw Object.assign(Error("완료 여부를 확인한 뒤 다시 시도하세요."), { status: 504, reason: "github-timeout", outcomeUnknown: true }); }
           task.state = "review"; value = { task, pull: task.pull };
@@ -145,11 +160,11 @@ test("browser: GitFlow tasks create, finish, recover uncertain writes, and retai
   try {
     const expression = await fs.readFile(new URL("./fixtures/tasks-browser.js.txt", import.meta.url), "utf8");
     const report = await browser(temp, "http://127.0.0.1:" + server.address().port, expression);
-    assert.ok(report.checks.length >= 12); assert.deepEqual(report.errors, []);
+    assert.ok(report.checks.length >= 25); assert.deepEqual(report.errors, []);
     assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"));
     await fs.writeFile(path.join(root, "data/tasks-qa/checks.json"), JSON.stringify(report, null, 2));
   } finally {
-    releaseCreate?.(); for (const stream of streams) stream.end();
+    releaseCreate?.(); releaseDelete?.(); for (const stream of streams) stream.end();
     await new Promise((resolve) => server.close(resolve));
     assert.equal(path.dirname(path.resolve(temp)), path.resolve(os.tmpdir()));
     await fs.rm(temp, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });

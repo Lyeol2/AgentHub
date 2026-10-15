@@ -21,13 +21,18 @@ function fixture(t, { develop = true } = {}) {
   git(repo, "add", "."); git(repo, "commit", "-qm", "base");
   git(repo, "remote", "add", "origin", remote); git(repo, "push", "-q", "origin", "main");
   if (develop) { git(repo, "branch", "develop"); git(repo, "push", "-q", "origin", "develop"); }
-  const state = { pulls: [], writes: [], running: new Set(), timeout: null };
+  const state = { pulls: [], writes: [], running: new Set(), timeout: null, removeFailure: null };
   const stored = new Map(); let serial = 0;
   const store = { list: () => [...stored.values()], get: (id) => stored.get(id) };
   const sessions = { checkSessionOptions() {}, async createSession(body, internal) {
     const session = { id: `session-${++serial}`, title: body.title, projectPath: body.project.path, cwd: internal.worktree.dir,
       taskId: internal.taskId, worktree: internal.worktree, state: "idle", events: [] };
     stored.set(session.id, session); return session;
+  }, async remove(id) {
+    if (state.removeFailure === id) throw new Error("Session removal failed");
+    stored.delete(id);
+    service.detachSession(id);
+    return { ok: true };
   } };
   const remoteSha = (branch) => git(repo, "ls-remote", remote, `refs/heads/${branch}`).split(/\s+/)[0] || null;
   const github = {
@@ -68,7 +73,7 @@ function fixture(t, { develop = true } = {}) {
   const create = (type = "feature", extra = {}) => service.create({ projectPath: repo, title: "새 작업", type, agent: "codex", ...extra });
   function change(dir, filename = "change.txt", text = "change\n") { fs.writeFileSync(path.join(dir, filename), text); }
   function commit(dir, filename = "remote-change.txt") { change(dir, filename); git(dir, "add", "."); git(dir, "commit", "-qm", filename); }
-  return { repo, remote, state, git, create, change, commit, stored, get service() { return service; }, restart() { service = createTaskService(options); return service; } };
+  return { repo, remote, dataDir, state, git, create, change, commit, stored, get service() { return service; }, restart() { service = createTaskService(options); return service; } };
 }
 
 test("tasks: missing develop starts from latest main without modifying the source worktree", async (t) => {
@@ -263,4 +268,141 @@ test("tasks: a failed worktree hook preserves provisioning records and session c
   assert.equal(recovered.task.sessionIds.length, 1);
   assert.equal(recovered.session.cwd, task.cwd);
   assert.equal(f.git(task.cwd, "branch", "--show-current"), task.branch);
+});
+
+
+test("tasks: deleting a task removes its record and owned sessions while preserving local work", async (t) => {
+  const f = fixture(t);
+  const { task, session } = await f.create();
+  f.change(task.cwd, "committed.txt", "Unpublished commit\n");
+  f.git(task.cwd, "add", "committed.txt"); f.git(task.cwd, "commit", "-qm", "unpublished work");
+  const head = f.git(task.cwd, "rev-parse", "HEAD");
+  f.change(task.cwd, "draft.txt", "Uncommitted draft\n");
+  const sourceHead = f.git(f.repo, "rev-parse", "HEAD");
+  // Ownership can survive in either the task record or the session record.
+  delete f.stored.get(session.id).taskId;
+  f.stored.set("orphan-owned", { ...session, id: "orphan-owned", taskId: task.id });
+  f.stored.set("unrelated", { ...session, id: "unrelated", taskId: undefined, cwd: f.repo, worktree: null });
+
+  const result = await f.service.remove(task.id);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(f.service.list(f.repo).tasks, []);
+  assert.equal(f.stored.has(session.id), false);
+  assert.equal(f.stored.has("orphan-owned"), false);
+  assert.equal(f.stored.has("unrelated"), true);
+  assert.equal(fs.existsSync(path.join(f.dataDir, "tasks", task.id + ".json")), false);
+  assert.equal(fs.readFileSync(path.join(task.cwd, "draft.txt"), "utf8"), "Uncommitted draft\n");
+  assert.equal(fs.readFileSync(path.join(task.cwd, "committed.txt"), "utf8"), "Unpublished commit\n");
+  assert.equal(f.git(f.repo, "rev-parse", "refs/heads/" + task.branch), head);
+  assert.equal(f.git(f.repo, "rev-parse", "HEAD"), sourceHead);
+  assert.deepEqual(f.state.writes, []);
+  assert.deepEqual(f.restart().list(f.repo).tasks, []);
+});
+
+test("tasks: deleting a published task preserves its remote branch and PR", async (t) => {
+  const f = fixture(t);
+  const { task } = await f.create(); f.change(task.cwd);
+  const finished = await f.service.finish(task.id);
+  const head = f.git(task.cwd, "rev-parse", "HEAD");
+  const writes = [...f.state.writes];
+
+  await f.service.remove(task.id);
+
+  assert.equal(f.git(f.repo, "ls-remote", f.remote, "refs/heads/" + task.branch).split(/\s+/)[0], head);
+  assert.equal(f.state.pulls.length, 1);
+  assert.equal(f.state.pulls[0].number, finished.pull.number);
+  assert.equal(f.state.pulls[0].state, "open");
+  assert.deepEqual(f.state.writes, writes);
+  assert.ok(fs.existsSync(task.cwd));
+});
+
+test("tasks: running sessions in the task folder block deletion without losing records", async (t) => {
+  const f = fixture(t);
+  const { task, session } = await f.create();
+  f.stored.set("same-folder", { ...session, id: "same-folder", taskId: undefined });
+  f.state.running.add("same-folder");
+
+  await assert.rejects(f.service.remove(task.id), (error) => error.reason === "running");
+
+  assert.equal(f.service.list(f.repo).tasks[0].id, task.id);
+  assert.equal(f.stored.has(session.id), true);
+  assert.ok(fs.existsSync(task.cwd));
+  f.state.running.clear();
+  await f.service.remove(task.id);
+  assert.equal(f.stored.has("same-folder"), true);
+});
+
+test("tasks: deletion waits for uncertain remote operations to be resolved", async (t) => {
+  const f = fixture(t);
+  const { task, session } = await f.create(); f.change(task.cwd); f.state.timeout = "push";
+  await assert.rejects(f.service.finish(task.id), (error) => error.outcomeUnknown);
+
+  await assert.rejects(f.service.remove(task.id), (error) => error.reason === "task-outcome-unknown");
+
+  assert.equal(f.service.list(f.repo).tasks[0].pendingAction.action, "push");
+  assert.equal(f.stored.has(session.id), true);
+  assert.ok(fs.existsSync(task.cwd));
+  f.state.timeout = null;
+  await f.service.refresh(task.id);
+  await f.service.remove(task.id);
+  assert.deepEqual(f.service.list(f.repo).tasks, []);
+});
+
+test("tasks: a cleaned task and its retained sessions can be deleted", async (t) => {
+  const f = fixture(t);
+  const { task, session } = await f.create(); f.change(task.cwd);
+  await f.service.finish(task.id);
+  const raw = f.state.pulls[0]; raw.merged = true; raw.state = "closed";
+  f.git(f.repo, "switch", "-q", "develop");
+  f.git(f.repo, "merge", "--squash", task.branch); f.git(f.repo, "commit", "-qm", "squashed PR");
+  f.git(f.repo, "push", "-q", "origin", "develop");
+  await f.service.cleanup(task.id);
+  assert.equal(fs.existsSync(task.cwd), false);
+  assert.equal(f.stored.has(session.id), true);
+
+  await f.service.remove(task.id);
+
+  assert.equal(f.stored.has(session.id), false);
+  assert.deepEqual(f.restart().list(f.repo).tasks, []);
+  assert.equal(f.state.pulls[0].merged, true);
+});
+
+test("tasks: a failed session deletion retains the task for retry", async (t) => {
+  const f = fixture(t);
+  const { task, session } = await f.create();
+  const second = await f.service.addSession(task.id);
+  f.state.removeFailure = second.session.id;
+
+  await assert.rejects(f.service.remove(task.id), /Session removal failed/);
+
+  assert.equal(f.service.list(f.repo).tasks[0].id, task.id);
+  assert.equal(f.stored.has(second.session.id), true);
+  assert.ok(fs.existsSync(path.join(f.dataDir, "tasks", task.id + ".json")));
+  assert.ok(fs.existsSync(task.cwd));
+  f.state.removeFailure = null;
+  await f.service.remove(task.id);
+  assert.equal(f.stored.has(session.id), false);
+  assert.equal(f.stored.has(second.session.id), false);
+  assert.deepEqual(f.restart().list(f.repo).tasks, []);
+});
+
+test("tasks: queued mutations cannot restore a task after deletion", async (t) => {
+  const f = fixture(t);
+  const { task } = await f.create();
+
+  const results = await Promise.allSettled([
+    f.service.remove(task.id),
+    f.service.addSession(task.id),
+    f.service.sync(task.id),
+  ]);
+
+  assert.equal(results[0].status, "fulfilled");
+  for (const result of results.slice(1)) {
+    assert.equal(result.status, "rejected");
+    assert.equal(result.reason.reason, "task-missing");
+  }
+  assert.equal(f.stored.size, 0);
+  assert.deepEqual(f.restart().list(f.repo).tasks, []);
+  assert.ok(fs.existsSync(task.cwd));
 });

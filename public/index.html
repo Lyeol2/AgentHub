@@ -707,6 +707,16 @@
     </form>
   </dialog>
 
+  <dialog id="delete-task-dialog" class="task-dialog" aria-labelledby="task-delete-heading" aria-describedby="task-delete-summary task-delete-note">
+    <form id="delete-task-form" class="dialog-form">
+      <h3 id="task-delete-heading">작업 삭제</h3>
+      <p class="hint task-finish-summary" id="task-delete-summary"></p>
+      <p class="hint" id="task-delete-note">작업 폴더·브랜치·PR·CLI 원본 대화는 보존됩니다. 병합된 작업의 폴더도 지우려면 취소한 뒤 <b>작업 폴더 정리</b>를 먼저 실행하세요.</p>
+      <p class="error" id="task-delete-error" role="alert"></p>
+      <menu><button type="button" class="ghost" id="task-delete-cancel">취소</button><button type="submit" class="primary danger" id="task-delete-submit">작업 삭제</button></menu>
+    </form>
+  </dialog>
+
   <script type="module" src="/layout.js"></script>
   <script type="module" src="/app.js"></script>
 </body>

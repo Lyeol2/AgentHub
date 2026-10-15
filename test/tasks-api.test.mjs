@@ -102,7 +102,8 @@ async function fixture(t) {
     return result.tasks;
   }
   return {
-    repo, origin, mainSha, developSha, request, success, createTask, tasks,
+    repo, origin, dataDir, mainSha, developSha, request, success, createTask, tasks,
+    get hub() { return hub; },
     async restart() {
       await hub.shutdown();
       hub = undefined;
@@ -223,4 +224,110 @@ test('public session creation cannot inject task ownership or reuse a task workt
   assert.equal(unrelated.worktree, null);
   const stored = (await f.tasks()).find(item => item.id === task.id);
   assert.deepEqual(stored.sessionIds, [session.id]);
+});
+
+
+test('task deletion removes the task and its sessions persistently while preserving the worktree', async t => {
+  const f = await fixture(t);
+  const { task, session } = await f.createTask('feature', 'Delete task with draft work');
+  const second = await f.success('POST', '/tasks/' + task.id + '/session', {});
+  const unrelated = await f.success('POST', '/sessions', {
+    projectPath: f.repo, title: 'Keep unrelated session', agent: 'codex', permission: 'workspace-write',
+  });
+  await writeFile(path.join(task.cwd, 'unpublished.txt'), 'Local commit must remain\n');
+  git(task.cwd, 'add', 'unpublished.txt'); git(task.cwd, 'commit', '-m', 'Unpublished task work');
+  const head = git(task.cwd, 'rev-parse', 'HEAD');
+  await writeFile(path.join(task.cwd, 'draft.txt'), 'Draft must remain\n');
+  const sourceHead = git(f.repo, 'rev-parse', 'HEAD');
+
+  const result = await f.success('DELETE', '/tasks/' + task.id);
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(await f.tasks(), []);
+  for (const id of [session.id, second.session.id]) {
+    assert.equal((await f.request('GET', '/sessions/' + id)).status, 404);
+    assert.equal(existsSync(path.join(f.dataDir, 'sessions', id + '.json')), false);
+  }
+  assert.equal(existsSync(path.join(f.dataDir, 'tasks', task.id + '.json')), false);
+  assert.equal((await f.success('GET', '/sessions/' + unrelated.id)).id, unrelated.id);
+  assert.equal(await readFile(path.join(task.cwd, 'draft.txt'), 'utf8'), 'Draft must remain\n');
+  assert.equal(await readFile(path.join(task.cwd, 'unpublished.txt'), 'utf8'), 'Local commit must remain\n');
+  assert.equal(git(f.repo, 'rev-parse', 'refs/heads/' + task.branch), head);
+  assert.equal(git(f.repo, 'rev-parse', 'HEAD'), sourceHead);
+
+  await f.restart();
+  assert.deepEqual(await f.tasks(), []);
+  assert.equal((await f.success('GET', '/sessions')).length, 1);
+  assert.equal((await f.success('GET', '/sessions'))[0].id, unrelated.id);
+  assert.ok(existsSync(task.cwd));
+});
+
+test('task deletion returns not found for an unknown task', async t => {
+  const f = await fixture(t);
+
+  const result = await f.request('DELETE', '/tasks/missing-task');
+
+  assert.equal(result.status, 404);
+  assert.equal(result.body.reason, 'task-missing');
+});
+
+test('task deletion refuses running sessions and retains the task', async t => {
+  const f = await fixture(t);
+  const { task, session } = await f.createTask('feature', 'Running task');
+  const isRunning = f.hub.runner.isRunning;
+  f.hub.runner.isRunning = id => id === session.id;
+  let result;
+  try {
+    result = await f.request('DELETE', '/tasks/' + task.id);
+  } finally {
+    f.hub.runner.isRunning = isRunning;
+  }
+
+  assert.equal(result.status, 409);
+  assert.equal(result.body.reason, 'running');
+  assert.equal((await f.tasks())[0].id, task.id);
+  assert.equal((await f.success('GET', '/sessions/' + session.id)).id, session.id);
+  assert.ok(existsSync(task.cwd));
+});
+
+test('task deletion refuses a persisted uncertain operation after restart', async t => {
+  const f = await fixture(t);
+  const { task, session } = await f.createTask('feature', 'Pending publication');
+  const file = path.join(f.dataDir, 'tasks', task.id + '.json');
+  const stored = JSON.parse(await readFile(file, 'utf8'));
+  stored.pendingAction = { action: 'push', expectedHead: git(task.cwd, 'rev-parse', 'HEAD'), outcomeUnknown: true };
+  await writeFile(file, JSON.stringify(stored));
+  await f.restart();
+
+  const result = await f.request('DELETE', '/tasks/' + task.id);
+
+  assert.equal(result.status, 409);
+  assert.equal(result.body.reason, 'task-outcome-unknown');
+  assert.equal((await f.tasks())[0].pendingAction.action, 'push');
+  assert.equal((await f.success('GET', '/sessions/' + session.id)).id, session.id);
+  assert.ok(existsSync(task.cwd));
+});
+
+test('task deletion can be retried after a session file removal fails', async t => {
+  const f = await fixture(t);
+  const { task, session } = await f.createTask('feature', 'Retry deletion');
+  const remove = f.hub.store.remove;
+  f.hub.store.remove = () => { throw Error('Simulated session file error'); };
+  let failed;
+  try {
+    failed = await f.request('DELETE', '/tasks/' + task.id);
+  } finally {
+    f.hub.store.remove = remove;
+  }
+
+  assert.equal(failed.ok, false);
+  assert.match(failed.body.error, /Simulated session file error/);
+  assert.equal((await f.tasks())[0].id, task.id);
+  assert.equal((await f.success('GET', '/sessions/' + session.id)).id, session.id);
+  assert.ok(existsSync(path.join(f.dataDir, 'tasks', task.id + '.json')));
+  await f.success('DELETE', '/tasks/' + task.id);
+  await f.restart();
+  assert.deepEqual(await f.tasks(), []);
+  assert.deepEqual(await f.success('GET', '/sessions'), []);
+  assert.ok(existsSync(task.cwd));
 });
