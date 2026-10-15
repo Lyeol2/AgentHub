@@ -92,7 +92,8 @@
   const nextDownload = $("command-result-download").href;
   check(revokedDownloads.includes(firstDownload) && nextDownload !== firstDownload, "replacing the preview revokes its previous download URL");
   check(await fetch(nextDownload).then((response) => response.text()) === savedOutput.text && $("command-result-download").download === "next.md", "opening the next result downloads its own exact snapshot");
-  $("command-result-dialog").close(); await tick();
+  // close 이벤트는 비동기로 오므로 정리가 끝날 때까지 기다린다.
+  $("command-result-dialog").close(); await until(() => revokedDownloads.includes(nextDownload) && !$("command-result-download").hasAttribute("href"));
   check(revokedDownloads.includes(nextDownload) && !$("command-result-download").hasAttribute("href") && $("command-result-download").hidden, "closing the viewer revokes and removes its download URL");
   savedOutput = { ...outputInfo, text };
   failOutput = true; await controller.openCommandOutput(markdown);
