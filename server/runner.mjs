@@ -68,6 +68,16 @@ export class Runner extends EventEmitter {
           this.emit("limit", session.agent, event.rateLimit);
           continue;
         }
+        // 세션 수명: 컨텍스트 압축 횟수와 지금 컨텍스트 크기
+        if (event.compact) {
+          session.compactions = (session.compactions ?? 0) + 1;
+          delete event.compact;
+        }
+        if (event.context) {
+          session.context = { ...session.context, ...event.context };
+          delete event.context;
+          if (event.kind === "usage") continue;
+        }
         if (event.kind === "error") {
           // Codex는 같은 오류를 error와 turn.failed로 두 번 보낸다.
           if (event.text === lastErrorText) continue;
@@ -137,6 +147,17 @@ export class Runner extends EventEmitter {
     });
 
     child.stdin.end(input);
+  }
+
+  // CLI 쪽 대화를 버리고 다음 요청부터 새 대화로 시작한다. AgentHub의 기록·역할·연결은 그대로 둔다.
+  restart(session) {
+    if (this.running.has(session.id)) throw new Error("실행 중인 세션은 다시 시작할 수 없습니다. 먼저 중지하세요.");
+    session.agentSessionId = null;
+    session.compactions = 0;
+    session.context = null;
+    delete session.roleChanged; // 새 대화의 첫 요청에 역할을 통째로 다시 붙인다.
+    this.append(session, { kind: "status", text: "세션을 다시 시작했습니다. 다음 요청부터 새 대화로 이어지며 이전 대화 내용은 CLI에 남지 않습니다." });
+    this.setState(session, "idle");
   }
 
   stop(session) {

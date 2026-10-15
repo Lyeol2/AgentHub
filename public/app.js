@@ -11,6 +11,20 @@ const state = {
   hubs: new Map(), // 프로젝트 경로(소문자) → AGENTHUB.md 내용
 };
 
+// 별도 창으로 연 세션(?session=id)이나 채팅(?chat=id 또는 "new"). 이 창은 사이드바 없이 그 화면만 보여 준다.
+const QUERY = new URLSearchParams(location.search);
+const POPUP = QUERY.get("session") ?? QUERY.get("chat");
+
+// 데스크톱 앱에서는 AgentHub 창으로, 브라우저에서는 팝업으로 열린다.
+const openWindow = (query) => window.open(`/?${query}`, "_blank", "width=760,height=900");
+const openSessionWindow = (id) => openWindow(`session=${encodeURIComponent(id)}`);
+
+// 목록의 세션은 그냥 누르면 이 창에서, 가운데 버튼이나 Ctrl·Shift를 누른 채 누르면 새 창으로 연다.
+const sessionOpener = (id) => (e) => {
+  if (e.button === 1 || e.ctrlKey || e.shiftKey) openSessionWindow(id);
+  else if (e.button === 0) selectSession(id);
+};
+
 async function api(method, url, body) {
   const res = await fetch(url, {
     method,
@@ -18,7 +32,7 @@ async function api(method, url, body) {
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error ?? `요청 실패 (${res.status})`);
+  if (!res.ok) throw Object.assign(new Error(data.error ?? `요청 실패 (${res.status})`), { reason: data.reason });
   return data;
 }
 
@@ -42,6 +56,27 @@ const badge = (agent) => el("span", { class: `badge ${agent}` }, AGENT_LABEL[age
 const sessionLabel = (s) => (s.chat ? CHAT_LABEL : AGENT_LABEL)[s.agent];
 const sessionBadge = (s) => el("span", { class: `badge ${s.agent}${s.chat ? " chat" : ""}` }, sessionLabel(s));
 const pill = (s) => el("span", { class: `pill ${s}` }, STATE_LABEL[s] ?? s);
+
+// 세션 수명: 컨텍스트 압축 횟수(1회 노랑, 2회 주황, 3회 이상 빨강)와 지금 컨텍스트가 창을 얼마나 채웠는지
+function lifeInfo(s) {
+  const n = s.compactions ?? 0;
+  const { used, window } = s.context ?? {};
+  const pct = used && window ? Math.min(100, Math.round((used / window) * 100)) : null;
+  const text = `압축 ${n}회${pct === null ? "" : ` · ${pct}%`}`;
+  const title = `세션 수명 · 컨텍스트 압축 ${n}회${pct === null ? "" : ` · 컨텍스트 ${used.toLocaleString()} / ${window.toLocaleString()} 토큰`}\n` +
+    "압축 1회 노랑, 2회 주황, 3회 이상 빨강. 답이 흐려지면 '다시 시작'으로 새 대화를 여세요.";
+  return { n, text, title, cls: `pill life life-${Math.min(n, 3)}` };
+}
+
+const lifePill = (s) => {
+  const life = lifeInfo(s);
+  return el("span", { class: life.cls, title: life.title }, life.text);
+};
+
+function renderLife(id, s) {
+  const life = lifeInfo(s);
+  Object.assign($(id), { className: life.cls, title: life.title, textContent: life.text });
+}
 
 function timeAgo(iso) {
   const sec = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -353,11 +388,13 @@ function renderSessionList() {
   const items = state.sessions.filter((s) => !q || `${s.title} ${s.projectName}`.toLowerCase().includes(q));
   const item = (s, sub) => el("button", {
     class: `session-item${state.current?.id === s.id ? " active" : ""}`,
-    onclick: () => selectSession(s.id),
+    onclick: sessionOpener(s.id),
+    onauxclick: sessionOpener(s.id),
   },
   el("span", { class: "top" },
     el("span", { class: `dot ${s.state}` }),
-    el("span", { class: "name" }, s.title)),
+    el("span", { class: "name" }, s.title),
+    s.compactions ? lifePill(s) : null),
   el("span", { class: "sub" }, sub));
   const chats = items.filter((s) => s.chat);
   $("chat-list").replaceChildren(...chats.map((s) => item(s, `${sessionLabel(s)}${s.model ? ` · ${s.model}` : ""} · ${timeAgo(s.updatedAt)}`)));
@@ -408,7 +445,7 @@ function renderDashboard() {
 }
 
 function sessionRow(s, withProject) {
-  return el("tr", { class: "click", onclick: () => selectSession(s.id) },
+  return el("tr", { class: "click", onclick: sessionOpener(s.id), onauxclick: sessionOpener(s.id) },
     el("td", { class: "title-cell", title: s.title }, s.title),
     el("td", {}, sessionBadge(s)),
     withProject ? el("td", {}, s.projectName) : el("td", { class: "path" }, s.worktree ? "작업 폴더" : "원본"),
@@ -572,7 +609,7 @@ function renderGraph() {
       el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null, pill(s.state)),
       el("div", { class: "gcard-title" }, s.title),
       el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
-      el("div", { class: "gcard-foot" }, timeAgo(s.updatedAt)),
+      el("div", { class: "gcard-foot" }, el("span", {}, timeAgo(s.updatedAt)), lifePill(s)),
       el("span", { class: "gcard-handle", title: "끌어서 다른 세션에 연결" }));
     cards.set(s.id, card);
     canvas.append(card);
@@ -655,6 +692,11 @@ function canvasPoint(e) {
 
 // 카드를 누르고 떼면 열고, 끌면 옮긴다. 손잡이를 끌어 다른 카드에 놓으면 연결한다.
 function onGraphPointerDown(e) {
+  if (e.button === 1 && e.target.closest(".gcard")) {
+    e.preventDefault();
+    openSessionWindow(e.target.closest(".gcard").dataset.id);
+    return;
+  }
   if (e.button !== 0) return;
   const g = state.graph;
   const label = e.target.closest(".edge-label");
@@ -705,7 +747,7 @@ function onGraphPointerDown(e) {
     g.canvas.classList.remove("connecting");
     temp?.remove();
     if (!moved) {
-      if (!connecting) selectSession(id);
+      if (!connecting) sessionOpener(id)(ev);
       return;
     }
     if (connecting) {
@@ -928,7 +970,9 @@ function renderSession() {
   $("s-meta").title = s.agentSessionId ?? "";
   $("s-diff").disabled = !s.baseCommit;
   $("s-diff").hidden = !!s.chat;
-  $("s-back").hidden = !!s.chat;
+  $("s-back").hidden = !!s.chat || !!POPUP;
+  $("s-popout").hidden = !!POPUP;
+  if (POPUP) document.title = `${s.title} · AgentHub`;
   renderFlow();
 
   $("s-events").replaceChildren(...s.events.map(renderEvent));
@@ -943,7 +987,8 @@ function renderState() {
   label.className = `pill ${s.state}`;
   const running = s.state === "running";
   $("s-stop").disabled = !running;
-  $("s-delete").disabled = running;
+  $("s-restart").disabled = running || !s.agentSessionId;
+  renderLife("s-life", s);
   $("s-form").querySelector("button").disabled = running;
 }
 
@@ -1047,11 +1092,12 @@ $("s-prompt").addEventListener("keydown", (e) => {
 
 $("s-crumb-project").addEventListener("click", (e) => {
   e.preventDefault();
-  if (!state.current) return;
+  if (!state.current || POPUP) return; // 별도 창에는 프로젝트·대시보드 화면이 없다.
   if (state.current.chat) goDashboard();
   else goProject(state.current.projectPath);
 });
 $("s-back").addEventListener("click", () => state.current && goProject(state.current.projectPath));
+$("s-popout").addEventListener("click", () => state.current && openSessionWindow(state.current.id));
 
 $("s-role").addEventListener("click", () => {
   $("role-text").value = state.current?.role ?? "";
@@ -1075,6 +1121,20 @@ $("role-form").addEventListener("submit", async (e) => {
 
 $("s-stop").addEventListener("click", () => api("POST", `/api/sessions/${state.current.id}/stop`).catch((e) => alert(e.message)));
 
+// CLI 대화만 새로 시작한다. 화면이 새로 그려지는 것은 서버가 보내는 session 이벤트로 한다.
+async function restartSession() {
+  const s = state.current;
+  if (!s) return;
+  const kept = s.chat ? "화면의 기록은 남지만" : "AgentHub 기록·역할·연결은 그대로 남지만";
+  if (!confirm(`"${s.title}"을(를) 다시 시작할까요?\n\nCLI 대화를 새로 시작해 컨텍스트를 비웁니다. ${kept}, AI는 이전 대화 내용을 기억하지 못합니다.`)) return;
+  try {
+    await api("POST", `/api/sessions/${s.id}/restart`);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+$("s-restart").addEventListener("click", restartSession);
+
 $("s-delete").addEventListener("click", async () => {
   const s = state.current;
   const note = s.imported ? "\n\n원래 Claude Code·Codex 기록은 지워지지 않습니다." : "";
@@ -1084,16 +1144,32 @@ $("s-delete").addEventListener("click", async () => {
     removeWorktree = confirm(
       `작업 폴더도 지울까요?\n${s.cwd}\n\n커밋하지 않은 변경이 있으면 지우지 않고 중단합니다. 브랜치 ${s.worktree.branch}는 남습니다.`);
   }
-  try {
-    await api("DELETE", `/api/sessions/${s.id}${removeWorktree ? "?removeWorktree=1" : ""}`);
-    const back = s.projectPath;
-    await loadSessions();
-    if (back) await goProject(back);
-    else goDashboard();
-  } catch (err) {
-    alert(err.message);
-  }
+  if (!(await deleteSession(s, { removeWorktree }))) return;
+  if (POPUP) return window.close(); // 별도 창은 보여 줄 세션이 없어졌으니 닫는다.
+  await loadSessions();
+  if (s.projectPath) await goProject(s.projectPath);
+  else goDashboard();
 });
+
+// 세션을 지운다. 실행 중으로 멈춰 있거나 작업 폴더를 못 지우면 그 자리에서 어떻게 할지 묻는다. 지웠으면 true.
+async function deleteSession(s, { removeWorktree = false, force = false } = {}) {
+  const query = new URLSearchParams();
+  if (removeWorktree) query.set("removeWorktree", "1");
+  if (force) query.set("force", "1");
+  try {
+    await api("DELETE", `/api/sessions/${s.id}?${query}`);
+    return true;
+  } catch (err) {
+    if (err.reason === "running" && confirm("실행 중인 세션입니다. 실행을 멈추고 삭제할까요?")) {
+      return deleteSession(s, { removeWorktree, force: true });
+    }
+    if (err.reason === "worktree" && confirm(`${err.message}\n\n작업 폴더는 남겨 두고 세션 기록만 삭제할까요?`)) {
+      return deleteSession(s, { force });
+    }
+    if (!["running", "worktree"].includes(err.reason)) alert(err.message);
+    return false;
+  }
+}
 
 // ── 변경 보기 ───────────────────────────────────────────────────
 function renderDiff(text) {
@@ -1177,7 +1253,6 @@ $("config-form").addEventListener("submit", async (e) => {
 // ── 일반 채팅 화면 ──────────────────────────────────────────────
 // 새 채팅은 첫 메시지를 보낼 때 세션을 만든다. 그 전까지 고른 AI·모델·추론 강도는 초안에 두고, 다음 새 채팅에도 쓴다.
 const CHAT_PREFS_KEY = "agenthub.chat";
-const POPUP_CHAT = new URLSearchParams(location.search).get("chat"); // 별도 창으로 연 채팅(세션 id 또는 "new")
 
 function loadChatPrefs() {
   const prefs = { agent: "claude", model: "", effort: "" };
@@ -1215,10 +1290,10 @@ function renderChat() {
   $("c-title").textContent = s?.title ?? "새 채팅";
   $("c-title").disabled = !s;
   $("c-delete").hidden = !s;
-  $("c-popout").hidden = !!POPUP_CHAT;
+  $("c-popout").hidden = !!POPUP;
   $("c-empty").hidden = !!s?.events.length;
   $("c-events").replaceChildren(...(s?.events ?? []).map(renderEvent));
-  if (POPUP_CHAT) document.title = `${s?.title ?? "새 채팅"} · AgentHub`;
+  if (POPUP) document.title = `${s?.title ?? "새 채팅"} · AgentHub`;
   renderChatPick();
   renderChatState();
   scrollToBottom();
@@ -1249,6 +1324,10 @@ function renderChatState() {
     $("c-state").className = `pill ${s.state}`;
   }
   $("c-stop").hidden = !running;
+  $("c-life").hidden = !s;
+  if (s) renderLife("c-life", s);
+  $("c-restart").hidden = !s?.agentSessionId;
+  $("c-restart").disabled = running;
   $("c-form").querySelector("button").disabled = running;
   $("c-events").classList.toggle("running", running);
   if (running) $("c-empty").hidden = true;
@@ -1338,23 +1417,17 @@ $("c-title").addEventListener("click", async () => {
 
 $("c-stop").addEventListener("click", () => state.current && api("POST", `/api/sessions/${state.current.id}/stop`).catch((e) => alert(e.message)));
 $("c-new").addEventListener("click", () => openChat());
+$("c-restart").addEventListener("click", restartSession);
 
 $("c-delete").addEventListener("click", async () => {
   const s = state.current;
   if (!s || !confirm(`"${s.title}" 채팅을 삭제할까요?`)) return;
-  try {
-    await api("DELETE", `/api/sessions/${s.id}`);
-    await loadSessions();
-    openChat();
-  } catch (err) {
-    alert(err.message);
-  }
+  if (!(await deleteSession(s))) return;
+  await loadSessions();
+  openChat();
 });
 
-// 데스크톱 앱에서는 AgentHub 창으로, 브라우저에서는 팝업으로 열린다.
-$("c-popout").addEventListener("click", () => {
-  window.open(`/?chat=${state.current?.id ?? "new"}`, "_blank", "width=760,height=900");
-});
+$("c-popout").addEventListener("click", () => openWindow(`chat=${state.current?.id ?? "new"}`));
 
 // ── 새 세션 ─────────────────────────────────────────────────────
 const newKind = () => {
@@ -1592,6 +1665,24 @@ $("settings-form").addEventListener("submit", async (e) => {
   }
 });
 
+// ── 화면 테마 ───────────────────────────────────────────────────
+// 테마 적용은 CSS보다 먼저 읽는 theme.js가 맡고, 여기서는 고르는 버튼만 다룬다.
+function renderThemeSwitch() {
+  const pref = window.agenthubTheme.get();
+  for (const button of $("theme-switch").querySelectorAll("button")) {
+    const on = button.dataset.themePref === pref;
+    button.classList.toggle("active", on);
+    button.setAttribute("aria-checked", String(on));
+  }
+}
+
+$("theme-switch").addEventListener("click", (e) => {
+  const pref = e.target.closest("button")?.dataset.themePref;
+  if (pref) window.agenthubTheme.set(pref);
+});
+window.addEventListener("agenthub-theme", renderThemeSwitch);
+renderThemeSwitch();
+
 // ── 실시간 갱신 ─────────────────────────────────────────────────
 function connectStream() {
   const source = new EventSource("/api/stream");
@@ -1632,18 +1723,18 @@ function connectStream() {
     state.update = JSON.parse(e.data);
     renderUpdate();
   });
-  // 연결이 끊겼다가 돌아오면 놓친 이벤트를 다시 받아 온다.
+  // 연결이 끊겼다가 돌아오면 놓친 이벤트를 다시 받아 온다. 목록의 실행 상태도 그 사이 바뀌었을 수 있다.
   source.addEventListener("open", () => {
+    loadSessions();
     if (state.current) selectSession(state.current.id);
   });
 }
 
 await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate(), loadProjects(), loadLinks()]);
-// 별도 창으로 연 채팅은 사이드바 없이 채팅 화면만 보여 준다.
-if (POPUP_CHAT) {
+if (POPUP) {
   document.body.classList.add("popup");
-  if (POPUP_CHAT === "new") openChat();
-  else await selectSession(POPUP_CHAT).catch(openChat);
+  if (POPUP === "new") openChat();
+  else await selectSession(POPUP).catch(openChat);
 } else {
   goDashboard();
 }

@@ -31,6 +31,13 @@ export async function createWorktree(repo, sessionId) {
 }
 
 export async function removeWorktree(repo, dir) {
+  // 저장소가 사라졌으면(임시 폴더 등) 지울 worktree 기록도 없다.
+  if (!fs.existsSync(repo)) return;
+  // 폴더를 이미 직접 지웠으면 git에 남은 worktree 기록만 정리한다.
+  if (!fs.existsSync(dir)) {
+    await git(repo, ["worktree", "prune"]).catch(() => {});
+    return;
+  }
   // --force를 쓰지 않는다. 커밋하지 않은 변경이 있으면 실패하고 폴더를 남긴다.
   await git(repo, ["worktree", "remove", dir]);
 }

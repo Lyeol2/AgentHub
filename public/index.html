@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AgentHub</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -49,6 +50,11 @@
         <svg viewBox="0 0 24 24"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
         설정
       </button>
+      <div class="theme-switch" id="theme-switch" role="radiogroup" aria-label="화면 테마">
+        <button type="button" data-theme-pref="dark" role="radio">다크</button>
+        <button type="button" data-theme-pref="light" role="radio">라이트</button>
+        <button type="button" data-theme-pref="system" role="radio" title="Windows 설정을 따릅니다">시스템</button>
+      </div>
     </footer>
   </aside>
 
@@ -99,7 +105,7 @@
         <p class="notice" id="p-registered">Claude Code·Codex 기록에서 자동으로 찾은 프로젝트입니다. 세션을 가져오거나 새로 만들면 AgentHub 프로젝트로 등록됩니다.</p>
         <div class="card">
           <div class="card-head">
-            <h3>세션 흐름 <span class="muted">카드를 눌러 열고, 끌어서 옮기고, ● 손잡이를 다른 카드로 끌어 연결합니다</span></h3>
+            <h3>세션 흐름 <span class="muted">카드를 눌러 열고(가운데 버튼·Ctrl+클릭은 새 창), 끌어서 옮기고, ● 손잡이를 다른 카드로 끌어 연결합니다</span></h3>
             <div class="actions">
               <button class="ghost sm" id="p-orchestrator" title="목표를 작업으로 나누고 세션을 만들어 지휘하는 세션">오케스트레이터 만들기</button>
               <button class="ghost sm" id="p-relayout" title="옮긴 위치를 지우고 연결 순서대로 다시 배치">자동 배치</button>
@@ -128,6 +134,7 @@
             <h2 id="s-title"></h2>
             <span id="s-kind" class="pill orch" hidden>오케스트레이터</span>
             <span id="s-state" class="pill"></span>
+            <span id="s-life" class="pill life"></span>
           </div>
           <div class="sub" id="s-meta"></div>
           <div class="flow" id="s-flow"></div>
@@ -135,10 +142,12 @@
         <div class="actions">
           <label class="toggle"><input type="checkbox" id="s-show-log"> 로그</label>
           <button id="s-back" class="ghost">흐름</button>
+          <button id="s-popout" class="ghost" title="이 세션을 별도 창으로 엽니다">새 창으로</button>
           <button id="s-config" class="ghost">설정</button>
           <button id="s-role" class="ghost">역할</button>
           <button id="s-diff" class="ghost">변경 보기</button>
           <button id="s-stop" class="ghost">중지</button>
+          <button id="s-restart" class="ghost" title="CLI 대화를 새로 시작해 컨텍스트를 비웁니다. 기록·역할·연결은 그대로 둡니다.">다시 시작</button>
           <button id="s-delete" class="ghost danger">삭제</button>
         </div>
       </header>
@@ -163,7 +172,9 @@
         <button type="button" id="c-title" class="chat-title" title="눌러서 이름 바꾸기"></button>
         <div class="actions">
           <span id="c-state" class="pill"></span>
+          <span id="c-life" class="pill life"></span>
           <button id="c-stop" class="ghost sm">중지</button>
+          <button id="c-restart" class="ghost sm" title="CLI 대화를 새로 시작해 컨텍스트를 비웁니다. 화면의 기록은 그대로 둡니다.">다시 시작</button>
           <button id="c-new" class="ghost sm">새 채팅</button>
           <button id="c-popout" class="ghost sm" title="이 채팅을 별도 창으로 엽니다">새 창으로</button>
           <button id="c-delete" class="ghost sm danger">삭제</button>

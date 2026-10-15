@@ -45,11 +45,12 @@ export class SessionStore {
     if (session) fs.writeFileSync(path.join(SESSIONS_DIR, `${id}.json`), JSON.stringify(session, null, 2));
   }
 
+  // 파일을 먼저 지운다. 파일을 못 지웠는데(다른 프로그램이 잡고 있는 등) 목록에서만 빠지면 다음 실행 때 되살아난다.
   remove(id) {
     clearTimeout(this.timers.get(id));
     this.timers.delete(id);
+    fs.rmSync(path.join(SESSIONS_DIR, `${id}.json`), { force: true, maxRetries: 3 });
     this.sessions.delete(id);
-    fs.rmSync(path.join(SESSIONS_DIR, `${id}.json`), { force: true });
   }
 
   flushAll() {

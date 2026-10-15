@@ -72,6 +72,11 @@ export function parseLine(line) {
       if (msg.subtype === "init") {
         return [{ kind: "status", text: `세션 시작 (${msg.model ?? "기본 모델"})`, agentSessionId: msg.session_id }];
       }
+      // 컨텍스트가 차서 CLI가 대화를 요약했다. 세션 수명 표시에 쓴다.
+      if (msg.subtype === "compact_boundary") {
+        const before = msg.compact_metadata?.pre_tokens;
+        return [{ kind: "status", text: `컨텍스트를 압축했습니다${before ? ` (압축 전 ${before.toLocaleString()} 토큰)` : ""}`, compact: true }];
+      }
       return [];
     case "assistant": {
       if (msg.error) {
@@ -86,6 +91,12 @@ export function parseLine(line) {
         else if (block.type === "tool_use") {
           events.push({ kind: "tool", text: toolSummary(block.name, block.input), detail: truncate(block.input) });
         }
+      }
+      // 이번 호출에 넣은 토큰이 지금 컨텍스트 크기다. 하위 에이전트 호출은 따로 센다.
+      const u = msg.message?.usage;
+      if (u && !msg.parent_tool_use_id) {
+        const used = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+        if (used) events.push({ kind: "usage", context: { used } });
       }
       return events;
     }
@@ -105,7 +116,11 @@ export function parseLine(line) {
       const cost = typeof msg.total_cost_usd === "number" ? ` · 환산 비용 $${msg.total_cost_usd.toFixed(4)}` : "";
       const seconds = msg.duration_ms ? ` · ${(msg.duration_ms / 1000).toFixed(1)}초` : "";
       if (msg.is_error) return [{ kind: "error", text: msg.result ?? "실행 실패" }];
-      return [{ kind: "result", text: `턴 완료${seconds}${cost}` }];
+      // 모델별 컨텍스트 창 크기. 하위 에이전트 모델이 섞여 있으면 가장 큰 값(주 모델)을 쓴다.
+      const windows = Object.values(msg.modelUsage ?? {}).map((m) => m.contextWindow).filter(Number.isFinite);
+      const result = { kind: "result", text: `턴 완료${seconds}${cost}` };
+      if (windows.length) result.context = { window: Math.max(...windows) };
+      return [result];
     }
     default:
       return [];

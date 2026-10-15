@@ -166,7 +166,7 @@ function claudeHistory(file) {
       const text = claudeUserText(msg);
       if (text && !isInjected(text)) events.push({ kind: "user", text, ts: msg.timestamp });
       else events.push(...claude.parseLine(line).map((e) => ({ ...e, ts: msg.timestamp })));
-    } else if (msg.type === "assistant") {
+    } else if (msg.type === "assistant" || (msg.type === "system" && msg.subtype === "compact_boundary")) {
       events.push(...claude.parseLine(line).map((e) => ({ ...e, ts: msg.timestamp })));
     }
   }
@@ -325,12 +325,24 @@ export function discoverProjects() {
   return [...projects.values()].sort((a, b) => b.lastActive.localeCompare(a.lastActive));
 }
 
+// 화면에 보일 기록과 세션 수명(압축 횟수, 마지막 컨텍스트 크기)
 export function loadHistory(found) {
-  const events = found.agent === "claude" ? claudeHistory(found.file) : codexHistory(found.file);
+  let compactions = 0;
+  let context = null;
+  const events = [];
+  for (const { compact, context: ctx, ...e } of found.agent === "claude" ? claudeHistory(found.file) : codexHistory(found.file)) {
+    if (compact) compactions++;
+    if (ctx) context = { ...context, ...ctx };
+    if (e.kind !== "usage") events.push(e);
+  }
   const skipped = Math.max(0, events.length - MAX_EVENTS);
   const kept = events.slice(skipped);
   const note = `${found.agent === "claude" ? "Claude Code" : "Codex"}에서 가져온 세션입니다.` +
     (skipped ? ` 앞부분 ${skipped}개 항목은 생략했습니다.` : "");
-  return [{ kind: "status", text: note }, ...kept].map((e, seq) => ({ ...e, seq, ts: e.ts ?? new Date().toISOString() }));
+  return {
+    events: [{ kind: "status", text: note }, ...kept].map((e, seq) => ({ ...e, seq, ts: e.ts ?? new Date().toISOString() })),
+    compactions,
+    context,
+  };
 }
 

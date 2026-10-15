@@ -64,10 +64,12 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// reason: 화면이 실패 종류에 따라 다음 선택지를 물을 수 있게 붙이는 구분 값
 class HttpError extends Error {
-  constructor(status, message) {
+  constructor(status, message, reason) {
     super(message);
     this.status = status;
+    this.reason = reason;
   }
 }
 
@@ -105,6 +107,8 @@ function broadcast(type, data) {
 }
 runner.on("event", (sessionId, event) => broadcast("event", { sessionId, event }));
 runner.on("state", (sessionId, state) => broadcast("state", { sessionId, state }));
+// 턴이 끝나면 목록의 세션 수명(압축 횟수, 컨텍스트 크기)도 새로 받게 한다.
+runner.on("turnEnd", () => broadcast("sessions", {}));
 // 데스크톱 앱(Electron)이 업데이트 기능을 넘겨준다. 브라우저로 쓸 때는 없다.
 let updater = null;
 export function setUpdater(next) {
@@ -122,6 +126,13 @@ setInterval(() => broadcast("ping", {}), 25000).unref();
 function getSession(id) {
   const session = store.get(id);
   if (!session) throw new HttpError(404, "세션이 없습니다.");
+  return session;
+}
+
+// 실행 중으로 남아 있는데 실제로 도는 CLI가 없으면(중간에 실행이 끊긴 경우) 중단된 것으로 고친다.
+// 그대로 두면 화면에서 중지·삭제 버튼이 막혀 지울 수 없는 세션이 된다.
+function settleState(session) {
+  if (session.state === "running" && !runner.isRunning(session.id)) runner.setState(session, "interrupted");
   return session;
 }
 
@@ -546,7 +557,7 @@ async function handleApi(req, res, url) {
   }
 
   if (parts[0] === "sessions") {
-    if (parts.length === 1 && method === "GET") return send(res, 200, store.list().map(summary));
+    if (parts.length === 1 && method === "GET") return send(res, 200, store.list().map((s) => summary(settleState(s))));
 
     if (parts.length === 1 && method === "POST") {
       const body = await readJson(req);
@@ -567,6 +578,7 @@ async function handleApi(req, res, url) {
       const cwd = found.cwd && fs.existsSync(found.cwd) ? found.cwd : project.path;
       const git = await isGitRepo(cwd);
       const now = new Date().toISOString();
+      const history = loadHistory(found);
       const session = {
         id: `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`,
         title: found.title || `${found.agent} 세션`,
@@ -583,7 +595,9 @@ async function handleApi(req, res, url) {
         state: "idle",
         createdAt: now,
         updatedAt: now,
-        events: loadHistory(found),
+        compactions: history.compactions,
+        context: history.context,
+        events: history.events,
       };
       store.add(session);
       broadcast("sessions", {});
@@ -592,7 +606,7 @@ async function handleApi(req, res, url) {
 
     const session = getSession(parts[1]);
 
-    if (parts.length === 2 && method === "GET") return send(res, 200, session);
+    if (parts.length === 2 && method === "GET") return send(res, 200, settleState(session));
 
     if (parts[2] === "messages" && method === "POST") {
       const body = await readJson(req);
@@ -653,21 +667,40 @@ async function handleApi(req, res, url) {
 
     if (parts[2] === "stop" && method === "POST") return send(res, 200, { stopped: runner.stop(session) });
 
+    if (parts[2] === "restart" && method === "POST") {
+      try {
+        runner.restart(session);
+      } catch (err) {
+        throw new HttpError(409, err.message);
+      }
+      broadcast("sessions", {});
+      broadcast("session", { sessionId: session.id });
+      return send(res, 200, summary(session));
+    }
+
     if (parts[2] === "diff" && method === "GET") {
       if (!session.baseCommit) throw new HttpError(400, "git 저장소가 아닙니다.");
       return send(res, 200, await diffSince(session.cwd, session.baseCommit));
     }
 
+    // force=1: 실행 중이면 CLI를 멈추고 지운다(멈추지 않고 남은 세션을 지울 때).
     if (parts.length === 2 && method === "DELETE") {
-      if (runner.isRunning(session.id)) throw new HttpError(409, "실행 중인 세션은 삭제할 수 없습니다.");
+      if (runner.isRunning(session.id)) {
+        if (url.searchParams.get("force") !== "1") throw new HttpError(409, "실행 중인 세션입니다.", "running");
+        runner.stop(session);
+      }
       if (session.worktree && url.searchParams.get("removeWorktree") === "1") {
         try {
           await removeWorktree(session.projectPath, session.worktree.dir);
         } catch (err) {
-          throw new HttpError(409, `작업 폴더를 지우지 못했습니다(커밋하지 않은 변경이 있을 수 있음): ${err.message}`);
+          throw new HttpError(409, `작업 폴더를 지우지 못했습니다(커밋하지 않은 변경이 있을 수 있음): ${err.message}`, "worktree");
         }
       }
-      store.remove(session.id);
+      try {
+        store.remove(session.id);
+      } catch (err) {
+        throw new HttpError(500, `세션 파일을 지우지 못했습니다: ${err.message}`);
+      }
       links.removeForSession(session.id);
       broadcast("sessions", {});
       broadcast("links", {});
@@ -688,7 +721,7 @@ const server = http.createServer(async (req, res) => {
   try {
     await handleApi(req, res, url);
   } catch (err) {
-    send(res, err.status ?? 500, { error: err.message });
+    send(res, err.status ?? 500, { error: err.message, reason: err.reason });
   }
 });
 

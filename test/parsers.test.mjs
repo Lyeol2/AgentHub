@@ -94,6 +94,26 @@ test("claude: rate_limit_event는 화면 이벤트가 아니라 한도 정보로
   assert.deepEqual(ev.rateLimit, info);
 });
 
+test("claude: 컨텍스트 압축과 컨텍스트 크기를 세션 수명 정보로 넘긴다", () => {
+  const [compact] = claude.parseLine(JSON.stringify({ type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "auto", pre_tokens: 150000 } }));
+  assert.equal(compact.kind, "status");
+  assert.equal(compact.compact, true);
+
+  const events = claude.parseLine(JSON.stringify({
+    type: "assistant",
+    message: { content: [{ type: "text", text: "a" }], usage: { input_tokens: 10, cache_creation_input_tokens: 90, cache_read_input_tokens: 900 } },
+  }));
+  assert.deepEqual(events.at(-1), { kind: "usage", context: { used: 1000 } });
+  // 하위 에이전트 호출은 주 대화의 컨텍스트가 아니다.
+  const sub = claude.parseLine(JSON.stringify({ type: "assistant", parent_tool_use_id: "t", message: { content: [], usage: { input_tokens: 5 } } }));
+  assert.equal(sub.length, 0);
+
+  const [result] = claude.parseLine(JSON.stringify({
+    type: "result", is_error: false, modelUsage: { haiku: { contextWindow: 200000 }, opus: { contextWindow: 1000000 } },
+  }));
+  assert.deepEqual(result.context, { window: 1000000 });
+});
+
 test("discover: AgentHub 작업 폴더와 하위 폴더는 원래 저장소로 묶는다", async () => {
   const path = await import("node:path");
   const { projectRoot } = await import("../server/discover.mjs");

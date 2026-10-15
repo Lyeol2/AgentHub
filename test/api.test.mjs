@@ -54,6 +54,23 @@ test("api: 세션 수정·연결·삭제", async () => {
   assert.equal((await api("DELETE", `/sessions/${a.id}`)).status, 200);
 });
 
+test("api: 작업 폴더를 직접 지운 세션도 삭제된다", async () => {
+  const s = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "W", permission: "acceptEdits", isolate: true })).body;
+  fs.rmSync(s.cwd, { recursive: true, force: true });
+  assert.equal((await api("DELETE", `/sessions/${s.id}?removeWorktree=1`)).status, 200);
+  assert.equal((await api("GET", `/sessions/${s.id}`)).status, 404);
+});
+
+test("api: 세션 다시 시작은 CLI 대화와 수명만 비운다", async () => {
+  const s = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "R", permission: "acceptEdits" })).body;
+  const restarted = await api("POST", `/sessions/${s.id}/restart`);
+  assert.equal(restarted.status, 200);
+  assert.equal(restarted.body.agentSessionId, null);
+  assert.equal(restarted.body.compactions, 0);
+  assert.equal(restarted.body.title, "R");
+  assert.equal((await api("DELETE", `/sessions/${s.id}`)).status, 200);
+});
+
 test("api: AGENTHUB.md 만들기와 흐름 시작", async () => {
   assert.equal((await api("GET", `/hub?path=${encodeURIComponent(repo)}`)).body.exists, false);
   const hub = (await api("POST", "/hub/init", { path: repo })).body;
