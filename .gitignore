@@ -8,3 +8,5 @@ dist/
 release.local.json
 # 릴리스 준비 세션이 쓰는 사용자용 업데이트 내역 초안. 릴리스할 때 쓰고 지운다.
 release-notes.draft.md
+# 테스트·작업 중 생기는 임시 파일
+.tmp/
