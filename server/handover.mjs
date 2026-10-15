@@ -38,7 +38,8 @@ function line(e) {
 }
 
 // session: 바꾸기 전 세션(이전 agent·model), files: 기준 커밋 이후 바뀐 파일(git status 형식)
-export function handoverText(session, files = "", { previousCwd, previousBranch } = {}) {
+// importedFrom: 내보낸 기록 문서에서 가져온 세션이면 그 문서 이름
+export function handoverText(session, files = "", { previousCwd, previousBranch, importedFrom } = {}) {
   const parts = session.events.map(line).filter(Boolean);
   const firstUser = parts.findIndex((p) => p.startsWith("[사용자"));
   // 첫 요청(작업의 목표)은 꼭 남기고, 나머지는 최근 것부터 예산 안에서 채운다.
@@ -53,6 +54,18 @@ export function handoverText(session, files = "", { previousCwd, previousBranch 
   const skipped = parts.length - head.length - tail.length;
   const from = `${AGENT_NAME[session.agent] ?? session.agent}${session.model ? ` (${session.model})` : ""}`;
   const branch = session.worktree ? ` (브랜치 ${session.worktree.branch})` : "";
+  if (importedFrom) return [
+    "[내보낸 기록에서 가져온 작업]",
+    `이 세션은 AgentHub에서 내보낸 작업 기록(${importedFrom})을 가져왔다. 기록은 다른 시점·다른 PC·다른 폴더에서 진행했을 수 있으므로, 기록의 경로와 파일 상태를 그대로 믿지 말고 지금 작업 폴더에서 직접 확인한다.`,
+    `작업 폴더: ${session.cwd}${branch}`,
+    "",
+    "--- 가져온 기록 ---",
+    ...head,
+    ...(skipped > 0 && tail.length ? [`(… 중간 기록 ${skipped}건 생략)`] : []),
+    ...tail,
+    "--- 기록 끝 ---",
+    "기록에서 끝나지 않은 일이 있으면 이어서 하고, 다 끝났으면 다음 요청을 따른다.",
+  ].join("\n\n").replace(/\n{3,}/g, "\n\n");
   return [
     previousCwd ? "[작업 폴더를 바꾼 세션의 진행 상황]" : "[이전 AI에서 이어받은 작업]",
     previousCwd

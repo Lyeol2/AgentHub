@@ -22,6 +22,9 @@ import { createCommandService } from "./application/commands.mjs";
 import { createSkillService } from "./application/skills.mjs";
 import { createGitService } from "./application/git.mjs";
 import { createSystemService } from "./application/system.mjs";
+import { createAccountService } from "./application/account.mjs";
+import { createIssueService } from "./application/issues.mjs";
+import { FileIssueLinkStore } from "./infrastructure/persistence/issue-links.mjs";
 import { createTurnLifecycle } from "./application/lifecycle.mjs";
 import { createHttpServer } from "./transport/http.mjs";
 import { createApiHandler } from "./transport/api.mjs";
@@ -36,6 +39,7 @@ export function createHub(options = {}) {
   config.hiddenProjects ??= [];
   config.hiddenSessions ??= [];
   config.skillLayout ??= {};
+  config.account ??= { hidden: false };
 
   let port = Number(options.port ?? process.env.PORT ?? config.port ?? 4517);
   const deps = options.deps ?? {};
@@ -102,7 +106,13 @@ export function createHub(options = {}) {
       getUpdater: () => updater,
     }),
     messaging: createMessagingService({ mailbox, board, projects, notify }),
+    account: deps.account ?? createAccountService({ config, setup, saveConfig: persistConfig }),
   };
+  services.issues = deps.issues ?? createIssueService({
+    config, store, sessions, workflows, notify,
+    links: deps.issueLinks ?? new FileIssueLinkStore({ dataDir }),
+    logger: deps.logger ?? console,
+  });
 
   // Resolve the MCP URL lazily, after an ephemeral port has been assigned.
   runner.mcp = (session) => {
@@ -137,12 +147,18 @@ export function createHub(options = {}) {
     notify("state", { sessionId, state, runningStartedAt });
   });
   listen(setup, "change", (jobs) => notify("setup", jobs));
-  listen(setup, "finished", () => notify("cli", {}));
+  listen(setup, "finished", (tool) => {
+    notify("cli", {});
+    if (tool === "gh") {
+      services.account.forget?.();
+      notify("account", {});
+    }
+  });
   listen(runner, "limit", (agent, info) => {
     if (agent === "claude") limits.recordClaudeLimit(info);
     notify("limits", {});
   });
-  const onTurnEnd = createTurnLifecycle({ runner, mailbox, sessions, workflows, chain, notify });
+  const onTurnEnd = createTurnLifecycle({ runner, mailbox, sessions, workflows, chain, notify, issues: services.issues });
   const logger = deps.logger ?? console;
   listen(runner, "turnEnd", (session, ok) => {
     onTurnEnd(session, ok).catch((err) => logger.error(err));

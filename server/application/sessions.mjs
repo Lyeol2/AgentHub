@@ -13,8 +13,9 @@ import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
 import { HttpError } from "./errors.mjs";
-import { AttachmentStore } from "../attachments.mjs";
+import { AttachmentStore, publicAttachment } from "../attachments.mjs";
 import { exportSession } from "../session-export.mjs";
+import { parseSessionMarkdown, listRecords as listRecords_, readRecord, readRecordImage, RECORD_MAX_BYTES } from "../session-import.mjs";
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
@@ -381,6 +382,75 @@ export function createSessionService({
     }
   }
 
+  // ── 기록 가져오기 ───────────────────────────────────────────────
+  // 내보낸 기록 문서를 찾는 곳: 프로젝트 원본, 그리고 세션을 고르면 그 세션의 작업 폴더(워크트리)
+  function recordFolders(projectPath, sessionId) {
+    const project = path.resolve(String(projectPath ?? ""));
+    const folders = [{ location: "project", dir: project }];
+    if (sessionId) {
+      const session = getSession(sessionId);
+      if (session.cwd && !session.chat && !samePath(session.cwd, project)) folders.push({ location: "session", dir: session.cwd });
+    }
+    return folders;
+  }
+
+  async function listRecords({ projectPath, sessionId }) {
+    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+    const groups = await Promise.all(recordFolders(projectPath, sessionId).map(async ({ location, dir }) =>
+      (await listRecords_(dir).catch(() => [])).map((record) => ({ ...record, location }))));
+    return groups.flat();
+  }
+
+  async function importRecord(body = {}) {
+    const project = ensureProject(body.projectPath);
+    let source;
+    try {
+      if (typeof body.markdown === "string") {
+        if (Buffer.byteLength(body.markdown) > RECORD_MAX_BYTES) throw Object.assign(new Error("기록 문서는 5MB까지 가져올 수 있습니다."), { code: "IMPORT_TOO_LARGE" });
+        source = { markdown: body.markdown, folder: null, name: String(body.fileName ?? "기록 문서").replace(/[\x00-\x1f]/g, "").slice(0, 200) };
+      } else {
+        const folder = recordFolders(project.path, body.sessionId).find((f) => f.location === (body.location ?? "project"));
+        if (!folder) throw Object.assign(new Error("기록 위치가 올바르지 않습니다."), { code: "IMPORT_PATH" });
+        const read = await readRecord(folder.dir, body.fileName);
+        source = { ...read, name: body.fileName };
+      }
+    } catch (err) {
+      throw new HttpError(err.code === "IMPORT_MISSING" ? 404 : 400, err.message);
+    }
+    let parsed;
+    try { parsed = parseSessionMarkdown(source.markdown); }
+    catch (err) { throw new HttpError(400, err.message); }
+
+    const session = await createSession({
+      project, agent: body.agent ?? parsed.meta.agent ?? "claude", permission: body.permission,
+      title: String(body.title ?? "").trim() || parsed.title || "가져온 기록",
+    });
+    // 이미지는 문서 옆 .assets에서 읽어 이 세션의 첨부로 다시 저장한다. 업로드한 문서는 이미지 파일이 없다.
+    let missingImages = 0;
+    const now = new Date().toISOString();
+    for (const [seq, { images, ...event }] of parsed.events.entries()) {
+      const attached = [];
+      for (const image of images ?? []) {
+        const file = source.folder ? await readRecordImage(source.folder, image.href) : null;
+        try {
+          if (!file) throw new Error("missing");
+          attached.push(publicAttachment(attachments.save(session.id, { name: image.name, mimeType: file.mimeType, data: file.bytes.toString("base64") })));
+        } catch {
+          missingImages++;
+        }
+      }
+      session.events.push({ ...event, seq, ts: event.ts ?? now, ...(attached.length ? { attachments: attached } : {}) });
+    }
+    session.importedFrom = { name: source.name, sessionId: parsed.meta.sessionId, exportedAt: parsed.meta.exportedAt, at: now };
+    if (body.carry !== false && session.events.some((e) => e.kind === "user")) session.handover = handoverText(session, "", { importedFrom: source.name });
+    runner.append(session, { kind: "status", text: `작업 기록 ${source.name}에서 ${parsed.events.length}건을 가져왔습니다.`
+      + (session.handover ? " 첫 요청에 기록을 붙여 이어서 작업합니다." : "")
+      + (missingImages ? ` 이미지 ${missingImages}장은 찾지 못해 빠졌습니다.` : "") });
+    store.touch(session);
+    broadcast("sessions", {});
+    return summary(session);
+  }
+
   function queueAction(id, itemId, action) {
     const session = getSession(id);
     const found = chain.list(session.id).find((item) => item.id === itemId);
@@ -589,7 +659,7 @@ export function createSessionService({
 
   return {
     list: () => store.list().map((s) => summary(settleState(s))), detail,
-    create, importSession, update, sendMessage, uploadAttachment, attachmentContent, exportRecord, queueAction, decidePlan, answerQuestion, answerPermission,
+    create, importSession, update, sendMessage, uploadAttachment, attachmentContent, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
     stop, pause, resume, restart, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,

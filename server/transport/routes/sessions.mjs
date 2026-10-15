@@ -1,10 +1,15 @@
 import { IMAGE_BODY_LIMIT } from "../../attachments.mjs";
+import { RECORD_MAX_BYTES } from "../../session-import.mjs";
+
+const RECORD_BODY_LIMIT = RECORD_MAX_BYTES * 2 + 100_000; // JSON 이스케이프 여유
 
 export function sessionRoutes(s) {
   return [
     ["GET", "sessions", () => s.list()],
     ["POST", "sessions", ({ body }) => s.create(body)],
     ["POST", "sessions/import", ({ body }) => s.importSession(body)],
+    ["GET", "records", ({ query }) => s.listRecords({ projectPath: query.get("path"), sessionId: query.get("session") ?? undefined })],
+    ["POST", "sessions/import-record", ({ body }) => s.importRecord(body), { maxBodyBytes: RECORD_BODY_LIMIT }],
     ["GET", "sessions/:id", ({ params }) => s.detail(params.id)],
     ["PUT", "sessions/:id", ({ params, body }) => s.update(params.id, body)],
     ["DELETE", "sessions/:id", ({ params, query }) => s.remove(params.id, {

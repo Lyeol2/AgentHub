@@ -1003,3 +1003,43 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
   .event-attachments img { max-width: 128px; height: 90px; }
   .export-result { padding: 8px 16px; }
 }
+
+/* 계정 연결 */
+.account-box { padding: 0 10px; }
+.account-line { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); min-width: 0; }
+.account-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-avatar { border-radius: 50%; flex: none; object-fit: cover; }
+.account-avatar.placeholder { width: 20px; height: 20px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-size: 11px; font-weight: 650; }
+.account-connect { width: 100%; padding: 4px 9px; font-size: 11.5px; }
+.account-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.account-row .account-avatar.placeholder { width: 32px; height: 32px; font-size: 14px; }
+.account-who { display: grid; gap: 2px; min-width: 0; }
+.account-who a { font-size: 11.5px; text-decoration: none; }
+
+/* 팀 작업(GitHub 이슈) */
+.inbox-list { flex: none; max-height: 180px; }
+.issue-boxes { display: flex; gap: 2px; }
+.issue-boxes button { border: 0; border-radius: 6px; padding: 4px 10px; background: transparent; color: var(--muted); font-size: 12px; }
+.issue-boxes button.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.issue-pill { font-size: 10px; padding: 0 6px; }
+.issue-link { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 0 16px; font-size: 11.5px; }
+.issue-link:empty { display: none; }
+.issue-link .check { display: flex; align-items: center; gap: 5px; }
+.issue-link .check input { width: auto; margin: 0; }
+.issue-link .dot { display: inline-block; }
+.issue-done { flex-basis: 100%; color: var(--ok); }
+.issue-thread { border-top: 1px solid var(--line); padding: 12px 16px 16px; display: grid; gap: 10px; }
+.issue-thread h5 { margin: 0; font-size: 12px; color: var(--muted); font-weight: 600; }
+.issue-comments { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 50vh; overflow-y: auto; }
+.issue-comment { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); max-width: 92%; }
+.issue-comment.mine { justify-self: end; border-color: rgb(76 141 255 / .35); background: var(--accent-soft); }
+.issue-comment-head { display: flex; gap: 8px; align-items: baseline; font-size: 11px; margin-bottom: 4px; }
+.issue-comment-body { font-size: 12px; overflow-wrap: anywhere; }
+.issue-comment-form { display: grid; gap: 6px; }
+.issue-comment-form textarea { width: 100%; resize: vertical; }
+.issue-row { gap: 12px; }
+.issue-row label { flex: 1; min-width: 0; }
+.issue-row select { width: 100%; }
+#issue-visibility.error { color: var(--danger); }
+.account-row .spacer { flex: 1; }
+.record-pick { align-items: center; }

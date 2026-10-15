@@ -8,7 +8,7 @@ import { composerAction } from "../../composer.js";
 import { createImageComposer, uploadImages, renderAttachmentLinks } from "./image-composer.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 
-export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation }) {
+export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, data, navigation }) {
   const ui = {
     "chatDraft": null
   };
@@ -65,6 +65,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("s-diff").disabled = !s.baseCommit;
     $("s-diff").hidden = !!s.chat;
     $("s-export").hidden = !!s.chat;
+    $("s-import").hidden = !!s.chat;
     $("s-back").hidden = !!s.chat || !!POPUP;
     $("s-popout").hidden = !!POPUP;
     if (POPUP) document.title = `${s.title} · AgentHub`;
@@ -367,6 +368,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         disabled: running, title: "같은 설정(역할·모델·권한·연결)으로 새 세션을 만들고 지금 세션은 지웁니다. 화면 기록도 비워집니다.",
       }),
       s.chat ? null : item("스킬 장착…", () => openEquipDialog(s)),
+      s.chat ? null : item("팀원에게 넘기기…", () => sendSessionToTeam(s), { title: "세션 요약으로 GitHub 이슈를 만들어 팀원에게 작업을 보냅니다" }),
       el("hr"),
       item("삭제", () => confirmDeleteSession(s), { danger: true }));
     document.body.append(menu);

@@ -2,7 +2,7 @@ import { createProjectsView } from "./view.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 
-export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation }) {
+export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, openNew, data, navigation }) {
   const ui = {
     "filter": "",
     "removingProject": null,
@@ -60,9 +60,9 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   }
 
   // ── 프로젝트 탭 ─────────────────────────────────────────────────
-  // 세션 흐름 / 세션 목록 / Git. 마지막에 본 탭을 이 브라우저에 기억한다.
+  // 세션 흐름 / 세션 목록 / Git / 작업. 마지막에 본 탭을 이 브라우저에 기억한다.
   const TAB_KEY = "agenthub-project-tab";
-  const PROJECT_TABS = ["flow", "sessions", "git"];
+  const PROJECT_TABS = ["flow", "sessions", "git", "issues"];
   const projectTab = () => (PROJECT_TABS.includes(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "flow");
 
   function showProjectTab(tab) {
@@ -73,6 +73,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     }
     for (const panel of document.querySelectorAll("#view-project .tab-panel")) panel.hidden = panel.dataset.panel !== tab;
     if (tab === "git") loadGit();
+    if (tab === "issues") loadIssues(navigation.project);
   }
 
   $("p-tabs").addEventListener("click", (e) => {
@@ -147,6 +148,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     $("p-path").textContent = p.path;
     $("p-registered").hidden = p.registered;
     renderProjectSessions();
+    renderIssueCount();
     showProjectTab(projectTab());
     loadSkills(p.path);
     loadCommands(p.path);
@@ -223,5 +225,5 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   });
   $("p-new").addEventListener("click", () => openNew(navigation.project));
 
-  return { loadSessions, loadProjects, renderProjectNav, renderSessionList, renderDashboard, currentProject, projectTab, renderProjectSessions, renderProject, sortedProjects };
+  return { loadSessions, loadProjects, renderProjectNav, renderSessionList, renderDashboard, currentProject, projectTab, showProjectTab, renderProjectSessions, renderProject, sortedProjects };
 }
