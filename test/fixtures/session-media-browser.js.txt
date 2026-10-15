@@ -33,6 +33,13 @@
   check(await count("/attachments") === 1 && await count("/messages") === 1, "paste image-only Enter uploads then sends once");
   check($("s-events").querySelector(".event-attachments a").getAttribute("target") === "_blank", "history image opens full size");
   await state("s1", "running");
+  check(!document.hidden, "timer fixture is visible");
+  $("s-elapsed").textContent = "stale timer";
+  document.dispatchEvent(new Event("visibilitychange"));
+  check($("s-elapsed").textContent.startsWith("⏱ ") && !$("s-elapsed").hidden, "visibility refresh updates the open session timer");
+  const elapsedBeforeTick = $("s-elapsed").textContent;
+  await until(() => $("s-elapsed").textContent !== elapsedBeforeTick);
+  check($("s-elapsed").textContent.startsWith("⏱ ") && !$("s-elapsed").hidden, "one-second interval advances the open session timer");
   drop("s", image("drop.png"));
   check($("s-send").dataset.action === "queue", "drop image-only running request queues");
   $("s-send").click();

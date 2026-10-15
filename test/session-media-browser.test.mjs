@@ -42,6 +42,7 @@ async function runBrowser(temp, url) {
     await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     const loaded = new Promise((resolve) => { const listener = ({ data }) => { if (JSON.parse(data).method === "Page.loadEventFired") { socket.removeEventListener("message", listener); resolve(); } }; socket.addEventListener("message", listener); });
     await command("Page.navigate", { url }); await loaded;
+    await command("Page.bringToFront");
     const expression = await fs.readFile(new URL("./fixtures/session-media-browser.js.txt", import.meta.url), "utf8");
     const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
     if (result.exceptionDetails) throw Error((result.exceptionDetails.exception?.description ?? result.exceptionDetails.text) + "\nBrowser errors:\n" + errors.join("\n"));

@@ -40,7 +40,7 @@ export function refreshElapsedTimes(data, commandNodeFoot) {
   const now = Date.now();
   for (const node of document.querySelectorAll("[data-elapsed-kind]")) {
     const item = node.dataset.elapsedKind === "command" ? data.commands.find((item) => item.id === node.dataset.elapsedId)
-      : data.current?.id === node.dataset.elapsedId ? state.current : data.sessions.find((item) => item.id === node.dataset.elapsedId);
+      : data.current?.id === node.dataset.elapsedId ? data.current : data.sessions.find((item) => item.id === node.dataset.elapsedId);
     updateElapsedElement(node, item, now);
     if (node.dataset.elapsedKind === "command" && item) {
       const detail = node.nextElementSibling;
