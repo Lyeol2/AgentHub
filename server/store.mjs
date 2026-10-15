@@ -52,11 +52,14 @@ export class SessionStore {
     for (const file of fs.readdirSync(SESSIONS_DIR)) {
       if (!file.endsWith(".json")) continue;
       const session = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), "utf8"));
-      // 서버가 꺼질 때 실행 중이던 턴은 중단된 것으로 본다.
-      if (session.state === "running") session.state = "interrupted";
+      // 서버가 꺼질 때 실행 중이던 턴은 중단된 것으로 보고 타이머도 종료한다.
+      const interrupted = session.state === "running";
+      const staleTimer = session.runningStartedAt != null;
+      if (interrupted) session.state = "interrupted";
+      if (interrupted || staleTimer) session.runningStartedAt = null;
       const migrated = useProjectFolder(session);
       this.sessions.set(session.id, session);
-      if (migrated) this.flush(session.id);
+      if (migrated || interrupted || staleTimer) this.flush(session.id);
     }
   }
 

@@ -255,6 +255,7 @@
             <h2 id="s-title"></h2>
             <span id="s-kind" class="pill orch" hidden>오케스트레이터</span>
             <span id="s-state" class="pill"></span>
+          <time id="s-elapsed" class="pill run-elapsed" role="timer" aria-live="off" hidden></time>
             <span id="s-life" class="pill life"></span>
           </div>
           <div class="sub" id="s-meta"></div>
@@ -297,6 +298,7 @@
         <button type="button" id="c-title" class="chat-title" title="눌러서 이름 바꾸기"></button>
         <div class="actions">
           <span id="c-state" class="pill"></span>
+          <time id="c-elapsed" class="pill run-elapsed" role="timer" aria-live="off" hidden></time>
           <span id="c-life" class="pill life"></span>
           <button id="c-restart" class="ghost sm" title="CLI 대화를 새로 시작해 컨텍스트를 비웁니다. 화면의 기록은 그대로 둡니다.">다시 시작</button>
           <button id="c-new" class="ghost sm">새 채팅</button>

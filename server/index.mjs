@@ -290,7 +290,7 @@ runner.on("event", (sessionId, event) => {
   // 질문·권한 요청이 오면 목록의 "답을 기다림" 표시도 바로 바꾼다.
   if (event.status === "pending" && (event.kind === "question" || event.kind === "permission")) broadcast("sessions", {});
 });
-runner.on("state", (sessionId, state) => broadcast("state", { sessionId, state }));
+runner.on("state", (sessionId, state, runningStartedAt) => broadcast("state", { sessionId, state, runningStartedAt }));
 // 설치·로그인이 진행되면 화면에 알리고, 끝나면 CLI 상태도 다시 받게 한다.
 setup.on("change", (jobs) => broadcast("setup", jobs));
 setup.on("finished", () => broadcast("cli", {}));
@@ -587,6 +587,7 @@ async function createSession({ project, title, role, roleName, orchestrator, cre
     baseCommit: git ? await headCommit(cwd) : null,
     agentSessionId: null,
     state: "idle",
+    runningStartedAt: null,
     createdAt: now,
     updatedAt: now,
     events: [],
@@ -1327,6 +1328,7 @@ async function handleApi(req, res, url) {
         cliSessionIds: [found.agentSessionId],
         imported: true,
         state: "idle",
+        runningStartedAt: null,
         createdAt: now,
         updatedAt: now,
         compactions: history.compactions,

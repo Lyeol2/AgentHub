@@ -103,9 +103,17 @@ export class Runner extends EventEmitter {
   }
 
   setState(session, state) {
+    // 출력·추가 요청·CLI 재시도에도 현재 작업의 시작 시각은 유지한다.
+    if (state === "running") {
+      if (session.state !== "running" || !Number.isFinite(Date.parse(session.runningStartedAt))) {
+        session.runningStartedAt = new Date().toISOString();
+      }
+    } else {
+      session.runningStartedAt = null;
+    }
     session.state = state;
     this.store.touch(session);
-    this.emit("state", session.id, state);
+    this.emit("state", session.id, state, session.runningStartedAt);
   }
 
   isRunning(id) {

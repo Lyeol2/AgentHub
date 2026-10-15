@@ -378,3 +378,38 @@ test("api: PR 목록·상세·생성·병합·닫기·푸시 경로와 오류를
     for (const name of names) githubPulls[name] = original[name];
   }
 });
+
+
+test("api: 실행 시작 시각 필드를 목록·상세·상태 스트림에서 제공한다", async () => {
+  const session = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "timer API" })).body;
+  const controller = new AbortController();
+  let reader;
+  try {
+    assert.equal(session.runningStartedAt, null);
+    assert.equal((await api("GET", "/sessions/" + session.id)).body.runningStartedAt, null);
+    assert.equal((await api("GET", "/sessions")).body.find((s) => s.id === session.id).runningStartedAt, null);
+    const stream = await fetch("http://127.0.0.1:45177/api/stream", { signal: controller.signal });
+    reader = stream.body.getReader();
+    const decoder = new TextDecoder();
+    await api("POST", "/sessions/" + session.id + "/pause");
+    let data = "";
+    let payload;
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      while (!payload) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        data += decoder.decode(chunk.value, { stream: true });
+        payload = data.split("\n\n").slice(0, -1).find((event) => event.startsWith("event: state\n"));
+      }
+      assert.ok(payload, data);
+      assert.deepEqual(JSON.parse(payload.split("\ndata: ")[1]), { sessionId: session.id, state: "paused", runningStartedAt: null });
+    } finally {
+      clearTimeout(timer);
+    }
+  } finally {
+    controller.abort();
+    await reader?.cancel().catch(() => {});
+    await api("DELETE", "/sessions/" + session.id);
+  }
+});

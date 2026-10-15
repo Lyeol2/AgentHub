@@ -269,3 +269,20 @@ test("graph: creating a command after a handle drop immediately connects it and 
   assert.equal(created[1][2].to, "created");
   assert.equal(h.state.editingCommand, null);
 });
+
+test("graph: data redraw waits until a gesture finishes and is applied once", () => {
+  const h = setup(["trackGraphGesture"]);
+  const g = graph(h);
+  let renders = 0;
+  h.context.renderGraph = () => renders++;
+  g.dragging = true;
+  g.needsRender = true;
+  h.context.end = () => { g.dragging = false; };
+  h.run("trackGraphGesture({ pointerId: 11 }, () => {}, end)");
+  h.emit("pointermove", { pointerId: 11 });
+  assert.equal(renders, 0);
+  h.emit("pointerup", { pointerId: 11 });
+  assert.equal(renders, 1);
+  h.emit("pointerup", { pointerId: 11 });
+  assert.equal(renders, 1);
+});

@@ -166,3 +166,24 @@ test("store: cwd가 없거나 원본 경로로 남아도 이전 worktree 재개 
     assert.deepEqual(persisted(id), session);
   }
 });
+
+test("store: 서버 재시작은 원본 폴더의 실행 세션도 중단하고 타이머 종료를 저장한다", () => {
+  fixture("running-timer", { state: "running", runningStartedAt: "2026-10-15T00:00:00.000Z" });
+  const session = new SessionStore().get("running-timer");
+  assert.equal(session.state, "interrupted");
+  assert.equal(session.runningStartedAt, null);
+  assert.deepEqual(persisted("running-timer"), session);
+  assert.deepEqual(new SessionStore().get("running-timer"), session);
+});
+
+test("store: 이전 버전의 실행 세션과 종료된 세션의 남은 타이머를 정리한다", () => {
+  fixture("legacy-running-timer", { state: "running" });
+  fixture("paused-stale-timer", { state: "paused", runningStartedAt: "2026-10-15T00:00:00.000Z" });
+  const store = new SessionStore();
+  for (const [id, state] of [["legacy-running-timer", "interrupted"], ["paused-stale-timer", "paused"]]) {
+    const session = store.get(id);
+    assert.equal(session.state, state);
+    assert.equal(session.runningStartedAt, null);
+    assert.deepEqual(persisted(id), session);
+  }
+});

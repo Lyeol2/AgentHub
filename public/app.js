@@ -2,6 +2,7 @@ import { renderMarkdown } from "./markdown.js";
 import { layoutGitGraph, gitWorkRows } from "./gitgraph.js";
 import { createPullRequests } from "./gitpulls.js";
 import { composerAction } from "./composer.js";
+import { runningElapsed } from "./elapsed.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -63,6 +64,57 @@ const badge = (agent) => el("span", { class: `badge ${agent}` }, AGENT_LABEL[age
 const sessionLabel = (s) => (s.chat ? CHAT_LABEL : AGENT_LABEL)[s.agent];
 const sessionBadge = (s) => el("span", { class: `badge ${s.agent}${s.chat ? " chat" : ""}` }, sessionLabel(s));
 const pill = (s) => el("span", { class: `pill ${s}` }, STATE_LABEL[s] ?? s);
+
+// 타이머는 텍스트만 갱신한다. 노드 선택·끌기·입력창 포커스는 그대로 유지한다.
+function updateElapsedElement(node, item, now = Date.now()) {
+  const elapsed = runningElapsed(item, now);
+  const fallback = node.dataset.elapsedFallback === "updated" && item;
+  node.hidden = elapsed === null && !fallback;
+  node.classList.toggle("is-running", elapsed !== null);
+  const text = elapsed !== null ? "⏱ " + elapsed : fallback ? timeAgo(item.updatedAt) : "";
+  if (node.textContent !== text) node.textContent = text;
+  const startedAt = elapsed !== null ? item.runningStartedAt ?? item.live?.startedAt : null;
+  if (startedAt) {
+    node.dateTime = startedAt;
+    node.title = "현재 작업 경과 시간 · 시작 " + new Date(startedAt).toLocaleString();
+  } else {
+    node.removeAttribute("datetime");
+    node.removeAttribute("title");
+  }
+}
+
+function elapsedElement(kind, item, fallback = false) {
+  const node = el("time", {
+    class: "run-elapsed", role: "timer", "aria-live": "off",
+    "data-elapsed-kind": kind, "data-elapsed-id": item.id,
+    ...(fallback ? { "data-elapsed-fallback": "updated" } : {}),
+  });
+  updateElapsedElement(node, item);
+  return node;
+}
+
+function renderSessionElapsed(prefix, session) {
+  const node = $(prefix + "-elapsed");
+  node.dataset.elapsedKind = "session";
+  node.dataset.elapsedId = session?.id ?? "";
+  updateElapsedElement(node, session);
+}
+
+function refreshElapsedTimes() {
+  const now = Date.now();
+  for (const node of document.querySelectorAll("[data-elapsed-kind]")) {
+    const item = node.dataset.elapsedKind === "command" ? commandById(node.dataset.elapsedId)
+      : state.current?.id === node.dataset.elapsedId ? state.current : sessionById(node.dataset.elapsedId);
+    updateElapsedElement(node, item, now);
+    if (node.dataset.elapsedKind === "command" && item) {
+      const detail = node.nextElementSibling;
+      if (detail?.classList.contains("gcmd-result-text")) {
+        const text = commandNodeFoot(item);
+        if (detail.textContent !== text) detail.textContent = text;
+      }
+    }
+  }
+}
 
 // 세션 수명: 컨텍스트 압축 횟수(1회 노랑, 2회 주황, 3회 이상 빨강)와 지금 컨텍스트가 창을 얼마나 채웠는지
 function lifeInfo(s) {
@@ -1254,7 +1306,10 @@ function layoutGraph(sessions, links) {
 
 function renderGraph() {
   const box = $("p-graph");
-  if (state.graph?.dragging) return; // 끄는 중에는 다시 그리지 않는다.
+  if (state.graph?.dragging) {
+    state.graph.needsRender = true; // 데이터 변경은 끌기를 마친 뒤 한 번 반영한다.
+    return;
+  }
   const sessions = state.sessions
     .filter((s) => samePath(s.projectPath, state.project))
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
@@ -1288,7 +1343,7 @@ function renderGraph() {
       el("div", { class: "gcard-title" }, s.title),
       el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
       skillChips(s),
-      el("div", { class: "gcard-foot" }, el("span", {}, timeAgo(s.updatedAt)),
+      el("div", { class: "gcard-foot" }, elapsedElement("session", s, true),
         el("span", { class: "gcard-life" }, lifePill(s),
           el("button", {
             type: "button",
@@ -1384,6 +1439,7 @@ function clearGraphTransientState() {
 // 취소·포커스 상실·화면 전환에도 임시 선과 선택 상자가 남지 않게 정리한다.
 function trackGraphGesture(startEvent, onMove, onEnd) {
   state.graphGesture?.cancel();
+  const graph = state.graph;
   let active = true;
   const matches = (e) => e.pointerId === startEvent.pointerId;
   const move = (e) => { if (matches(e)) onMove(e); };
@@ -1396,6 +1452,7 @@ function trackGraphGesture(startEvent, onMove, onEnd) {
     window.removeEventListener("blur", cancel);
     if (state.graphGesture?.cancel === cancel) state.graphGesture = null;
     onEnd(e, cancelled);
+    if (graph?.needsRender && state.graph === graph && !graph.dragging && state.view === "project") renderGraph();
   };
   const up = (e) => { if (matches(e)) finish(e, false); };
   const abort = (e) => { if (matches(e)) finish(e, true); };
@@ -1481,11 +1538,15 @@ async function loadCommands(projectPath = state.project) {
   if ($("command-dialog").open) renderCommandRun();
 }
 
-function commandNode(c) {
+function commandNodeFoot(c) {
   const running = c.state === "running";
   const run = c.lastRun;
-  const foot = running ? `실행 중 · ${firstLine(c.live?.tail?.split(/\r?\n/).at(-1) ?? "") || "출력 기다리는 중"}`
+  return running ? `실행 중 · ${firstLine(c.live?.tail?.split(/\r?\n/).at(-1) ?? "") || "출력 기다리는 중"}`
     : run ? `종료 ${run.exitCode}${run.timedOut ? " (시간 초과)" : ""} · ${seconds(run.durationMs)} · ${timeAgo(run.startedAt)}` : "아직 실행하지 않음";
+}
+
+function commandNode(c) {
+  const running = c.state === "running";
   return el("div", { class: `gcmd ${c.state}`, "data-id": c.id, title: `${c.title}\n${c.command}\n\n누르면 편집, ● 손잡이를 끌어 다음 세션·명령에 잇습니다.` },
     el("div", { class: "gcard-top" },
       el("span", { class: "pill cmd" }, "명령"),
@@ -1494,7 +1555,7 @@ function commandNode(c) {
     el("div", { class: "gcard-title" }, c.title),
     el("div", { class: "gcmd-code mono" }, firstLine(c.command)),
     el("div", { class: "gcmd-foot" },
-      el("span", { class: "gcmd-result" }, foot),
+      el("span", { class: "gcmd-result" }, elapsedElement("command", c), el("span", { class: "gcmd-result-text" }, commandNodeFoot(c))),
       el("button", {
         type: "button",
         class: `gcmd-btn${running ? " stop" : ""}`,
@@ -2630,6 +2691,7 @@ function renderState() {
   const label = $("s-state");
   label.textContent = STATE_LABEL[s.state] ?? s.state;
   label.className = `pill ${s.state}`;
+  renderSessionElapsed("s", s);
   const running = s.state === "running";
   $("s-stop").disabled = !running && s.state !== "paused";
   // 도구 호출의 "실행 중" 표시는 턴이 도는 동안에만 보인다.
@@ -3425,6 +3487,7 @@ function renderChatState() {
     $("c-state").textContent = STATE_LABEL[s.state] ?? s.state;
     $("c-state").className = `pill ${s.state}`;
   }
+  renderSessionElapsed("c", s);
   $("c-life").hidden = !s;
   if (s) renderLife("c-life", s);
   $("c-restart").hidden = !s?.agentSessionId;
@@ -3833,9 +3896,15 @@ function connectStream() {
     if (event.kind === "status" || event.kind === "result") selectSession(sessionId); // CLI 세션 ID 등 메타 갱신
   });
   source.addEventListener("state", (e) => {
-    const { sessionId, state: next } = JSON.parse(e.data);
+    const payload = JSON.parse(e.data);
+    const { sessionId, state: next } = payload;
+    const applyState = (session) => {
+      session.state = next;
+      if (next !== "running") session.runningStartedAt = null;
+      else if (Object.hasOwn(payload, "runningStartedAt")) session.runningStartedAt = payload.runningStartedAt;
+    };
     const item = state.sessions.find((s) => s.id === sessionId);
-    if (item) item.state = next;
+    if (item) applyState(item);
     // Codex 한도는 턴이 끝난 뒤 기록 파일에서 읽는다.
     if (item?.agent === "codex" && next !== "running") loadLimits();
     renderSessionList();
@@ -3845,7 +3914,7 @@ function connectStream() {
     // 시작·종료 상태를 모두 반영해 노선도의 작업 중 표시를 갱신한다.
     if (state.view === "project" && projectTab() === "git" && item && samePath(item.projectPath, state.project)) loadGit();
     if (state.current?.id === sessionId) {
-      state.current.state = next;
+      applyState(state.current);
       renderState();
     }
   });
@@ -3907,3 +3976,5 @@ connectStream();
 loadAuth();
 loadSetup();
 setInterval(loadAuth, 5 * 60_000);
+setInterval(refreshElapsedTimes, 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshElapsedTimes(); });
