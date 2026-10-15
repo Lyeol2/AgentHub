@@ -249,6 +249,19 @@
     </form>
   </dialog>
 
+  <dialog id="setup-dialog" class="wide">
+    <form method="dialog" class="dialog-form">
+      <h3>CLI 설치·로그인 <small>AgentHub가 쓰는 CLI를 이 PC에 설치하고 로그인합니다</small></h3>
+      <div id="setup-list" class="setup-list"></div>
+      <p class="hint">설치는 winget(Windows 패키지 관리자)으로 합니다. 로그인은 브라우저에서 계정을 확인하는 방식이라 비밀번호를 AgentHub에 넣지 않습니다. GitHub CLI는 릴리스 같은 GitHub 작업에만 필요하고, 앱 업데이트에는 필요 없습니다.</p>
+      <menu>
+        <button type="button" class="ghost" id="setup-refresh">다시 확인</button>
+        <span class="spacer"></span>
+        <button value="cancel" formnovalidate class="primary">닫기</button>
+      </menu>
+    </form>
+  </dialog>
+
   <dialog id="settings-dialog">
     <form method="dialog" class="dialog-form" id="settings-form">
       <h3>설정</h3>
@@ -258,7 +271,7 @@
         <input id="project-path" placeholder="예: E:\Git\Project_GBS">
         <button type="button" id="add-project" class="ghost">추가</button>
       </div>
-      <h4>CLI 경로</h4>
+      <h4>CLI 경로 <button type="button" class="ghost sm" id="open-setup">설치·로그인</button></h4>
       <p class="hint">PATH, npm 전역 설치 폴더, Claude 데스크톱 앱 폴더에서 자동으로 찾습니다. 다른 실행 파일을 쓰려면 직접 지정하세요.</p>
       <div class="cli-field">
         <span class="cli-name">claude</span>

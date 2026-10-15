@@ -662,3 +662,19 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 #command-text { font-family: var(--mono); font-size: 12.5px; }
 .command-last pre { max-height: 260px; margin: 0; }
 .ok-text { color: var(--ok); }
+
+/* ── CLI 설치·로그인 ──────────────────────────────────────── */
+.cli-status { cursor: pointer; }
+.setup-list { display: grid; gap: 10px; }
+.setup-item { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; }
+.setup-item.ok { border-color: rgb(76 194 138 / .4); }
+.setup-head { display: flex; align-items: center; gap: 8px; }
+.pill.setup-ok { color: var(--ok); border-color: rgb(76 194 138 / .45); }
+.pill.setup-need { color: var(--warn); border-color: rgb(229 180 75 / .5); }
+.setup-job { display: grid; gap: 6px; padding: 8px 10px; border-radius: 6px; background: var(--code-bg); }
+.setup-job.error { border: 1px solid rgb(240 100 100 / .4); }
+.setup-job-head { display: flex; align-items: center; justify-content: space-between; font-size: 12.5px; color: var(--muted); }
+.setup-code { display: flex; align-items: center; gap: 8px; }
+.setup-code .mono { font-size: 20px; font-weight: 700; letter-spacing: 2px; color: var(--text); }
+.setup-paste { display: flex; gap: 8px; }
+.setup-log { margin: 4px 0 0; max-height: 200px; overflow: auto; font-family: var(--mono); font-size: 11.5px; white-space: pre-wrap; color: var(--muted); }

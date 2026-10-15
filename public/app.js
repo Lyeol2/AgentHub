@@ -154,36 +154,119 @@ async function loadAuth(fresh = false) {
   renderCliStatus();
 }
 
+// 사이드바의 CLI 상태. 없으면 "설치", 로그인이 안 됐으면 "로그인" 버튼을 보이고, 누르면 설치·로그인 창에서 진행한다.
 function renderCliStatus() {
   if (!state.status) return;
-  $("cli-status").replaceChildren(
-    ...Object.entries(state.status.agents).map(([name, info]) => {
-      const loggedIn = state.auth?.[name];
-      const needLogin = info.path && loggedIn === false;
-      return el("div", { title: info.path ?? "CLI를 찾지 못했습니다" },
-        el("span", { class: `dot ${!info.path || needLogin ? "error" : "ok"}` }),
-        el("span", { class: "cli-text" }, `${AGENT_LABEL[name]} ${info.path ? info.version ?? "버전 확인 실패" : "없음"}`),
-        needLogin ? el("button", { class: "login-btn", onclick: () => startLogin(name), title: "새 창에서 CLI 로그인을 엽니다" }, "로그인 필요") : null);
-    }),
-  );
+  const rows = Object.entries(state.status.agents).map(([name, info]) => ({
+    id: name, label: AGENT_LABEL[name], path: info.path, version: info.version, loggedIn: state.auth?.[name],
+  }));
+  const gh = state.setup?.tools.find((t) => t.id === "gh");
+  if (gh) rows.push({ id: "gh", label: "GitHub", path: gh.path, version: gh.version?.replace(/^gh version\s*/, "").split(" ")[0], loggedIn: gh.loggedIn });
+  $("cli-status").replaceChildren(...rows.map((r) => {
+    const job = state.setup?.jobs?.[r.id];
+    const busy = job?.state === "running";
+    const action = busy ? null : !r.path ? "install" : r.loggedIn === false ? "login" : null;
+    return el("div", { title: r.path ?? "CLI를 찾지 못했습니다" },
+      el("span", { class: `dot ${busy ? "running" : !r.path || r.loggedIn === false ? "error" : "ok"}` }),
+      el("span", { class: "cli-text" }, `${r.label} ${busy ? (job.kind === "install" ? "설치 중…" : "로그인 중…") : r.path ? r.version ?? "버전 확인 실패" : "없음"}`),
+      action ? el("button", { class: "login-btn", onclick: () => openSetup(r.id, action), title: "앱 안에서 설치·로그인을 진행합니다" },
+        action === "install" ? "설치" : "로그인 필요") : null);
+  }));
 }
 
-// 새 콘솔 창에서 로그인 명령을 연다. 끝날 때까지 몇 초마다 다시 확인한다.
-async function startLogin(agent) {
+// ── CLI 설치·로그인 ─────────────────────────────────────────────
+const SETUP_STATE = { running: "진행 중", done: "완료", error: "실패", canceled: "취소함" };
+
+async function loadSetup() {
   try {
-    await api("POST", `/api/auth/${agent}/login`);
-  } catch (err) {
-    alert(err.message);
+    state.setup = await api("GET", "/api/setup");
+  } catch {
     return;
   }
-  alert(`${AGENT_LABEL[agent]} 로그인 창을 열었습니다. 창의 안내대로 브라우저에서 로그인한 뒤 그 창을 닫으세요.`);
-  clearInterval(state.authPoll);
-  let tries = 0;
-  state.authPoll = setInterval(async () => {
-    await loadAuth(true);
-    if (state.auth?.[agent] || ++tries >= 60) clearInterval(state.authPoll);
-  }, 5000);
+  renderCliStatus();
+  if ($("setup-dialog").open) renderSetup();
 }
+
+// 창을 열고, action이 있으면 바로 시작한다.
+async function openSetup(tool = null, action = null) {
+  if (!state.setup) await loadSetup();
+  renderSetup();
+  if (!$("setup-dialog").open) $("setup-dialog").showModal();
+  if (tool && action) setupAction(tool, action);
+}
+
+async function setupAction(tool, action, body) {
+  try {
+    await api("POST", `/api/setup/${tool}/${action}`, body);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
+function renderSetup() {
+  const tools = state.setup?.tools ?? [];
+  $("setup-list").replaceChildren(...tools.map((t) => {
+    const job = state.setup.jobs?.[t.id];
+    const running = job?.state === "running";
+    const status = !t.path ? "설치 안 됨"
+      : `${t.version ?? "버전 확인 실패"} · ${t.loggedIn === true ? "로그인됨" : t.loggedIn === false ? "로그인 필요" : "로그인 확인 실패"}`;
+    const ok = t.path && t.loggedIn === true;
+    const item = el("div", { class: `setup-item${ok ? " ok" : ""}` },
+      el("div", { class: "setup-head" },
+        el("b", {}, t.label),
+        el("span", { class: `pill ${ok ? "setup-ok" : "setup-need"}` }, status),
+        el("span", { class: "spacer" }),
+        !t.path && t.installable ? el("button", { type: "button", class: "primary sm", onclick: () => setupAction(t.id, "install"), ...(running ? { disabled: "" } : {}) }, "설치") : null,
+        t.path ? el("button", { type: "button", class: `${t.loggedIn ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "login"), ...(running ? { disabled: "" } : {}) }, t.loggedIn ? "다시 로그인" : "로그인") : null),
+      !t.path && !t.installable ? el("p", { class: "hint" }, "winget이 없어 자동으로 설치할 수 없습니다. 직접 설치한 뒤 다시 확인하세요.") : null);
+    if (job) item.append(setupJob(t, job, running));
+    return item;
+  }));
+}
+
+// 진행 중이거나 끝난 작업. 로그인이면 브라우저 주소·일회용 코드·코드 붙여넣기 칸을 보인다.
+function setupJob(t, job, running) {
+  const box = el("div", { class: `setup-job ${job.state}` },
+    el("div", { class: "setup-job-head" },
+      el("span", {}, `${job.kind === "install" ? "설치" : "로그인"} ${SETUP_STATE[job.state] ?? job.state}`),
+      running ? el("button", { type: "button", class: "ghost sm danger", onclick: () => setupAction(t.id, "cancel") }, "취소") : null));
+  if (job.kind === "login" && running) {
+    if (job.url) {
+      box.append(el("p", { class: "hint" }, "브라우저에서 로그인 페이지를 열었습니다. 열리지 않았으면 아래 버튼을 누르세요."),
+        el("button", { type: "button", class: "ghost sm", onclick: () => window.open(job.url, "_blank") }, "브라우저에서 열기"));
+    }
+    if (job.code) {
+      box.append(el("div", { class: "setup-code" },
+        el("span", { class: "mono" }, job.code),
+        el("button", { type: "button", class: "ghost sm", onclick: () => navigator.clipboard?.writeText(job.code) }, "복사"),
+        el("span", { class: "hint" }, "로그인 페이지에 이 코드를 입력하세요.")));
+    }
+    // Claude는 브라우저에 표시된 코드를 다시 붙여 넣으라고 한다.
+    if (t.id === "claude" || job.waitsForCode) {
+      const input = el("input", { class: "mono", placeholder: "브라우저에 표시된 코드를 붙여 넣으세요" });
+      const send = () => input.value.trim() && setupAction(t.id, "input", { text: input.value });
+      input.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) {
+          e.preventDefault();
+          send();
+        }
+      });
+      box.append(el("div", { class: "setup-paste" }, input, el("button", { type: "button", class: "primary sm", onclick: send }, "보내기")));
+    }
+  }
+  if (job.state === "done") box.append(el("p", { class: "ok-text" }, job.kind === "install" ? "설치했습니다." : "로그인했습니다."));
+  if (job.log.trim()) box.append(el("details", { ...(job.state === "error" ? { open: "" } : {}) }, el("summary", {}, "출력"), el("pre", { class: "setup-log" }, job.log.trim().split("\n").slice(-40).join("\n"))));
+  return box;
+}
+
+$("setup-refresh").addEventListener("click", async () => {
+  $("setup-refresh").disabled = true;
+  await Promise.all([loadStatus(), loadAuth(true), loadSetup()]);
+  $("setup-refresh").disabled = false;
+});
+$("cli-status").addEventListener("click", (e) => {
+  if (!e.target.closest("button")) openSetup();
+});
 
 // ── 사용 한도 ───────────────────────────────────────────────────
 function timeUntil(iso) {
@@ -2477,6 +2560,7 @@ for (const agent of ["claude", "codex"]) {
 }
 
 $("open-settings").addEventListener("click", openSettings);
+$("open-setup").addEventListener("click", () => openSetup());
 $("add-project-nav").addEventListener("click", openSettings);
 $("add-project-dash").addEventListener("click", openSettings);
 
@@ -2563,6 +2647,14 @@ function connectStream() {
   });
   source.addEventListener("sessions", loadSessions);
   source.addEventListener("links", loadLinks);
+  // 설치·로그인 진행 상황. 끝나면 CLI 경로·버전·로그인 상태를 다시 받는다.
+  source.addEventListener("setup", (e) => {
+    if (!state.setup) return loadSetup();
+    state.setup.jobs = JSON.parse(e.data);
+    renderCliStatus();
+    if ($("setup-dialog").open) renderSetup();
+  });
+  source.addEventListener("cli", () => Promise.all([loadStatus(), loadAuth(true), loadSetup()]));
   source.addEventListener("commands", () => state.view === "project" && loadCommands());
   source.addEventListener("skills", (e) => {
     if (samePath(JSON.parse(e.data).projectPath, state.project)) loadSkills();
@@ -2594,4 +2686,5 @@ if (POPUP) {
 }
 connectStream();
 loadAuth();
+loadSetup();
 setInterval(loadAuth, 5 * 60_000);

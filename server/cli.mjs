@@ -89,10 +89,18 @@ function findDesktopClaude() {
 }
 
 // 공식 설치 스크립트(~/.local/bin), npm 전역 설치, 각 앱의 기본 설치 폴더
+// winget으로 설치한 실행 파일은 WinGet\Links에 바로 가기가 생긴다.
+const WINGET_LINKS = path.join(LOCALAPPDATA, "Microsoft", "WinGet", "Links");
 const EXTRA_DIRS = {
-  claude: [path.join(HOME, ".local", "bin"), path.join(HOME, ".claude", "local"), path.join(LOCALAPPDATA, "Programs", "claude")],
-  codex: [path.join(HOME, ".local", "bin"), path.join(LOCALAPPDATA, "Programs", "codex")],
+  claude: [path.join(HOME, ".local", "bin"), path.join(HOME, ".claude", "local"), path.join(LOCALAPPDATA, "Programs", "claude"), WINGET_LINKS],
+  codex: [path.join(HOME, ".local", "bin"), path.join(LOCALAPPDATA, "Programs", "codex"), WINGET_LINKS],
+  gh: [path.join(process.env.ProgramFiles ?? "C:\\Program Files", "GitHub CLI"), path.join(LOCALAPPDATA, "Programs", "GitHub CLI"), WINGET_LINKS],
 };
+
+// 앱을 켠 뒤 설치한 CLI도 찾도록 레지스트리 PATH를 다시 읽게 한다.
+export function refreshPath() {
+  registryPath = null;
+}
 
 export function locateCli(agent, override) {
   if (override) return fs.existsSync(override) ? override : null;
@@ -104,6 +112,7 @@ export function locateCli(agent, override) {
     const names = isWindows ? ["codex.exe", "codex.cmd"] : ["codex"];
     return findOnPath(names, EXTRA_DIRS.codex);
   }
+  if (agent === "gh") return findOnPath(isWindows ? ["gh.exe"] : ["gh"], EXTRA_DIRS.gh);
   return null;
 }
 
@@ -161,8 +170,13 @@ export function cliAuth(agent, file, { fresh = false } = {}) {
   return promise;
 }
 
+// 설치·로그인이 끝나면 캐시를 비워 다음 확인 때 다시 묻는다.
+export function forgetAuth() {
+  authCache.clear();
+}
+
 function readAuth(agent, file) {
-  const args = agent === "claude" ? ["auth", "status"] : ["login", "status"];
+  const args = agent === "codex" ? ["login", "status"] : ["auth", "status"];
   return new Promise((resolve) => {
     let out = "";
     const child = spawnCli(file, args, { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
@@ -175,6 +189,8 @@ function readAuth(agent, file) {
     });
     child.on("close", () => {
       clearTimeout(timer);
+      // gh: 로그인했으면 종료 코드 0, 안 했으면 "not logged into"
+      if (agent === "gh") return resolve(/Logged in to/i.test(out) ? true : /not logged in/i.test(out) ? false : null);
       if (agent === "claude") {
         // 로그인하지 않았으면 종료 코드 2와 함께 loggedIn: false를 낸다.
         try {
