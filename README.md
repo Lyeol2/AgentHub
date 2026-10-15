@@ -5,10 +5,15 @@ Claude Code와 Codex 세션을 한 화면에서 만들고 이어 가는 데스�
 ## 요구 사항
 
 - git
-- Claude Code CLI: `claude auth login`으로 로그인되어 있어야 한다. PATH에 없으면 Claude 데스크톱 앱이 내려받은 `claude.exe`를 자동으로 찾는다.
-- Codex CLI: `codex login`으로 로그인되어 있어야 한다. `npm i -g @openai/codex`로 설치한 경우 `%APPDATA%
-pm`에서 자동으로 찾는다.
+- Claude Code CLI: 로그인되어 있어야 한다(`claude auth login`). PATH에 없으면 Claude 데스크톱 앱이 내려받은 `claude.exe`를 자동으로 찾는다.
+- Codex CLI: 로그인되어 있어야 한다(`codex login`). `npm i -g @openai/codex`로 설치한 경우 `%APPDATA%\npm`에서 자동으로 찾는다.
 - 소스에서 실행하거나 빌드할 때는 Node.js 20 이상
+
+CLI가 없거나 로그인이 안 됐으면 앱 안에서 설치·로그인할 수 있다. 사이드바의 CLI 상태에 뜨는 **설치**·**로그인** 버튼이나 **설정 → CLI 경로 → 설치·로그인**에서 Claude Code·Codex·GitHub CLI를 다룬다.
+
+- 설치는 winget으로 한다. winget이 없으면 Claude Code는 공식 설치 스크립트(`install.ps1`), Codex는 npm으로 설치한다.
+- 로그인은 각 CLI의 브라우저 로그인을 실행하고, 출력에서 로그인 주소와 일회용 코드를 꺼내 창에 보여 준다. Claude가 코드를 붙여 넣으라고 하면 창에서 입력한다.
+- 진행 출력이 실시간으로 보이고, 끝나면 CLI 경로·버전·로그인 상태를 다시 확인한다. 앱을 켠 뒤 설치한 CLI도 PATH를 다시 읽어 찾는다.
 
 서버는 외부 패키지를 쓰지 않는다. Electron과 electron-builder는 앱 실행·빌드용 개발 의존성이다.
 
@@ -18,7 +23,7 @@ pm`에서 자동으로 찾는다.
 
 [Releases](https://github.com/Lyeol2/AgentHub/releases)나 `dist/`의 `AgentHub-Setup-<버전>.exe`(설치형)나 `AgentHub-<버전>-portable.exe`(설치 없이 실행)를 쓴다. 앱이 서버를 내부에서 띄우고 창을 연다. 창을 닫으면 실행 중인 에이전트를 멈추고 세션을 저장한 뒤 종료한다.
 
-설치본의 세션 기록과 설정은 `%APPDATA%AgentHubdata`에 저장된다.
+설치본의 세션 기록과 설정은 `%APPDATA%\AgentHub\data`에 저장된다.
 
 ```bash
 npm install
@@ -191,7 +196,7 @@ Claude Code·Codex 기록에 남은 작업 폴더를 모아 프로젝트 목록�
 | Codex | `read-only` | 읽기만 한다. |
 | Codex | `workspace-write` (기본) | 작업 폴더 안의 쓰기를 허용한다. |
 
-비대화형 실행이므로 실행 도중의 승인 요청은 화면에 뜨지 않고 거부된다.
+Claude는 실행 중에 허용되지 않은 도구를 쓰려 하면 세션 화면에 **권한 요청** 카드가 뜨고, 답할 때까지 CLI가 기다린다. 허용·거부 중에 고르고, CLI가 규칙을 제안하면 **항상 허용**으로 같은 종류는 다시 묻지 않게 할 수 있다. Codex는 비대화형으로 실행하므로 샌드박스 밖의 작업은 묻지 않고 거부된다.
 
 ## 보안
 
@@ -206,4 +211,4 @@ npm test
 ## 알려진 한계
 
 - Unity 프로젝트를 별도 작업 폴더에서 열면 `Library/`를 새로 만든다. 여러 세션이 같은 Unity Editor를 동시에 쓰지 않도록 하는 잠금은 아직 없다.
-- 실행 중 승인 요청, 이미지 첨부, 작업 기록을 프로젝트 문서로 내보내는 기능은 없다.
+- 이미지 첨부, 작업 기록을 프로젝트 문서로 내보내는 기능은 없다. Codex는 실행 중 권한 요청을 받지 않는다.
