@@ -51,9 +51,10 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
   }
 
   function setupAction(tool, action, body = {}) {
-    if (!TOOLS[tool]) throw new HttpError(404, "없는 CLI입니다.");
+    if (!Object.hasOwn(TOOLS, tool) && tool !== "winget") throw new HttpError(404, "없는 설치 도구입니다.");
     try {
       if (action === "install") return setup.install(tool);
+      if (tool === "winget" && action !== "cancel") throw new HttpError(404, "winget은 설치·복구와 취소만 지원합니다.");
       if (action === "login") return setup.login(tool);
       if (action === "input") {
         setup.input(tool, String(body.text ?? "").slice(0, 2000));

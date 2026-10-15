@@ -134,3 +134,73 @@ test("CLI 실행 실패와 로그인 확인 실패는 정상 연결로 표시하
   assert.doesNotMatch(h.get("cli-status").children[1].children[0].className, /ok/);
   assert.match(h.get("cli-status").children[1].title, /로그인 상태를 확인하지 못/);
 });
+
+const descendants = (node) => typeof node === "string" ? [] : [node, ...node.children.flatMap(descendants)];
+
+test("winget 카드는 인증 없이 설치·복구하고 진행 중 작업을 취소한다", (t) => {
+  const h = ui(t), calls = [];
+  const view = createSettingsView({ setupAction: (...args) => calls.push(args) });
+  const winget = { id: "winget", label: "Windows 패키지 관리자 (winget)", path: "C:/WindowsApps/winget.exe", version: "v1.12.0", installable: true };
+  view.renderSetup({ winget, tools: [], jobs: {} });
+  const item = h.get("setup-list").children[0];
+  assert.match(item.className, /ok/);
+  assert.doesNotMatch(text(item), /로그인/);
+  assert.match(text(item), /winget이 없으면 CLI 설치 전에 자동으로 준비/);
+  const repair = descendants(item).find((node) => node.tag === "button" && text(node) === "설치·복구");
+  repair.handlers.click();
+  assert.deepEqual(calls, [["winget", "install"]]);
+
+  view.renderSetup({ winget, tools: [], jobs: { winget: { kind: "install", state: "running", log: "" } } });
+  const buttons = descendants(h.get("setup-list")).filter((node) => node.tag === "button");
+  assert.equal(buttons.find((node) => text(node) === "설치·복구").disabled, "");
+  buttons.find((node) => text(node) === "취소").handlers.click();
+  assert.deepEqual(calls.at(-1), ["winget", "cancel"]);
+
+  view.renderSetup({ tools: [], jobs: {} });
+  assert.equal(h.get("setup-list").children.length, 0);
+});
+
+test("자동 설치가 없어도 공식 수동 설치 안내와 명령 복사를 사용할 수 있다", async (t) => {
+  const h = ui(t), copied = [];
+  const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: { clipboard: { writeText: async (value) => copied.push(value) } } });
+  t.after(() => {
+    if (navigatorDescriptor) Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
+    else delete globalThis.navigator;
+  });
+  const command = "winget install --id GitHub.cli --exact";
+  createSettingsView({}).renderSetup({
+    tools: [{ id: "gh", label: "GitHub CLI", path: null, installable: false,
+      manual: { links: [{ label: "공식 설치 페이지", url: "https://cli.github.com/" }], command, note: "PowerShell에서 실행하세요." } }], jobs: {},
+  });
+  const nodes = descendants(h.get("setup-list"));
+  assert.equal(nodes.filter((node) => node.tag === "button" && text(node) === "설치").length, 0);
+  assert.ok(nodes.some((node) => node.tag === "summary" && text(node) === "수동 설치"));
+  const link = nodes.find((node) => node.tag === "a");
+  assert.equal(link.href, "https://cli.github.com/");
+  assert.equal(link.target, "_blank");
+  assert.match(link.rel, /noopener/);
+  assert.match(text(h.get("setup-list")), /상단의 ‘다시 확인’/);
+  assert.ok(nodes.some((node) => node.tag === "pre" && text(node) === command));
+  const copy = nodes.find((node) => node.tag === "button" && text(node) === "명령 복사");
+  await copy.handlers.click();
+  assert.deepEqual(copied, [command]);
+  assert.equal(copy.textContent, "복사됨");
+});
+
+test("CLI 실행이나 자동 설치가 실패하면 재설치와 열린 수동 설치 안내를 보여 준다", (t) => {
+  const h = ui(t), calls = [];
+  createSettingsView({ setupAction: (...args) => calls.push(args) }).renderSetup({
+    tools: [{ id: "codex", label: "Codex", path: "C:/chosen/codex.cmd", version: null, installable: true,
+      manual: { links: [{ label: "공식 설치 안내", url: "https://developers.openai.com/codex/cli/" }], note: "직접 설치하세요." } }],
+    jobs: { codex: { kind: "install", state: "error", log: "설치 실패" } },
+  });
+  const nodes = descendants(h.get("setup-list"));
+  const reinstall = nodes.find((node) => node.tag === "button" && text(node) === "다시 설치");
+  reinstall.handlers.click();
+  assert.deepEqual(calls, [["codex", "install"]]);
+  const manual = nodes.find((node) => node.tag === "details" && text(node.children[0]) === "수동 설치");
+  assert.equal(manual.open, "");
+  assert.match(text(manual), /자동 설치에 실패했습니다/);
+  assert.match(text(manual), /상단의 ‘다시 확인’/);
+});

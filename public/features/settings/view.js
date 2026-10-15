@@ -36,27 +36,52 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
   }
 
   function renderSetup(setup) {
-    const tools = setup?.tools ?? [];
+    const tools = [...(setup?.winget ? [setup.winget] : []), ...(setup?.tools ?? [])];
     $("setup-list").replaceChildren(...tools.map((t) => {
       const job = setup.jobs?.[t.id];
       const running = job?.state === "running";
+      const packageManager = t.id === "winget";
       const status = !t.path ? "실행 파일을 찾지 못함" : !t.version ? "실행 확인 실패"
-        : `${t.version} · ${t.loggedIn === true ? "로그인됨" : t.loggedIn === false ? "로그인 필요" : "로그인 확인 실패"}`;
-      const ok = t.path && t.version && t.loggedIn === true;
+        : packageManager ? t.version : `${t.version} · ${t.loggedIn === true ? "로그인됨" : t.loggedIn === false ? "로그인 필요" : "로그인 확인 실패"}`;
+      const ok = t.path && t.version && (packageManager || t.loggedIn === true);
       const item = el("div", { class: `setup-item${ok ? " ok" : ""}` },
         el("div", { class: "setup-head" },
           el("b", {}, t.label),
           el("span", { class: `pill ${ok ? "setup-ok" : "setup-need"}` }, status),
           el("span", { class: "spacer" }),
-          !t.path && t.installable ? el("button", { type: "button", class: "primary sm", onclick: () => setupAction(t.id, "install"), ...(running ? { disabled: "" } : {}) }, "설치") : null,
-          t.path && t.version ? el("button", { type: "button", class: `${t.loggedIn ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "login"), ...(running ? { disabled: "" } : {}) }, t.loggedIn ? "다시 로그인" : "로그인") : null),
+          t.installable && (packageManager || !t.path || !t.version) ? el("button", { type: "button", class: `${ok ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "install"), ...(running ? { disabled: "" } : {}) }, packageManager ? "설치·복구" : t.path ? "다시 설치" : "설치") : null,
+          !packageManager && t.path && t.version ? el("button", { type: "button", class: `${t.loggedIn ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "login"), ...(running ? { disabled: "" } : {}) }, t.loggedIn ? "다시 로그인" : "로그인") : null),
         t.path ? el("p", { class: "hint mono" }, t.path) : null,
-        !t.path ? el("p", { class: "hint" }, `${!t.installable ? "자동으로 설치할 방법이 없습니다. " : ""}이미 설치했다면 설정에서 CLI 실행 파일 경로를 직접 지정한 뒤 다시 확인하세요.`) : null,
-        t.path && !t.version ? el("p", { class: "hint" }, "이 경로의 CLI를 실행하지 못했습니다. 설정에서 실행 파일 경로를 확인하고, 터미널에서 해당 CLI의 --version이 실행되는지 확인하세요.") : null,
-        t.path && t.version && t.loggedIn === null ? el("p", { class: "hint" }, "CLI는 실행되지만 로그인 상태를 확인하지 못했습니다. 다시 확인하거나 로그인 출력을 확인하세요.") : null);
+        packageManager ? el("p", { class: "hint" }, "Windows에서 winget이 없으면 CLI 설치 전에 자동으로 준비합니다. 자동 설치·복구에 실패하면 아래 수동 설치 안내를 따라 설치한 뒤 상단의 ‘다시 확인’을 누르세요.") : null,
+        !packageManager && !t.path ? el("p", { class: "hint" }, `${!t.installable ? "자동으로 설치할 방법이 없습니다. 아래 수동 설치 안내를 확인하세요. " : ""}이미 설치했다면 설정에서 CLI 실행 파일 경로를 직접 지정한 뒤 다시 확인하세요.`) : null,
+        !packageManager && t.path && !t.version ? el("p", { class: "hint" }, "이 경로의 CLI를 실행하지 못했습니다. 다시 설치하거나 아래 수동 설치 안내를 확인하세요. 설정에서 실행 파일 경로를 확인하고 터미널에서 해당 CLI의 --version을 실행할 수도 있습니다.") : null,
+        !packageManager && t.path && t.version && t.loggedIn === null ? el("p", { class: "hint" }, "CLI는 실행되지만 로그인 상태를 확인하지 못했습니다. 다시 확인하거나 로그인 출력을 확인하세요.") : null);
       if (job) item.append(setupJob(t, job, running));
+      if (t.manual) item.append(manualInstall(t.manual, job?.kind === "install" && job.state === "error"));
       return item;
     }));
+  }
+
+  function manualInstall(manual, failed) {
+    const details = el("details", { ...(failed ? { open: "" } : {}) },
+      el("summary", {}, "수동 설치"),
+      failed ? el("p", { class: "hint" }, "자동 설치에 실패했습니다. 공식 설치 페이지나 아래 명령으로 직접 설치할 수 있습니다.") : null,
+      manual.note ? el("p", { class: "hint" }, manual.note) : null,
+      ...(manual.links ?? []).map((link) => el("p", { class: "hint" },
+        el("a", { href: link.url, target: "_blank", rel: "noopener noreferrer" }, link.label))));
+    if (manual.command) {
+      const copy = el("button", { type: "button", class: "ghost sm", onclick: async () => {
+        try {
+          await navigator.clipboard.writeText(manual.command);
+          copy.textContent = "복사됨";
+        } catch {
+          copy.textContent = "아래 명령을 직접 복사하세요";
+        }
+      } }, "명령 복사");
+      details.append(copy, el("pre", { class: "setup-log" }, manual.command));
+    }
+    details.append(el("p", { class: "hint" }, "설치가 끝나면 상단의 ‘다시 확인’을 누르세요."));
+    return details;
   }
 
   function setupJob(t, job, running) {
