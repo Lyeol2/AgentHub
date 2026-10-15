@@ -106,7 +106,7 @@
         <div class="tab-panel" data-panel="flow">
         <div class="card">
           <div class="card-head">
-            <h3>세션 흐름 <span class="muted">카드를 눌러 고르고 두 번 눌러 엽니다(가운데 버튼·Ctrl+두 번 누르기는 새 창). 빈 곳을 끌면 여러 개를 고르고, 고른 카드는 함께 옮겨집니다. ● 손잡이를 끌어 다른 카드에 연결합니다</span></h3>
+            <h3>세션 흐름 <span class="muted" title="클릭으로 선택, 두 번 클릭으로 열기. 빈 곳을 끌어 여러 개 선택. ● 손잡이를 끌어 연결. Ctrl+두 번 클릭은 새 창.">두 번 클릭해 열기 · ●를 끌어 연결</span></h3>
             <div class="actions">
               <button class="ghost sm" id="p-orchestrator" title="목표를 작업으로 나누고 세션을 만들어 지휘하는 세션">오케스트레이터 만들기</button>
               <button class="ghost sm" id="p-skills" title="스킬 만들기·편집·옮기기. 세션 카드의 스킬 칩을 눌러 장착합니다">스킬</button>
@@ -143,33 +143,38 @@
         </div>
 
         <div class="tab-panel" data-panel="git" hidden>
-          <div class="card">
+          <div class="card git-card">
             <div class="card-head">
-              <h3>Git <span class="muted" id="g-branch"></span></h3>
-              <div class="actions"><button class="ghost sm" id="g-refresh">새로고침</button></div>
+              <h3>Git <span class="git-current-branch" id="g-branch"></span></h3>
+              <div class="actions"><span class="muted" id="g-sync"></span><button class="ghost sm" id="g-refresh">새로고침</button></div>
             </div>
-            <p class="hint pad" id="g-note" hidden></p>
-            <div class="git-grid" id="g-body">
-              <div class="git-side">
-                <section>
-                  <h4>변경 파일 <span class="muted" id="g-file-count"></span></h4>
-                  <label class="check git-all"><input type="checkbox" id="g-all"> 모두 고르기</label>
+            <p class="hint pad" id="g-note" role="status" hidden></p>
+            <div class="git-grid" id="g-body" hidden>
+              <aside class="git-side" aria-label="Git 작업">
+                <details id="g-changes">
+                  <summary>변경 파일 <span class="tab-count" id="g-file-count"></span></summary>
+                  <label class="check git-all"><input type="checkbox" id="g-all"> 전체 선택</label>
                   <ul class="git-list" id="g-files"></ul>
-                  <textarea id="g-message" rows="3" placeholder="커밋 메시지"></textarea>
-                  <div class="git-row"><button class="primary sm" id="g-commit">고른 파일 커밋</button><span class="error" id="g-error"></span></div>
-                </section>
+                  <textarea id="g-message" rows="2" placeholder="커밋 메시지" aria-label="커밋 메시지"></textarea>
+                  <div class="git-row"><button class="primary sm" id="g-commit">커밋</button></div>
+                  <p class="error" id="g-error" role="alert"></p>
+                </details>
                 <section>
-                  <h4>브랜치 <span class="muted">세션 브랜치는 작업 폴더의 커밋 안 한 변경까지 보입니다</span></h4>
+                  <h4>브랜치 <span class="muted" id="g-branch-count"></span></h4>
                   <ul class="git-list" id="g-branches"></ul>
                 </section>
-                <section>
-                  <h4>최근 커밋</h4>
-                  <ul class="git-list" id="g-commits"></ul>
+              </aside>
+              <div class="git-main">
+                <section class="git-history" aria-label="브랜치와 커밋 흐름">
+                  <div class="git-history-head"><h4>커밋 흐름</h4><span class="muted" id="g-summary" role="status"></span></div>
+                  <div class="git-legend"><span><i class="git-legend-node"></i>커밋</span><span><i class="git-legend-work"></i>작업 중 · 커밋 전</span></div>
+                  <div class="git-history-scroll" id="g-history-scroll"><div id="g-graph"></div></div>
+                  <p class="git-history-note muted" id="g-history-note"></p>
                 </section>
-              </div>
-              <div class="git-view">
-                <div class="git-view-title" id="g-view-title">파일·커밋·브랜치를 고르면 내용이 여기 보입니다.</div>
-                <pre class="diff" id="g-view"></pre>
+                <section class="git-view" id="g-detail" aria-label="선택한 항목의 상세" hidden>
+                  <div class="git-view-head"><div class="git-view-title" id="g-view-title"></div><button class="ghost sm" id="g-detail-close" aria-label="상세 닫기">닫기</button></div>
+                  <pre class="diff" id="g-view"></pre>
+                </section>
               </div>
             </div>
           </div>

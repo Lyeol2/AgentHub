@@ -6,6 +6,7 @@ import { git } from "./git.mjs";
 
 const FILES_MAX = 500;
 const COMMITS_MAX = 40;
+const GRAPH_COMMITS_MAX = 100;
 const DIFF_MAX = 1_500_000; // 화면에 보낼 diff 최대 글자 수
 const UNTRACKED_MAX = 200_000;
 const HASH = /^[0-9a-f]{4,40}$/i;
@@ -46,6 +47,14 @@ export function parseLog(out) {
   });
 }
 
+// 노선도는 현재 브랜치 밖의 커밋과 분기·병합 관계도 보여 준다. refs는 로컬 브랜치 이름만 담는다.
+function parseGraphLog(out, refsByTip) {
+  return out.split(END).map((r) => r.trim()).filter(Boolean).map((r) => {
+    const [hash, short, parents, author, date, subject] = r.split(SEP);
+    return { hash, short, parents: parents ? parents.split(" ") : [], author, date, subject, refs: refsByTip.get(hash) ?? [] };
+  });
+}
+
 async function status(dir) {
   return parseStatus(await git(dir, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]));
 }
@@ -60,11 +69,12 @@ async function count(dir, range) {
 
 // sessions: 이 프로젝트의 AgentHub 세션(작업 폴더를 분리한 세션의 브랜치를 세션과 잇는다)
 export async function gitOverview(repo, sessions = []) {
-  const [branchOut, files, logOut, refsOut] = await Promise.all([
+  const [branchOut, files, logOut, refsOut, graphOut] = await Promise.all([
     git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "HEAD"),
     status(repo),
     git(repo, ["log", `-n${COMMITS_MAX}`, "--date=iso-strict", `--pretty=format:%H${SEP}%h${SEP}%an${SEP}%ad${SEP}%D${SEP}%s${END}`]).catch(() => ""),
-    git(repo, ["for-each-ref", "refs/heads", `--format=%(refname:short)${SEP}%(committerdate:iso-strict)${SEP}%(subject)`]).catch(() => ""),
+    git(repo, ["for-each-ref", "refs/heads", `--format=%(refname:short)${SEP}%(objectname)${SEP}%(committerdate:iso-strict)${SEP}%(subject)`]).catch(() => ""),
+    git(repo, ["log", "--branches", "HEAD", "--topo-order", `-n${GRAPH_COMMITS_MAX + 1}`, "--date=iso-strict", `--pretty=format:%H${SEP}%h${SEP}%P${SEP}%an${SEP}%ad${SEP}%s${END}`]).catch(() => ""),
   ]);
   const branch = branchOut.trim();
   const upstream = (await git(repo, ["rev-parse", "--abbrev-ref", "@{upstream}"]).catch(() => "")).trim() || null;
@@ -72,11 +82,20 @@ export async function gitOverview(repo, sessions = []) {
   const behind = upstream ? await count(repo, `HEAD..${upstream}`) : null;
 
   const bySession = new Map(sessions.filter((s) => s.worktree).map((s) => [s.worktree.branch, s]));
-  const branches = await Promise.all(refsOut.trim().split(/\r?\n/).filter(Boolean).slice(0, 80).map(async (line) => {
-    const [name, date, subject] = line.split(SEP);
+  const refs = refsOut.trim().split(/\r?\n/).filter(Boolean).map((line) => {
+    const [name, tip, date, subject] = line.split(SEP);
+    return { name, tip, date, subject };
+  });
+  const refsByTip = new Map();
+  for (const { name, tip } of refs) {
+    if (!refsByTip.has(tip)) refsByTip.set(tip, []);
+    refsByTip.get(tip).push(name);
+  }
+  const graphCommits = parseGraphLog(graphOut, refsByTip);
+  const branches = await Promise.all(refs.slice(0, 80).map(async ({ name, tip, date, subject }) => {
     const session = bySession.get(name);
     const current = name === branch;
-    const item = { name, date, subject, current, ahead: current ? 0 : await count(repo, `HEAD..${name}`) };
+    const item = { name, tip, date, subject, current, ahead: current ? 0 : await count(repo, `HEAD..${name}`) };
     if (session) {
       // 세션은 보통 커밋하지 않고 작업 폴더에 변경을 남기므로 그 수도 센다.
       const dir = session.worktree.dir;
@@ -96,6 +115,7 @@ export async function gitOverview(repo, sessions = []) {
     files: files.slice(0, FILES_MAX).map((f) => ({ ...f, label: statusLabel(f) })),
     moreFiles: Math.max(0, files.length - FILES_MAX),
     commits: parseLog(logOut),
+    graph: { commits: graphCommits.slice(0, GRAPH_COMMITS_MAX), truncated: graphCommits.length > GRAPH_COMMITS_MAX },
     branches,
   };
 }

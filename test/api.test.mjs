@@ -273,6 +273,10 @@ test("api: Git 패널 조회와 입력 검사", async () => {
   const overview = await api("GET", `/git?path=${encodeURIComponent(repo)}`);
   assert.equal(overview.status, 200);
   assert.ok(Array.isArray(overview.body.files) && Array.isArray(overview.body.commits) && Array.isArray(overview.body.branches));
+  assert.ok(Array.isArray(overview.body.graph.commits));
+  assert.equal(typeof overview.body.graph.truncated, "boolean");
+  assert.ok(overview.body.graph.commits.every((c) => /^[0-9a-f]{40}$/.test(c.hash) && Array.isArray(c.parents) && Array.isArray(c.refs)));
+  assert.ok(overview.body.branches.every((b) => /^[0-9a-f]{40}$/.test(b.tip)));
   assert.equal((await api("GET", "/git")).status, 400);
   const plain = fs.mkdtempSync(path.join(tmp, "plain-"));
   const notGit = await api("GET", `/git?path=${encodeURIComponent(plain)}`);

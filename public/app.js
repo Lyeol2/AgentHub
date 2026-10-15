@@ -1,4 +1,5 @@
 import { renderMarkdown } from "./markdown.js";
+import { layoutGitGraph, gitWorkRows } from "./gitgraph.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -631,164 +632,261 @@ function renderProjectSessionTable() {
 $("p-session-filter").addEventListener("input", renderProjectSessionTable);
 
 // ── Git 탭 ──────────────────────────────────────────────────────
-// 변경 파일을 골라 커밋하고, 커밋·브랜치·파일의 차이를 오른쪽에 본다.
-// 세션 브랜치는 그 세션 작업 폴더의 커밋 안 한 변경을 보고, 그 브랜치에 커밋한 뒤 현재 브랜치로 병합할 수 있다.
+// 전체 브랜치의 기록과 커밋 전 작업을 함께 그리고, 상세는 고른 뒤에 연다.
 async function loadGit() {
   const p = currentProject();
   if (!p) return;
   const projectPath = p.path;
-  if (!state.git || !samePath(state.git.project, projectPath)) state.git = { project: projectPath, selected: new Set(), data: null };
-  let data;
-  try {
-    data = await api("GET", `/api/git?path=${encodeURIComponent(projectPath)}`);
-  } catch (err) {
-    if (!samePath(projectPath, state.project)) return;
-    $("g-note").hidden = false;
-    $("g-note").textContent = err.reason === "not-git" ? "git 저장소가 아닌 프로젝트입니다." : err.message;
+  if (!state.git || !samePath(state.git.project, projectPath)) {
+    state.git = { project: projectPath, selected: new Set(), data: null, loadVersion: 0, viewVersion: 0 };
+    $("g-detail").hidden = true;
     $("g-body").hidden = true;
+    $("g-message").value = "";
+    $("g-error").textContent = "";
     $("g-branch").textContent = "";
-    return;
+    $("g-sync").textContent = "";
+    $("p-tab-git").textContent = "";
+    $("g-changes").open = false;
   }
-  if (!samePath(projectPath, state.project)) return;
-  $("g-note").hidden = true;
-  $("g-body").hidden = false;
-  // 목록에서 사라진 파일은 고른 것에서도 뺀다.
-  const paths = new Set(data.files.map((f) => f.path));
-  for (const f of state.git.selected) if (!paths.has(f)) state.git.selected.delete(f);
-  state.git.data = data;
-  renderGit();
+  const current = state.git;
+  const version = ++current.loadVersion;
+  $("g-refresh").disabled = true;
+  try {
+    const data = await api("GET", "/api/git?path=" + encodeURIComponent(projectPath));
+    if (state.git !== current || version !== current.loadVersion || !samePath(projectPath, state.project)) return;
+    $("g-note").hidden = true;
+    $("g-body").hidden = false;
+    const paths = new Set(data.files.map((f) => f.path));
+    for (const f of current.selected) if (!paths.has(f)) current.selected.delete(f);
+    current.data = data;
+    renderGit();
+  } catch (err) {
+    if (state.git !== current || version !== current.loadVersion || !samePath(projectPath, state.project)) return;
+    $("g-note").hidden = false;
+    $("g-note").textContent = err.reason === "not-git" ? "Git 저장소가 아닙니다." : err.message;
+    $("g-body").hidden = true;
+  } finally {
+    if (state.git === current && version === current.loadVersion) $("g-refresh").disabled = false;
+  }
 }
 
 function renderGit() {
   const { data, selected } = state.git;
-  const upstream = data.upstream
-    ? ` · ${data.upstream} 기준 ${data.ahead ? `${data.ahead}개 앞섬` : ""}${data.ahead && data.behind ? ", " : ""}${data.behind ? `${data.behind}개 뒤처짐` : ""}${!data.ahead && !data.behind ? "같음" : ""}`
-    : " · 원격 브랜치 없음";
-  $("g-branch").textContent = `현재 브랜치 ${data.branch}${upstream}`;
-  $("p-tab-git").textContent = data.files.length ? String(data.files.length + data.moreFiles) : "";
-
-  // 변경 파일
-  $("g-file-count").textContent = data.files.length ? `${data.files.length + data.moreFiles}개` : "";
+  $("g-branch").textContent = data.branch;
+  $("g-branch").title = "현재 브랜치: " + data.branch;
+  $("g-sync").textContent = data.upstream
+    ? (data.ahead ? "↑ " + data.ahead + " " : "") + (data.behind ? "↓ " + data.behind : "") + (!data.ahead && !data.behind ? "동기화됨" : "")
+    : "";
+  $("g-sync").title = data.upstream ? data.upstream + " · 마지막으로 받은 원격 기록 기준" : "";
+  const n = data.files.length + data.moreFiles;
+  $("p-tab-git").textContent = n ? String(n) : "";
+  $("g-file-count").textContent = String(n);
   $("g-files").replaceChildren(...(data.files.length ? data.files.map((f) => {
-    const box = el("input", { type: "checkbox", onchange: (e) => {
+    const box = el("input", { type: "checkbox", "aria-label": f.path + " 선택", onchange: (e) => {
       if (e.target.checked) selected.add(f.path);
       else selected.delete(f.path);
       renderGitCommitButton();
     } });
     box.checked = selected.has(f.path);
-    return el("li", { class: "git-file" },
-      box,
-      el("span", { class: `git-status s-${f.label === "새 파일" ? "new" : f.label === "삭제" ? "del" : f.label === "충돌" ? "conflict" : "mod"}` }, f.label),
-      el("button", { type: "button", class: "link mono", title: f.orig ? `${f.orig} → ${f.path}` : f.path, onclick: () => showGitFile(f.path) }, f.path));
-  }) : [el("li", { class: "muted" }, "바뀐 파일이 없습니다.")]),
-  ...(data.moreFiles ? [el("li", { class: "muted" }, `… 외 ${data.moreFiles}개`)] : []));
-  $("g-all").checked = data.files.length > 0 && data.files.every((f) => selected.has(f.path));
+    return el("li", { class: "git-file" }, box,
+      el("span", { class: "git-status s-" + (f.label === "새 파일" ? "new" : f.label === "삭제" ? "del" : f.label === "충돌" ? "conflict" : "mod") }, f.label),
+      el("button", { type: "button", class: "link mono", title: f.orig ? f.orig + " → " + f.path : f.path, onclick: () => showGitFile(f.path) }, f.path));
+  }) : [el("li", { class: "muted" }, "변경 없음")]),
+  ...(data.moreFiles ? [el("li", { class: "muted" }, "외 " + data.moreFiles + "개 · 일부만 표시")] : []));
   renderGitCommitButton();
-
-  // 브랜치
+  $("g-branch-count").textContent = String(data.branches.length);
   $("g-branches").replaceChildren(...data.branches.map(renderGitBranch));
-
-  // 최근 커밋
-  $("g-commits").replaceChildren(...(data.commits.length ? data.commits.map((c) => el("li", { class: "git-commit" },
-    el("button", { type: "button", class: "link", title: `${c.hash}\n${c.author} · ${fmtDate(c.date)}`, onclick: () => showGitCommit(c) },
-      el("span", { class: "mono hash" }, c.short), " ", c.subject),
-    el("div", { class: "git-commit-meta" },
-      el("span", { class: "muted when" }, `${c.author} · ${timeAgo(c.date)}`),
-      ...c.refs.map((r) => el("span", { class: "pill ref" }, r.replace(/^HEAD -> /, "● ")))))) : [el("li", { class: "muted" }, "커밋이 없습니다.")]));
+  renderGitGraph();
 }
 
+const gitBranchName = (b) => b.sessionTitle || b.name;
+
 function renderGitCommitButton() {
-  const files = state.git.data?.files ?? [];
-  $("g-all").checked = files.length > 0 && files.every((f) => state.git.selected.has(f.path));
-  const n = state.git.selected.size;
-  $("g-commit").disabled = !n;
-  $("g-commit").textContent = n ? `고른 파일 ${n}개 커밋` : "고른 파일 커밋";
+  const current = state.git;
+  const files = current.data?.files ?? [];
+  const picked = files.filter((f) => current.selected.has(f.path)).length;
+  $("g-all").checked = files.length > 0 && picked === files.length;
+  $("g-all").indeterminate = picked > 0 && picked < files.length;
+  $("g-commit").disabled = !picked || !!current.committing;
+  $("g-commit").textContent = current.committing ? "커밋 중…" : picked ? "커밋 (" + picked + ")" : "커밋";
 }
 
 function renderGitBranch(b) {
+  const running = b.sessionState === "running";
+  const status = running ? "작업 중" : b.dirty ? "변경 " + b.dirty : b.ahead ? "+" + b.ahead : b.current ? "현재" : "";
   const actions = [];
-  const run = (label, fn, opts = {}) => actions.push(el("button", { type: "button", class: `ghost sm${opts.primary ? " primary" : ""}`, title: opts.title ?? "", onclick: fn }, label));
-  if (b.sessionId && b.dirty) run("변경 보기", () => showSessionChanges(b), { title: "세션 작업 폴더의 커밋 안 한 변경" });
-  if (b.sessionId && b.dirty) run("브랜치에 커밋", (e) => openBranchCommit(e.target.closest("li"), b), { title: "세션 작업 폴더의 변경을 이 브랜치에 커밋합니다" });
-  if (!b.current && b.ahead) run("들어올 내용", () => showGitBranch(b), { title: "병합하면 현재 브랜치에 들어올 커밋의 차이" });
-  if (!b.current && b.ahead) run("병합", () => mergeGitBranch(b), { title: `현재 브랜치(${state.git.data.branch})로 병합합니다` });
-  const facts = [
-    b.current ? "현재 브랜치" : b.ahead ? `커밋 ${b.ahead}개 앞섬` : "새 커밋 없음",
-    b.sessionId ? (b.dirty === null ? "작업 폴더 없음" : b.dirty ? `커밋 안 한 변경 ${b.dirty}개` : "작업 폴더 깨끗함") : null,
-  ].filter(Boolean).join(" · ");
-  return el("li", { class: `git-branch${b.current ? " current" : ""}` },
-    el("div", { class: "git-branch-head" },
-      el("span", { class: "mono name", title: b.subject ?? "" }, b.current ? `● ${b.name}` : b.name),
-      b.sessionId ? el("button", { type: "button", class: "pill session-ref", title: "세션 열기", onclick: () => selectSession(b.sessionId) }, b.sessionTitle) : null),
-    el("div", { class: "muted facts" }, facts),
-    actions.length ? el("div", { class: "git-actions" }, ...actions) : null);
+  const run = (label, fn, opts = {}) => {
+    const button = el("button", { type: "button", class: "ghost sm", title: opts.title ?? "", onclick: fn }, label);
+    button.disabled = !!opts.disabled;
+    actions.push(button);
+  };
+  if (b.sessionId) run("세션 열기", () => selectSession(b.sessionId));
+  if (b.sessionId && b.dirty) run("변경 보기", () => showSessionChanges(b));
+  if (b.sessionId && b.dirty) run("커밋", (e) => openBranchCommit(e.target.closest("li"), b), { disabled: running, title: running ? "세션이 끝난 뒤 커밋할 수 있습니다." : "세션의 변경 전체를 커밋합니다." });
+  if (!b.current && b.ahead) run("비교", () => showGitBranch(b));
+  if (!b.current && b.ahead) run("병합", () => mergeGitBranch(b), { title: state.git.data.branch + "에 병합" });
+  const summary = el("summary", { title: b.name },
+    el("span", { class: "git-branch-dot" + (running ? " running" : "") }),
+    el("span", { class: "name" }, gitBranchName(b)),
+    el("span", { class: "git-branch-status" }, status));
+  return el("li", { class: "git-branch" + (b.current ? " current" : "") },
+    el("details", {}, summary,
+      el("div", { class: "git-branch-info muted mono" }, b.name),
+      b.dirty === null ? el("div", { class: "muted" }, "작업 폴더 없음") : null,
+      actions.length ? el("div", { class: "git-actions" }, ...actions) : null));
+}
+
+function renderGitGraph() {
+  const { data } = state.git;
+  const work = gitWorkRows(data);
+  const commits = data.graph?.commits ?? data.commits;
+  const layout = layoutGitGraph([...work, ...commits]);
+  const width = Math.max(60, layout.lanes * 22 + 26);
+  $("g-graph").style.minWidth = (width + 470) + "px";
+  const rows = layout.rows.map((row) => {
+    const c = row.commit;
+    const x = (lane) => 20 + lane * 22;
+    const y = { top: 0, node: 24, bottom: 48 };
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.setAttribute("width", width);
+    svg.setAttribute("height", 48);
+    svg.setAttribute("viewBox", "0 0 " + width + " 48");
+    svg.setAttribute("aria-hidden", "true");
+    for (const s of row.segments) {
+      const path = document.createElementNS(svg.namespaceURI, "path");
+      const ax = x(s.fromLane), bx = x(s.toLane), ay = y[s.from], by = y[s.to];
+      const middle = (ay + by) / 2;
+      path.setAttribute("d", ax === bx ? "M" + ax + " " + ay + "V" + by : "M" + ax + " " + ay + "C" + ax + " " + middle + " " + bx + " " + middle + " " + bx + " " + by);
+      path.setAttribute("class", "git-track git-track-" + s.color + (s.dashed ? " work" : ""));
+      svg.append(path);
+    }
+    const circle = document.createElementNS(svg.namespaceURI, "circle");
+    circle.setAttribute("cx", x(row.lane));
+    circle.setAttribute("cy", 24);
+    circle.setAttribute("r", c.work ? 5 : c.parents?.length > 1 ? 5.5 : 4);
+    circle.setAttribute("class", "git-station git-track-" + row.color + (c.work ? " work" : ""));
+    svg.append(circle);
+    const branches = (c.refs ?? []).map((name) => data.branches.find((b) => b.name === name) ?? (c.branch?.name === name ? c.branch : { name }));
+    const chips = branches.slice(0, 2).map((b) => el("span", { class: "git-ref" + (b.current ? " current" : ""), title: b.name }, gitBranchName(b)));
+    if (branches.length > 2) chips.push(el("span", { class: "git-ref", title: branches.slice(2).map(gitBranchName).join("\n") }, "+" + (branches.length - 2)));
+    const title = c.work ? [gitBranchName(c.branch), c.branch.sessionState === "running" ? "작업 중" : "", c.dirty ? "변경 " + c.dirty + "개" : ""].filter(Boolean).join(" · ") : c.subject;
+    const button = el("button", { type: "button", class: "git-graph-row" + (c.work ? " work" : "") + (state.git.activeRow === c.hash ? " active" : ""),
+      "data-hash": c.hash, "aria-pressed": String(state.git.activeRow === c.hash), title: c.work ? title : c.subject + "\n" + c.author + " · " + fmtDate(c.date) + "\n" + c.hash,
+      onclick: () => {
+        setGitActive(c.hash);
+        if (!c.work) showGitCommit(c);
+        else if (c.branch.sessionId) showSessionChanges(c.branch);
+        else { ++state.git.viewVersion; $("g-detail").hidden = true; $("g-changes").open = true; $("g-changes").scrollIntoView({ block: "nearest" }); }
+      } }, svg,
+      el("span", { class: "git-graph-subject" }, title),
+      el("span", { class: "git-graph-refs" }, ...chips),
+      el("span", { class: "git-graph-meta mono" }, c.work ? "커밋 전" : c.short));
+    return button;
+  });
+  $("g-graph").replaceChildren(...(rows.length ? rows : [el("p", { class: "git-empty muted" }, "아직 커밋이 없습니다.")]));
+  $("g-summary").textContent = (work.length ? "작업 " + work.length + " · " : "") + "커밋 " + commits.length;
+  $("g-history-note").textContent = data.graph?.truncated ? "최근 100개 · 아래로 이전 기록이 이어집니다." : "커밋을 누르면 변경 내용을 볼 수 있습니다.";
+}
+
+function setGitActive(hash) {
+  state.git.activeRow = hash;
+  for (const row of $("g-graph").querySelectorAll(".git-graph-row")) {
+    row.classList.toggle("active", row.dataset.hash === hash);
+    row.setAttribute("aria-pressed", String(row.dataset.hash === hash));
+  }
 }
 
 function showGitView(title, text) {
+  $("g-detail").hidden = false;
   $("g-view-title").textContent = title;
   $("g-view").replaceChildren(...renderDiff(text));
   $("g-view").scrollTop = 0;
 }
 
 async function gitGet(url, title) {
+  const current = state.git;
+  const version = ++current.viewVersion;
+  showGitView(title, "불러오는 중…");
   try {
-    showGitView(title, (await api("GET", url)).diff);
+    const data = await api("GET", url);
+    if (state.git === current && current.viewVersion === version && samePath(current.project, state.project)) showGitView(title, data.diff || "변경 없음");
   } catch (err) {
-    showGitView(title, err.message);
+    if (state.git === current && current.viewVersion === version && samePath(current.project, state.project)) showGitView(title, err.message);
   }
 }
 
 const gitQuery = (extra) => new URLSearchParams({ path: state.git.project, ...extra });
-const showGitFile = (file) => gitGet(`/api/git/diff?${gitQuery({ file })}`, `변경: ${file}`);
-const showGitCommit = (c) => gitGet(`/api/git/show?${gitQuery({ hash: c.hash })}`, `커밋 ${c.short} · ${c.subject}`);
-const showGitBranch = (b) => gitGet(`/api/git/branch?${gitQuery({ branch: b.name })}`, `${b.name}에서 들어올 내용`);
+const showGitFile = (file) => gitGet("/api/git/diff?" + gitQuery({ file }), file);
+const showGitCommit = (c) => gitGet("/api/git/show?" + gitQuery({ hash: c.hash }), c.short + " · " + c.subject);
+const showGitBranch = (b) => gitGet("/api/git/branch?" + gitQuery({ branch: b.name }), gitBranchName(b) + " · 병합할 변경");
 
 async function showSessionChanges(b) {
+  const current = state.git;
+  const version = ++current.viewVersion;
+  const title = gitBranchName(b) + " · 작업 변경";
+  showGitView(title, "불러오는 중…");
   try {
-    const data = await api("GET", `/api/sessions/${b.sessionId}/diff`);
-    showGitView(`${b.sessionTitle} 작업 폴더의 변경 (세션을 만든 커밋 기준)`, `${data.status}\n${data.diff}`);
+    const data = await api("GET", "/api/sessions/" + b.sessionId + "/diff");
+    if (state.git === current && current.viewVersion === version && samePath(current.project, state.project)) showGitView(title, data.diff || data.status || "변경 없음");
   } catch (err) {
-    showGitView(b.sessionTitle, err.message);
+    if (state.git === current && current.viewVersion === version && samePath(current.project, state.project)) showGitView(title, err.message);
   }
 }
 
-// 세션 브랜치에 커밋: 그 줄 아래에 메시지 칸을 열어 받는다(앱 창에서는 prompt를 쓸 수 없다).
 function openBranchCommit(li, b) {
   li.querySelector(".git-inline")?.remove();
-  const input = el("input", { placeholder: `${b.sessionTitle}의 작업 커밋 메시지`, value: `${b.sessionTitle} 작업` });
-  const error = el("span", { class: "error" });
+  const current = state.git;
+  const input = el("input", { placeholder: "커밋 메시지", "aria-label": gitBranchName(b) + " 커밋 메시지", value: gitBranchName(b) + " 작업" });
+  const error = el("span", { class: "error", role: "alert" });
+  let busy = false;
   const submit = async () => {
+    if (busy) return;
+    busy = true;
+    button.disabled = true;
     try {
-      await api("POST", "/api/git/commit", { path: state.git.project, session: b.sessionId, message: input.value });
-      await loadGit();
+      await api("POST", "/api/git/commit", { path: current.project, session: b.sessionId, message: input.value });
+      if (state.git === current && samePath(current.project, state.project)) await loadGit();
     } catch (err) {
       error.textContent = err.message;
+    } finally {
+      busy = false;
+      button.disabled = false;
     }
   };
-  input.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") submit();
-    if (e.key === "Escape") form.remove();
-  });
-  const form = el("div", { class: "git-inline" }, input,
-    el("button", { type: "button", class: "primary sm", onclick: submit }, "커밋"),
+  const button = el("button", { type: "button", class: "primary sm", onclick: submit }, "커밋");
+  const form = el("div", { class: "git-inline" }, input, button,
     el("button", { type: "button", class: "ghost sm", onclick: () => form.remove() }, "취소"), error);
-  li.append(form);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.isComposing) submit();
+    if (e.key === "Escape" && !busy) form.remove();
+  });
+  li.querySelector("details").append(form);
   input.focus();
   input.select();
 }
 
 async function mergeGitBranch(b) {
-  const into = state.git.data.branch;
-  if (!confirm(`${b.name}의 커밋 ${b.ahead}개를 현재 브랜치(${into})로 병합할까요?\n\n충돌이 나면 병합을 되돌리고 충돌한 파일을 알려 줍니다.`)) return;
+  const current = state.git;
+  if (current.merging) return;
+  const into = current.data.branch;
+  if (!confirm(gitBranchName(b) + " → " + into + " 병합할까요?\n충돌하면 자동 취소됩니다.")) return;
+  current.merging = true;
   try {
-    const { result } = await api("POST", "/api/git/merge", { path: state.git.project, branch: b.name });
-    showGitView(`병합함: ${b.name} → ${into}`, result);
+    const { result } = await api("POST", "/api/git/merge", { path: current.project, branch: b.name });
+    if (state.git === current && samePath(current.project, state.project)) { ++current.viewVersion; showGitView("병합 완료", result); }
   } catch (err) {
     alert(err.message);
+  } finally {
+    current.merging = false;
   }
-  await loadGit();
+  if (state.git === current && samePath(current.project, state.project)) await loadGit();
 }
 
+$("g-detail-close").addEventListener("click", () => {
+  ++state.git.viewVersion;
+  $("g-detail").hidden = true;
+  setGitActive(null);
+});
 $("g-refresh").addEventListener("click", loadGit);
 $("g-all").addEventListener("change", (e) => {
   for (const f of state.git?.data?.files ?? []) {
@@ -798,18 +896,30 @@ $("g-all").addEventListener("change", (e) => {
   renderGit();
 });
 $("g-commit").addEventListener("click", async () => {
-  const button = $("g-commit");
+  const current = state.git;
+  if (!current.selected.size || current.committing) return;
   $("g-error").textContent = "";
-  button.disabled = true;
+  current.committing = true;
+  renderGitCommitButton();
   try {
-    const { result } = await api("POST", "/api/git/commit", { path: state.git.project, message: $("g-message").value, files: [...state.git.selected] });
-    $("g-message").value = "";
-    state.git.selected.clear();
-    showGitView("커밋함", result);
+    const { result } = await api("POST", "/api/git/commit", { path: current.project, message: $("g-message").value, files: [...current.selected] });
+    if (state.git === current && samePath(current.project, state.project)) {
+      $("g-message").value = "";
+      current.selected.clear();
+      ++current.viewVersion;
+      showGitView("커밋 완료", result);
+    }
   } catch (err) {
-    $("g-error").textContent = err.message;
+    if (state.git === current && samePath(current.project, state.project)) $("g-error").textContent = err.message;
+  } finally {
+    current.committing = false;
   }
-  await loadGit();
+  if (state.git === current && samePath(current.project, state.project)) await loadGit();
+});
+
+// 창을 다시 열어 보면 외부 Git 작업도 반영한다.
+window.addEventListener("focus", () => {
+  if (state.view === "project" && projectTab() === "git") loadGit();
 });
 
 // ── 프로젝트 제거 ───────────────────────────────────────────────
@@ -3398,8 +3508,8 @@ function connectStream() {
     renderProjectNav();
     if (state.view === "dashboard") renderDashboard();
     if (state.view === "project") renderProjectSessions();
-    // 보고 있는 프로젝트의 세션이 턴을 마치면 파일이 바뀌었을 수 있으므로 Git 탭을 새로 받는다.
-    if (state.view === "project" && projectTab() === "git" && next !== "running" && item && samePath(item.projectPath, state.project)) loadGit();
+    // 시작·종료 상태를 모두 반영해 노선도의 작업 중 표시를 갱신한다.
+    if (state.view === "project" && projectTab() === "git" && item && samePath(item.projectPath, state.project)) loadGit();
     if (state.current?.id === sessionId) {
       state.current.state = next;
       renderState();
