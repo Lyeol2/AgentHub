@@ -1,11 +1,15 @@
 // AgentHub 데스크톱 앱: 메인 프로세스 안에서 로컬 서버를 띄우고 그 화면을 창에 보여 준다.
-import { app, BrowserWindow, Menu, dialog, shell } from "electron";
+import { app, BrowserWindow, Menu, dialog, shell, clipboard, ipcMain } from "electron";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Updater } from "./updater.mjs";
+import { createClipboardFileAccess, readClipboardFiles } from "./clipboard-files.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ICON = path.join(HERE, "..", "build", "icon.ico");
+const PRELOAD = path.join(HERE, "preload.cjs");
+const clipboardAccess = createClipboardFileAccess(() => readClipboardFiles(clipboard));
+ipcMain.handle("agenthub:clipboard-files", (event) => clipboardAccess.read(event));
 
 let win = null;
 let server = null;
@@ -65,7 +69,7 @@ function createWindow(url) {
     icon: ICON,
     backgroundColor: "#f6f6f4",
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: PRELOAD },
   });
   win.once("ready-to-show", () => win.show());
   // 업데이트 직후 등 ready-to-show가 오지 않는 경우가 있어, 잠시 뒤에는 그냥 보여 준다.
@@ -81,6 +85,7 @@ function createWindow(url) {
 
 // 앱 밖으로 나가는 링크는 기본 브라우저에서 연다. 앱 안의 링크(채팅 "새 창으로")는 AgentHub 창으로 연다.
 function guard(contents, base) {
+  clipboardAccess.register(contents, base);
   const isLocal = (target) => target.startsWith(base);
   contents.setWindowOpenHandler(({ url: target }) => {
     if (isLocal(target)) {
@@ -94,7 +99,7 @@ function guard(contents, base) {
           icon: ICON,
           backgroundColor: "#0d1016",
           autoHideMenuBar: true,
-          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+          webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: PRELOAD },
         },
       };
     }

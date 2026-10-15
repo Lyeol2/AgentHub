@@ -1,4 +1,4 @@
-import { IMAGE_BODY_LIMIT } from "../../attachments.mjs";
+import { ATTACHMENT_BODY_LIMIT, isImageAttachment, safeAttachmentName } from "../../attachments.mjs";
 
 export function sessionRoutes(s) {
   return [
@@ -12,10 +12,16 @@ export function sessionRoutes(s) {
       removeWorktree: query.get("removeWorktree") === "1",
       deleteRecords: query.get("records") === "delete"
     })],
-    ["POST", "sessions/:id/attachments", ({ params, body }) => s.uploadAttachment(params.id, body), { maxBodyBytes: IMAGE_BODY_LIMIT }],
+    ["POST", "sessions/:id/attachments", ({ params, body }) => s.uploadAttachment(params.id, body), { maxBodyBytes: ATTACHMENT_BODY_LIMIT }],
     ["GET", "sessions/:id/attachments/:image", ({ params, res }) => {
       const image = s.attachmentContent(params.id, params.image);
-      res.writeHead(200, { "Content-Type": image.mimeType, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" });
+      const headers = { "Content-Type": image.mimeType, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
+      if (!isImageAttachment(image)) {
+        const filename = encodeURIComponent(safeAttachmentName(image.name)).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+        headers["Content-Disposition"] = "attachment; filename=\"attachment\"; filename*=UTF-8''" + filename;
+        headers["Content-Security-Policy"] = "sandbox; default-src 'none'";
+      }
+      res.writeHead(200, headers);
       res.end(image.bytes);
     }],
     ["POST", "sessions/:id/export", ({ params }) => s.exportRecord(params.id)],

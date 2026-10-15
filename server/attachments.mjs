@@ -3,10 +3,25 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { HttpError } from "./application/errors.mjs";
 
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = MAX_ATTACHMENT_BYTES;
 export const MAX_ATTACHMENTS = 4;
-export const IMAGE_BODY_LIMIT = 14_100_000;
+export const ATTACHMENT_BODY_LIMIT = 14_100_000;
+export const IMAGE_BODY_LIMIT = ATTACHMENT_BODY_LIMIT;
 const TYPES = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
+export const isImageAttachment = (attachment) => Object.hasOwn(TYPES, attachment?.mimeType);
+const MIME = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/i;
+export function safeAttachmentName(value) {
+  let name = String(value ?? "file").split(/[\\/]/).at(-1).replace(/[\x00-\x1f\x7f<>:"|?*]/g, "_").slice(0, 180).toWellFormed().replace(/[. ]+$/g, "");
+  if (!name || /^\.+$/.test(name)) name = "file";
+  if (/^(con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(name)) name = "_" + name;
+  return name;
+}
+export function attachmentExtension(attachment) {
+  if (isImageAttachment(attachment)) return "." + TYPES[attachment.mimeType];
+  const extension = path.extname(safeAttachmentName(attachment?.name));
+  return /^\.[a-z0-9]{1,16}$/i.test(extension) ? extension.toLowerCase() : ".bin";
+}
 const inside = (base, file) => {
   const relative = path.relative(base, file);
   return relative !== ".." && !relative.startsWith(".." + path.sep) && !path.isAbsolute(relative);
@@ -24,7 +39,7 @@ export function publicAttachment({ id, name, mimeType, size, url }) {
   return { id, name, mimeType, size, url };
 }
 
-// Client-supplied paths are never used. Each session owns a separate image directory.
+// Client-supplied paths are never used. Each session owns a separate attachment directory.
 export class AttachmentStore {
   constructor({ dataDir }) {
     this.dataDir = path.resolve(dataDir);
@@ -37,30 +52,33 @@ export class AttachmentStore {
     if (create) fs.mkdirSync(this.dataDir, { recursive: true });
     for (const part of [this.root, dir]) {
       if (!fs.existsSync(part)) {
-        if (!create) throw new HttpError(404, "첨부 이미지를 찾지 못했습니다.");
+        if (!create) throw new HttpError(404, "첨부 파일을 찾지 못했습니다.");
         fs.mkdirSync(part);
       }
-      if (fs.lstatSync(part).isSymbolicLink() || !fs.statSync(part).isDirectory() || !inside(fs.realpathSync(this.dataDir), fs.realpathSync(part))) throw new HttpError(400, "첨부 이미지 폴더가 올바르지 않습니다.");
+      if (fs.lstatSync(part).isSymbolicLink() || !fs.statSync(part).isDirectory() || !inside(fs.realpathSync(this.dataDir), fs.realpathSync(part))) throw new HttpError(400, "첨부 파일 폴더가 올바르지 않습니다.");
     }
     return dir;
   }
 
   save(sessionId, { name, mimeType, data } = {}) {
-    if (!Object.hasOwn(TYPES, mimeType)) throw new HttpError(400, "PNG·JPEG·GIF·WebP 이미지만 첨부할 수 있습니다.");
-    if (typeof data !== "string" || !data) throw new HttpError(400, "이미지 데이터를 입력하세요.");
-    if (data.length > Math.ceil(MAX_IMAGE_BYTES / 3) * 4) throw new HttpError(413, "이미지는 파일당 10MB까지 첨부할 수 있습니다.");
-    if (data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new HttpError(400, "이미지 데이터가 올바른 base64 형식이 아닙니다.");
+    mimeType = String(mimeType || "application/octet-stream").toLowerCase();
+    if (mimeType.length > 150 || !MIME.test(mimeType)) throw new HttpError(400, "파일 형식이 올바르지 않습니다.");
+    if (typeof data !== "string") throw new HttpError(400, "파일 데이터를 입력하세요.");
+    if (data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) throw new HttpError(413, "첨부 파일은 파일당 10MB까지 추가할 수 있습니다.");
+    if (data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new HttpError(400, "파일 데이터가 올바른 base64 형식이 아닙니다.");
     const bytes = Buffer.from(data, "base64");
-    if (bytes.length > MAX_IMAGE_BYTES) throw new HttpError(413, "이미지는 파일당 10MB까지 첨부할 수 있습니다.");
-    if (bytes.toString("base64") !== data || imageType(bytes) !== mimeType) throw new HttpError(400, "이미지 내용과 파일 형식이 일치하지 않습니다.");
+    if (bytes.length > MAX_ATTACHMENT_BYTES) throw new HttpError(413, "첨부 파일은 파일당 10MB까지 추가할 수 있습니다.");
+    if (bytes.toString("base64") !== data) throw new HttpError(400, "파일 데이터가 올바른 base64 형식이 아닙니다.");
+    if (isImageAttachment({ mimeType }) && imageType(bytes) !== mimeType) throw new HttpError(400, "이미지 내용과 파일 형식이 일치하지 않습니다.");
     const id = randomBytes(16).toString("hex");
     const descriptor = {
-      id, name: String(name ?? "이미지").replace(/[\x00-\x1f\x7f]/g, "").slice(0, 200) || "이미지",
+      id, name: safeAttachmentName(name),
       mimeType, size: bytes.length,
       url: "/api/sessions/" + encodeURIComponent(sessionId) + "/attachments/" + id,
     };
     const dir = this.folder(sessionId, true);
-    const file = path.join(dir, id + "." + TYPES[mimeType]);
+    // Keep a separate data suffix so a JSON upload cannot overwrite its descriptor.
+    const file = path.join(dir, id + (isImageAttachment(descriptor) ? "" : ".data") + attachmentExtension(descriptor));
     fs.writeFileSync(file, bytes, { flag: "wx" });
     try { fs.writeFileSync(path.join(dir, id + ".json"), JSON.stringify(descriptor), { flag: "wx" }); }
     catch (err) { fs.rmSync(file); throw err; }
@@ -68,22 +86,22 @@ export class AttachmentStore {
   }
 
   resolve(sessionId, id) {
-    if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id)) throw new HttpError(400, "첨부 이미지 ID가 올바르지 않습니다.");
+    if (typeof id !== "string" || !/^[a-f0-9]{32}$/.test(id)) throw new HttpError(400, "첨부 파일 ID가 올바르지 않습니다.");
     const dir = this.folder(sessionId);
     const metadata = path.join(dir, id + ".json");
-    if (!fs.existsSync(metadata)) throw new HttpError(404, "첨부 이미지를 찾지 못했습니다.");
-    if (!fs.lstatSync(metadata).isFile() || fs.lstatSync(metadata).isSymbolicLink()) throw new HttpError(400, "첨부 이미지가 올바르지 않습니다.");
+    if (!fs.existsSync(metadata)) throw new HttpError(404, "첨부 파일을 찾지 못했습니다.");
+    if (!fs.lstatSync(metadata).isFile() || fs.lstatSync(metadata).isSymbolicLink()) throw new HttpError(400, "첨부 파일이 올바르지 않습니다.");
     const descriptor = JSON.parse(fs.readFileSync(metadata, "utf8"));
-    if (descriptor.id !== id || !Object.hasOwn(TYPES, descriptor.mimeType)) throw new HttpError(400, "첨부 이미지 정보가 올바르지 않습니다.");
-    const file = path.join(dir, id + "." + TYPES[descriptor.mimeType]);
-    if (!fs.existsSync(file)) throw new HttpError(404, "첨부 이미지를 찾지 못했습니다.");
-    if (!fs.lstatSync(file).isFile() || fs.lstatSync(file).isSymbolicLink() || !inside(fs.realpathSync(dir), fs.realpathSync(file))) throw new HttpError(400, "첨부 이미지가 올바르지 않습니다.");
+    if (descriptor.id !== id || typeof descriptor.mimeType !== "string" || !MIME.test(descriptor.mimeType)) throw new HttpError(400, "첨부 파일 정보가 올바르지 않습니다.");
+    const file = path.join(dir, id + (isImageAttachment(descriptor) ? "" : ".data") + attachmentExtension(descriptor));
+    if (!fs.existsSync(file)) throw new HttpError(404, "첨부 파일을 찾지 못했습니다.");
+    if (!fs.lstatSync(file).isFile() || fs.lstatSync(file).isSymbolicLink() || !inside(fs.realpathSync(dir), fs.realpathSync(file))) throw new HttpError(400, "첨부 파일이 올바르지 않습니다.");
     return { ...publicAttachment(descriptor), path: file };
   }
 
   resolveAll(sessionId, ids = []) {
-    if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS) throw new HttpError(400, "이미지는 요청당 4장까지 첨부할 수 있습니다.");
-    if (new Set(ids).size !== ids.length) throw new HttpError(400, "같은 이미지를 중복 첨부할 수 없습니다.");
+    if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS) throw new HttpError(400, "파일은 요청당 4개까지 첨부할 수 있습니다.");
+    if (new Set(ids).size !== ids.length) throw new HttpError(400, "같은 파일을 중복 첨부할 수 없습니다.");
     return ids.map((id) => this.resolve(sessionId, id));
   }
 

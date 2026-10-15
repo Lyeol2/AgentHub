@@ -1,10 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { attachmentExtension, isImageAttachment } from "./attachments.mjs";
 
 const AGENT = { claude: "Claude", codex: "Codex" };
 const LABEL = { user: "사용자", text: "AI", tool: "도구", tool_result: "도구 결과", error: "오류", status: "상태", log: "로그", thinking: "생각", result: "결과", message: "보낸 메시지" };
 const STATUS = { pending: "대기 중", answered: "답함", skipped: "지나감", invalid: "형식 오류", allowed: "허용함", denied: "거절함", applied: "실행함", rejected: "거절함" };
-const IMAGE_EXTENSION = { "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif" };
 const RESERVED_NAME = /^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i;
 const BACKTICK = String.fromCharCode(96);
 const list = (value) => Array.isArray(value) ? value : [];
@@ -96,12 +96,14 @@ function attachmentsOf(session) {
   return [...found.values()];
 }
 function attachmentMarkdown(attachment, links) {
-  const name = inline(attachment?.name || "첨부 이미지");
+  const image = isImageAttachment(attachment);
+  const label = image ? "첨부 이미지" : "첨부 파일";
+  const name = inline(attachment?.name || label);
   const relative = links instanceof Map ? links.get(attachment?.id) : undefined;
   // Downloads without copied assets expose neither local paths nor authenticated API URLs.
-  if (!relative) return "첨부 이미지: " + name + " (별도 이미지 파일)";
+  if (!relative) return label + ": " + name + (image ? " (별도 이미지 파일)" : " (별도 파일)");
   const href = String(relative).split("/").map((part) => encodeURIComponent(part).replace(/[!'()*]/g, (character) => "%" + character.charCodeAt(0).toString(16).toUpperCase())).join("/");
-  return "![" + name + "](" + href + ")";
+  return (image ? "!" : "") + "[" + name + "](" + href + ")";
 }
 function questionBody(event) {
   const parts = ["상태: " + inline(STATUS[event.status] || event.status || "미정")];
@@ -209,7 +211,7 @@ async function removeCreated(root, docs, destination, files, directories) {
   }
 }
 
-/** Save a fresh project document and private copies of its attached images. */
+/** Save a fresh project document and private copies of its attached files. */
 export async function exportSession(session, { resolveAttachment, now = new Date() } = {}) {
   if (session.chat || !session.projectPath || !session.cwd) throw failure("EXPORT_PROJECT_REQUIRED", "일반 채팅은 프로젝트 문서 내보내기를 지원하지 않습니다. 프로젝트 세션에서 사용하세요.");
   if (!path.isAbsolute(session.cwd)) throw failure("EXPORT_UNSAFE_PATH", "작업 폴더는 절대 경로여야 합니다.");
@@ -223,16 +225,15 @@ export async function exportSession(session, { resolveAttachment, now = new Date
   await checkedDirectory(root, docs, true);
   await checkedDirectory(root, destination, true);
 
-  // Resolve inputs first: absent images cannot silently produce an incomplete success.
+  // Resolve inputs first: absent files cannot silently produce an incomplete success.
   const sources = [];
   for (const attachment of attachmentsOf(session)) {
-    if (!IMAGE_EXTENSION[attachment.mimeType]) throw failure("EXPORT_ATTACHMENT_INVALID", "지원하지 않는 이미지 첨부 형식입니다.");
-    if (typeof resolveAttachment !== "function") throw failure("EXPORT_ATTACHMENT_MISSING", "첨부 이미지 저장소를 찾을 수 없습니다.");
+    if (typeof resolveAttachment !== "function") throw failure("EXPORT_ATTACHMENT_MISSING", "첨부 파일 저장소를 찾을 수 없습니다.");
     const resolved = await resolveAttachment(attachment, session);
     const source = typeof resolved === "string" ? resolved : resolved?.path;
-    if (!source || !path.isAbsolute(source)) throw failure("EXPORT_ATTACHMENT_MISSING", "첨부 이미지 파일을 찾을 수 없습니다.");
+    if (!source || !path.isAbsolute(source)) throw failure("EXPORT_ATTACHMENT_MISSING", "첨부 파일을 찾을 수 없습니다.");
     const stat = await fs.lstat(source);
-    if (!stat.isFile() || stat.isSymbolicLink()) throw failure("EXPORT_ATTACHMENT_INVALID", "첨부 이미지는 실제 파일이어야 합니다.");
+    if (!stat.isFile() || stat.isSymbolicLink()) throw failure("EXPORT_ATTACHMENT_INVALID", "첨부는 실제 파일이어야 합니다.");
     sources.push({ attachment, source });
   }
 
@@ -264,7 +265,7 @@ export async function exportSession(session, { resolveAttachment, now = new Date
         await checkedDirectory(root, docs);
         await checkedDirectory(root, destination);
         await checkedDirectory(root, assetDir);
-        const name = (index + 1) + "-" + safeName(path.parse(attachment.name || "image").name, "image", 40) + IMAGE_EXTENSION[attachment.mimeType];
+        const name = (index + 1) + "-" + safeName(path.parse(attachment.name || "file").name, "file", 40) + attachmentExtension(attachment);
         const target = path.join(assetDir, name);
         const targetHandle = await fs.open(target, "wx", 0o600);
         try {

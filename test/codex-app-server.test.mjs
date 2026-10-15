@@ -41,7 +41,7 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 
 test("app-server: initialization, resume and native text/image turn input are ordered", async () => {
   const f = fixture({ resume: "previous" });
-  await f.protocol.start("사진 설명", [{ path: "C:/saved/image.png" }]);
+  await f.protocol.start("사진 설명", [{ path: "C:/saved/image.png", mimeType: "image/png" }]);
   assert.deepEqual(f.sent.map((message) => message.method), ["initialize", "initialized", "thread/resume", "turn/start"]);
   assert.equal(f.sent[2].params.threadId, "previous");
   assert.equal(f.sent[2].params.approvalPolicy, "on-request");

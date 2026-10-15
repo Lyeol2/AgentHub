@@ -67,6 +67,8 @@ html, body { height: 100%; margin: 0; }
 body {
   display: grid;
   grid-template-columns: var(--sidebar-width, 260px) 6px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
   background: var(--bg);
   color: var(--text);
   font: 13.5px/1.55 "Segoe UI Variable", "Segoe UI", "Malgun Gothic", system-ui, sans-serif;
@@ -203,17 +205,18 @@ body.resizing-sidebar, body.resizing-sidebar * { cursor: col-resize !important; 
 .gcard-foot .pill.life { font-size: 10px; padding: 0 6px; }
 
 /* ── 메인 ─────────────────────────────────────────────────── */
-main { display: flex; min-width: 0; min-height: 0; height: 100vh; }
+main { display: flex; min-width: 0; min-height: 0; height: 100%; overflow: hidden; }
 .view { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
 .topbar {
   display: flex; justify-content: space-between; align-items: flex-end; gap: 16px;
+  flex: none; min-width: 0;
   padding: 18px 24px 14px; border-bottom: 1px solid var(--line); background: var(--bg);
 }
 .topbar h2 { margin: 0; font-size: 19px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .sub { color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
 .crumb { color: var(--faint); font-size: 11.5px; margin-bottom: 2px; }
 .actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-.content { flex: 1; padding: 20px 24px 28px; overflow-y: auto; display: grid; grid-auto-rows: max-content; gap: 18px; align-content: start; }
+.content { flex: 1; min-height: 0; min-width: 0; padding: 20px 24px 28px; overflow-y: auto; display: grid; grid-auto-rows: max-content; gap: 18px; align-content: start; }
 
 .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; }
 .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; }
@@ -282,7 +285,7 @@ main { display: flex; min-width: 0; min-height: 0; height: 100vh; }
 
 .events {
   list-style: none; margin: 0; padding: 20px 24px;
-  overflow-y: auto; flex: 1;
+  overflow-y: auto; flex: 1; min-height: 0;
   display: flex; flex-direction: column; gap: 8px;
 }
 .ev { max-width: 920px; width: fit-content; white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -312,8 +315,8 @@ main { display: flex; min-width: 0; min-height: 0; height: 100vh; }
 .ev.work > details > summary:hover { color: var(--text); }
 .work-events { list-style: none; margin: 8px 0 0; padding: 0 0 0 12px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 
-.composer { display: flex; gap: 10px; padding: 14px 24px 18px; border-top: 1px solid var(--line); background: var(--bg); }
-.composer textarea { flex: 1; min-width: 0; resize: vertical; background: var(--panel); min-height: 64px; }
+.composer { display: flex; flex: none; gap: 10px; padding: 14px 24px 18px; border-top: 1px solid var(--line); background: var(--bg); }
+.composer textarea { flex: 1; min-width: 0; resize: none; background: var(--panel); min-height: 64px; }
 .composer button { align-self: flex-end; white-space: nowrap; padding: 10px 14px; min-height: 44px; }
 .composer button[data-action] { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-width: 100px; }
 .composer button[data-action="pause"] { background: var(--panel-2); color: var(--text); border-color: var(--line-strong); }
@@ -369,14 +372,15 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
 }
 @media (max-width: 640px) {
   html, body { height: auto; }
-  body { grid-template-columns: 1fr; grid-template-rows: auto auto; }
+  body { grid-template-columns: 1fr; grid-template-rows: auto auto; overflow: auto; }
   .sidebar { height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
   .sidebar-resizer { display: none; }
   .session-list { max-height: 30vh; }
-  main, .view { height: auto; min-height: 0; }
-  .content { overflow: visible; padding: 16px; }
+  main { height: 100dvh; min-height: 0; }
+  .view { height: 100%; min-height: 0; }
+  .content { overflow: auto; padding: 16px; }
   .topbar { flex-direction: column; align-items: stretch; padding: 16px; }
-  .events { min-height: 55vh; padding: 16px; }
+  .events { min-height: 0; padding: 16px; }
   .composer { padding: 12px 16px; gap: 8px; }
   .composer button[data-action] { min-width: 44px; padding: 10px; }
   .composer button[data-action] > span:not(.composer-icon) { display: none; }
@@ -385,7 +389,7 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
 }
 
 /* ── 세션 흐름 그래프 ─────────────────────────────────────── */
-.graph { overflow: hidden; min-height: 180px; max-height: 62vh; background:
+.graph { position: relative; flex: 1; overflow: hidden; min-height: 0; min-width: 0; background:
   radial-gradient(circle, var(--line) 1px, transparent 1px) 0 0 / 20px 20px; }
 .graph.panning, .graph.panning * { cursor: grabbing !important; user-select: none; }
 .graph-empty { color: var(--faint); text-align: center; padding: 48px 16px; }
@@ -544,7 +548,8 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
 .view.chat { background: var(--bg); }
 
 /* 별도 창으로 연 채팅·세션: 사이드바 없이 그 화면만 */
-body.popup { grid-template-columns: 1fr; }
+body.popup { height: 100dvh; grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+body.popup main { height: 100%; }
 body.popup .sidebar, body.popup .sidebar-resizer { display: none; }
 body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decoration: none; }
 
@@ -765,8 +770,8 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 .project-remove-keep { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); display: grid; gap: 3px; }
 
 /* ── 그래프 확대·축소 ─────────────────────────────────────── */
-/* 바깥 상자는 확대한 크기로 스크롤 범위를 잡고, 캔버스는 왼쪽 위를 기준으로 transform으로 키운다. */
-.graph-sizer { position: relative; min-width: 100%; min-height: 180px; }
+/* 화면 크기는 패널이 정하고, 노드의 크기와 이동·확대는 레이아웃에 영향을 주지 않는다. */
+.graph-sizer { position: absolute; inset: 0; }
 .graph-sizer > .graph-canvas { position: absolute; left: 0; top: 0; min-width: 0; transform-origin: 0 0; }
 .zoom-controls { display: inline-flex; gap: 2px; align-items: center; }
 .zoom-controls #p-zoom-reset { min-width: 52px; font-variant-numeric: tabular-nums; }
@@ -787,6 +792,14 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 .tab-count { margin-left: 4px; font-size: 11px; font-weight: 500; color: var(--faint); }
 .tab-panel { display: grid; gap: 18px; }
 .tab-panel[hidden] { display: none; }
+#view-project > .content { display: flex; flex-direction: column; overflow: hidden; }
+#view-project > .content > .notice, #p-tabs { flex: none; }
+#view-project .tab-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; align-content: start; }
+#view-project .tab-panel[data-panel="flow"] { display: flex; overflow: hidden; }
+.flow-card { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
+.flow-card > .card-head, .flow-card > .hub-bar { flex: none; }
+.flow-card > .card-head { flex-wrap: wrap; gap: 8px; }
+.flow-card > .card-head h3 { flex-wrap: wrap; gap: 4px 10px; }
 #p-sessions .role-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 #p-session-filter { margin: 0; width: 220px; }
 
@@ -982,14 +995,16 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .gcmd-result > .run-elapsed:not([hidden])::after { content: " · "; }
 
 
-/* Images stay in the conversation draft until its request is accepted. */
+/* Attachments stay in the conversation draft until its request is accepted. */
 .composer-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .composer-body textarea { width: 100%; flex: auto; }
 .composer.file-drag { outline: 2px dashed var(--accent); outline-offset: -6px; background: var(--panel); }
 .composer-actions { gap: 6px; }
-.attachment-tray { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.attachment-tray { display: flex; flex-wrap: wrap; gap: 8px; max-height: 112px; overflow: auto; list-style: none; margin: 0; padding: 0; }
 .attachment-preview { position: relative; width: 88px; min-width: 0; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; background: var(--panel); }
 .attachment-preview img { display: block; width: 88px; height: 66px; object-fit: contain; background: var(--code-bg); }
+.attachment-file-icon { display: grid; place-items: center; height: 66px; padding: 8px; background: var(--code-bg); color: var(--muted); font: 600 12px var(--mono); }
+.attachment-preview.file { width: 120px; }
 .attachment-name { display: block; font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 5px; }
 .composer .attachment-remove { position: absolute; top: 2px; right: 2px; padding: 0; min-height: 24px; width: 24px; height: 24px; border-radius: 50%; background: var(--panel); color: var(--text); line-height: 1; }
 .attachment-error { margin: 0; color: var(--danger); font-size: 12px; }
@@ -997,10 +1012,14 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .event-attachments { display: flex; flex-wrap: wrap; gap: 8px; white-space: normal; margin-top: 8px; }
 .event-attachments a { display: flex; flex-direction: column; gap: 3px; max-width: 160px; color: inherit; font-size: 11px; text-decoration: none; overflow-wrap: anywhere; }
 .event-attachments img { display: block; max-width: 160px; width: 100%; height: 110px; object-fit: contain; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
+.event-attachments a.file { min-width: 100px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
 .queue-item .event-attachments { margin: 0; flex: none; gap: 3px; }
 .queue-item .event-attachments a { width: 32px; }
 .queue-item .event-attachments img { height: 28px; }
 .queue-item .event-attachments span { display: none; }
+.queue-item .event-attachments a.file { flex-direction: row; align-items: center; width: auto; min-width: 0; max-width: 140px; padding: 3px 6px; }
+.queue-item .event-attachments a.file span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue-item .event-attachments a.file .attachment-file-icon { flex: none; height: auto; padding: 0; }
 .export-result { margin: 0; padding: 8px 24px; background: var(--panel); color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 @media (max-width: 640px) {
   .composer .attachment-add { padding: 10px; min-width: 44px; }

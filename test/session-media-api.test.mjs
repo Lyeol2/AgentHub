@@ -71,6 +71,33 @@ test("media api: upload, binary image retrieval and session ownership", async (t
   assert.equal(noHeader.status, 403);
 });
 
+test("media api: generic files download safely and reach project sessions, while chat rejects unreadable binary files", async (t) => {
+  const f = await fixture(t);
+  const uploadFile = (id, name, mimeType, data) => f.api("POST", "/sessions/" + id + "/attachments", { name, mimeType, data: Buffer.from(data).toString("base64") });
+  const result = await uploadFile("session-a", "../보고서.html", "text/html", "<script>example</script>");
+  assert.equal(result.status, 200);
+  assert.equal(result.body.name, "보고서.html");
+  const download = await fetch("http://127.0.0.1:" + f.hub.port + result.body.url);
+  assert.equal(download.status, 200);
+  assert.match(download.headers.get("Content-Disposition"), /^attachment;.*filename\*=UTF-8''/);
+  assert.equal(download.headers.get("X-Content-Type-Options"), "nosniff");
+  assert.match(download.headers.get("Content-Security-Policy"), /sandbox/);
+  assert.equal(await download.text(), "<script>example</script>");
+  assert.equal((await f.api("POST", "/sessions/session-a/messages", { attachments: [result.body.id] })).status, 200);
+  assert.match(f.runner.calls[0].prompt, /파일/);
+  assert.equal(fs.readFileSync(f.runner.calls[0].meta.attachments[0].path, "utf8"), "<script>example</script>");
+  const text = (await uploadFile("chat", "notes.md", "text/markdown", "파일 내용")).body;
+  assert.equal((await f.api("POST", "/sessions/chat/messages", { attachments: [text.id] })).status, 200);
+  const binary = (await uploadFile("chat", "archive.zip", "application/zip", "binary\u0000data")).body;
+  const rejected = await f.api("POST", "/sessions/chat/messages", { attachments: [binary.id], mode: "queue" });
+  assert.equal(rejected.status, 400);
+  assert.match(rejected.body.error, /프로젝트 세션/);
+  const oversizedText = (await uploadFile("chat", "large.txt", "text/plain", "a".repeat(65_537))).body;
+  const limited = await f.api("POST", "/sessions/chat/messages", { attachments: [oversizedText.id] });
+  assert.equal(limited.status, 400);
+  assert.match(limited.body.error, /64 KiB/);
+});
+
 test("media api: image-only messages and queued/steered images reach the runner", async (t) => {
   const f = await fixture(t);
   const image = (await f.upload()).body;

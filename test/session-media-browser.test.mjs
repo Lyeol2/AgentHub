@@ -65,10 +65,10 @@ async function runBrowser(temp, url) {
 
 
 // Fixture-only session media flows: no CLI processes or application data store.
-test("browser: session images, draft isolation, export, permissions, and completed conversation folding", { timeout: 45000 }, async (t) => {
+test("browser: session attachments, clipboard races, draft isolation, export, permissions, and completed conversation folding", { timeout: 45000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(browserExecutable).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required for browser integration");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-media-browser-"));
-  const streams = new Set(), requests = [], uploads = new Map();
+  const streams = new Set(), requests = [], uploads = new Map(), uploadData = new Map();
   const project = { path: "C:/fixture", name: "Fixture", claude: 0, codex: 0, registered: true };
   const session = (id, title, agent = "codex") => ({ id, title, agent, projectPath: project.path, projectName: project.name, cwd: project.path, permission: "workspace-write", state: "idle", createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", skills: [], events: [], queue: [] });
   const sessions = [session("s1", "First"), session("s2", "Second", "claude")];
@@ -101,8 +101,8 @@ test("browser: session images, draft isolation, export, permissions, and complet
           if (mode.holdUpload) { mode.holdUpload = false; await new Promise((resolve) => releaseUpload = resolve); }
           if (mode.uploadError) { mode.uploadError = false; throw Error("fixture upload failure"); }
           const attachment = { id: "img" + uploads.size, name: body.name, mimeType: body.mimeType, size: 68, url: "/api/sessions/" + s.id + "/attachments/img" + uploads.size };
-          uploads.set(attachment.id, attachment); value = attachment;
-        } else if (parts[4] === "attachments") { res.setHeader("Content-Type", "image/png"); res.end(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64")); return; }
+          uploads.set(attachment.id, attachment); uploadData.set(attachment.id, Buffer.from(body.data, "base64")); value = attachment;
+        } else if (parts[4] === "attachments") { res.setHeader("Content-Type", uploads.get(parts[5]).mimeType); res.end(uploadData.get(parts[5])); return; }
         else if (parts[4] === "messages") {
           if (mode.messageError) { mode.messageError = false; throw Error("fixture message failure"); }
           const attachments = body.attachments.map((id) => uploads.get(id));

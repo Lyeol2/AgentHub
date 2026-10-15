@@ -3,6 +3,8 @@
 // 화면에서 답을 받은 뒤 control_response로 돌려준다(Agent SDK가 쓰는 방식과 같다).
 import fs from "node:fs";
 import { randomUUID } from "node:crypto";
+import { isImageAttachment } from "../attachments.mjs";
+import { attachmentInputText } from "../attachment-input.mjs";
 
 // default: 허락이 필요한 도구(수정, 명령)를 쓸 때마다 화면에서 허용·거절을 묻는다.
 export const PERMISSION_MODES = ["default", "plan", "acceptEdits", "bypassPermissions"];
@@ -56,7 +58,9 @@ export const initLine = () => JSON.stringify({ type: "control_request", request_
 
 export const userLine = (text, attachments = []) => JSON.stringify({
   type: "user",
-  message: { role: "user", content: [{ type: "text", text }, ...attachments.map((attachment) => ({ type: "image", source: { type: "base64", media_type: attachment.mimeType, data: fs.readFileSync(attachment.path).toString("base64") } }))] },
+  message: { role: "user", content: [{ type: "text", text }, ...attachments.map((attachment) => isImageAttachment(attachment)
+    ? { type: "image", source: { type: "base64", media_type: attachment.mimeType, data: fs.readFileSync(attachment.path).toString("base64") } }
+    : { type: "text", text: attachmentInputText(attachment) })] },
   parent_tool_use_id: null,
   session_id: "",
 });

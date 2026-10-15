@@ -106,7 +106,7 @@
           <button type="button" role="tab" data-tab="git">Git <span class="tab-count" id="p-tab-git"></span></button>
         </nav>
         <div class="tab-panel" data-panel="flow">
-        <div class="card">
+        <div class="card flow-card">
           <div class="card-head">
             <h3>세션 흐름 <span class="muted" title="두 번 클릭해 열기 · 빈 곳을 끌어 선택 후 Delete로 삭제 · ●를 다른 카드나 빈 곳에 끌어 연결">휠 확대·축소 · 휠 버튼 끌어 이동</span></h3>
             <div class="actions">
@@ -280,13 +280,13 @@
       <ul id="s-queue" class="queue" hidden></ul>
       <form id="s-form" class="composer">
         <div class="composer-body">
-          <ul id="s-attachments" class="attachment-tray" aria-label="첨부 이미지" hidden></ul>
+          <ul id="s-attachments" class="attachment-tray" aria-label="첨부 파일" hidden></ul>
           <textarea id="s-prompt" rows="3" placeholder="요청을 입력하세요 · Enter 보내기, Shift+Enter 줄바꿈"></textarea>
           <p id="s-attachment-error" class="attachment-error" role="alert"></p>
         </div>
-        <input type="file" id="s-files" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+        <input type="file" id="s-files" multiple hidden>
         <div class="composer-actions">
-          <button type="button" id="s-attach" class="ghost attachment-add" title="이미지 첨부 · 붙여넣기·끌어놓기 가능 · 최대 4장, 장당 10 MiB" aria-label="이미지 첨부">＋<span> 이미지</span></button>
+          <button type="button" id="s-attach" class="ghost attachment-add" title="이미지·파일 첨부 · Ctrl+V 또는 끌어놓기 · 최대 4개, 파일당 10 MiB" aria-label="이미지·파일 첨부">＋<span> 첨부</span></button>
           <button type="submit" value="send" id="s-send" class="primary">보내기</button>
         </div>
       </form>
@@ -324,13 +324,13 @@
       <ul id="c-queue" class="queue chat-queue" hidden></ul>
       <form id="c-form" class="composer chat-composer">
         <div class="composer-body">
-          <ul id="c-attachments" class="attachment-tray" aria-label="첨부 이미지" hidden></ul>
+          <ul id="c-attachments" class="attachment-tray" aria-label="첨부 파일" hidden></ul>
           <textarea id="c-prompt" rows="2" placeholder="메시지를 입력하세요 · Enter 보내기, Shift+Enter 줄바꿈"></textarea>
           <p id="c-attachment-error" class="attachment-error" role="alert"></p>
         </div>
-        <input type="file" id="c-files" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+        <input type="file" id="c-files" multiple hidden>
         <div class="composer-actions">
-          <button type="button" id="c-attach" class="ghost attachment-add" title="이미지 첨부 · 붙여넣기·끌어놓기 가능 · 최대 4장, 장당 10 MiB" aria-label="이미지 첨부">＋<span> 이미지</span></button>
+          <button type="button" id="c-attach" class="ghost attachment-add" title="이미지·파일 첨부 · Ctrl+V 또는 끌어놓기 · 최대 4개, 파일당 10 MiB" aria-label="이미지·파일 첨부">＋<span> 첨부</span></button>
           <button type="submit" value="send" id="c-send" class="primary">보내기</button>
         </div>
       </form>

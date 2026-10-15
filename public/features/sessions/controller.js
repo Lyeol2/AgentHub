@@ -5,7 +5,7 @@ import { linkLabel } from "../../shared/flow.js";
 import { firstLine } from "../../shared/store.js";
 import { closeContextMenu } from "../../shared/context-menu.js";
 import { composerAction } from "../../composer.js";
-import { createImageComposer, uploadImages, renderAttachmentLinks } from "./image-composer.js";
+import { createAttachmentComposer, uploadAttachments, renderAttachmentLinks } from "./image-composer.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 
 export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation }) {
@@ -99,7 +99,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   }
 
   const composerBusy = new Set();
-  const imageComposers = Object.fromEntries(["s", "c"].map((prefix) => [prefix, createImageComposer({ prefix, onChange: () => renderComposerAction(prefix, data.current) })]));
+  const imageComposers = Object.fromEntries(["s", "c"].map((prefix) => [prefix, createAttachmentComposer({ prefix, onChange: () => renderComposerAction(prefix, data.current) })]));
   let newChatDraft = 0;
   const pendingChats = new Map();
   const exportResults = new Map();
@@ -169,7 +169,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $(`${prefix}-queue`).hidden = !items.length;
     $(`${prefix}-queue`).replaceChildren(...items.map((item) => el("li", { class: "queue-item" },
       el("span", { class: "queue-tag" }, item.user ? "대기" : `↳ ${item.fromTitle ?? "넘어온 작업"}`),
-      el("span", { class: "queue-text", title: item.text }, firstLine(item.text) || (item.attachments?.length ? "이미지 요청" : "")),
+      el("span", { class: "queue-text", title: item.text }, firstLine(item.text) || (item.attachments?.length ? "첨부 파일 요청" : "")),
       item.attachments?.length ? renderAttachmentLinks(item.attachments) : null,
       running && s.canInject && item.user ? el("button", { type: "button", class: "ghost sm", title: "지금 하는 작업에 이 요청을 붙입니다", onclick: () => act(item, "steer") }, "붙이기") : null,
       running ? null : el("button", { type: "button", class: "ghost sm", onclick: () => act(item, "send") }, "보내기"),
@@ -243,7 +243,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     composerBusy.add("s");
     renderComposerAction("s", s);
     try {
-      const attachments = await uploadImages(api, s.id, snapshot.items);
+      const attachments = await uploadAttachments(api, s.id, snapshot.items);
       const result = await api("POST", "/api/sessions/" + s.id + "/messages", { prompt, attachments, mode: composerMode(s) });
       imageComposers.s.commit(snapshot);
       if (result.queued) refreshQueue(s.id);
@@ -688,7 +688,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         s = await api("POST", "/api/sessions", { chat: true, agent, model, effort, title: chatTitle(prompt || snapshot.items[0]?.file.name || "이미지 채팅") });
         pendingChats.set(snapshot.key, s);
       }
-      const attachments = await uploadImages(api, s.id, snapshot.items);
+      const attachments = await uploadAttachments(api, s.id, snapshot.items);
       const result = await api("POST", "/api/sessions/" + s.id + "/messages", { prompt, attachments, mode: composerMode(current) });
       const stillCurrent = current ? data.current?.id === current.id
         : !data.current && navigation.view === "chat" && navigation.viewRevision === viewRevision;
