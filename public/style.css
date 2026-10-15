@@ -295,8 +295,11 @@ main { display: flex; min-width: 0; min-height: 0; height: 100vh; }
 .events:not(.show-log) .ev.log { display: none; }
 
 .composer { display: flex; gap: 10px; padding: 14px 24px 18px; border-top: 1px solid var(--line); background: var(--bg); }
-.composer textarea { resize: vertical; background: var(--panel); min-height: 64px; }
-.composer button { align-self: flex-end; white-space: nowrap; padding: 8px 18px; }
+.composer textarea { flex: 1; min-width: 0; resize: vertical; background: var(--panel); min-height: 64px; }
+.composer button { align-self: flex-end; white-space: nowrap; padding: 10px 14px; min-height: 44px; }
+.composer button[data-action] { display: inline-flex; justify-content: center; align-items: center; gap: 7px; min-width: 100px; }
+.composer button[data-action="pause"] { background: var(--panel-2); color: var(--text); border-color: var(--line-strong); }
+.composer-icon { font-size: 16px; line-height: 1; }
 
 /* ── 대화상자 ─────────────────────────────────────────────── */
 dialog {
@@ -355,7 +358,9 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
   .content { overflow: visible; padding: 16px; }
   .topbar { flex-direction: column; align-items: stretch; padding: 16px; }
   .events { min-height: 55vh; padding: 16px; }
-  .composer { flex-direction: column; padding: 12px 16px; }
+  .composer { padding: 12px 16px; gap: 8px; }
+  .composer button[data-action] { min-width: 44px; padding: 10px; }
+  .composer button[data-action] > span:not(.composer-icon) { display: none; }
   .limit-agent + .limit-agent { border-left: 0; border-top: 1px solid var(--line); }
   .table .path { display: none; }
 }
@@ -541,7 +546,7 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .gcard-restart:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
 
 /* ── 실행 중에 보내기: 대기열과 보내기 버튼 ──────────────── */
-.composer-actions { display: flex; flex-direction: column; gap: 6px; align-self: flex-end; }
+.composer-actions { display: flex; flex: none; align-self: flex-end; }
 .composer-actions button { align-self: stretch; }
 .queue { list-style: none; margin: 0; padding: 8px 24px 0; display: grid; gap: 4px; border-top: 1px solid var(--line); background: var(--bg); }
 .chat-queue { width: 100%; max-width: 860px; margin: 0 auto; border-top: 0; background: transparent; }

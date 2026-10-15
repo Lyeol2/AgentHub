@@ -1,6 +1,7 @@
 import { renderMarkdown } from "./markdown.js";
 import { layoutGitGraph, gitWorkRows } from "./gitgraph.js";
 import { createPullRequests } from "./gitpulls.js";
+import { composerAction } from "./composer.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -103,6 +104,7 @@ function table(id, headers, rows, emptyText) {
 
 // ── 화면 전환 ───────────────────────────────────────────────────
 function show(view) {
+  state.viewRevision = (state.viewRevision ?? 0) + 1;
   state.view = view;
   for (const name of ["dashboard", "project", "session", "chat"]) $(`view-${name}`).hidden = name !== view;
   $("nav-dashboard").classList.toggle("active", view === "dashboard");
@@ -2480,12 +2482,7 @@ function renderState() {
   label.textContent = STATE_LABEL[s.state] ?? s.state;
   label.className = `pill ${s.state}`;
   const running = s.state === "running";
-  const paused = s.state === "paused";
-  // 일시중지 ↔ 재개 한 버튼. 쉬고 있을 때 일시중지하면 넘어오는 작업을 쌓아 두기만 한다.
-  $("s-pause").textContent = paused ? "▶ 재개" : "⏸ 일시중지";
-  $("s-pause").classList.toggle("primary", paused);
-  $("s-pause").classList.toggle("ghost", !paused);
-  $("s-stop").disabled = !running && !paused;
+  $("s-stop").disabled = !running && s.state !== "paused";
   // 도구 호출의 "실행 중" 표시는 턴이 도는 동안에만 보인다.
   $("s-events").classList.toggle("running", running);
   $("s-restart").disabled = running || !s.agentSessionId;
@@ -2500,16 +2497,28 @@ function composerMode(s) {
   return s?.state === "running" ? "queue" : "send";
 }
 
+const composerBusy = new Set();
+
+function renderComposerAction(prefix, s) {
+  const action = composerAction(s, $(prefix + "-prompt").value);
+  const send = $(prefix + "-send");
+  send.disabled = action.disabled || composerBusy.has(prefix);
+  send.value = action.action;
+  send.dataset.action = action.action;
+  send.replaceChildren(el("span", { class: "composer-icon", "aria-hidden": "true" }, action.icon), el("span", {}, action.label));
+  send.title = action.title;
+  send.setAttribute("aria-label", action.label);
+  send.setAttribute("aria-busy", String(composerBusy.has(prefix)));
+}
+
 function renderComposer(prefix, s) {
   const running = s?.state === "running";
-  const send = $(`${prefix}-send`);
-  send.disabled = false;
-  send.textContent = running ? "대기열에 추가" : "보내기";
-  send.title = running ? "지금 작업이 끝나면 보냅니다 (Enter)" : "";
-  $(`${prefix}-queue-btn`).hidden = true;
-  $(`${prefix}-prompt`).placeholder = !running
-    ? (prefix === "c" ? "메시지를 입력하세요" : "요청을 입력하세요") + " · Enter 보내기, Shift+Enter 줄바꿈"
-    : `작업 중 · Enter 대기열에 추가${s.canInject ? " (대기열에서 '붙이기'로 지금 작업에 넣을 수 있습니다)" : " (끝나면 차례로 보냅니다)"}`;
+  renderComposerAction(prefix, s);
+  $(prefix + "-prompt").placeholder = running
+    ? "작업 중 · 입력 후 Enter 대기열에 추가, 입력을 비우면 ⏸ 일시중지"
+    : s?.state === "paused"
+      ? "일시중지됨 · ▶ 재개 또는 요청을 입력해 이어서 진행"
+      : (prefix === "c" ? "메시지를 입력하세요" : "요청을 입력하세요") + " · Enter 보내기, Shift+Enter 줄바꿈";
   renderQueue(prefix, s);
 }
 
@@ -2549,11 +2558,14 @@ async function refreshQueue(sessionId) {
 
 // Enter: 보내기(실행 중이면 대기열에 추가), Shift+Enter: 줄바꿈. 한글 조합 중인 키는 무시한다.
 function composerKeys(prefix) {
-  $(`${prefix}-prompt`).addEventListener("keydown", (e) => {
-    if (e.isComposing) return;
+  $(prefix + "-prompt").addEventListener("input", () => renderComposerAction(prefix, state.current));
+  $(prefix + "-prompt").addEventListener("keydown", (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      $(`${prefix}-form`).requestSubmit($(`${prefix}-send`));
+      // 빈 Enter는 작업을 멈추거나 재개하지 않는다. 제어는 버튼·Esc로만 한다.
+      if (!$(prefix + "-prompt").value.trim() || $(prefix + "-send").disabled) return;
+      $(prefix + "-form").requestSubmit($(prefix + "-send"));
     }
   });
 }
@@ -2839,15 +2851,25 @@ $("s-show-log").addEventListener("change", (e) => {
 
 $("s-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const prompt = $("s-prompt").value.trim();
+  const input = $("s-prompt");
+  const raw = input.value;
+  const prompt = raw.trim();
   const s = state.current;
-  if (!prompt || !s) return;
+  if (!s || composerBusy.has("s")) return;
+  const action = composerAction(s, raw).action;
+  if (action === "pause" || action === "resume") return togglePause();
+  if (!prompt) return;
+  composerBusy.add("s");
+  renderComposerAction("s", s);
   try {
-    const result = await api("POST", `/api/sessions/${s.id}/messages`, { prompt, mode: composerMode(s) });
-    $("s-prompt").value = "";
+    const result = await api("POST", "/api/sessions/" + s.id + "/messages", { prompt, mode: composerMode(s) });
+    if (state.current?.id === s.id && input.value === raw) input.value = "";
     if (result.queued) refreshQueue(s.id);
   } catch (err) {
     alert(err.message);
+  } finally {
+    composerBusy.delete("s");
+    if (state.view === "session") renderComposer("s", state.current);
   }
 });
 composerKeys("s");
@@ -2886,18 +2908,31 @@ $("s-stop").addEventListener("click", () => api("POST", `/api/sessions/${state.c
 // 일시중지·재개. 일시중지는 대화를 그대로 두고 멈추며, 재개하면 멈춘 곳부터 이어서 진행한다.
 async function togglePause() {
   const s = state.current;
-  if (!s || s.chat) return;
-  const button = $("s-pause");
-  button.disabled = true;
+  const prefix = state.view === "chat" ? "c" : "s";
+  if (!s || composerBusy.has(prefix)) return;
+  composerBusy.add(prefix);
+  renderComposerAction(prefix, s);
   try {
-    await api("POST", `/api/sessions/${s.id}/${s.state === "paused" ? "resume" : "pause"}`);
+    const before = s.state;
+    const action = before === "paused" ? "resume" : "pause";
+    const updated = await api("POST", "/api/sessions/" + s.id + "/" + action);
+    // 실시간 이벤트가 먼저 도착했다면 오래된 응답으로 상태를 되돌리지 않는다.
+    if (s.state === before) {
+      delete s.paused;
+      delete s.pausedMidTurn;
+      Object.assign(s, updated);
+    }
+    if (action === "resume" && state.current?.id === s.id) {
+      delete state.current.paused;
+      delete state.current.pausedMidTurn;
+    }
   } catch (err) {
     alert(err.message);
   } finally {
-    button.disabled = false;
+    composerBusy.delete(prefix);
+    if (state.current?.id === s.id) renderState();
   }
 }
-$("s-pause").addEventListener("click", togglePause);
 
 // CLI 대화만 새로 시작한다. 화면이 새로 그려지는 것은 서버가 보내는 session 이벤트로 한다.
 // s: 다시 시작할 세션(흐름 그래프 카드에서 누르면 그 카드의 세션, 아니면 보고 있는 세션)
@@ -2972,7 +3007,7 @@ document.addEventListener("keydown", (e) => {
   closeContextMenu();
   // Claude Code·Codex처럼 Esc로 실행 중인 세션을 일시중지한다(대화상자·메뉴가 열려 있으면 그것만 닫는다).
   if (hadMenu || e.defaultPrevented || document.querySelector("dialog[open]")) return;
-  if (state.view === "session" && state.current?.state === "running") {
+  if (["session", "chat"].includes(state.view) && state.current?.state === "running") {
     e.preventDefault();
     togglePause();
   }
@@ -3241,7 +3276,6 @@ function renderChatState() {
     $("c-state").textContent = STATE_LABEL[s.state] ?? s.state;
     $("c-state").className = `pill ${s.state}`;
   }
-  $("c-stop").hidden = !running;
   $("c-life").hidden = !s;
   if (s) renderLife("c-life", s);
   $("c-restart").hidden = !s?.agentSessionId;
@@ -3289,25 +3323,36 @@ const chatTitle = (text) => {
 
 $("c-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const prompt = $("c-prompt").value.trim();
+  if (composerBusy.has("c")) return;
+  const input = $("c-prompt");
+  const raw = input.value;
+  const prompt = raw.trim();
+  const current = state.current;
+  const viewRevision = state.viewRevision;
+  const action = composerAction(current, raw).action;
+  if (action === "pause" || action === "resume") return togglePause();
   if (!prompt) return;
-  $("c-send").disabled = true;
+  composerBusy.add("c");
+  renderComposerAction("c", current);
   try {
-    let s = state.current;
+    let s = current;
     if (!s) {
       const { agent, model, effort } = state.chatDraft;
       s = await api("POST", "/api/sessions", { chat: true, agent, model, effort, title: chatTitle(prompt) });
     }
-    const result = await api("POST", `/api/sessions/${s.id}/messages`, { prompt, mode: composerMode(state.current) });
-    $("c-prompt").value = "";
+    const result = await api("POST", "/api/sessions/" + s.id + "/messages", { prompt, mode: composerMode(current) });
+    const stillCurrent = current ? state.current?.id === current.id
+      : !state.current && state.view === "chat" && state.viewRevision === viewRevision;
+    if (stillCurrent && input.value === raw) input.value = "";
     if (result.queued) refreshQueue(s.id);
-    if (!state.current) {
+    if (!current && stillCurrent) {
       await loadSessions();
-      await selectSession(s.id);
+      if (!state.current && state.view === "chat" && state.viewRevision === viewRevision) await selectSession(s.id);
     }
   } catch (err) {
     alert(err.message);
   } finally {
+    composerBusy.delete("c");
     if (state.view === "chat") renderChatState();
   }
 });
@@ -3328,7 +3373,6 @@ $("c-title").addEventListener("click", async () => {
   }
 });
 
-$("c-stop").addEventListener("click", () => state.current && api("POST", `/api/sessions/${state.current.id}/stop`).catch((e) => alert(e.message)));
 $("c-new").addEventListener("click", () => openChat());
 $("c-restart").addEventListener("click", () => restartSession());
 
