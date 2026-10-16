@@ -50,12 +50,13 @@ async function runBrowser(temp, url) {
       await command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       const layout = await command("Runtime.evaluate", { expression: `new Promise(resolve => requestAnimationFrame(() => {
         const graph = document.getElementById("p-graph").getBoundingClientRect();
+        const toolbar = document.getElementById("p-flow-assistant").getBoundingClientRect();
         const content = document.querySelector("#view-project > .content");
         const bottom = content.getBoundingClientRect().bottom - parseFloat(getComputedStyle(content).paddingBottom);
-        resolve({ height: graph.height, bottom: graph.bottom, expectedBottom: bottom - 1, right: graph.right, documentWidth: document.documentElement.scrollWidth, documentHeight: document.documentElement.scrollHeight });
+        resolve({ height: graph.height, bottom: toolbar.bottom, graphGap: Math.abs(graph.bottom - toolbar.top), toolbarHeight: toolbar.height, expectedBottom: bottom - 1, right: graph.right, documentWidth: document.documentElement.scrollWidth, documentHeight: document.documentElement.scrollHeight });
       }))`, awaitPromise: true, returnByValue: true });
       const bounds = layout.result.value;
-      assert.ok(bounds.height > 100 && Math.abs(bounds.bottom - bounds.expectedBottom) < 2, "Graph fills resized window: " + JSON.stringify({ width, height, ...bounds }));
+      assert.ok(bounds.height > 100 && bounds.graphGap < 2 && Math.abs(bounds.bottom - bounds.expectedBottom) < 2, "Graph fills resized window above the toolbar: " + JSON.stringify({ width, height, ...bounds }));
       assert.ok(bounds.right <= width && bounds.documentWidth <= width && bounds.documentHeight <= height, "Panels stay inside resized window");
     }
     if (process.env.AGENTHUB_UI_SCREENSHOT) {
@@ -107,6 +108,10 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
       else if (url.pathname === "/api/projects/all") value = [project];
       else if (url.pathname === "/api/projects/discover") value = [];
       else if (url.pathname === "/api/links") value = [{ id: "l1", from: "s1", to: "s2", enabled: true, when: "success" }];
+      else if (url.pathname === "/api/flow-assistant/plan") value = { summary: "리뷰 세션을 붙입니다.", actions: [
+        { type: "create_session", key: "rev", agent: "codex", permission: "read-only", title: "리뷰", role: "검토한다.", roleName: "", text: '새 세션 "리뷰" 만들기' },
+        { type: "link", from: "s1", to: "rev", when: "success", keyword: "", note: "", text: '"First" → "리뷰" 연결 (성공하면)' }] };
+      else if (url.pathname === "/api/flow-assistant/apply") value = { done: body.actions.map((action) => action.text), created: ["s1"] };
       else if (url.pathname.startsWith("/api/commands/") && req.method === "DELETE") throw Error("locked");
       else if (url.pathname.startsWith("/api/commands/") && req.method === "PUT") value = {};
       else if (url.pathname === "/api/commands") value = { shells: [{ id: "powershell", label: "PowerShell" }], commands: [
@@ -144,6 +149,14 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
     for (const endpoint of ["status", "auth", "setup"]) assert.ok(requests.some((request) => request.path === `/api/${endpoint}` && request.search === "?fresh=1"), `${endpoint} must bypass cached detection on recheck`);
     assert.deepEqual(requests.filter((request) => request.method === "POST" && request.path.startsWith("/api/setup/")).map((request) => request.path), ["/api/setup/winget/install", "/api/setup/winget/cancel"], "winget buttons must reach only fixture install and cancel handlers");
     assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"), "Verification must not start an agent or command");
+    const commandMoves = requests.filter((request) => request.method === "PUT" && request.path === "/api/commands/cmd-a" && request.body?.pos !== undefined).map((request) => request.body.pos);
+    assert.deepEqual(commandMoves.at(-2), { x: 20, y: 200 }, "undo restores the command node's saved position");
+    assert.deepEqual(commandMoves.at(-1), commandMoves.at(-3), "redo puts the command node back where it was dragged");
+    const planned = requests.find((request) => request.path === "/api/flow-assistant/plan");
+    assert.equal(planned?.body.prompt, "리뷰 세션 붙여 줘", "flow assistant sends the typed request");
+    assert.deepEqual(planned?.body.selected, ["s1"], "flow assistant sends the selected cards");
+    const applied = requests.find((request) => request.path === "/api/flow-assistant/apply");
+    assert.deepEqual(applied?.body.actions.map((action) => action.type), ["create_session", "link"], "flow assistant applies the previewed actions unchanged");
   } finally {
     for (const stream of streams) stream.end();
     await new Promise((resolve) => server.close(resolve));

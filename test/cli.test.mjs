@@ -7,7 +7,8 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { locateCli, locateCommand, normalizeCliPath, isCliFile, refreshPath, spawnCli, cliVersion, cliAuth } from "../server/cli.mjs";
+import { locateCli, locateCommand, normalizeCliPath, isCliFile, refreshPath, spawnCli, cliVersion, cliAuth, decodeConsole, missingFolder } from "../server/cli.mjs";
+import { insideTaskPath } from "../server/tasks.mjs";
 import { installPlan, Setup } from "../server/setup.mjs";
 
 const windows = process.platform === "win32";
@@ -162,7 +163,8 @@ test("cli: 경로 재확인은 mtime이 같은 npm shim의 버전·인증 캐시
 });
 
 test("setup: 외부에서 설치한 winget도 다시 확인하면 설치 방법에 반영한다", { skip: !windows }, (t) => {
-  const f = fixture(t); environment(t, { PATH: "" });
+  // 이 PC의 WindowsApps에 있는 실제 winget 별칭이 보이지 않게 한다.
+  const f = fixture(t); environment(t, { PATH: "", LOCALAPPDATA: path.join(f.dir, "local") });
   let added = false;
   mocks(t, { registry: () => added ? f.dir : "" });
   assert.notEqual(installPlan("codex")?.how, "winget");
@@ -218,4 +220,30 @@ test("cli: 앱 실행 뒤 추가된 Node 경로로 npm 형식 cmd shim을 실제
   });
   assert.equal(result.code, 0, result.error);
   assert.equal(result.output, "123456");
+});
+
+test("cli: Windows 기본 명령의 출력은 UTF-8이 아니면 콘솔 코드페이지로 읽는다", { skip: !windows }, () => {
+  assert.equal(decodeConsole(Buffer.from("C:\\Users\\홍길동")), "C:\\Users\\홍길동");
+  // 한국어 Windows의 reg·where는 cp949로 출력한다. 다른 코드페이지의 PC에서는 UTF-8 그대로다.
+  const cp949 = childProcess.execFileSync("cmd.exe", ["/d", "/c", "echo 홍길동"]);
+  assert.equal(decodeConsole(cp949).trim(), "홍길동");
+});
+
+test("cli: 작업 폴더가 없어서 난 ENOENT는 실행 파일이 아니라 폴더 문제로 알린다", () => {
+  const error = Object.assign(new Error("spawn claude ENOENT"), { code: "ENOENT" });
+  assert.match(missingFolder(error, path.join(os.tmpdir(), "agenthub-no-such-folder-" + Date.now())), /작업 폴더가 없습니다/);
+  assert.equal(missingFolder(error, os.tmpdir()), null);
+  assert.equal(missingFolder(new Error("x"), "Z:\\none"), null);
+});
+
+test("tasks: 실행 중 세션 확인은 대소문자·구분자와 하위 폴더를 같은 원본 폴더로 본다", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-inside-"));
+  try {
+    fs.mkdirSync(path.join(root, "repo", "app"), { recursive: true });
+    const repo = path.join(root, "repo");
+    assert.ok(insideTaskPath(path.join(repo, "app"), repo));
+    assert.ok(insideTaskPath(repo.toUpperCase(), repo.replace(/\\/g, "/") + "/"));
+    assert.ok(!insideTaskPath(root, repo));
+    assert.ok(!insideTaskPath(path.join(root, "repo.agenthub", "task-1"), repo));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

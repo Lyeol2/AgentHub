@@ -1,11 +1,15 @@
 import { $, el } from "../../shared/dom.js";
 
-export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "notify"];
-export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", notify: "알림" };
+export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"];
+export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", notify: "알림", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기" };
 export const kindOf = (node) => Object.hasOwn(KIND_LABEL, node?.kind) ? node.kind : "command";
 export const hasBranchPorts = (node) => ["git", "repeat"].includes(node?.kind);
-export const isSourceOnly = (node) => ["button", "input", "watch"].includes(node?.kind);
+export const isSourceOnly = (node) => ["button", "input", "watch", "webhook-in"].includes(node?.kind);
+// 받는 주소. 앱이 열린 주소를 기준으로 만든다.
+export const hookUrl = (node) => node?.hookToken ? `${location.origin}/hooks/${node.hookToken}` : "";
 export const KIND_HINT = {
+  webhook: "앞 노드의 결과를 지정한 주소로 보냅니다(Slack·Discord·사내 API 등). 본문과 머리글에 {{input}}와 입력값 {{key}}를 쓸 수 있고, JSON 본문에서는 값이 자동으로 이스케이프됩니다. 2xx 응답이면 성공이며 응답 본문을 다음 노드에 넘깁니다.",
+  "webhook-in": "받는 주소로 POST 요청이 오면 흐름을 시작합니다. 주소의 긴 값이 비밀번호 역할을 하니 공유하지 마세요. AgentHub는 이 PC(127.0.0.1)에서만 열려 있으므로 GitHub 같은 외부 서비스는 ngrok 같은 터널 주소의 /hooks/... 경로로 보내야 합니다. 카드의 시험 실행은 빈 요청으로 흐름을 시험합니다.",
   notify: "앞 노드의 결과를 앱 알림으로 보여 주고 다음 노드로 전달합니다. 메시지에 {{input}}와 입력값 {{key}}를 사용할 수 있습니다. 데스크톱 알림과 소리는 흐름 알림 설정에서 허용하세요.",
   input: "실행할 때 입력 폼을 엽니다. 입력값은 이번 실행과 뒤따르는 노드에서만 사용합니다. 프롬프트와 연결의 전달 내용에 {{key}}를 쓰세요. 명령에서는 입력값을 AGENTHUB_KEY 환경 변수로 읽습니다(예: PowerShell $env:AGENTHUB_TASK, Bash $AGENTHUB_TASK).",
   repeat: "성공 출력을 반복할 작업에 연결하고, 작업의 실패 출력을 이 노드로 되돌리세요. 같은 실행에서 최대 횟수까지 다시 시도하며, 한도를 넘으면 실패 출력으로 넘깁니다. 성공한 작업은 다음 노드로 연결합니다.",
@@ -31,6 +35,16 @@ export function createFlowNodeForms() {
   }
   $("input-field-add").addEventListener("click", () => addField());
   $("transform-mode").addEventListener("change", syncTransform);
+  $("webhook-method").addEventListener("change", syncWebhook);
+  // GET·DELETE는 본문을 보내지 않는다.
+  function syncWebhook() { $("webhook-body-row").hidden = !["POST", "PUT", "PATCH"].includes($("webhook-method").value); }
+  $("webhook-in-copy").addEventListener("click", async () => {
+    const value = $("webhook-in-url").value;
+    if (!value) return;
+    try { await navigator.clipboard.writeText(value); $("webhook-in-copy").textContent = "복사함"; }
+    catch { $("webhook-in-url").select(); }
+    setTimeout(() => { $("webhook-in-copy").textContent = "복사"; }, 1500);
+  });
   function syncTransform() {
     const mode = $("transform-mode").value;
     $("transform-expression-row").hidden = mode === "template";
@@ -56,13 +70,29 @@ export function createFlowNodeForms() {
     $("notify-title").value = cmd?.notificationTitle ?? "AgentHub";
     $("notify-level").value = cmd?.level ?? "info";
     $("notify-sound").checked = cmd?.sound === true;
+    $("webhook-url").value = cmd?.url ?? "";
+    $("webhook-url").required = kind === "webhook";
+    $("webhook-method").value = cmd?.method ?? "POST";
+    $("webhook-timeout").value = cmd?.timeoutSec ?? 30;
+    $("webhook-headers").value = cmd?.headers ?? "";
+    $("webhook-body-type").value = cmd?.bodyType ?? "json";
+    $("webhook-body").value = cmd?.body ?? '{"text": "{{input}}"}';
+    $("webhook-in-url").value = hookUrl(cmd);
+    $("webhook-in-copy").disabled = !cmd?.hookToken;
+    $("webhook-in-regenerate").checked = false;
+    $("webhook-in-regenerate-row").hidden = !cmd;
+    $("webhook-in-enabled").checked = cmd?.enabled !== false;
+    $("webhook-in-prompt").value = cmd?.kind === "webhook-in" ? cmd.prompt ?? "" : "웹훅 요청을 받았습니다.\n{{body}}";
     syncTransform();
+    syncWebhook();
   }
   function body(kind) {
     if (kind === "input") return { fields: [...$("input-fields").children].map((row) => ({ key: row.querySelector(".flow-field-key").value.trim(), label: row.querySelector(".flow-field-label").value.trim(), type: row.querySelector(".flow-field-type").value, required: row.querySelector(".flow-field-required").checked, defaultValue: row.querySelector(".flow-field-default").value })), prompt: $("input-prompt").value };
     if (kind === "repeat") return { maxIterations: Number($("repeat-max").value), delayMs: Number($("repeat-delay").value) };
     if (kind === "transform") return { transformMode: $("transform-mode").value, expression: $("transform-expression").value, template: $("transform-template").value };
     if (kind === "notify") return { message: $("notify-message").value, notificationTitle: $("notify-title").value, level: $("notify-level").value, sound: $("notify-sound").checked };
+    if (kind === "webhook") return { url: $("webhook-url").value.trim(), method: $("webhook-method").value, timeoutSec: Number($("webhook-timeout").value), headers: $("webhook-headers").value, bodyType: $("webhook-body-type").value, body: $("webhook-body").value };
+    if (kind === "webhook-in") return { enabled: $("webhook-in-enabled").checked, prompt: $("webhook-in-prompt").value, ...($("webhook-in-regenerate").checked ? { regenerateToken: true } : {}) };
     if (kind === "watch") return { watchPaths: $("watch-paths").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), debounceMs: Number($("watch-debounce").value), prompt: $("watch-prompt").value };
     return {};
   }

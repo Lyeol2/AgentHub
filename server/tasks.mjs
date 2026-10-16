@@ -7,11 +7,19 @@ import { normalizeGitflowSettings } from "./gitflow-settings.mjs";
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const clean = (value) => String(value ?? "").replace(/https?:\/\/[^/\s@]+@/g, "https://[credentials]@").slice(0, 1600);
 export const sameTaskPath = (a, b) => !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
+// 실제 경로 기준으로 child가 parent 폴더이거나 그 안에 있는지 본다.
+// 정션·subst 드라이브·8.3 짧은 이름으로 등록한 프로젝트도 Git이 돌려주는 경로와 맞춰 비교한다.
+const realPath = (value) => { try { return fs.realpathSync.native(value); } catch { return path.resolve(value); } };
+export function insideTaskPath(child, parent) {
+  if (!child || !parent) return false;
+  const relative = path.relative(realPath(parent).toLowerCase(), realPath(child).toLowerCase());
+  return !relative || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
 
 // All arguments are passed directly to Git; authentication prompts must never hang the server.
 export async function taskGit(cwd, args, { write = false, ...options } = {}) {
   try {
-    return await runGitHubCommand("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-C", cwd, ...args],
+    return await runGitHubCommand("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-c", "core.longpaths=true", "-C", cwd, ...args],
       { cwd, timeout: write ? 60_000 : 20_000, ...options });
   } catch (error) {
     throw new HttpError(error.timedOut ? 504 : 409, clean(error.message), error.timedOut ? "git-timeout" : "git-error",
@@ -112,8 +120,15 @@ export async function assertTaskGitIdle(task) {
   }
 }
 
-export function taskWorktreeLocation(repo, id) {
+// name은 사용자가 지정한 작업 폴더 이름이다. 없으면 task-<작업ID>를 쓴다.
+export function taskWorktreeLocation(repo, id, name) {
   const source = path.basename(repo.common).toLowerCase() === ".git" ? path.dirname(repo.common) : repo.top;
   const root = path.join(path.dirname(source), `${path.basename(source)}.agenthub`);
-  return { root, cwd: path.join(root, `task-${id}`) };
+  return { root, cwd: path.join(root, name || `task-${id}`) };
+}
+
+// 작업 폴더 이름은 <프로젝트>.agenthub/ 바로 아래 한 단계 폴더만 허용한다.
+export function validTaskWorktreeName(name) {
+  return /^[A-Za-z0-9가-힣_][A-Za-z0-9가-힣._-]{0,79}$/u.test(name) && !/\.$/.test(name)
+    && !/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(name);
 }

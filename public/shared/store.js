@@ -7,7 +7,9 @@ export function createStore() {
   };
 }
 
-export const samePath = (a, b) => !!a && !!b && a.toLowerCase() === b.toLowerCase();
+// Git이 주는 E:/Git/x와 Windows 경로 E:\Git\x, 끝 구분자 차이를 같은 경로로 본다.
+const pathKey = (p) => p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+export const samePath = (a, b) => !!a && !!b && pathKey(a) === pathKey(b);
 export const firstLine = (text) => text?.split(/\r?\n/)[0] ?? "";
 
 /** Apply live execution metadata equally to list and open-detail snapshots. */

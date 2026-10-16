@@ -6,6 +6,8 @@ import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { linkLabel } from "../../shared/flow.js";
 import { openContextMenu, closeContextMenu } from "../../shared/context-menu.js";
+import { createFlowAssistant } from "./flow-assistant.js";
+import { createGraphHistory, linkBody, commandBody } from "./history.js";
 
 export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
   const ui = {
@@ -16,8 +18,19 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     "editingLink": null
   };
   const view = createGraphView({ skillChips, restartSession, toggleSessionLock, commandNode });
+  const history = createGraphHistory({
+    refresh: (projectPath) => Promise.all([loadSessions(), loadCommands(projectPath), loadLinks()]),
+    onChange: renderHistoryButtons,
+  });
+  // 그래프 아래 AI 입력창. 적용하면 새로 만든 노드를 골라 둔다.
+  const assistant = createFlowAssistant({ api, navigation, getSelected: () => [...ui.graphSelected],
+    onApplied: async (created) => {
+      await Promise.all([loadSessions(), loadCommands(navigation.project), loadLinks()]);
+      ui.graphSelected = new Set(created);
+      syncGraphSelection();
+    } });
 
-  const nodeGroups = createNodeGroups({ api, data, navigation, ui, renderGraph, loadSessions, loadCommands, runCommand, saveGroupTemplate, trackGesture: trackGraphGesture, canvasPoint, placeCards, openLinkDialog, openCreateMenu: openGraphCreateMenu, syncSelection: syncGraphSelection });
+  const nodeGroups = createNodeGroups({ api, data, navigation, ui, history, renderGraph, loadSessions, loadCommands, runCommand, saveGroupTemplate, trackGesture: trackGraphGesture, canvasPoint, placeCards, openLinkDialog, openCreateMenu: openGraphCreateMenu, syncSelection: syncGraphSelection });
 
   // ── 세션 흐름 그래프 ────────────────────────────────────────────
 
@@ -62,8 +75,11 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const cmdNodes = samePath(data.commandsProject, navigation.project) ? data.commands ?? [] : [];
     if (!sessions.length && !cmdNodes.length && !nodeGroups.groups().length) {
       ui.graph = null;
+      ui.graphSelected.clear();
       box.replaceChildren(el("div", { class: "graph-empty" },
-        "이 프로젝트에서 만든 세션이 없습니다. 여기서 우클릭하거나 새 세션을 만들면 카드로 보입니다."));
+        "이 프로젝트에서 만든 세션이 없습니다. 여기서 우클릭하거나 아래 입력창에 만들 노드를 적으면 카드로 보입니다."));
+      assistant.selectionChanged();
+      renderHistoryButtons();
       return;
     }
     // 명령 노드는 세션과 같은 흐름 안에 놓인다(세션 → 명령 → 세션).
@@ -86,6 +102,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     syncGraphSelection();
     box.replaceChildren(sizer);
     renderZoomLabel();
+    renderHistoryButtons();
   }
   // 카드 끌기·연결·선택 상자. 그래프에 초점을 두면 Delete로 선택한 노드를 한 번에 지운다.
   $("p-graph").tabIndex = 0;
@@ -105,6 +122,71 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     deleteGraphSelection();
   });
 
+  // ── 되돌리기·다시 실행 ──────────────────────────────────────────
+  // Ctrl+Z 되돌리기, Ctrl+Y 또는 Ctrl+Shift+Z 다시 실행. 입력 중이거나 창이 열려 있으면 그 칸의 기본 동작을 둔다.
+  function renderHistoryButtons() {
+    const state = history.state(navigation.project);
+    $("p-undo").disabled = !state.undo;
+    $("p-redo").disabled = !state.redo;
+    $("p-undo").title = state.undo ? `되돌리기: ${state.undo} (Ctrl+Z)` : "되돌릴 변경이 없습니다 (Ctrl+Z)";
+    $("p-redo").title = state.redo ? `다시 실행: ${state.redo} (Ctrl+Y)` : "다시 실행할 변경이 없습니다 (Ctrl+Y)";
+  }
+  async function stepHistory(action) {
+    if (navigation.view !== "project" || ui.graph?.dragging || document.querySelector("dialog[open]")) return;
+    closeContextMenu();
+    const result = await history[action](navigation.project);
+    if (result && !result.ok) alert(`"${result.label}"을(를) ${action === "undo" ? "되돌리지" : "다시 실행하지"} 못했습니다. 그 사이 노드나 연결이 바뀌었을 수 있습니다.\n\n${result.error.message}`);
+  }
+  $("p-undo").addEventListener("click", () => { void stepHistory("undo"); });
+  $("p-redo").addEventListener("click", () => { void stepHistory("redo"); });
+  document.addEventListener("keydown", (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.isComposing || e.defaultPrevented) return;
+    const key = e.key.toLowerCase();
+    const action = key === "z" ? e.shiftKey ? "redo" : "undo" : key === "y" && !e.shiftKey ? "redo" : null;
+    if (!action || navigation.view !== "project" || !$("p-graph").getClientRects().length) return;
+    if (e.target.closest?.("input, textarea, select, [contenteditable]:not([contenteditable=\"false\"])") || document.querySelector("dialog[open]")) return;
+    e.preventDefault();
+    if (!e.repeat) void stepHistory(action);
+  });
+  renderHistoryButtons();
+
+  const storedPos = (id) => { const pos = commandById(id)?.pos ?? sessionById(id)?.graphPos ?? null; return pos ? { ...pos } : null; };
+  // 위치를 저장한다. null이면 자동 배치로 돌아간다.
+  const putPos = (id, pos) => isCommandNode(id) ? api("PUT", `/api/commands/${id}`, { pos }) : api("PUT", `/api/sessions/${id}`, { graphPos: pos });
+  const groupMembers = () => new Map(nodeGroups.groups().map((group) => [group.id, [...group.members]]));
+  async function restoreLayout(positions, members, { resolve }) {
+    for (const [id, pos] of positions) await putPos(resolve(id), pos);
+    for (const [id, list] of members) await api("PUT", `/api/node-groups/${resolve(id)}`, { members: list.map(resolve) });
+  }
+  // 연결을 지운 것을 되살린다. 지운 연결의 id는 새 연결 id로 이어 둔다.
+  async function restoreLink(link, { resolve, remap }) {
+    const created = await api("POST", "/api/links", { ...linkBody(link), from: resolve(link.from), to: resolve(link.to) });
+    remap(link.id, created.id);
+  }
+  // 지울 노드의 설정과 이어진 연결
+  const nodeSnapshot = (node) => ({ id: node.id, title: node.title, body: commandBody(node),
+    links: data.links.filter((l) => l.from === node.id || l.to === node.id).map((l) => ({ ...l })) });
+  // 노드를 지운 것을 기록한다. 되돌리면 노드를 다시 만들고 연결을 잇는다. 끝이 사라진(지운 세션 등) 연결은 건너뛴다.
+  function recordNodesRemoved(projectPath, removed) {
+    if (!removed.length) return;
+    history.record(projectPath, { label: removed.length > 1 ? `노드 ${removed.length}개 삭제` : `"${removed[0].title}" 삭제`,
+      undo: async (tools) => {
+        for (const node of removed) {
+          const body = node.body.members ? { ...node.body, members: node.body.members.map(tools.resolve) } : node.body;
+          tools.remap(node.id, (await api("POST", "/api/commands", body)).id);
+        }
+        const links = [...new Map(removed.flatMap((node) => node.links).map((l) => [l.id, l])).values()];
+        for (const link of links) await restoreLink(link, tools).catch(() => {});
+      },
+      redo: async ({ resolve }) => { for (const node of removed) await api("DELETE", `/api/commands/${resolve(node.id)}`); },
+    });
+  }
+  function recordLinkCreated(projectPath, link) {
+    history.record(projectPath, { label: "연결 만들기",
+      undo: ({ resolve }) => api("DELETE", `/api/links/${resolve(link.id)}`),
+      redo: (tools) => restoreLink(link, tools) });
+  }
+
   // 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 명령 노드는 명령 메뉴, 빈 곳은 그 자리에 새 세션·명령을 만든다.
   $("p-graph").addEventListener("contextmenu", (e) => {
     if (e.target.closest(".edge-label")) return;
@@ -116,7 +198,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }
     const card = e.target.closest(".gcard, .gcmd");
     const cmd = card && commandById(card.dataset.id);
-    const grouping = card ? [...nodeGroups.selectedEntries(), null] : [];
+    // 그룹 묶기 항목은 노드를 둘 이상 골랐을 때만 붙인다. 하나만 골랐으면 평소 메뉴를 연다.
+    const grouping = card && ui.graphSelected.size > 1 ? [...nodeGroups.selectedEntries(), null] : [];
     if (cmd) {
       const running = ["running", "watching"].includes(cmd.state);
       const kind = cmd.kind ?? "command";
@@ -154,16 +237,16 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const node = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, kind, { connectWhen, connectKeyword }))];
     const start = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, null, kind))];
     // 고른 세션 카드가 있으면 그 세션들을 미리 골라 둔다.
-    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "group"].includes(node.kind); });
+    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "webhook-in", "group"].includes(node.kind); });
     const collect = [picked.length > 1 && !connectFrom ? `선택한 노드 ${picked.length}개 결과 모으기` : "새 결과 모으기",
       inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked, connectWhen, connectKeyword }))];
     // 종류별로 묶는다. 시작점 노드는 들어오는 연결을 받을 수 없으므로 손잡이에서 열었을 때는 뺀다.
     const sections = [
       ["AI", [["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen, connectKeyword }))]]],
-      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch")]],
+      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch"), start("새 웹훅 받기", "webhook-in")]],
       ["실행", [node("새 명령", "command"), node("새 GIT", "git")]],
       ["흐름 제어", [node("새 반복 제어", "repeat"), node("새 결과 가공", "transform"), collect]],
-      ["출력", [node("새 알림", "notify"), node("새 Markdown 출력", "markdown")]],
+      ["출력", [node("새 알림", "notify"), node("새 웹훅 보내기", "webhook"), node("새 Markdown 출력", "markdown")]],
     ];
     const selected = !connectFrom ? nodeGroups.selectedEntries() : [];
     openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [
@@ -177,6 +260,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   function clearGraphTransientState() {
     ui.graphGesture?.cancel();
+    assistant.reset();
     closeContextMenu();
     cancelNodeCreation();
     clearExecutionControls?.();
@@ -231,7 +315,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       const when = context.connectWhen ?? (source.kind === "git" ? "success" : null);
       const target = commandById(to);
       const targetKind = target?.kind ?? context.kind ?? "session";
-      await api("POST", "/api/links", { from: source.id, to, ...(when ? { when, keyword: context.connectKeyword ?? "" } : defaultLinkCondition(source.id)), ...(source.kind === "git" ? { useGitWorktree: when === "success" && source.gitAction === "use" && ["session", "command"].includes(targetKind) } : {}), enabled: true });
+      const link = await api("POST", "/api/links", { from: source.id, to, ...(when ? { when, keyword: context.connectKeyword ?? "" } : defaultLinkCondition(source.id)), ...(source.kind === "git" ? { useGitWorktree: when === "success" && source.gitAction === "use" && ["session", "command"].includes(targetKind) } : {}), enabled: true });
+      if (link?.id) recordLinkCreated(projectPath, link);
       await loadLinks();
     } catch (err) {
       alert(`노드는 만들었지만 연결하지 못했습니다. 손잡이를 끌어 다시 연결해 주세요.\n\n${err.message}`);
@@ -596,8 +681,19 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
         }
         return;
       }
+      const projectPath = navigation.project;
+      const before = new Map(group.map((n) => [n, storedPos(n)]));
+      const membersBefore = groupMembers();
       await Promise.all(group.map(saveNodePos));
       await nodeGroups.droppedMembers(group);
+      // 그룹 박스 안팎으로 옮겨 구성원이 바뀌었으면 함께 되돌린다.
+      const after = new Map(group.map((n) => [n, storedPos(n)]));
+      const membersAfter = groupMembers();
+      const changed = [...new Set([...membersBefore.keys(), ...membersAfter.keys()])]
+        .filter((id) => membersBefore.has(id) && membersAfter.has(id) && membersBefore.get(id).join() !== membersAfter.get(id).join());
+      history.record(projectPath, { label: group.length > 1 ? `카드 ${group.length}개 이동` : "카드 이동",
+        undo: (tools) => restoreLayout(before, changed.map((id) => [id, membersBefore.get(id)]), tools),
+        redo: (tools) => restoreLayout(after, changed.map((id) => [id, membersAfter.get(id)]), tools) });
     };
 
     trackGraphGesture(e, onMove, onUp);
@@ -648,6 +744,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     if (!g) return;
     for (const id of ui.graphSelected) if (!g.cards.has(id) && !g.groupFrames?.has(id)) ui.graphSelected.delete(id);
     for (const [id, card] of [...g.cards, ...(g.groupFrames ?? [])]) card.classList.toggle("selected", ui.graphSelected.has(id));
+    assistant.selectionChanged();
   }
 
   // 빈 곳에서 끌면 상자 안에 걸친 카드를 고른다. Ctrl·Shift를 누르고 끌면 지금 선택에 더한다.
@@ -718,17 +815,22 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       (samePath(data.commandsProject, projectPath) ? commandById(id) : null)).filter(Boolean);
     if (!nodes.length) return;
     const running = nodes.filter((n) => n.state === "running").length;
-    if (!confirm(`선택한 노드 ${nodes.length}개와 이어진 연결을 삭제할까요?${running ? `\n실행 중인 ${running}개는 멈춥니다.` : ""}\n세션의 작업 폴더와 원본 CLI 기록은 남겨 둡니다.`)) return;
+    const sessionCount = nodes.filter((n) => !isCommandNode(n.id)).length;
+    if (!confirm(`선택한 노드 ${nodes.length}개와 이어진 연결을 삭제할까요?${running ? `\n실행 중인 ${running}개는 멈춥니다.` : ""}\n세션의 작업 폴더와 원본 CLI 기록은 남겨 둡니다.${sessionCount ? "\n세션 삭제는 Ctrl+Z로 되돌릴 수 없습니다." : ""}`)) return;
     ui.deletingGraphNodes = true;
     closeContextMenu();
+    // 노드 설정과 이어진 연결을 미리 남겨 두어 되돌릴 때 되살린다.
+    const snapshots = new Map(nodes.filter((n) => isCommandNode(n.id)).map((n) => [n.id, nodeSnapshot(n)]));
     try {
       const results = await Promise.allSettled(nodes.map((node) =>
         api("DELETE", isCommandNode(node.id) ? `/api/commands/${node.id}` : `/api/sessions/${node.id}?force=1`)));
       const errors = [];
+      const removed = [];
       results.forEach((result, i) => {
-        if (result.status === "fulfilled") ui.graphSelected.delete(nodes[i].id);
+        if (result.status === "fulfilled") { ui.graphSelected.delete(nodes[i].id); if (snapshots.has(nodes[i].id)) removed.push(snapshots.get(nodes[i].id)); }
         else errors.push(`${nodes[i].title}: ${result.reason.message}`);
       });
+      recordNodesRemoved(projectPath, removed);
       await Promise.all([loadSessions(), loadCommands(projectPath), loadLinks()]);
       if (errors.length) alert(`일부 노드를 삭제하지 못했습니다.\n\n${errors.join("\n")}`);
     } finally {
@@ -754,6 +856,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const placed = data.sessions.filter((s) => samePath(s.projectPath, navigation.project) && s.graphPos && !grouped.has(s.id));
     for (const s of placed) s.graphPos = null;
     const placedCommands = (data.commands ?? []).filter((c) => c.pos && !grouped.has(c.id));
+    const before = new Map([...placed, ...placedCommands].map((node) => [node.id, storedPos(node.id)]));
+    if (before.size) history.record(navigation.project, { label: "자동 배치",
+      undo: (tools) => restoreLayout(before, [], tools),
+      redo: (tools) => restoreLayout(new Map([...before.keys()].map((id) => [id, null])), [], tools) });
     for (const c of placedCommands) c.pos = null;
     renderGraph();
     await Promise.all([
@@ -842,17 +948,34 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       approve: $("link-approve").checked,
       ...(commandById(from)?.kind === "git" ? { useGitWorktree: !$("link-git-worktree-row").hidden && $("link-git-worktree").checked } : {}),
     };
+    const projectPath = navigation.project;
+    // 연결 설정을 바꿨으면 이전 값으로 되돌릴 수 있게 남긴다.
+    const recordEdit = () => {
+      const previous = linkBody(link);
+      const next = { ...previous, ...body, ...(body.when !== "keyword" ? { keyword: "" } : {}) };
+      if (JSON.stringify(previous) === JSON.stringify(next)) return;
+      history.record(projectPath, { label: "연결 설정 변경",
+        undo: ({ resolve }) => api("PUT", `/api/links/${resolve(link.id)}`, previous),
+        redo: ({ resolve }) => api("PUT", `/api/links/${resolve(link.id)}`, next) });
+    };
     try {
       if (action === "delete") {
         if (!confirm("이 연결을 삭제할까요?")) return;
         await api("DELETE", `/api/links/${link.id}`);
+        const removed = { ...link };
+        history.record(projectPath, { label: "연결 삭제",
+          undo: (tools) => restoreLink(removed, tools),
+          redo: ({ resolve }) => api("DELETE", `/api/links/${resolve(removed.id)}`) });
       } else if (action === "run") {
         await api("PUT", `/api/links/${link.id}`, body);
+        recordEdit();
         await api("POST", `/api/links/${link.id}/run`);
       } else if (link) {
         await api("PUT", `/api/links/${link.id}`, body);
+        recordEdit();
       } else {
-        await api("POST", "/api/links", { ...body, from, to });
+        const created = await api("POST", "/api/links", { ...body, from, to });
+        if (created?.id) recordLinkCreated(projectPath, created);
       }
       $("link-dialog").close();
       await loadLinks();
@@ -861,5 +984,6 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }
   });
 
-  return { loadNodeGroups: nodeGroups.load, loadMessages, loadLinks, renderGraph, clearGraphTransientState, connectCreatedGraphNode, renderLinkConditions, drawEdges, highlightSessions, clearSelection };
+  return { loadNodeGroups: nodeGroups.load, loadMessages, loadLinks, renderGraph, clearGraphTransientState, connectCreatedGraphNode, renderLinkConditions, drawEdges, highlightSessions, clearSelection,
+    history, nodeSnapshot, recordNodesRemoved, renderHistoryButtons };
 }

@@ -33,6 +33,7 @@ import { FileIssueLinkStore } from "./infrastructure/persistence/issue-links.mjs
 import { createTurnLifecycle } from "./application/lifecycle.mjs";
 import { createHttpServer } from "./transport/http.mjs";
 import { createApiHandler } from "./transport/api.mjs";
+import { createFlowAssistantService } from "./application/flow-assistant.mjs";
 import { createMcpHandler } from "./transport/mcp.mjs";
 import { createEventStream } from "./transport/sse.mjs";
 
@@ -133,6 +134,8 @@ export function createHub(options = {}) {
     messaging: createMessagingService({ mailbox, board, projects, notify }),
     account: deps.account ?? createAccountService({ config, setup, saveConfig: persistConfig }),
   };
+  services.flowAssistant = createFlowAssistantService({ store, commands, links, projects, sessions, commandService: services.commands,
+    workflowService: workflows, cliPaths, ask: deps.ask, notify });
   services.issues = deps.issues ?? createIssueService({
     config, store, sessions, notify,
     links: deps.issueLinks ?? new FileIssueLinkStore({ dataDir }),
@@ -157,6 +160,7 @@ export function createHub(options = {}) {
     publicDir: options.publicDir ?? path.join(ROOT, "public"),
     handleApi,
     handleMcp,
+    receiveHook: (token, request) => services.commands.receiveHook(token, request),
   });
 
   const listeners = [];

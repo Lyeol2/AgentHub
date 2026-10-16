@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
-const RENAME_RETRIES = 5;
+const RENAME_RETRIES = 8; // 20·40·80·160·320·500·500·500ms, 모두 합쳐 약 2초
 const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
 // 임시 파일에 다 쓰고 디스크에 내린 뒤 이름을 바꾼다.
@@ -23,7 +23,7 @@ export function writeFileAtomic(file, text) {
       try { fs.renameSync(temp, file); return; }
       catch (error) {
         if (attempt >= RENAME_RETRIES || !["EPERM", "EACCES", "EBUSY"].includes(error.code)) throw error;
-        pause(20 * (attempt + 1));
+        pause(Math.min(20 * 2 ** attempt, 500));
       }
     }
   } catch (error) {

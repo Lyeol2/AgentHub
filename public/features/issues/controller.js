@@ -68,7 +68,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
 
   function setProject(project) {
     if (state?.project === project) return;
-    state = { project, box: state?.box ?? "inbox", context: null, issues: [], number: null, detail: null, listVersion: 0, detailVersion: 0, loading: false, busy: null };
+    state = { project, box: state?.box ?? "inbox", context: null, issues: [], number: null, detail: null, details: new Map(), listVersion: 0, detailVersion: 0, loading: false, busy: null };
     $("i-grid").hidden = true;
     $("i-repo").textContent = "";
     $("i-repo").removeAttribute("href");
@@ -133,22 +133,41 @@ export function createIssuesController({ api, account, connectAccount, goProject
     const s = state;
     if (!s?.context) return;
     const changed = s.number !== number;
+    // 이미 보고 있는 작업을 다시 누르면 그대로 둔다. 새 내용은 주기 갱신이 가져온다.
+    if (!changed && !quiet && s.detail?.issue.number === number) return;
     s.number = number;
     const version = ++s.detailVersion;
     listView(s);
-    if (changed || !quiet) $("i-detail").replaceChildren(el("p", { class: "pr-empty muted", role: "status" }, `작업 #${number} 불러오는 중…`));
+    // 한 번 연 작업은 저장해 둔 내용을 바로 보이고, 오래됐으면 뒤에서 조용히 다시 읽는다.
+    const cached = changed ? s.details.get(number) : null;
+    if (cached) {
+      s.detail = cached.data;
+      detailView(s);
+      if (Date.now() - cached.at < DETAIL_INTERVAL) return;
+      quiet = true;
+    } else if (changed || !quiet) $("i-detail").replaceChildren(el("p", { class: "pr-empty muted", role: "status" }, `작업 #${number} 불러오는 중…`));
     try {
       const data = await api("GET", `/api/issues/${number}?` + query(s));
       if (!current(s) || version !== s.detailVersion) return;
-      const sameIssue = s.detail?.issue.number === number;
+      const prev = s.detail?.issue.number === number ? s.detail.issue : null;
+      s.details.set(number, { data, at: Date.now() });
       s.detail = data;
-      if (quiet && sameIssue && $("i-comments")) updateDetail(s);
-      else detailView(s);
+      if (quiet && prev && $("i-comments") && sameHead(prev, data.issue)) updateDetail(s);
+      else {
+        // 상태·본문이 바뀌어 다시 그릴 때도 쓰던 댓글은 남긴다.
+        const draft = prev ? $("i-comment")?.value ?? "" : "";
+        detailView(s);
+        if (draft) $("i-comment").value = draft;
+      }
     } catch (err) {
       if (!current(s) || version !== s.detailVersion) return;
+      s.detail = null;
       $("i-detail").replaceChildren(el("p", { class: "pr-empty error", role: "alert" }, err.message));
     }
   }
+
+  const sameHead = (a, b) => a.state === b.state && a.stateReason === b.stateReason && a.title === b.title && a.body === b.body
+    && a.assignees.join() === b.assignees.join();
 
   function commentList(s) {
     const { comments, commentsLimited } = s.detail;
@@ -568,7 +587,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
       if (state && samePath(projectPath, state.project) && visible()) refresh();
     },
     accountChanged() {
-      if (state) state.context = null;
+      if (state) { state.context = null; state.details.clear(); }
       team.data = null;
       loadInbox();
       if (state && visible()) refresh();

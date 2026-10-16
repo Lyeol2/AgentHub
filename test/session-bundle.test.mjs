@@ -40,6 +40,17 @@ test(".agenthub: 보이는 필드만 담고 비밀값은 가린다", async () =>
   assert.match(recordReadText("x.agenthub", parsed), /^\[다른 세션의 작업 기록: x\.agenthub\][\s\S]*\[사용자\]\n해/);
 });
 
+test(".agenthub: 확인 없이 실행하는 권한은 가져올 때 되살리지 않는다", async (t) => {
+  const { project, hub, sessions } = await hubFixture(t);
+  for (const [agent, permission, fallback] of [["codex", "danger-full-access", "workspace-write"], ["codex", "auto-review", "workspace-write"], ["claude", "bypassPermissions", "acceptEdits"]]) {
+    const original = await sessions.create({ projectPath: project, agent, title: "위험한 " + permission, permission });
+    hub.store.get(original.id).events.push({ seq: 0, ts: ts(1), kind: "user", text: "해" });
+    const exported = await sessions.exportRecord(original.id, { format: "agenthub" });
+    const created = await sessions.importRecord({ projectPath: project, fileName: exported.fileName });
+    assert.equal(hub.store.get(created.id).permission, fallback, permission);
+  }
+});
+
 test(".agenthub: 내보내고 새 세션으로 불러오거나 다른 세션에 읽힌다", async (t) => {
   const { hub, project, sessions } = await hubFixture(t);
   const original = await sessions.create({ projectPath: project, agent: "codex", title: "원래 세션", permission: "read-only", role: "리뷰만 한다" });

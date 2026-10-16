@@ -7,10 +7,11 @@ function setup() {
   const nodes = new Map(), calls = [], alerts = [];
   globalThis.document = {
     getElementById(id) {
-      if (!nodes.has(id)) nodes.set(id, { addEventListener() {}, open: false });
+      if (!nodes.has(id)) nodes.set(id, { addEventListener() {}, open: false, value: "" });
       return nodes.get(id);
     },
     querySelector: () => null,
+    addEventListener() {},
   };
   globalThis.alert = (text) => alerts.push(text);
   const data = { sessions: [{ id: "from", projectPath: "C:/repo", role: '마지막 줄에 "통과" 또는 "수정"을 쓴다.' }], commands: [], commandsProject: "C:/repo", links: [] };
