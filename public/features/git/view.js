@@ -141,7 +141,8 @@ export function createGitView({ getModel, selectSession, showSessionChanges, ope
           if (!c.work) showGitCommit(c);
           else if (c.branch.sessionId) showSessionChanges(c.branch);
           else { showGitTab("changes"); $("g-changes").scrollIntoView({ block: "nearest" }); }
-        } }, svg,
+        },
+        ondblclick: () => { if (!c.work) checkoutCommit(branches); } }, svg,
         el("span", { class: "git-graph-subject" }, title),
         el("span", { class: "git-graph-refs" }, ...chips),
         el("span", { class: "git-graph-meta mono" }, c.work ? "커밋 전" : c.short));
@@ -149,7 +150,18 @@ export function createGitView({ getModel, selectSession, showSessionChanges, ope
     });
     $("g-graph").replaceChildren(...(rows.length ? rows : [el("p", { class: "git-empty muted" }, "아직 커밋이 없습니다.")]));
     $("g-summary").textContent = (work.length ? "작업 " + work.length + " · " : "") + "커밋 " + commits.length;
-    $("g-history-note").textContent = data.graph?.truncated ? "최근 100개 · 아래로 이전 기록이 이어집니다." : "커밋을 누르면 변경 내용을 볼 수 있습니다.";
+    $("g-history-note").textContent = data.graph?.truncated ? "최근 100개 · 아래로 이전 기록이 이어집니다." : "커밋을 누르면 변경 내용을, 브랜치 커밋을 두 번 누르면 체크아웃합니다.";
+  }
+
+  // 커밋을 두 번 누르면 그 커밋을 가리키는 로컬 브랜치로 체크아웃한다. 브랜치 없는 커밋(detached HEAD)으로는 바꾸지 않는다.
+  function checkoutCommit(branches) {
+    const local = branches.filter((b) => getModel().data.branches.includes(b));
+    if (local.some((b) => b.current)) return;
+    const target = local.find((b) => !b.checkedOutAt);
+    if (target) return checkoutGitBranch(target);
+    alert(local.length
+      ? "이 커밋의 브랜치는 다른 작업 폴더에서 쓰고 있어 체크아웃할 수 없습니다.\n" + local[0].checkedOutAt
+      : "이 커밋을 가리키는 로컬 브랜치가 없습니다. 브랜치 끝 커밋을 두 번 누르면 그 브랜치로 체크아웃합니다.");
   }
 
   function setGitActive(hash) {

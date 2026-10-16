@@ -28,7 +28,45 @@ export function normalizeCliPath(value) {
 
 export function isCliFile(file) {
   if (!file || (isWindows && !/\.(exe|com|cmd|bat)$/i.test(file))) return false;
-  try { return fs.statSync(file).isFile(); } catch { return false; }
+  try { return fs.statSync(file).isFile(); }
+  catch (error) {
+    // WindowsApps의 실행 별칭(winget.exe 등)은 stat이 EACCES로 실패하지만 실행은 된다.
+    if (!isWindows || error.code !== "EACCES") return false;
+    try { return fs.lstatSync(file).isSymbolicLink(); } catch { return false; }
+  }
+}
+
+// reg·where 같은 Windows 기본 명령은 UTF-8이 아니라 콘솔 코드페이지(한국어 Windows는 cp949)로 출력한다.
+const OEM_ENCODINGS = { 949: "euc-kr", 932: "shift_jis", 936: "gbk", 950: "big5", 65001: "utf-8" };
+let oemDecoder;
+function oemEncoding() {
+  try {
+    const out = execFileSync(systemFile("reg.exe"), ["query", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Nls\\CodePage", "/v", "OEMCP"],
+      { encoding: "latin1", windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+    return OEM_ENCODINGS[out.match(/OEMCP\s+REG_SZ\s+(\d+)/i)?.[1]] ?? "windows-1252";
+  } catch {
+    return "windows-1252";
+  }
+}
+export function decodeConsole(bytes) {
+  if (typeof bytes === "string") return bytes;
+  try { return new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch {
+    oemDecoder ??= new TextDecoder(oemEncoding());
+    return oemDecoder.decode(bytes);
+  }
+}
+
+// 작업 폴더가 없으면 Windows는 실행 파일을 못 찾은 것처럼 ENOENT를 낸다. 진짜 원인을 알려 준다.
+export function missingFolder(error, cwd) {
+  if (error?.code !== "ENOENT" || !cwd) return null;
+  try { if (fs.statSync(cwd).isDirectory()) return null; } catch {}
+  return `작업 폴더가 없습니다: ${cwd} (폴더를 옮겼거나 지웠는지, 드라이브가 연결되어 있는지 확인하세요)`;
+}
+
+// cmd.exe나 npm shim을 거쳐 실행한 자식 프로세스까지 함께 끝낸다.
+export function killProcessTree(pid) {
+  spawn(systemFile("taskkill.exe"), ["/pid", String(pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
 }
 
 function registryPathDirs() {
@@ -39,7 +77,7 @@ function registryPathDirs() {
     const reg = systemFile("reg.exe");
     for (const key of ["HKCU\\Environment", "HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment"]) {
       try {
-        const out = execFileSync(reg, ["query", key, "/v", "Path"], { encoding: "utf8", windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
+        const out = decodeConsole(execFileSync(reg, ["query", key, "/v", "Path"], { windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] }));
         const value = out.match(/Path\s+REG_(?:EXPAND_)?SZ\s+(.*)/i)?.[1] ?? "";
         registryPath.push(...value.split(";").map(normalizeCliPath).filter(Boolean));
       } catch {
@@ -213,7 +251,7 @@ function probe(file, args) {
     };
     const stop = () => {
       finish(null);
-      if (isWindows && child?.pid) spawn(systemFile("taskkill.exe"), ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
+      if (isWindows && child?.pid) killProcessTree(child.pid);
       else child?.kill();
     };
     try {

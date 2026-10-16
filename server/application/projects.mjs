@@ -68,7 +68,7 @@ export function createProjectService({ config, store, runner, links, commands, c
   function add(body) {
     const dir = path.resolve(String(body.path ?? "").trim());
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new HttpError(400, "폴더가 없습니다.");
-    if (config.projects.some((p) => p.path === dir)) throw new HttpError(400, "이미 등록된 프로젝트입니다.");
+    if (config.projects.some((p) => samePath(p.path, dir))) throw new HttpError(400, "이미 등록된 프로젝트입니다.");
     config.projects.push({ name: String(body.name ?? "").trim() || path.basename(dir), path: dir });
     unhideProject(dir);
     saveConfig(config);

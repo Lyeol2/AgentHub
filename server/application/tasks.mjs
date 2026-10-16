@@ -8,7 +8,7 @@ import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
-  taskDirty, taskWorktreeLocation, sameTaskPath, assertTaskGitIdle } from "../tasks.mjs";
+  taskDirty, taskWorktreeLocation, sameTaskPath, insideTaskPath, assertTaskGitIdle } from "../tasks.mjs";
 import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey } from "../gitflow-settings.mjs";
 
 // 설정한 배포·개발 브랜치인지(대소문자를 구분한다)
@@ -64,7 +64,9 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const cwd = path.resolve(repo.top);
     const other = [...records.values()].find((task) => task.inPlace && task.state !== "cleaned" && sameTaskPath(task.gitCommonDir, repo.common));
     if (other) throw new HttpError(409, `원본 폴더는 이미 "${other.title}" 작업에서 쓰고 있습니다. 그 작업을 정리하거나 워크트리를 만들어 진행하세요.`, "task-in-place");
-    assertIdle({ cwd });
+    // 저장소 하위 폴더를 프로젝트로 등록한 세션도 원본 폴더에서 일하는 세션이다.
+    if (store.list().some((session) => runner.isRunning(session.id) && insideTaskPath(session.cwd, cwd)))
+      throw new HttpError(409, "이 작업 폴더에서 실행 중인 세션을 먼저 중지하세요.", "running");
     await assertTaskGitIdle({ cwd });
     if (await taskDirty({ cwd })) throw new HttpError(409, "원본 폴더에 커밋하지 않은 변경이 있습니다. 커밋하거나 워크트리를 만들어 진행하세요.", "task-dirty");
     return (await taskGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "")).trim() || null;
@@ -537,7 +539,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (await assertTaskWorktree(task) !== head || await taskDirty(task))
         throw new HttpError(409, "정리 확인 중 작업 폴더가 변경됐습니다. 다시 확인하세요.", "task-stale-head");
       if (task.inPlace) await leaveInPlaceBranch(task);
-      else if (ownsWorktree) await taskGit(task.projectPath, ["worktree", "remove", "--", task.cwd], { write: true });
+      else if (ownsWorktree) await removeTaskWorktree(task);
       else task.worktreePreserved = true;
       task.localBranchRemoved = false;
       // Compare-and-delete permits squash merges without using a destructive force flag.
@@ -553,6 +555,19 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
       return { task: clone(task) };
     });
+  }
+  // Windows에서는 편집기·탐색기·백신·남은 개발 서버가 파일을 잡고 있으면 git이 폴더를 다 지우지 못한다.
+  // git은 그래도 워크트리 기록은 지우므로, 기록이 빠졌으면 남은 폴더만 잠시 기다리며 마저 지운다.
+  async function removeTaskWorktree(task) {
+    try {
+      await taskGit(task.projectPath, ["worktree", "remove", "--", task.cwd], { write: true });
+    } catch (error) {
+      const list = await taskGit(task.projectPath, ["worktree", "list", "--porcelain"]).catch(() => null);
+      const registered = list === null || list.split(/\r?\n/).some((line) => line.startsWith("worktree ") && sameTaskPath(line.slice(9), task.cwd));
+      if (registered) throw new HttpError(409, `작업 폴더를 지우지 못했습니다. 그 폴더를 연 편집기·탐색기·터미널을 닫고 다시 정리하세요.\n${error.message}`, "task-worktree-locked");
+      try { fs.rmSync(task.cwd, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }); }
+      catch { task.cleanupWarning = `작업 폴더 일부가 남았습니다. 파일을 잡고 있는 프로그램을 닫은 뒤 직접 지우세요: ${task.cwd}`; }
+    }
   }
   function replaceSession(previous, next) {
     for (const task of records.values()) {

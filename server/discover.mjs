@@ -156,8 +156,10 @@ function allClaude() {
   const found = [];
   for (const name of fs.readdirSync(base)) {
     const dir = path.join(base, name);
-    if (!fs.statSync(dir).isDirectory()) continue;
-    for (const file of fs.readdirSync(dir)) {
+    // 훑는 사이에 지워졌거나 잠긴 폴더 하나 때문에 목록 전체가 사라지지 않게 건너뛴다.
+    let files;
+    try { files = fs.statSync(dir).isDirectory() ? fs.readdirSync(dir) : []; } catch { continue; }
+    for (const file of files) {
       if (!file.endsWith(".jsonl")) continue;
       try {
         const entry = cached(path.join(dir, file), summarizeClaude);
@@ -190,8 +192,9 @@ function claudeHistory(file) {
 const codexMetaCache = new Map(); // 파일 경로 → session_meta(바뀌지 않는다)
 
 function walk(dir, out = []) {
-  if (!fs.existsSync(dir)) return out;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
     const full = path.join(dir, entry.name);
     if (entry.isDirectory()) walk(full, out);
     else if (entry.name.endsWith(".jsonl")) out.push(full);

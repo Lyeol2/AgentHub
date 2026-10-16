@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createApiClient } from "../public/shared/api.js";
 import { connectEventStream } from "../public/shared/stream.js";
-import { createStore, applySessionState } from "../public/shared/store.js";
+import { createStore, applySessionState, samePath } from "../public/shared/store.js";
 
 test("HTTP client sends the shared header and preserves response error reasons", async () => {
   const requests = [];
@@ -68,4 +68,10 @@ test("live execution metadata updates both list and open-detail snapshots withou
   applySessionState(data, { sessionId: "s1", state: "idle" });
   assert.equal(data.current.runningStartedAt, null);
   assert.equal(data.sessions[0].runningStartedAt, null);
+});
+
+test("store: Git의 / 경로와 Windows 경로, 끝 구분자를 같은 경로로 본다", () => {
+  assert.ok(samePath("E:/Git/x", "e:\\git\\X\\"));
+  assert.ok(!samePath("E:/Git/x", "E:/Git/xy"));
+  assert.ok(!samePath("", "E:/Git/x"));
 });

@@ -73,7 +73,7 @@ export function normalizeIssue(raw, repo) {
 }
 
 const normalizeComment = (raw) => ({
-  id: Number(raw.id), author: login(raw.user), body: String(raw.body ?? ""),
+  id: Number(raw.id), author: login(raw.user), association: String(raw.author_association ?? ""), body: String(raw.body ?? ""),
   createdAt: raw.created_at ?? null, updatedAt: raw.updated_at ?? null,
 });
 

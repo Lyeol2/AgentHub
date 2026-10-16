@@ -4,9 +4,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { checkFlowNode, FLOW_NODE_KINDS } from "./flow-nodes.mjs";
+import { killProcessTree, locateCommand, missingFolder } from "./cli.mjs";
 
 const isWindows = process.platform === "win32";
 export const COMMAND_PREFIX = "cmd-";
@@ -22,16 +23,15 @@ export const TIMEOUT_DEFAULT = 600;
 export const TIMEOUT_MAX = 3600;
 
 // ── 셸 ─────────────────────────────────────────────────────────
+// where 출력은 한글 경로가 깨지므로 직접 찾고, 앱을 켠 뒤 설치한 PowerShell 7도 보이게 잠시만 기억한다.
 let pwshPath;
+let pwshAt = 0;
 function findPwsh() {
-  if (pwshPath !== undefined) return pwshPath;
-  pwshPath = null;
-  try {
-    const out = execFileSync(isWindows ? "where" : "which", ["pwsh"], { encoding: "utf8", windowsHide: true, timeout: 5000, stdio: ["ignore", "pipe", "ignore"] });
-    pwshPath = out.split(/\r?\n/).find((l) => l.trim())?.trim() ?? null;
-  } catch {
-    // 설치되지 않음
-  }
+  if (pwshPath !== undefined && Date.now() - pwshAt < 30_000) return pwshPath;
+  pwshAt = Date.now();
+  pwshPath = isWindows
+    ? locateCommand("pwsh.exe", [path.join(process.env.ProgramFiles || "C:\\Program Files", "PowerShell", "7")])
+    : locateCommand("pwsh");
   return pwshPath;
 }
 
@@ -77,7 +77,7 @@ function shellInvocation(shell, command) {
 
 function killTree(child) {
   if (!child?.pid) return;
-  if (isWindows) spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
+  if (isWindows) killProcessTree(child.pid);
   else child.kill("SIGTERM");
 }
 
@@ -125,7 +125,7 @@ export function runShell({ shell, command, cwd, timeoutSec = TIMEOUT_DEFAULT, on
       resolve({ exitCode: timedOut || stopped ? exitCode || 1 : exitCode ?? 1, output, timedOut, stopped, durationMs: Date.now() - started });
     };
     child.on("error", (err) => {
-      add(`\n실행 실패: ${err.message}`);
+      add(`\n실행 실패: ${missingFolder(err, cwd) ?? err.message}`);
       finish(1);
     });
     child.on("close", (code) => finish(code));
