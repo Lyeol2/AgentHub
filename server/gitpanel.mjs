@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { git } from "./git.mjs";
+import { withGitRepoLock } from "./git-lock.mjs";
 
 const FILES_MAX = 500;
 const COMMITS_MAX = 40;
@@ -50,28 +51,19 @@ function fileState(file) {
   };
 }
 
-// 같은 index에 대한 검증과 변경은 한 작업으로 실행한다. 다른 worktree는 별도 index를 쓴다.
-const mutations = new Map();
+// Validation and mutations share the repository queue with Git graph nodes.
 const mutationDirs = new Map();
 async function mutate(dir, action) {
-  const inputDir = fs.realpathSync(dir);
-  const inputKey = process.platform === "win32" ? inputDir.toLowerCase() : inputDir;
-  // 같은 폴더의 요청은 경로 확인도 공유하여 들어온 순서를 유지한다.
-  let resolving = mutationDirs.get(inputKey);
+  const real = fs.realpathSync(dir);
+  const key = process.platform === "win32" ? real.toLowerCase() : real;
+  // Share location resolution so calls from the same folder retain request order.
+  let resolving = mutationDirs.get(key);
   if (!resolving) {
-    resolving = git(dir, ["rev-parse", "--absolute-git-dir"]).then((out) => {
-      const real = fs.realpathSync(out.trim());
-      return process.platform === "win32" ? real.toLowerCase() : real;
-    });
-    mutationDirs.set(inputKey, resolving);
-    resolving.catch(() => { if (mutationDirs.get(inputKey) === resolving) mutationDirs.delete(inputKey); });
+    resolving = git(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).then((value) => fs.realpathSync(value.trim()));
+    mutationDirs.set(key, resolving);
+    resolving.catch(() => { if (mutationDirs.get(key) === resolving) mutationDirs.delete(key); });
   }
-  const key = await resolving;
-  const previous = mutations.get(key) ?? Promise.resolve();
-  const current = previous.catch(() => {}).then(action);
-  mutations.set(key, current);
-  try { return await current; }
-  finally { if (mutations.get(key) === current) mutations.delete(key); }
+  return withGitRepoLock(await resolving, action);
 }
 
 // -- 다음의 pathspec도 해석된다. 저장소 루트 기준의 리터럴 이름으로 한정한다.

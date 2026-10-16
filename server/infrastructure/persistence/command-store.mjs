@@ -9,7 +9,26 @@ export class CommandStore {
     this.file = path.join(dataDir, "commands.json");
     this.commands = readJsonFile(this.file, { dataDir, fallback: () => [], valid: Array.isArray });
     // 서버가 꺼질 때 실행 중이던 명령은 중단된 것으로 본다.
-    for (const c of this.commands) if (c.state === "running") c.state = "error";
+    for (const c of this.commands) if (c.kind === "watch") {
+      // 파일 감시는 서버 재시작 후 사용자가 다시 켜야 한다.
+      c.state = "idle";
+      c.live = null;
+      c.queued = null;
+    } else if (c.state === "running") {
+      c.state = "error";
+      if (["input", "repeat", "transform", "notify", "group"].includes(c.kind)) {
+        c.lastRun = { ...c.live, ok: false, exitCode: 1, stopped: true, tail: "앱이 종료되어 흐름 실행이 중단되었습니다. 다시 실행하세요." };
+        c.live = null;
+        c.queued = null;
+      }
+      if (c.kind === "git") {
+        const output = "앱이 종료되어 Git 작업 결과를 확인할 수 없습니다. 브랜치와 작업 폴더 상태를 확인한 뒤 다시 실행하세요.";
+        c.lastRun = { ...c.live, ok: false, exitCode: 1, stopped: true, tail: output,
+          gitResult: { ok: false, reason: "outcome-unknown", output, recoveryRequired: true } };
+        c.live = null;
+        c.queued = null;
+      }
+    }
   }
 
   list(projectPath) {

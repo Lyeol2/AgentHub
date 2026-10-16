@@ -1,7 +1,7 @@
 import { connectEventStream } from "../shared/stream.js";
 import { applySessionState, samePath } from "../shared/store.js";
 
-export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged }) {
+export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow }) {
   const source = connectEventStream({ handlers: {
   event: (e) => {
     const { sessionId, event } = JSON.parse(e.data);
@@ -45,7 +45,10 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     await loadProjects();
     if (navigation.view === "project" && !currentProject()) goDashboard();
   },
+  runs: () => refreshRuns?.(),
+  notification: (e) => notifyFlow?.(JSON.parse(e.data)),
   links: loadLinks,
+  "node-groups": () => navigation.view === "project" && loadNodeGroups?.(),
   messages: (e) => {
     if (samePath(JSON.parse(e.data).projectPath, navigation.project)) loadMessages();
   },
@@ -76,6 +79,8 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
   // 연결이 끊겼다가 돌아오면 놓친 이벤트를 다시 받아 온다. 목록의 실행 상태도 그 사이 바뀌었을 수 있다.
   open: () => {
     loadSessions();
+    refreshRuns?.();
+    if (navigation.view === "project") loadNodeGroups?.();
     if (data.current) selectSession(data.current.id);
     if (navigation.view === "project" && projectTab() === "tasks") loadTasks?.(navigation.project);
   },

@@ -1,0 +1,41 @@
+/* Canvas groups retain their expanded rectangle when folded into one node. */
+.node-group { position: absolute; border: 1px solid rgb(123 142 213 / .65); border-radius: 12px; background: rgb(123 142 213 / .045); box-sizing: border-box; z-index: 0; }
+.node-group.selected { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.node-group.collapsed { background: var(--panel-2); box-shadow: 0 4px 16px rgb(0 0 0 / .12); }
+.node-group-header { height: 35px; display: flex; align-items: center; gap: 8px; margin: 6px 10px; cursor: grab; }
+.node-group-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; flex: 1; }
+.node-group-toggle, .node-group-edit { padding: 1px 7px; min-height: 22px; font-size: 11px; background: var(--panel); }
+.node-group-toggle { width: 24px; padding: 1px; }
+.node-group-summary { font-size: 10.5px; color: var(--muted); margin: 0 16px; cursor: grab; }
+.node-group-resize { position: absolute; right: -2px; bottom: -2px; width: 19px; height: 19px; cursor: nwse-resize; }
+.node-group-resize::after { content: ""; position: absolute; width: 8px; height: 8px; right: 5px; bottom: 5px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); }
+.node-group-port { position: absolute; transform: translateY(-50%); display: flex; align-items: center; gap: 6px; height: 26px; cursor: crosshair; font-size: 10.5px; color: var(--text); white-space: nowrap; max-width: 145px; }
+.node-group-port.input { left: -6px; }
+.node-group-port.output { right: -6px; flex-direction: row-reverse; }
+.node-group-port-dot { flex: none; border: 2px solid #9eabe3; background: var(--panel); width: 10px; height: 10px; border-radius: 50%; box-sizing: border-box; }
+.node-group-port:hover .node-group-port-dot { background: var(--accent); border-color: var(--accent); }
+.node-group-port-label { max-width: 125px; overflow: hidden; text-overflow: ellipsis; background: var(--panel); padding: 1px 4px; border-radius: 4px; }
+.node-group:not(.collapsed) .node-group-port.input .node-group-port-label { position: absolute; right: 17px; }
+.node-group:not(.collapsed) .node-group-port.output .node-group-port-label { position: absolute; left: 17px; }
+.graph-edges { z-index: 1; }
+.gcard, .gcmd { z-index: 2; }
+.edge-label { z-index: 3; }
+.graph-edges path.edge.group-boundary { stroke: #9eabe3; stroke-opacity: .55; stroke-width: 1.2; stroke-dasharray: 3 4; }
+.node-group-dialog { width: min(840px, 92vw); max-height: 88vh; padding: 24px; }
+.node-group-form { display: grid; gap: 12px; min-width: 0; }
+.node-group-form h2, .node-group-form h3, .node-group-form p { margin: 0; }
+.node-group-form h3 { margin-top: 6px; font-size: 13px; }
+.node-group-form > label { display: grid; gap: 6px; }
+.node-group-members { display: grid; gap: 7px; max-height: 200px; overflow: auto; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.node-group-members input { width: auto; }
+.node-group-port-editor { display: grid; gap: 8px; max-height: 230px; overflow: auto; }
+.node-group-port-row { display: flex; align-items: center; gap: 8px; }
+.node-group-port-row input { flex: 1; min-width: 90px; }
+.node-group-port-node { font-size: 10.5px; color: var(--muted); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.node-group-port-add { display: flex; gap: 8px; flex-wrap: wrap; }
+.node-group-port-add select { flex: 1; min-width: 90px; }
+.node-group-port-add input { width: 120px; }
+.node-group-form .dialog-actions { display: flex; justify-content: end; gap: 8px; margin-top: 8px; }
+
+.node-group-buttons { position: absolute; inset: auto 12px 10px; display: grid; gap: 4px; }
+.node-group-buttons button { padding: 2px 8px; min-height: 24px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }

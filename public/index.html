@@ -119,6 +119,9 @@
           <div class="card-head">
             <h3>세션 흐름 <span class="muted" title="두 번 클릭해 열기 · 빈 곳을 끌어 선택 후 Delete로 삭제 · ●를 다른 카드나 빈 곳에 끌어 연결">휠 확대·축소 · 휠 버튼 끌어 이동</span></h3>
             <div class="actions">
+              <button class="ghost sm" id="p-execution-history">실행 기록</button>
+              <button class="ghost sm" id="p-group-templates">그룹 템플릿</button>
+              <button class="ghost sm" id="p-flow-notifications">알림 설정</button>
               <button class="ghost sm" id="p-orchestrator" title="목표를 작업으로 나누고 세션을 만들어 지휘하는 세션">오케스트레이터 만들기</button>
               <button class="ghost sm" id="p-skills" title="스킬 만들기·편집·옮기기. 세션 카드의 스킬 칩을 눌러 장착합니다">스킬</button>
               <button class="ghost sm" id="p-board" title="세션들이 함께 보는 메모. API 약속·정한 사항·진행 상황을 남깁니다">공유 노트</button>
@@ -528,6 +531,8 @@
       <label class="check"><input type="checkbox" name="approve" id="link-approve">
         넘기기 전에 승인 받기 (조건이 맞으면 연결선 위에 승인 대기로 멈춥니다)
       </label>
+      <label class="check" id="link-git-worktree-row" hidden><input type="checkbox" name="useGitWorktree" id="link-git-worktree"> Git 작업 폴더 사용</label>
+      <p class="hint" id="link-git-worktree-hint" hidden>Git 결과의 작업 폴더에서 실행합니다. 기존 대화가 있는 세션은 같은 작업 폴더일 때만 실행할 수 있습니다.</p>
       <label class="check"><input type="checkbox" name="enabled" id="link-enabled" checked> 사용</label>
       <p class="hint">한 세션에서 나가는 연결은 키워드 → 성공·실패 → 그 외 순서로 먼저 맞은 쪽만 따라갑니다. "항상"은 언제나 함께 넘깁니다.</p>
       <p class="hint">보내는 세션의 마지막 답변, 바뀐 파일 목록, 작업 폴더 경로가 받는 세션의 요청으로 들어갑니다. 받는 세션이 실행 중이면 끝난 뒤 시작합니다. 자동 연결은 한 흐름에서 최대 8단계까지 이어집니다.</p>
@@ -555,18 +560,55 @@
         <label id="command-shell-row">셸 <select id="command-shell"></select></label>
         <label><span id="command-cwd-label">실행 폴더</span>
           <select id="command-cwd">
-            <option value="source">보낸 세션의 작업 폴더</option>
+            <option value="source">이전 노드의 작업 폴더</option>
             <option value="project">프로젝트 폴더</option>
           </select>
         </label>
         <label id="command-timeout-row">시간 제한(초) <input id="command-timeout" type="number" min="1" max="3600" value="600"></label>
       </div>
+      <div id="git-settings" class="git-node-settings" hidden>
+        <div class="two">
+          <label>Git 작업 <select id="git-action"><option value="use">브랜치 사용</option><option value="merge">브랜치 병합</option></select></label>
+          <label>시간 제한(초) <input id="git-timeout" type="number" min="1" max="3600" value="600"></label>
+        </div>
+        <label><span id="git-branch-label">사용할 브랜치</span> <select id="git-branch" aria-describedby="git-branch-details"></select></label>
+        <label id="git-target-row" hidden>반영할 대상 브랜치 <select id="git-target" aria-describedby="git-branch-details"></select></label>
+        <div class="git-branch-toolbar"><span id="git-branches-status" class="hint" role="status"></span><button type="button" id="git-branches-refresh" class="ghost sm">새로고침</button></div>
+        <p id="git-branch-details" class="hint mono"></p>
+        <p id="git-merge-hint" class="hint" hidden>소스 브랜치의 커밋된 변경만 --no-ff로 병합합니다. 대상 작업 폴더에 미커밋 변경이 있으면 실행하지 않습니다.</p>
+      </div>
       <label id="command-text-row">명령 <textarea id="command-text" rows="8" spellcheck="false" placeholder="npm test"></textarea></label>
       <label id="button-prompt-row" hidden>연결된 세션에 보낼 프롬프트
         <textarea id="button-prompt" rows="6" maxlength="20000" placeholder="예: 작업을 시작하고 완료한 내용을 알려 주세요."></textarea>
       </label>
+      <section id="input-settings" class="flow-node-settings" hidden>
+        <div class="flow-field-toolbar"><span>입력 항목</span><button type="button" id="input-field-add" class="ghost sm">항목 추가</button></div>
+        <div id="input-fields" class="flow-input-fields"></div>
+        <label>전달할 요청 <textarea id="input-prompt" rows="4" placeholder="{{task}} 작업을 {{branch}} 브랜치에서 진행해 주세요."></textarea></label>
+        <p class="hint">변수 이름은 영문·숫자·밑줄을 사용합니다. 이름은 영문 또는 밑줄로 시작합니다.</p>
+      </section>
+      <section id="repeat-settings" class="flow-node-settings" hidden>
+        <div class="two"><label>최대 실행 횟수 <input id="repeat-max" type="number" min="1" max="20" value="3"></label><label>다시 실행하기 전 대기(밀리초) <input id="repeat-delay" type="number" min="0" max="60000" value="0"></label></div>
+        <p class="hint">반복 제어 → 성공 → 구현 → 테스트 → 실패 → 반복 제어로 연결하세요. 테스트 성공은 다음 작업으로 연결합니다.</p>
+      </section>
+      <section id="transform-settings" class="flow-node-settings" hidden>
+        <label>가공 방식 <select id="transform-mode"><option value="json">JSON 필드 추출</option><option value="lines">문구를 포함한 줄 선택</option><option value="template">텍스트 템플릿</option></select></label>
+        <label id="transform-expression-row"><span id="transform-expression-label">JSON 필드 경로</span><input id="transform-expression" class="mono" spellcheck="false"></label>
+        <label id="transform-template-row" hidden>출력 템플릿 <textarea id="transform-template" rows="6" spellcheck="false" placeholder="검사 결과: {{input}}"></textarea></label>
+      </section>
+      <section id="watch-settings" class="flow-node-settings" hidden>
+        <label>감시할 파일·폴더 <textarea id="watch-paths" rows="4" spellcheck="false" placeholder="src&#10;package.json"></textarea></label>
+        <p class="hint">프로젝트 안의 상대 경로를 한 줄에 하나씩 입력하세요. 예: src, test/example.test.mjs</p>
+        <label>변경을 모아 기다릴 시간(밀리초) <input id="watch-debounce" type="number" min="100" max="60000" value="500"></label>
+        <label>변경 시 보낼 요청 <textarea id="watch-prompt" rows="4"></textarea></label>
+      </section>
+      <section id="notify-settings" class="flow-node-settings" hidden>
+        <label>알림 제목 <input id="notify-title" maxlength="200" value="AgentHub"></label>
+        <label>알림 내용 <textarea id="notify-message" rows="5" maxlength="20000" placeholder="{{input}}"></textarea></label>
+        <div class="two"><label>표시 종류 <select id="notify-level"><option value="info">안내</option><option value="success">성공</option><option value="error">실패</option></select></label><label class="check"><input id="notify-sound" type="checkbox"> 소리 요청</label></div>
+      </section>
       <div id="group-members-row" class="group-members" hidden>
-        <span class="group-members-label">묶을 세션</span>
+        <span class="group-members-label">모을 노드</span>
         <ul id="group-members" class="group-member-list"></ul>
       </div>
       <p class="hint" id="command-kind-hint">연결로 넘어오면 실행합니다. 종료 코드 0이면 "성공 시", 아니면 "실패 시" 연결로 넘어가고, 받는 세션에는 출력 마지막 부분이 함께 갑니다. 실행 전에 확인하려면 들어오는 연결에 "넘기기 전에 승인 받기"를 켜세요.</p>
@@ -580,8 +622,16 @@
         <button value="run" formnovalidate class="ghost" id="command-run">지금 실행</button>
         <span class="spacer"></span>
         <button value="cancel" formnovalidate class="ghost">취소</button>
-        <button value="ok" class="primary">저장</button>
+        <button value="ok" class="primary" id="command-save">저장</button>
       </menu>
+    </form>
+  </dialog>
+
+  <dialog id="input-run-dialog" class="wide" aria-labelledby="input-run-heading">
+    <form method="dialog" id="input-run-form" class="dialog-form">
+      <h3 id="input-run-heading">실행 입력</h3>
+      <div id="input-run-fields" class="flow-run-fields"></div>
+      <menu><span class="spacer"></span><button value="cancel" formnovalidate class="ghost">취소</button><button value="run" class="primary">입력하고 실행</button></menu>
     </form>
   </dialog>
 

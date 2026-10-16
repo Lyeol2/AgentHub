@@ -1,3 +1,4 @@
+import { assertSessionGitContext } from "./git-context.mjs";
 import { EventEmitter } from "node:events";
 import * as claude from "./agents/claude.mjs";
 import * as codex from "./agents/codex.mjs";
@@ -58,6 +59,7 @@ export class Runner extends EventEmitter {
     if (child.appServer) child.appServer.inject(input, meta.attachments);
     else child.stdin.write(`${agent.userLine(input, meta.attachments)}\n`);
     child.injected = (child.injected ?? 0) + 1;
+    child.emit?.("injected");
     this.append(session, { kind: "user", text, ...publicMeta(meta), injected: true });
   }
 
@@ -133,6 +135,7 @@ export class Runner extends EventEmitter {
   // retry는 이어 갈 대화가 없어 새 대화로 다시 보낼 때 쓴다. 요청은 이미 화면에 있으므로 다시 남기지 않는다.
   send(session, prompt, cliPath, input = prompt, meta = {}, retry = false) {
     if (this.running.has(session.id)) throw new Error("이 세션은 이미 실행 중입니다.");
+    assertSessionGitContext(session);
     if (!cliPath) throw new Error(`${session.agent} CLI를 찾지 못했습니다. 설정에서 경로를 지정하세요.`);
 
     const agent = AGENTS[session.agent];
@@ -167,18 +170,27 @@ export class Runner extends EventEmitter {
     let lastErrorText = null;
 
     let endTimer = null;
+    const cancelEndTimer = () => {
+      clearTimeout(endTimer);
+      endTimer = null;
+    };
+    child.on("injected", cancelEndTimer);
     const handleLine = (line, common = false) => {
       if (child.appServer && !common) return child.appServer.handleLine(line);
       if (!line.trim()) return;
-      // 턴이 끝난 뒤에도 붙인 요청으로 다음 출력이 오면 stdin을 닫지 않고 기다린다.
-      clearTimeout(endTimer);
-      if (agent.interactive && line.includes('"control_')) {
+      if (agent.interactive) {
         let msg = null;
         try {
           msg = JSON.parse(line);
         } catch {
           // 아래에서 일반 줄로 처리한다.
         }
+        // 실제 다음 작업이 시작될 때만 완료 대기를 취소한다. 한도·초기화 등 부가 알림은 종료를 막지 않는다.
+        const active = msg?.type === "assistant"
+          || (msg?.type === "user" && Array.isArray(msg.message?.content) && msg.message.content.some((block) => block?.type === "tool_result"))
+          || (msg?.type === "stream_event" && msg.event?.type === "message_start")
+          || (msg?.type === "control_request" && msg.request?.subtype === "can_use_tool");
+        if (active) cancelEndTimer();
         if (msg?.type === "control_request") return this.ask(session, child, agent, msg);
         if (msg?.type === "control_cancel_request") return this.dropPrompts(session.id, msg.request_id);
         if (msg?.type === "control_response") return; // initialize 응답
@@ -210,9 +222,9 @@ export class Runner extends EventEmitter {
           delete event.context;
           if (event.kind === "usage") continue;
         }
+        const duplicateError = event.kind === "error" && event.text === lastErrorText;
         if (event.kind === "error") {
-          // Codex는 같은 오류를 error와 turn.failed로 두 번 보낸다.
-          if (event.text === lastErrorText) continue;
+          // 같은 오류는 한 번만 표시하되, 뒤에 온 최종 이벤트의 종료 처리는 항상 실행한다.
           lastErrorText = event.text;
           sawError = true;
         }
@@ -220,11 +232,15 @@ export class Runner extends EventEmitter {
         // 턴의 마지막 줄(성공·실패 모두). 대화형 실행은 stdin을 닫아야 CLI가 끝난다.
         const final = event.final;
         delete event.final;
-        this.append(session, event);
+        if (!duplicateError) this.append(session, event);
         if (final && child.appServer) child.appServer.shutdown();
         else if (final && agent.interactive) {
           // 실행 중에 붙인 요청이 있으면 CLI가 이어서 처리할 수 있으므로 잠시 기다렸다가 닫는다.
-          if (child.injected) endTimer = setTimeout(() => child.stdin.end(), INJECT_GRACE_MS);
+          cancelEndTimer();
+          if (child.injected) endTimer = setTimeout(() => {
+            endTimer = null;
+            child.stdin.end();
+          }, INJECT_GRACE_MS);
           else child.stdin.end();
         }
       }
@@ -264,7 +280,8 @@ export class Runner extends EventEmitter {
 
     child.on("close", (code, signal) => {
       if (buffer) handleLine(buffer);
-      clearTimeout(endTimer);
+      cancelEndTimer();
+      child.removeListener("injected", cancelEndTimer);
       child.appServer?.close();
       this.running.delete(session.id);
       this.dropPrompts(session.id);
