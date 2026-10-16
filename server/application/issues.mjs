@@ -96,6 +96,11 @@ export function createIssueService({ config, store, sessions, workflows, links, 
     return guard(() => client.context(dir, { remote }));
   }
 
+  async function members(projectPath, { remote } = {}) {
+    const dir = await gitRepo(projectPath);
+    return guard(() => client.members(dir, { remote }));
+  }
+
   async function list(projectPath, { box, state, remote } = {}) {
     const dir = await gitRepo(projectPath);
     return guard(async () => {
@@ -252,5 +257,5 @@ export function createIssueService({ config, store, sessions, workflows, links, 
     notify("issues", { projectPath: link.projectPath, number: link.number, done });
   }
 
-  return { inbox, context, list, detail, create, comment, giveBack, close, reopen, start, setProgress, draft, onTurnEnd };
+  return { inbox, context, members, list, detail, create, comment, giveBack, close, reopen, start, setProgress, draft, onTurnEnd };
 }

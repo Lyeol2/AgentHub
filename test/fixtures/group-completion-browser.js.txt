@@ -66,7 +66,7 @@
   $("view-project").hidden = true; $("view-session").hidden = false;
   const textarea = $("s-prompt");
   let builtin = null, submitted = 0, escaped = 0;
-  createCompletion({ textarea, api, getSession: () => ({ id: "s1", projectPath: project }), onBuiltin: (name) => { builtin = name; } });
+  const completion = createCompletion({ textarea, api, getSession: () => ({ id: "s1", projectPath: project }), onBuiltin: (name) => { builtin = name; } });
   // 작성창의 보내기(Enter) 처리는 자동 완성 뒤에 등록된다.
   textarea.addEventListener("keydown", (e) => { if (e.key === "Enter") submitted++; });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented) escaped++; });
@@ -84,11 +84,14 @@
   type("검토 @src/a");
   await until(() => !menu.hidden && menu.textContent.includes("src/app.js"));
   key("Enter");
-  check(textarea.value === "검토 @src/app.js " && submitted === 0, "Enter inserts the file reference");
+  check(textarea.value === "검토 @app.js " && submitted === 0, "Enter inserts the file reference by its name");
+  const chip = textarea.parentElement.querySelector(".ref-mirror .ref-chip");
+  check(textarea.parentElement.classList.contains("has-refs") && chip?.textContent === "@app.js", "the chosen file is drawn as a highlighted reference");
+  check(completion.expand(textarea.value.trim()) === "검토 @src/app.js", "sending restores the full file path");
   type("@sr");
   await until(() => !menu.hidden && menu.children.length >= 2);
   key("ArrowDown"); key("Tab");
-  check(textarea.value === "@src/app.js ", "arrow keys move the selection");
+  check(textarea.value === "@app.js ", "arrow keys move the selection");
   type("@src");
   await until(() => !menu.hidden);
   key("Escape");

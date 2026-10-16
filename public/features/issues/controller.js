@@ -6,6 +6,29 @@ const INBOX_INTERVAL = 3 * 60_000;
 const DETAIL_INTERVAL = 15_000;
 const BODY_TEMPLATE = "## 할 일\n\n\n## 기대 결과\n\n\n## 재현·확인 방법\n\n";
 const AGENTS = [["claude", "Claude"], ["codex", "Codex"]];
+const NAME_KEY = "agenthub-team-names";
+const NAME_MAX = 40;
+
+// 팀원 표시 이름: 이 컴퓨터에서 직접 붙인 이름이 먼저, 없으면 GitHub 프로필 이름이다.
+const githubNames = new Map(); // login(소문자) → GitHub 프로필 이름
+function localNames() {
+  try {
+    const value = JSON.parse(localStorage.getItem(NAME_KEY) ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+function setLocalName(login, name) {
+  const names = localNames();
+  const value = String(name ?? "").trim().slice(0, NAME_MAX);
+  if (value) names[login.toLowerCase()] = value;
+  else delete names[login.toLowerCase()];
+  localStorage.setItem(NAME_KEY, JSON.stringify(names));
+}
+const displayName = (login) => String(localNames()[String(login).toLowerCase()] ?? "") || githubNames.get(String(login).toLowerCase()) || "";
+const who = (login) => (displayName(login) ? "@" + login + " (" + displayName(login) + ")" : "@" + login);
+const rememberNames = (context) => { for (const p of context?.assignees ?? []) if (p.name) githubNames.set(p.login.toLowerCase(), p.name); };
 
 // GitHub의 <details> 접기는 화면에서 굵은 제목으로 펼쳐 보인다(마크다운 렌더러는 HTML을 그대로 두지 않는다).
 const markdown = (text) => renderMarkdown(String(text ?? "")
@@ -76,6 +99,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
       ]);
       if (!current(s) || version !== s.listVersion) return;
       s.context = context;
+      rememberNames(context);
       s.issues = list.issues;
       $("i-repo").textContent = context.repo + (context.private ? "" : " · 공개 저장소");
       $("i-repo").href = context.repositoryUrl;
@@ -99,7 +123,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
       el("button", { type: "button", class: "pr-list-item" + (s.number === issue.number ? " active" : ""), "aria-pressed": String(s.number === issue.number), onclick: () => detail(issue.number) },
         el("span", { class: "pr-list-title" }, issue.title),
         el("span", { class: "pr-list-meta" }, statusBadge(issue),
-          el("span", {}, `#${issue.number} · ${s.box === "inbox" ? "@" + sender(issue) + "에게서" : "@" + (issue.assignees.join(", @") || "?") + "에게"}`),
+          el("span", {}, `#${issue.number} · ${s.box === "inbox" ? who(sender(issue)) + "에게서" : (issue.assignees.map(who).join(", ") || "@?") + "에게"}`),
           issue.link ? el("span", { class: "pill running issue-pill" }, issue.link.done ? "해결 완료" : "진행 중") : null,
           issue.comments ? el("span", { class: "muted" }, `댓글 ${issue.comments}`) : null),
         el("span", { class: "pr-list-branch" }, issue.updatedAt ? timeAgo(issue.updatedAt) + " 갱신" : "")))));
@@ -213,7 +237,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
     $("i-detail").replaceChildren(
       el("header", { class: "pr-detail-head" },
         el("div", { class: "pr-detail-meta" }, statusBadge(issue),
-          el("span", { class: "muted" }, `#${issue.number} · @${sender(issue)} → @${issue.assignees.join(", @") || "?"} · ${timeAgo(issue.updatedAt)}`)),
+          el("span", { class: "muted" }, `#${issue.number} · ${who(sender(issue))} → ${issue.assignees.map(who).join(", ") || "@?"} · ${timeAgo(issue.updatedAt)}`)),
         el("h4", {}, issue.title),
         meta.branch || meta.commit || meta.flow
           ? el("p", { class: "mono muted pr-refs" }, [meta.branch && `기준 ${meta.branch}`, meta.commit && String(meta.commit).slice(0, 8), meta.flow && `추천 흐름 ${meta.flow}`].filter(Boolean).join(" · "))
@@ -263,34 +287,36 @@ export function createIssuesController({ api, account, connectAccount, goProject
 
   function giveBack(s) {
     const issue = s.detail.issue;
-    const reason = prompt(`#${issue.number} 작업을 @${sender(issue)}에게 되돌려 보냅니다. 사유를 적어 주세요.`, "");
+    const reason = prompt(`#${issue.number} 작업을 ${who(sender(issue))}에게 되돌려 보냅니다. 사유를 적어 주세요.`, "");
     if (reason === null) return;
     return mutate("return", `/api/issues/${issue.number}/return`, { reason });
   }
 
   // ── 작업 보내기 ─────────────────────────────────────────────────
-  async function openSend(projectPath, draft = null) {
+  async function openSend(projectPath, draft = null, { assignee = "" } = {}) {
     if (!connected()) {
       if (confirm("작업을 보내려면 GitHub 계정을 연결해야 합니다. 지금 연결할까요?")) connectAccount();
       return;
     }
     send.projectPath = projectPath;
     send.context = null;
+    send.assignee = assignee;
     $("issue-error").textContent = "";
     $("issue-title").value = draft?.title ?? "";
     $("issue-body").value = draft?.body ?? BODY_TEMPLATE;
     $("issue-repo").textContent = "불러오는 중…";
     $("issue-visibility").textContent = "";
     $("issue-assignee").replaceChildren();
+    renderAssigneeName();
     $("issue-flow").replaceChildren(el("option", { value: "" }, "(지정 안 함)"));
     $("issue-dialog").showModal();
     try {
       const context = samePath(state?.project, projectPath) && state.context ? state.context : await api("GET", "/api/issues/context?" + new URLSearchParams({ path: projectPath }));
       if (send.projectPath !== projectPath) return;
       send.context = context;
+      rememberNames(context);
       $("issue-repo").textContent = context.repo;
-      const people = [...context.assignees].sort((a, b) => (a.login === context.viewer) - (b.login === context.viewer) || a.login.localeCompare(b.login));
-      $("issue-assignee").replaceChildren(...people.map((p) => el("option", { value: p.login }, "@" + p.login + (p.login === context.viewer ? " (나)" : ""))));
+      renderAssignees();
       $("issue-visibility").textContent = context.private
         ? "비공개 저장소입니다. 저장소 권한이 있는 사람만 볼 수 있습니다."
         : "⚠️ 공개 저장소입니다. 이 작업은 누구나 볼 수 있게 공개됩니다.";
@@ -303,6 +329,40 @@ export function createIssuesController({ api, account, connectAccount, goProject
       $("issue-error").textContent = err.message;
     }
   }
+
+  // 받을 팀원 목록. 이름이 있으면 "@아이디 (이름)"으로 보이고, 고른 팀원의 이름은 아래 칸에서 바꾼다.
+  function renderAssignees() {
+    const context = send.context;
+    if (!context) return;
+    const picked = $("issue-assignee").value || send.assignee;
+    const people = [...context.assignees].sort((a, b) => (a.login === context.viewer) - (b.login === context.viewer) || a.login.localeCompare(b.login));
+    $("issue-assignee").replaceChildren(...people.map((p) => el("option", { value: p.login }, who(p.login) + (p.login === context.viewer ? " · 나" : ""))));
+    if (people.some((p) => p.login === picked)) $("issue-assignee").value = picked;
+    renderAssigneeName();
+  }
+
+  function renderAssigneeName() {
+    const login = $("issue-assignee").value;
+    const input = $("issue-assignee-name");
+    const github = login ? githubNames.get(login.toLowerCase()) : "";
+    input.disabled = !login;
+    input.value = login ? String(localNames()[login.toLowerCase()] ?? "") : "";
+    input.placeholder = github ? "GitHub 이름: " + github : "예: 홍길동";
+  }
+
+  $("issue-assignee").addEventListener("change", renderAssigneeName);
+  $("issue-assignee-name").addEventListener("change", () => {
+    const login = $("issue-assignee").value;
+    if (!login) return;
+    setLocalName(login, $("issue-assignee-name").value);
+    renderAssignees();
+    if (state?.context) listView(state);
+    renderInbox();
+  });
+  $("issue-assignee-name").addEventListener("keydown", (e) => {
+    // 이름 칸의 Enter는 작업을 보내지 않고 이름만 저장한다.
+    if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); e.target.dispatchEvent(new Event("change")); }
+  });
 
   $("issue-form").addEventListener("submit", async (e) => {
     if (e.submitter?.value !== "ok") return;
@@ -385,7 +445,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
       class: "session-item", title: `${issue.repo} #${issue.number}\n${issue.title}`, onclick: () => openInboxItem(issue),
     },
     el("span", { class: "top" }, el("span", { class: "dot idle" }), el("span", { class: "name" }, issue.title)),
-    el("span", { class: "sub" }, `#${issue.number} · @${sender(issue)} · ${issue.projectPath ? issue.repo.split("/")[1] : issue.repo}`))));
+    el("span", { class: "sub" }, `#${issue.number} · ${who(sender(issue))} · ${issue.projectPath ? issue.repo.split("/")[1] : issue.repo}`))));
     renderTabCount();
   }
 
@@ -431,6 +491,84 @@ export function createIssuesController({ api, account, connectAccount, goProject
   $("i-connect").addEventListener("click", () => connectAccount());
   $("inbox-refresh").addEventListener("click", loadInbox);
 
+  // ── 팀원 탭 ─────────────────────────────────────────────────────
+  // 저장소에서 작업을 받을 수 있는 팀원. 이름을 붙이고, 각자 맡은 열린 작업 수를 보고, 바로 작업을 보낸다.
+  const team = { project: null, data: null, version: 0 };
+
+  function memberNotice(text = "", connect = false) {
+    $("m-notice").hidden = !text;
+    $("m-note").textContent = text;
+    $("m-connect").hidden = !connect;
+  }
+
+  async function loadMembers(project) {
+    if (team.project !== project) {
+      Object.assign(team, { project, data: null });
+      $("m-list").replaceChildren();
+      $("m-repo").textContent = "";
+      $("m-repo").removeAttribute("href");
+      $("p-tab-members").textContent = "";
+    }
+    const version = ++team.version;
+    if (!connected()) {
+      memberNotice("GitHub 계정을 연결하면 이 저장소의 팀원을 볼 수 있습니다.", true);
+      return;
+    }
+    if (!team.data) memberNotice("팀원을 불러오는 중…");
+    $("m-refresh").disabled = true;
+    try {
+      const data = await api("GET", "/api/issues/members?" + new URLSearchParams({ path: project }));
+      if (version !== team.version || !samePath(project, navigation.project)) return;
+      team.data = data;
+      rememberNames(data);
+      memberNotice("");
+      renderMembers();
+    } catch (err) {
+      if (version === team.version) memberNotice(err.message, ["gh-missing", "gh-auth"].includes(err.reason));
+    } finally {
+      if (version === team.version) $("m-refresh").disabled = false;
+    }
+  }
+
+  function renderMembers() {
+    const data = team.data;
+    if (!data) return;
+    $("m-repo").textContent = data.repo;
+    $("m-repo").href = data.repositoryUrl;
+    const people = [...data.assignees].sort((a, b) => (b.login === data.viewer) - (a.login === data.viewer) || a.login.localeCompare(b.login));
+    $("p-tab-members").textContent = people.length ? String(people.length) : "";
+    $("m-list").replaceChildren(...(people.length ? people.map(memberRow) : [el("li", { class: "muted member-empty" }, "작업을 받을 수 있는 팀원이 없습니다. GitHub 저장소 설정에서 협업자를 초대하세요.")]));
+  }
+
+  function memberRow(p) {
+    const title = el("strong", { class: "member-name" });
+    const sub = el("span", { class: "member-sub muted" });
+    const paint = () => {
+      title.textContent = displayName(p.login) || "@" + p.login;
+      sub.textContent = ["@" + p.login, p.name && displayName(p.login) !== p.name ? "GitHub 이름 " + p.name : ""].filter(Boolean).join(" · ");
+    };
+    paint();
+    const input = el("input", { class: "member-name-input", maxlength: String(NAME_MAX), autocomplete: "off",
+      placeholder: p.name ? "GitHub 이름: " + p.name : "이름 붙이기", "aria-label": "@" + p.login + " 표시 이름" });
+    input.value = String(localNames()[p.login.toLowerCase()] ?? "");
+    input.addEventListener("change", () => {
+      setLocalName(p.login, input.value);
+      paint();
+      if (state?.context) listView(state);
+      renderInbox();
+    });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.isComposing) input.blur(); });
+    const avatar = p.avatarUrl ? el("img", { class: "member-avatar", src: p.avatarUrl, alt: "", loading: "lazy" }) : el("span", { class: "member-avatar" });
+    return el("li", { class: "member-row" }, avatar,
+      el("div", { class: "member-info" }, el("div", { class: "member-title" }, title, p.login === team.data.viewer ? el("span", { class: "pill" }, "나") : null), sub),
+      el("span", { class: "member-tasks muted", title: "이 저장소에서 맡은 열린 팀 작업" + (team.data.limited ? " · 최근 100개 기준" : "") }, "맡은 작업 " + (p.openTasks ?? 0)),
+      input,
+      el("button", { type: "button", class: "ghost sm", onclick: () => openSend(team.project, null, { assignee: p.login }) }, "작업 보내기"));
+  }
+
+  $("m-refresh").addEventListener("click", () => team.project && loadMembers(team.project));
+  $("m-connect").addEventListener("click", () => connectAccount());
+
   const visible = () => navigation.view === "project" && projectTab() === "issues" && !document.hidden;
   const timers = [
     setInterval(loadInbox, INBOX_INTERVAL),
@@ -439,7 +577,8 @@ export function createIssuesController({ api, account, connectAccount, goProject
   window.addEventListener("pagehide", (event) => { if (!event.persisted) timers.forEach(clearInterval); });
 
   return {
-    activate(project) {
+    activate(project, tab = "issues") {
+      if (tab === "members") return loadMembers(project);
       setProject(project);
       refresh();
     },
@@ -450,8 +589,10 @@ export function createIssuesController({ api, account, connectAccount, goProject
     },
     accountChanged() {
       if (state) state.context = null;
+      team.data = null;
       loadInbox();
       if (state && visible()) refresh();
+      if (team.project && navigation.view === "project" && projectTab() === "members") loadMembers(team.project);
     },
     loadInbox, renderTabCount, openSend, sendSession, pullIssues,
   };

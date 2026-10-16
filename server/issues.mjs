@@ -10,6 +10,9 @@ const TITLE_MAX = 256;
 const BODY_MAX = 60_000;
 const COMMENT_MAX = 60_000;
 const PAGE = 50;
+const PROFILE_TTL = 60 * 60_000;
+const PROFILE_WORKERS = 6;
+const NAME_MAX = 40;
 
 // 본문 끝의 숨김 주석에 보낸 사람·기준 브랜치·추천 흐름을 남긴다. 주석이 끝나지 않게 <, >는 JSON 이스케이프로 쓴다.
 export function formatIssueBody(text, meta) {
@@ -83,6 +86,7 @@ export class GitHubIssues {
   constructor({ pulls = githubPulls } = {}) {
     this.pulls = pulls;
     this.viewers = new Map();
+    this.profiles = new Map(); // login → { name, at }
   }
 
   target(dir, remote) { return this.pulls.target(dir, remote); }
@@ -104,6 +108,24 @@ export class GitHubIssues {
     return value;
   }
 
+  // 팀원 GitHub 프로필의 이름(예: 한국어 이름). 못 읽으면 빈 이름으로 두고 잠깐 기억한다.
+  async profileNames(target, logins) {
+    const names = new Map();
+    const queue = [...logins];
+    const worker = async () => {
+      for (let user = queue.shift(); user; user = queue.shift()) {
+        const cached = this.profiles.get(user.toLowerCase());
+        if (cached && Date.now() - cached.at < PROFILE_TTL) { names.set(user, cached.name); continue; }
+        let name = "";
+        try { name = String((await this.api(target, "GET", "users/" + user))?.name ?? "").trim().slice(0, NAME_MAX); } catch {}
+        this.profiles.set(user.toLowerCase(), { name, at: Date.now() });
+        names.set(user, name);
+      }
+    };
+    await Promise.all(Array.from({ length: PROFILE_WORKERS }, worker));
+    return names;
+  }
+
   async context(dir, { remote } = {}) {
     const target = await this.target(dir, remote);
     const [viewer, info, assignees, local] = await Promise.all([
@@ -112,10 +134,12 @@ export class GitHubIssues {
       this.api(target, "GET", "repos/" + target.repo + "/assignees?per_page=100"),
       this.pulls.local(dir),
     ]);
+    const people = assignees.map((user) => ({ login: login(user), avatarUrl: String(user.avatar_url ?? "") })).filter((user) => LOGIN.test(user.login));
+    const names = await this.profileNames(target, people.map((user) => user.login));
     return {
       repo: target.repo, repositoryUrl: target.url, remote: target.name, viewer,
       private: info.private === true, hasIssues: info.has_issues !== false,
-      assignees: assignees.map((user) => ({ login: login(user), avatarUrl: String(user.avatar_url ?? "") })).filter((user) => LOGIN.test(user.login)),
+      assignees: people.map((user) => ({ ...user, name: names.get(user.login) ?? "" })),
       branch: local.branch, headSha: local.headSha,
     };
   }
@@ -131,6 +155,19 @@ export class GitHubIssues {
     const raw = await this.api(target, "GET", "repos/" + target.repo + "/issues?" + query);
     const issues = raw.filter((item) => !item.pull_request).map((item) => normalizeIssue(item, target.repo));
     return { repo: target.repo, viewer, box, issues, limited: raw.length >= PAGE };
+  }
+
+  // 팀원 탭: 작업을 받을 수 있는 팀원과 각자 맡은 열린 작업 수(최근 100개 기준).
+  async members(dir, { remote } = {}) {
+    const context = await this.context(dir, { remote });
+    const target = await this.target(dir, remote);
+    const query = new URLSearchParams({ labels: ISSUE_LABEL, state: "open", per_page: "100" });
+    const raw = await this.api(target, "GET", "repos/" + target.repo + "/issues?" + query);
+    const open = new Map();
+    for (const item of raw.filter((entry) => !entry.pull_request)) {
+      for (const user of normalizeIssue(item, target.repo).assignees) open.set(user.toLowerCase(), (open.get(user.toLowerCase()) ?? 0) + 1);
+    }
+    return { ...context, assignees: context.assignees.map((user) => ({ ...user, openTasks: open.get(user.login.toLowerCase()) ?? 0 })), limited: raw.length >= 100 };
   }
 
   // 모든 저장소에서 나에게 지정된 열린 작업. 사이드바 배지와 알림에 쓴다.

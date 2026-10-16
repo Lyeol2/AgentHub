@@ -434,3 +434,26 @@ test("tasks: records without GitFlow snapshots keep legacy branch names after pr
   f.change(task.cwd);
   assert.equal((await f.service.finish(task.id)).pull.baseRefName, "develop");
 });
+
+test("tasks: without a worktree the source folder switches to the task branch and returns on cleanup", async (t) => {
+  const f = fixture(t);
+  f.change(f.repo, "dirty.txt");
+  await assert.rejects(f.create("feature", { worktree: false }), (error) => error.reason === "task-dirty");
+  fs.rmSync(path.join(f.repo, "dirty.txt"));
+  await assert.rejects(f.create("feature", { worktree: false, workBranch: "feature/x" }), /새 작업 브랜치만/);
+
+  const { task, session } = await f.create("feature", { worktree: false });
+  assert.equal(task.inPlace, true); assert.equal(task.previousBranch, "main"); assert.equal(task.ownsWorktree, false);
+  assert.equal(path.resolve(task.cwd), path.resolve(f.repo)); assert.equal(session.cwd, task.cwd);
+  assert.equal(f.git(f.repo, "branch", "--show-current"), task.branch);
+  assert.equal(fs.existsSync(path.join(path.dirname(f.repo), "repo.agenthub")), false); // 워크트리 폴더를 만들지 않는다.
+  await assert.rejects(f.create("feature", { worktree: false }), (error) => error.reason === "task-in-place");
+
+  f.change(task.cwd);
+  await f.service.finish(task.id);
+  const raw = f.state.pulls[0]; raw.merged = true; raw.state = "closed";
+  const cleaned = await f.service.cleanup(task.id);
+  assert.equal(cleaned.task.state, "cleaned"); assert.equal(cleaned.task.localBranchRemoved, true);
+  assert.equal(f.git(f.repo, "branch", "--show-current"), "main"); // 작업 전 브랜치로 돌아온다.
+  assert.ok(fs.existsSync(f.repo));
+});
