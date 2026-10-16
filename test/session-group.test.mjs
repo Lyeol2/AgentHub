@@ -33,7 +33,7 @@ function setup({ links = [], extra = [] } = {}) {
 }
 
 test("세션 묶음: 묶을 세션이 있어야 하고 개수에 한도가 있다", () => {
-  assert.deepEqual(checkCommand({ kind: "group", members: ["a", "b", "a"] }), { kind: "group", title: "세션 묶음", members: ["a", "b"] });
+  assert.deepEqual(checkCommand({ kind: "group", members: ["a", "b", "a"] }), { kind: "group", title: "결과 모으기", members: ["a", "b"] });
   assert.throws(() => checkCommand({ kind: "group", members: [] }), /하나 이상/);
   assert.throws(() => checkCommand({ kind: "group", members: Array.from({ length: 21 }, (_, i) => `s${i}`) }), /20개까지/);
   assert.throws(() => checkCommand({ kind: "command" }, { id: "cmd-1", kind: "group", members: ["a"] }), /종류는 바꿀 수 없습니다/);

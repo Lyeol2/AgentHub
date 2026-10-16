@@ -7,7 +7,11 @@ import { SessionStore } from "./store.mjs";
 import { Runner } from "./runner.mjs";
 import { LinkStore } from "./links.mjs";
 import { CommandStore } from "./commands.mjs";
+import { NodeGroupStore, createNodeGroupService } from "./node-groups.mjs";
 import { Chain } from "./chain.mjs";
+import { RunHistoryStore } from "./run-history.mjs";
+import { createRunService } from "./application/runs.mjs";
+import { createGroupTemplateService } from "./application/group-templates.mjs";
 import { Mailbox, createBoardStore } from "./messages.mjs";
 import { createMessagingService } from "./application/messaging.mjs";
 import { McpTokens, createMessagingTools } from "./mcp.mjs";
@@ -50,6 +54,11 @@ export function createHub(options = {}) {
   const runner = deps.runner ?? new Runner(store);
   const links = deps.links ?? new LinkStore({ dataDir });
   const commands = deps.commands ?? new CommandStore({ dataDir });
+  const runHistory = deps.runHistory ?? new RunHistoryStore({ dataDir });
+  for (const link of links.list()) {
+    if (link.pending?.flow?.id && ["interrupted", "stopped"].includes(runHistory.get(link.pending.flow.id)?.status)) links.update(link, { pending: null });
+  }
+  const nodeGroups = deps.nodeGroups ?? new NodeGroupStore({ dataDir });
   const board = deps.board ?? createBoardStore({ dataDir });
   const limits = deps.limits ?? createLimitsService({ dataDir });
   const events = deps.events ?? createEventStream();
@@ -69,15 +78,18 @@ export function createHub(options = {}) {
   let projects;
   let workflows;
   let tasks;
+  let nodeGroupService;
   let updater = null;
   let updateListener = null;
 
   const chain = deps.chain ?? new Chain({
-    store, runner, links, commands, cliPaths,
+    store, runner, links, commands, cliPaths, history: runHistory,
     autoTurnEnd: false,
     compose: (...args) => sessions.composeInput(...args),
     notify: (kind, sessionId) => {
-      if (kind === "links" || kind === "commands") notify(kind, {});
+      if (["links", "commands", "sessions"].includes(kind)) notify(kind, {});
+      else if (["runs", "notification"].includes(kind)) notify(kind, sessionId ?? {});
+      else if (kind === "git") notify("git", { projectPath: sessionId });
       else notify("queue", { sessionId });
     },
   });
@@ -91,21 +103,27 @@ export function createHub(options = {}) {
     saveConfig: persistConfig,
     sessions: () => sessions,
     tasks: () => tasks,
+    nodeGroups: () => nodeGroupService,
   });
+  nodeGroupService = createNodeGroupService({ groups: nodeGroups, store, commands, links, projects, notify });
   sessions = createSessionService({
     config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects, commands,
     saveConfig: persistConfig,
     workflows: () => workflows,
     tasks: () => tasks,
+    nodeGroups: () => nodeGroupService,
   });
-  workflows = createWorkflowService({ store, runner, links, commands, chain, projects, sessions, notify });
+  workflows = createWorkflowService({ store, runner, links, commands, chain, projects, sessions, nodeGroups: nodeGroupService, notify });
   tasks = createTaskService({ dataDir, config, saveConfig: persistConfig, store, runner, sessions, projects, notify, github: deps.github });
   const services = {
     sessions,
     projects,
     workflows,
     tasks,
-    commands: createCommandService({ commands, chain, links, store, projects, cliPaths, notify }),
+    nodeGroups: nodeGroupService,
+    runs: createRunService({ history: runHistory, chain, projects, notify }),
+    groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, notify }),
+    commands: createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups: () => nodeGroupService, notify }),
     skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
     git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks }),
     system: createSystemService({
@@ -148,7 +166,12 @@ export function createHub(options = {}) {
   };
   listen(runner, "event", (sessionId, event) => {
     notify("event", { sessionId, event });
-    if (event.status === "pending" && ["question", "permission"].includes(event.kind)) notify("sessions", {});
+    if (event.status === "pending" && ["question", "permission"].includes(event.kind)) {
+      const session = store.get(sessionId);
+      chain.controls?.wait(session, chain.flowFor?.(session), event.questions ? JSON.stringify(event.questions, null, 2) : event.text ?? "응답 대기");
+      chain.workflow?.settle();
+      notify("sessions", {});
+    }
   });
   listen(runner, "state", (sessionId, state, runningStartedAt) => {
     notify("state", { sessionId, state, runningStartedAt });
@@ -237,7 +260,7 @@ export function createHub(options = {}) {
   }
 
   const hub = {
-    config, dataDir, store, runner, links, commands, chain, mailbox, board, limits, setup,
+    config, dataDir, store, runner, links, commands, nodeGroups, runHistory, chain, mailbox, board, limits, setup,
     mcpTokens, server, services, events,
     get port() { return port; },
     start,

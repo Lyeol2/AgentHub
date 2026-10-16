@@ -2,11 +2,12 @@ export function assetRoutes({ commands: c, skills: s }) {
   const project = ({ query, body }) => query.get("path") ?? body.projectPath;
   return [
     ["GET", "commands", ({ query }) => c.list(query.get("path"))],
+    ["GET", "commands/git-branches", ({ query }) => c.gitBranches(query.get("path"))],
     ["POST", "commands/generate", ({ body }) => c.generate(body)],
     ["POST", "commands", ({ body }) => c.create(body)],
     ["PUT", "commands/:id", ({ params, body }) => c.update(params.id, body)],
     ["DELETE", "commands/:id", ({ params }) => c.remove(params.id)],
-    ["POST", "commands/:id/run", ({ params }) => c.run(params.id)],
+    ["POST", "commands/:id/run", ({ params, body }) => c.run(params.id, body)],
     ["POST", "commands/:id/stop", ({ params }) => c.stop(params.id)],
     ["GET", "commands/:id/output", ({ params }) => c.output(params.id)],
     ["GET", "commands/:id/output/file", ({ params, res }) => {

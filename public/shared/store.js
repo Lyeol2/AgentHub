@@ -2,7 +2,7 @@
 export function createStore() {
   return {
     data: { status: null, sessions: [], current: null, projects: null, links: [], commands: [],
-      commandsProject: null, shells: [], skills: [], skillsProject: null, messages: [], hubs: new Map() },
+      commandsProject: null, nodeGroups: [], nodeGroupsProject: null, shells: [], skills: [], skillsProject: null, messages: [], hubs: new Map() },
     navigation: { view: "dashboard", project: null, viewRevision: 0 },
   };
 }

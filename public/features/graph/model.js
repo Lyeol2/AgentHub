@@ -47,19 +47,19 @@ export function layoutGraph(sessions, links) {
   return pos;
 }
 
-export function edgePath(a, b, sa = CARD_SIZE, sb = CARD_SIZE) {
+export function edgePath(a, b, sa = CARD_SIZE, sb = CARD_SIZE, sourceY = null) {
   const x1 = a.x + sa.w;
-  const y1 = a.y + sa.h / 2;
+  const y1 = a.y + (sourceY ?? sa.h / 2);
   const x2 = b.x;
   const y2 = b.y + sb.h / 2;
   if (x2 < x1) {
     // 되돌아가는 연결은 카드 아래쪽끼리 잇는다.
-    const sx = a.x + sa.w / 2;
+    const sx = sourceY === null ? a.x + sa.w / 2 : x1;
     const tx = b.x + sb.w / 2;
-    const sy = a.y + sa.h;
+    const sy = sourceY === null ? a.y + sa.h : y1;
     const ty = b.y + sb.h;
     const low = Math.max(sy, ty) + 44;
-    return { d: `M${sx},${sy} C${sx},${low} ${tx},${low} ${tx},${ty}`, mid: { x: (sx + tx) / 2, y: low - 11 } };
+    return { d: `M${sx},${sy} C${sourceY === null ? sx : sx + 44},${low} ${tx},${low} ${tx},${ty}`, mid: { x: (sx + tx) / 2, y: low - 11 } };
   }
   const dx = Math.max(48, (x2 - x1) / 2);
   return { d: `M${x1},${y1} C${x1 + dx},${y1} ${x2 - dx},${y2} ${x2},${y2}`, mid: { x: (x1 + x2) / 2, y: (y1 + y2) / 2 } };

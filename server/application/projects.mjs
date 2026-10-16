@@ -5,7 +5,7 @@ import { removeWorktree } from "../git.mjs";
 import { HttpError } from "./errors.mjs";
 export const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
-export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks }) {
+export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks, nodeGroups }) {
   const cleanupSession = (...args) => sessions().cleanupSession(...args);
   const cliSessionIds = (...args) => sessions().cliSessionIds(...args);
   const clearBoard = (...args) => board.clear(...args);
@@ -56,6 +56,7 @@ export function createProjectService({ config, store, runner, links, commands, c
       commands.remove(c.id);
       links.removeForSession(c.id);
     }
+    nodeGroups?.()?.removeProject(dir);
     clearBoard(dir);
     delete config.skillLayout?.[dir.toLowerCase()];
     config.projects = config.projects.filter((p) => !samePath(p.path, dir));

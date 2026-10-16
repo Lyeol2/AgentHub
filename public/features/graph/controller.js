@@ -1,11 +1,13 @@
 import { createGraphView } from "./view.js";
+import { createNodeGroups } from "./node-groups.js";
+import { KIND_LABEL, kindOf, hasBranchPorts, isSourceOnly } from "../commands/flow-nodes.js";
 import { PAD, SVG_NS, isCommandNode, nodeSize, layoutGraph, edgePath } from "./model.js";
 import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { linkLabel } from "../../shared/flow.js";
 import { openContextMenu, closeContextMenu } from "../../shared/context-menu.js";
 
-export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, data, navigation }) {
+export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
   const ui = {
     "graph": null,
     "graphSelected": new Set(),
@@ -14,6 +16,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     "editingLink": null
   };
   const view = createGraphView({ skillChips, restartSession, toggleSessionLock, commandNode });
+
+  const nodeGroups = createNodeGroups({ api, data, navigation, ui, renderGraph, loadSessions, loadCommands, runCommand, saveGroupTemplate, trackGesture: trackGraphGesture, canvasPoint, placeCards, openLinkDialog, openCreateMenu: openGraphCreateMenu, syncSelection: syncGraphSelection });
 
   // ── 세션 흐름 그래프 ────────────────────────────────────────────
 
@@ -33,6 +37,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const before = new Set((data.links ?? []).filter((l) => l.pending).map((l) => l.id));
     try {
       data.links = await api("GET", "/api/links");
+      await nodeGroups.load(navigation.project, { render: false });
     } catch {
       return;
     }
@@ -46,6 +51,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   function renderGraph() {
     const box = $("p-graph");
+    nodeGroups.ensureLoaded();
     if (ui.graph?.dragging) {
       ui.graph.needsRender = true; // 데이터 변경은 끌기를 마친 뒤 한 번 반영한다.
       return;
@@ -54,7 +60,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       .filter((s) => samePath(s.projectPath, navigation.project))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     const cmdNodes = samePath(data.commandsProject, navigation.project) ? data.commands ?? [] : [];
-    if (!sessions.length && !cmdNodes.length) {
+    if (!sessions.length && !cmdNodes.length && !nodeGroups.groups().length) {
       ui.graph = null;
       box.replaceChildren(el("div", { class: "graph-empty" },
         "이 프로젝트에서 만든 세션이 없습니다. 여기서 우클릭하거나 새 세션을 만들면 카드로 보입니다."));
@@ -65,7 +71,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const links = data.links.filter((l) => ids.has(l.from) && ids.has(l.to));
     // 오케스트레이터가 만든 세션은 지휘선으로 잇고, 배치도 오케스트레이터를 앞에 둔다.
     const commands = sessions.filter((s) => ids.has(s.createdBy)).map((s) => ({ from: s.createdBy, to: s.id }));
-    // 세션 묶음은 묶은 세션에서 점선 묶음선으로 잇고, 배치도 묶은 세션 뒤에 둔다.
+    // 결과 모으기은 묶은 세션에서 점선 묶음선으로 잇고, 배치도 묶은 세션 뒤에 둔다.
     const members = cmdNodes.filter((c) => c.kind === "group")
       .flatMap((c) => (c.members ?? []).filter((id) => ids.has(id)).map((id) => ({ from: id, to: c.id })));
     const pos = layoutGraph([...sessions, ...cmdNodes], [...commands, ...members, ...links]);
@@ -75,6 +81,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const sizer = el("div", { class: "graph-sizer" }, canvas);
     const pan = samePath(ui.graph?.projectPath, navigation.project) ? { ...ui.graph.pan } : { x: 0, y: 0 };
     ui.graph = { canvas, sizer, svg, cards, pos, links, commands, members, zoom: graphZoomFor(navigation.project), pan, projectPath: navigation.project };
+    nodeGroups.render(ui.graph);
     placeCards();
     syncGraphSelection();
     box.replaceChildren(sizer);
@@ -85,6 +92,11 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   $("p-graph").addEventListener("pointerdown", onGraphPointerDown);
   $("p-graph").addEventListener("auxclick", (e) => { if (e.button === 1) e.preventDefault(); });
   $("p-graph").addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "g" && !e.repeat && !e.target.closest("input, textarea, select, [contenteditable]")) {
+      e.preventDefault();
+      if (!document.querySelector("dialog[open]") && navigation.view === "project") void nodeGroups.create();
+      return;
+    }
     if (e.key !== "Delete" || e.repeat || e.isComposing || e.defaultPrevented) return;
     if (e.target.closest("input, textarea, select, [contenteditable]:not([contenteditable=\"false\"])")) return;
     if (document.querySelector("dialog[open]")) return;
@@ -96,17 +108,26 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   // 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 명령 노드는 명령 메뉴, 빈 곳은 그 자리에 새 세션·명령을 만든다.
   $("p-graph").addEventListener("contextmenu", (e) => {
     if (e.target.closest(".edge-label")) return;
+    const frame = e.target.closest(".node-group");
+    if (frame) {
+      const group = nodeGroups.byId(frame.dataset.groupId);
+      if (group) openContextMenu(e, `노드 그룹 ${group.title}`, nodeGroups.contextEntries(group));
+      return;
+    }
     const card = e.target.closest(".gcard, .gcmd");
     const cmd = card && commandById(card.dataset.id);
+    const grouping = card ? [...nodeGroups.selectedEntries(), null] : [];
     if (cmd) {
-      const running = cmd.state === "running";
+      const running = ["running", "watching"].includes(cmd.state);
       const kind = cmd.kind ?? "command";
-      const label = kind === "button" ? "버튼" : kind === "markdown" ? "Markdown 출력" : kind === "group" ? "세션 묶음" : "명령";
+      const label = KIND_LABEL[kindOf(cmd)];
       openContextMenu(e, `${label} ${cmd.title}`, [
+        ...grouping,
         kind === "markdown"
           ? ["결과 보기", () => openCommandOutput(cmd), { disabled: !cmd.lastRun?.output }]
-          : kind === "group" ? ["지금 넘기기", () => runCommand(cmd), { title: "묶은 세션이 모두 끝났을 때만 넘깁니다" }]
+          : kind === "group" ? ["지금 넘기기", () => runCommand(cmd), { title: "모을 노드가 모두 끝났을 때 넘깁니다" }]
             : running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
+        ...(kind !== "markdown" && (cmd.lastRun || cmd.live) ? [["결과 보기", () => openCommandOutput(cmd)]] : []),
         ["편집", () => openCommandDialog(cmd)],
         null,
         ["삭제", () => removeCommand(cmd), { danger: true }],
@@ -115,14 +136,15 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }
     if (card) {
       const s = sessionById(card.dataset.id);
-      if (s) openSessionMenu(e, s);
+      if (s && grouping.length > 1) openContextMenu(e, s.title, [...grouping, ["세션 메뉴", () => openSessionMenu(e, s)]]);
+      else if (s) openSessionMenu(e, s);
       return;
     }
     openGraphCreateMenu(e);
   });
 
   // 손잡이를 빈 곳에 놓았을 때도 같은 생성 메뉴를 쓰고, 만든 노드에 바로 잇는다.
-  function openGraphCreateMenu(e, connectFrom = null) {
+  function openGraphCreateMenu(e, connectFrom = null, connectWhen = null, connectKeyword = "") {
     const projectPath = navigation.project;
     const at = ui.graph ? canvasPoint(e) : { x: PAD, y: PAD };
     const pos = { x: Math.max(0, Math.round(at.x)), y: Math.max(0, Math.round(at.y)) };
@@ -131,20 +153,29 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     };
     const source = commandById(connectFrom);
     const entries = [
-      ["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom }))],
+      ["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen, connectKeyword }))],
     ];
-    if (source?.kind !== "button") entries.push(
-      ["새 명령", inProject(() => openCommandDialog(null, pos, connectFrom))]);
+    entries.push(
+      ["새 명령", inProject(() => openCommandDialog(null, pos, connectFrom, "command", { connectWhen, connectKeyword }))]);
+    entries.push(
+      ["새 반복 제어", inProject(() => openCommandDialog(null, pos, connectFrom, "repeat", { connectWhen, connectKeyword }))],
+      ["새 결과 가공", inProject(() => openCommandDialog(null, pos, connectFrom, "transform", { connectWhen, connectKeyword }))],
+      ["새 알림", inProject(() => openCommandDialog(null, pos, connectFrom, "notify", { connectWhen, connectKeyword }))]);
+    if (!connectFrom) entries.push(
+      ["새 입력 폼", inProject(() => openCommandDialog(null, pos, null, "input"))],
+      ["새 파일 감시", inProject(() => openCommandDialog(null, pos, null, "watch"))]);
+    entries.push(["새 GIT", inProject(() => openCommandDialog(null, pos, connectFrom, "git", { connectWhen, connectKeyword }))]);
     if (!connectFrom) entries.push(
       ["새 버튼", inProject(() => openCommandDialog(null, pos, null, "button"))]);
-    if (!source || source.kind === "group") entries.push(
-      ["새 Markdown 출력", inProject(() => openCommandDialog(null, pos, connectFrom, "markdown"))]);
+    entries.push(
+      ["새 Markdown 출력", inProject(() => openCommandDialog(null, pos, connectFrom, "markdown", { connectWhen, connectKeyword }))]);
     // 고른 세션 카드가 있으면 그 세션들을 미리 골라 둔다.
-    const picked = [...ui.graphSelected].filter((id) => sessionById(id) && !sessionById(id).chat);
-    entries.push([picked.length > 1 && !connectFrom ? `선택한 세션 ${picked.length}개 묶기` : "새 세션 묶음",
-      inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked }))]);
-    openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [...entries,
+    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "group"].includes(node.kind); });
+    entries.push([picked.length > 1 && !connectFrom ? `선택한 노드 ${picked.length}개 결과 모으기` : "새 결과 모으기",
+      inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked, connectWhen, connectKeyword }))]);
+    openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [...(!connectFrom ? nodeGroups.selectedEntries() : []), ...entries,
       null,
+      ...(!connectFrom && openGroupTemplates ? [["그룹 템플릿 추가", inProject(() => openGroupTemplates(pos))]] : []),
       ["스킬 관리", inProject(() => openSkillsManager())],
     ]);
   }
@@ -153,6 +184,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     ui.graphGesture?.cancel();
     closeContextMenu();
     cancelNodeCreation();
+    clearExecutionControls?.();
+    document.getElementById("node-group-dialog")?.close?.();
     ui.graphSelected.clear();
   }
 
@@ -200,7 +233,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       (samePath(data.commandsProject, projectPath) ? commandById(context.connectFrom) : null);
     if (!source || (source.projectPath && !samePath(source.projectPath, projectPath))) return;
     try {
-      await api("POST", "/api/links", { from: source.id, to, ...defaultLinkCondition(source.id), enabled: true });
+      const when = context.connectWhen ?? (source.kind === "git" ? "success" : null);
+      const target = commandById(to);
+      const targetKind = target?.kind ?? context.kind ?? "session";
+      await api("POST", "/api/links", { from: source.id, to, ...(when ? { when, keyword: context.connectKeyword ?? "" } : defaultLinkCondition(source.id)), ...(source.kind === "git" ? { useGitWorktree: when === "success" && source.gitAction === "use" && ["session", "command"].includes(targetKind) } : {}), enabled: true });
       await loadLinks();
     } catch (err) {
       alert(`노드는 만들었지만 연결하지 못했습니다. 손잡이를 끌어 다시 연결해 주세요.\n\n${err.message}`);
@@ -218,7 +254,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       const size = nodeSize(id);
       card.style.left = `${p.x}px`;
       card.style.top = `${p.y}px`;
-      width = Math.max(width, p.x + size.w + PAD);
+      width = Math.max(width, p.x + size.w + PAD + (hasBranchPorts(commandById(id)) ? 32 : 0));
       height = Math.max(height, p.y + size.h + PAD);
     }
     // 되돌아가는 연결은 카드 아래로 휘어 내려가므로(edgePath) 그 선과 라벨이 잘리지 않게 아래 여백을 더 둔다.
@@ -228,9 +264,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       if (!a || !b || b.x >= a.x + nodeSize(link.from).w) continue;
       height = Math.max(height, Math.max(a.y + nodeSize(link.from).h, b.y + nodeSize(link.to).h) + 64);
     }
-    g.canvas.style.width = `${width}px`;
-    g.canvas.style.height = `${height}px`;
     g.size = { width, height };
+    nodeGroups.place(g);
+    g.canvas.style.width = `${g.size.width}px`;
+    g.canvas.style.height = `${g.size.height}px`;
     applyGraphZoom();
     drawEdges();
   }
@@ -324,6 +361,18 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   // sa·sb: 양 끝 노드 크기
 
+  function graphEdgePath(g, from, to, link = {}) {
+    if (nodeGroups.containsHiddenEdge(g, from, to)) return null;
+    if (!g.groupByMember?.has(from) && !g.groupByMember?.has(to)) {
+      if (!g.pos.has(from) || !g.pos.has(to)) return null;
+      return edgePath(g.pos.get(from), g.pos.get(to), nodeSize(from), nodeSize(to), hasBranchPorts(commandById(from)) ? link.when === "error" ? 78 : 40 : null);
+    }
+    const a = nodeGroups.endpoint(g, from, "output", to, link), b = nodeGroups.endpoint(g, to, "input", from, link);
+    if (!a || !b) return null;
+    const dx = Math.max(48, Math.abs(b.x - a.x) / 2);
+    return { d: `M${a.x},${a.y} C${a.x + dx},${a.y} ${b.x - dx},${b.y} ${b.x},${b.y}`, mid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } };
+  }
+
   function drawEdges() {
     const g = ui.graph;
     if (!g) return;
@@ -340,8 +389,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       talks.set(key, talk);
     }
     for (const talk of talks.values()) {
+      const edge = graphEdgePath(g, talk.from, talk.to);
+      if (!edge) continue;
       const path = document.createElementNS(SVG_NS, "path");
-      path.setAttribute("d", edgePath(g.pos.get(talk.from), g.pos.get(talk.to), nodeSize(talk.from), nodeSize(talk.to)).d);
+      path.setAttribute("d", edge.d);
       path.setAttribute("class", "edge message");
       const title = document.createElementNS(SVG_NS, "title");
       title.textContent = `메시지 ${talk.count}개 · 마지막: ${nodeTitle(talk.last.from)} → ${nodeTitle(talk.last.to)}
@@ -350,23 +401,41 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       g.svg.append(path);
     }
     for (const command of g.commands) {
+      const edge = graphEdgePath(g, command.from, command.to);
+      if (!edge) continue;
       const path = document.createElementNS(SVG_NS, "path");
-      path.setAttribute("d", edgePath(g.pos.get(command.from), g.pos.get(command.to), nodeSize(command.from), nodeSize(command.to)).d);
+      path.setAttribute("d", edge.d);
       path.setAttribute("class", "edge command");
       g.svg.append(path);
     }
     for (const member of g.members ?? []) {
+      const edge = graphEdgePath(g, member.from, member.to);
+      if (!edge) continue;
       const path = document.createElementNS(SVG_NS, "path");
-      path.setAttribute("d", edgePath(g.pos.get(member.from), g.pos.get(member.to), nodeSize(member.from), nodeSize(member.to)).d);
+      path.setAttribute("d", edge.d);
       path.setAttribute("class", "edge member");
       const title = document.createElementNS(SVG_NS, "title");
-      title.textContent = `${nodeTitle(member.from)} → 세션 묶음 ${nodeTitle(member.to)}`;
+      title.textContent = `${nodeTitle(member.from)} → 결과 모으기 ${nodeTitle(member.to)}`;
       path.append(title);
+      g.svg.append(path);
+    }
+    // Expanded groups show the correspondence between boundary ports and real nodes.
+    for (const group of nodeGroups.groups().filter((item) => !item.collapsed)) for (const port of group.ports) {
+      const pos = g.pos.get(port.nodeId);
+      if (!pos) continue;
+      const boundary = nodeGroups.portPoint(group, port), dimensions = nodeSize(port.nodeId);
+      const actual = { x: pos.x + (port.direction === "output" ? dimensions.w : 0), y: pos.y + (port.direction === "output" && hasBranchPorts(commandById(port.nodeId)) ? port.when === "error" ? 78 : 40 : dimensions.h / 2) };
+      const a = port.direction === "output" ? actual : boundary, b = port.direction === "output" ? boundary : actual;
+      const path = document.createElementNS(SVG_NS, "path");
+      path.setAttribute("d", `M${a.x},${a.y} C${a.x + 32},${a.y} ${b.x - 32},${b.y} ${b.x},${b.y}`);
+      path.setAttribute("class", "edge group-boundary");
       g.svg.append(path);
     }
     const placed = []; // 라벨이 겹치면 아래로 비킨다.
     for (const link of g.links) {
-      const { d, mid } = edgePath(g.pos.get(link.from), g.pos.get(link.to), nodeSize(link.from), nodeSize(link.to));
+      const edge = graphEdgePath(g, link.from, link.to, link);
+      if (!edge) continue;
+      const { d, mid } = edge;
       const halfWidth = linkLabel(link).length * 4 + 10;
       while (placed.some((p) => Math.abs(p.x - mid.x) < p.halfWidth + halfWidth && Math.abs(p.y - mid.y) < 22)) mid.y += 22;
       placed.push({ ...mid, halfWidth });
@@ -445,6 +514,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       openLinkDialog(data.links.find((l) => l.id === label.dataset.link));
       return;
     }
+    if (nodeGroups.pointerDown(e)) return;
     const card = e.target.closest(".gcard, .gcmd");
     // 빈 곳을 끌면 선택 상자로 여러 카드를 고른다.
     if (!card) {
@@ -456,7 +526,9 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     e.preventDefault();
     const id = card.dataset.id;
     const start = canvasPoint(e);
-    const connecting = e.target.classList.contains("gcard-handle");
+    const handle = e.target.closest(".gcard-handle");
+    const connecting = Boolean(handle);
+    const connectWhen = handle?.dataset.when ?? null;
     const additive = e.ctrlKey || e.metaKey || e.shiftKey;
     // 선택한 카드를 끌면 선택한 카드를 모두 함께 옮긴다.
     const group = !connecting && ui.graphSelected.has(id) ? [...ui.graphSelected].filter((n) => g.pos.has(n)) : [id];
@@ -473,7 +545,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       if (connecting) {
         const from = g.pos.get(id);
         const x1 = from.x + nodeSize(id).w;
-        const y1 = from.y + nodeSize(id).h / 2;
+        const y1 = from.y + (hasBranchPorts(commandById(id)) ? connectWhen === "error" ? 78 : 40 : nodeSize(id).h / 2);
         if (!temp) {
           temp = document.createElementNS(SVG_NS, "path");
           temp.setAttribute("class", "temp");
@@ -521,14 +593,16 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       if (connecting) {
         // 세션·명령 노드끼리 이으면 넘기기 연결을 만든다.
         const target = document.elementFromPoint(ev.clientX, ev.clientY);
-        const targetId = target?.closest(".gcard, .gcmd")?.dataset.id;
-        if (targetId && targetId !== id) openLinkDialog(null, id, targetId);
-        else if (!targetId && target?.closest("#p-graph") && !target.closest(".edge-label, button, a, input, select, textarea")) {
-          openGraphCreateMenu(ev, id);
+        const inputPort = target?.closest('.node-group-port[data-direction="input"]');
+        const targetId = inputPort?.dataset.nodeId ?? target?.closest(".gcard, .gcmd")?.dataset.id;
+        if (targetId && targetId !== id) openLinkDialog(null, id, targetId, connectWhen);
+        else if (!targetId && !target?.closest(".node-group") && target?.closest("#p-graph") && !target.closest(".edge-label, button, a, input, select, textarea")) {
+          openGraphCreateMenu(ev, id, connectWhen);
         }
         return;
       }
       await Promise.all(group.map(saveNodePos));
+      await nodeGroups.droppedMembers(group);
     };
 
     trackGraphGesture(e, onMove, onUp);
@@ -577,8 +651,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   function syncGraphSelection() {
     const g = ui.graph;
     if (!g) return;
-    for (const id of ui.graphSelected) if (!g.cards.has(id)) ui.graphSelected.delete(id);
-    for (const [id, card] of g.cards) card.classList.toggle("selected", ui.graphSelected.has(id));
+    for (const id of ui.graphSelected) if (!g.cards.has(id) && !g.groupFrames?.has(id)) ui.graphSelected.delete(id);
+    for (const [id, card] of [...g.cards, ...(g.groupFrames ?? [])]) card.classList.toggle("selected", ui.graphSelected.has(id));
   }
 
   // 빈 곳에서 끌면 상자 안에 걸친 카드를 고른다. Ctrl·Shift를 누르고 끌면 지금 선택에 더한다.
@@ -607,9 +681,14 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       const y2 = Math.max(start.y, p.y);
       Object.assign(box.style, { left: `${x1}px`, top: `${y1}px`, width: `${x2 - x1}px`, height: `${y2 - y1}px` });
       const picked = new Set(base);
-      for (const [id, pos] of g.pos) {
+      for (const [id] of g.cards) {
+        const pos = g.pos.get(id);
         const size = nodeSize(id);
         if (pos.x < x2 && pos.x + size.w > x1 && pos.y < y2 && pos.y + size.h > y1) picked.add(id);
+      }
+      for (const group of nodeGroups.groups().filter((item) => item.collapsed)) {
+        const size = nodeGroups.size(group), pos = group.rect;
+        if (pos.x < x2 && pos.x + size.w > x1 && pos.y < y2 && pos.y + size.h > y1) picked.add(group.id);
       }
       ui.graphSelected = picked;
       syncGraphSelection();
@@ -631,6 +710,14 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   async function deleteGraphSelection() {
     if (ui.deletingGraphNodes || navigation.view !== "project") return;
     const projectPath = navigation.project;
+    const selectedGroups = [...ui.graphSelected].map(nodeGroups.byId).filter(Boolean);
+    if (selectedGroups.length) {
+      // Selecting a container never silently deletes its member nodes.
+      if (confirm(`선택한 그룹 ${selectedGroups.length}개를 해제할까요? 내부 노드와 연결은 유지됩니다.`)) {
+        for (const group of selectedGroups) await nodeGroups.dissolve(group);
+      }
+      return;
+    }
     const nodes = [...ui.graphSelected].map((id) =>
       data.sessions.find((s) => s.id === id && samePath(s.projectPath, projectPath)) ??
       (samePath(data.commandsProject, projectPath) ? commandById(id) : null)).filter(Boolean);
@@ -657,6 +744,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   // 카드를 두 번 누르면 연다. Ctrl·Shift를 누르고 두 번 누르면 세션을 새 창으로 연다.
   $("p-graph").addEventListener("dblclick", (e) => {
+    const frame = e.target.closest(".node-group");
+    if (frame && !e.target.closest("button, .node-group-port")) { const group = nodeGroups.byId(frame.dataset.groupId); if (group) nodeGroups.edit(group); return; }
     const card = e.target.closest(".gcard, .gcmd");
     if (!card || e.target.closest(".gcard-restart, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
     const cmd = commandById(card.dataset.id);
@@ -666,9 +755,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   });
 
   $("p-relayout").addEventListener("click", async () => {
-    const placed = data.sessions.filter((s) => samePath(s.projectPath, navigation.project) && s.graphPos);
+    const grouped = new Set(nodeGroups.groups().flatMap((group) => group.members));
+    const placed = data.sessions.filter((s) => samePath(s.projectPath, navigation.project) && s.graphPos && !grouped.has(s.id));
     for (const s of placed) s.graphPos = null;
-    const placedCommands = (data.commands ?? []).filter((c) => c.pos);
+    const placedCommands = (data.commands ?? []).filter((c) => c.pos && !grouped.has(c.id));
     for (const c of placedCommands) c.pos = null;
     renderGraph();
     await Promise.all([
@@ -679,10 +769,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   // ── 연결 설정 ───────────────────────────────────────────────────
   // 연결 조건 선택지를 서버 목록으로 채운다.
-  function renderLinkConditions() {
+  function renderLinkConditions(source = commandById(ui.editingLink?.from)) {
     const select = $("link-when");
     const value = select.value;
-    select.replaceChildren(...(data.status?.linkConditions ?? []).map((c) => el("option", { value: c.id }, c.label)));
+    select.replaceChildren(...(data.status?.linkConditions ?? []).filter((c) => !hasBranchPorts(source) || ["success", "error", "always", "manual"].includes(c.id)).map((c) => el("option", { value: c.id }, c.label)));
     if (value) select.value = value;
   }
 
@@ -704,16 +794,15 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   }
 
   // link가 없으면 from → to 새 연결을 만든다.
-  function openLinkDialog(link, from = link?.from, to = link?.to) {
+  function openLinkDialog(link, from = link?.from, to = link?.to, connectWhen = null, connectKeyword = "") {
     const source = commandById(from);
     const target = commandById(to);
     if (source?.kind === "markdown") return alert("Markdown 출력 노드는 완료 메시지를 받는 노드입니다.");
-    if (target?.kind === "button") return alert("버튼 노드는 연결을 받지 않고, 버튼을 눌러 실행합니다.");
-    if (source?.kind === "button" && target && target.kind !== "group") return alert("버튼은 실행할 세션이나 세션 묶음에 연결해 주세요.");
-    if (target?.kind === "markdown" && source && source.kind !== "group") return alert("Markdown 출력은 완료 메시지를 보낼 세션이나 세션 묶음에 연결해 주세요.");
+    if (isSourceOnly(target)) return alert(KIND_LABEL[target.kind] + " 노드는 흐름의 시작점입니다. 카드에서 직접 실행해 주세요.");
     ui.editingLink = { link, from, to };
     $("link-names").textContent = `${nodeTitle(from)} → ${nodeTitle(to)}`;
-    const initial = link ?? defaultLinkCondition(from);
+    renderLinkConditions(source);
+    const initial = link ?? (connectWhen ? { when: connectWhen, keyword: connectKeyword } : defaultLinkCondition(from));
     $("link-when").value = initial.when;
     $("link-keyword").value = initial.keyword ?? "";
     // 키워드 후보를 누르면 키워드 칸에 넣는다.
@@ -725,8 +814,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     $("link-siblings-list").replaceChildren(...siblings.map((l) =>
       el("li", {}, `→ ${nodeTitle(l.to)}`, el("span", { class: "muted" }, ` · ${linkLabel(l)}${l.enabled ? "" : " · 꺼짐"}`))));
     $("link-note").value = link?.note ?? "";
+    $("link-note").placeholder = "다음 노드에 보낼 내용 · 입력값은 {{key}}, 이전 결과는 {{input}}로 사용";
     $("link-enabled").checked = link?.enabled ?? true;
     $("link-approve").checked = link?.approve ?? false;
+    $("link-git-worktree").checked = link?.useGitWorktree ?? (source?.kind === "git" && source.gitAction === "use" && initial.when === "success");
     $("link-delete").hidden = !link;
     $("link-run").hidden = !link;
     $("link-error").textContent = "";
@@ -736,6 +827,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   function syncLinkWhen() {
     $("link-keyword-row").hidden = $("link-when").value !== "keyword";
+    const source = commandById(ui.editingLink?.from), target = commandById(ui.editingLink?.to);
+    const eligible = source?.kind === "git" && (!target || !target.kind || target.kind === "command") && $("link-when").value !== "error";
+    $("link-git-worktree-row").hidden = !eligible;
+    $("link-git-worktree-hint").hidden = !eligible;
   }
   $("link-when").addEventListener("change", syncLinkWhen);
 
@@ -750,6 +845,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       note: $("link-note").value,
       enabled: $("link-enabled").checked,
       approve: $("link-approve").checked,
+      ...(commandById(from)?.kind === "git" ? { useGitWorktree: !$("link-git-worktree-row").hidden && $("link-git-worktree").checked } : {}),
     };
     try {
       if (action === "delete") {
@@ -770,5 +866,5 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }
   });
 
-  return { loadMessages, loadLinks, renderGraph, clearGraphTransientState, connectCreatedGraphNode, renderLinkConditions, drawEdges, highlightSessions, clearSelection };
+  return { loadNodeGroups: nodeGroups.load, loadMessages, loadLinks, renderGraph, clearGraphTransientState, connectCreatedGraphNode, renderLinkConditions, drawEdges, highlightSessions, clearSelection };
 }

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { withGitRepoLock } from "../git-lock.mjs";
 import { createHash, randomBytes } from "node:crypto";
 import { githubPulls, normalizePull } from "../github.mjs";
 import { summary } from "../store.mjs";
@@ -46,7 +47,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   }
   async function locked(key, action) {
     const previous = queue.get(key) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(action);
+    const current = previous.catch(() => {}).then(() => key === "gitflow-settings" ? action() : withGitRepoLock(key, action));
     queue.set(key, current);
     try { return await current; }
     finally { if (queue.get(key) === current) queue.delete(key); }
