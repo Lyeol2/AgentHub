@@ -50,10 +50,9 @@ test("SSE transport forwards registered events unchanged and can be closed", () 
 
 test("server snapshots and navigation are isolated between windows", () => {
   const a = createStore(), b = createStore();
-  a.data.sessions.push({ id: "s1" }); a.navigation.project = "C:/repo"; a.data.hubs.set("repo", {});
+  a.data.sessions.push({ id: "s1" }); a.navigation.project = "C:/repo";
   assert.deepEqual(b.data.sessions, []);
   assert.equal(b.navigation.project, null);
-  assert.equal(b.data.hubs.size, 0);
 });
 
 test("live execution metadata updates both list and open-detail snapshots without erasing start times", () => {

@@ -8,7 +8,6 @@ import { AGENT_NAME, handoverText, mapPermission } from "../handover.mjs";
 import { discoverSessions, loadHistory, deleteSessionRecords } from "../discover.mjs";
 import { ROLE_MAX, withRole } from "../role.mjs";
 import { orchestratorInput } from "../orchestrator.mjs";
-import { readHubFile } from "../hubfile.mjs";
 import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
@@ -115,7 +114,6 @@ export function createSessionService({
       return intro && !session.agentSessionId ? `${intro}\n\n${input}` : input;
     }
     let input = withSkills(session, session.kind !== "orchestrator" ? withRole(session, prompt) : orchestratorInput(session, prompt, {
-      hub: readHubFile(session.projectPath),
       sessions: projectSessions(session.projectPath),
     }));
     // 이전 버전의 원본 전용 안내를 받은 CLI 대화에도 현재 작업 폴더를 다시 알린다.

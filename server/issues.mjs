@@ -179,7 +179,6 @@ export class GitHubIssues {
     const title = typeof body.title === "string" ? body.title.trim() : "";
     const text = typeof body.body === "string" ? body.body : "";
     const assignee = typeof body.assignee === "string" ? body.assignee.trim() : "";
-    const flow = typeof body.flow === "string" ? body.flow.trim().slice(0, 100) : "";
     if (!title || title.length > TITLE_MAX) throw new GitHubError("작업 제목을 1~256자로 입력하세요.");
     if (text.length > BODY_MAX) throw new GitHubError("작업 내용은 60000자까지 입력할 수 있습니다.");
     if (!LOGIN.test(assignee)) throw new GitHubError("받을 팀원을 고르세요.");
@@ -193,7 +192,7 @@ export class GitHubIssues {
       throw error;
     }
     await this.ensureLabel(target);
-    const meta = { from: viewer, branch: local.branch ?? null, commit: local.headSha ?? null, ...(flow ? { flow } : {}) };
+    const meta = { from: viewer, branch: local.branch ?? null, commit: local.headSha ?? null };
     const raw = await this.api(target, "POST", "repos/" + target.repo + "/issues",
       { title, body: formatIssueBody(maskSecrets(text), meta), assignees: [assignee], labels: [ISSUE_LABEL] }, { write: true });
     return { ok: true, issue: normalizeIssue(raw, target.repo) };

@@ -134,7 +134,7 @@ export function createHub(options = {}) {
     account: deps.account ?? createAccountService({ config, setup, saveConfig: persistConfig }),
   };
   services.issues = deps.issues ?? createIssueService({
-    config, store, sessions, workflows, notify,
+    config, store, sessions, notify,
     links: deps.issueLinks ?? new FileIssueLinkStore({ dataDir }),
     logger: deps.logger ?? console,
   });

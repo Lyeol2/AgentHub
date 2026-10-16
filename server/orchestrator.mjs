@@ -13,8 +13,8 @@ const STATE_TEXT = { idle: "대기", running: "실행 중", error: "오류", int
 const PLAN_EXAMPLE = `\`\`\`${PLAN_FENCE}
 {
   "sessions": [
-    { "key": "ui", "role": "구현", "title": "정렬 버튼 UI", "prompt": "가방 화면에 정렬 버튼을 추가한다. ..." },
-    { "key": "review", "role": "리뷰", "title": "정렬 버튼 리뷰" }
+    { "key": "ui", "agent": "claude", "title": "정렬 버튼 UI", "roleText": "요청받은 기능을 구현한다. 끝나면 마지막 줄에 \\"검토 요청\\"만 쓴다.", "prompt": "가방 화면에 정렬 버튼을 추가한다. ..." },
+    { "key": "review", "agent": "codex", "permission": "read-only", "title": "정렬 버튼 리뷰", "roleText": "코드를 고치지 않고 변경을 검토한다." }
   ],
   "links": [
     { "from": "ui", "to": "review", "when": "keyword", "keyword": "검토 요청" },
@@ -33,24 +33,16 @@ function instructions() {
 ${PLAN_EXAMPLE}
 
 - sessions: 새로 만들 세션, 또는 이미 있는 세션 { "key": "...", "id": "<세션 id>" }. key는 이 계획 안에서 부르는 이름이다(영문·숫자·_·-).
-- 새 세션은 role에 아래 역할 템플릿 이름을 쓰거나, agent(claude|codex)·permission·roleText를 직접 적는다. title, model도 적을 수 있다.
+- 새 세션은 agent(claude|codex)·permission·roleText를 적는다. 생략하면 claude · 기본 권한이다. title, model도 적을 수 있다.
 - 새 세션에 prompt를 적으면 만든 뒤 바로 보낸다.
 - links: from·to에는 key, 세션 id, 또는 "${ORCHESTRATOR}"(너 자신)를 쓴다. when은 ${CONDITIONS.join("|")}이고 keyword 조건이면 keyword를 적는다(여러 개는 쉼표로 나눈다). note는 받는 세션에 줄 지시다.
 - 한 세션에서 나가는 연결은 if/else처럼 고른다: 답변 마지막 줄에 키워드가 맞은 연결 → 없으면 success/error 연결 → 그것도 없으면 otherwise 연결. always는 언제나 함께 넘긴다. 키워드로 가르려면 그 세션의 prompt에 마지막 줄에 쓸 판정을 적어 준다.
 - 이미 이어진 두 세션 사이의 연결을 다시 적으면 그 조건으로 고친다.
 - 결과를 다시 받아야 하면 그 세션에서 "${ORCHESTRATOR}"로 가는 연결을 만든다. 결과는 다음 요청으로 들어온다.
 - send: 이미 있는 세션에 요청을 보낸다. { "to": "<key 또는 id>", "prompt": "..." }
-- 새 세션의 기본은 프로젝트 원본 폴더다. 사용자가 워크트리 사용을 요청한 세션만 isolate:true와 worktreeName(필수 이름)을 함께 적는다. 이름을 생략하거나 세션 key로 대신하지 않는다. 역할 템플릿의 이전 분리 설정을 자동으로 따르지 않는다.
+- 새 세션의 기본은 프로젝트 원본 폴더다. 사용자가 워크트리 사용을 요청한 세션만 isolate:true와 worktreeName(필수 이름)을 함께 적는다. 이름을 생략하거나 세션 key로 대신하지 않는다.
 - 같은 원본 폴더에서 같은 파일을 고치는 세션을 동시에 돌리지 않는다.
 - 결과가 돌아오면 확인하고 다음 계획을 세운다. 목표를 다 이루었으면 무엇이 어디에 바뀌었는지 정리해 보고한다.`;
-}
-
-function roleLines(hub) {
-  if (!hub?.roles.length) return "없음. 새 세션은 agent·permission·roleText를 직접 적는다.";
-  return hub.roles.map((r) => {
-    const body = r.body.split(/\r?\n/).find((l) => l.trim()) ?? "";
-    return `- ${r.name}: ${r.agent} · ${r.permission} · 원본 폴더 — ${body}`;
-  }).join("\n");
 }
 
 function sessionLines(orchestrator, sessions) {
@@ -62,17 +54,12 @@ function sessionLines(orchestrator, sessions) {
   }).join("\n");
 }
 
-// 첫 요청에는 지휘 규칙·역할 템플릿·세션 목록을, 이후 요청에는 세션 상태만 붙인다.
+// 첫 요청에는 지휘 규칙·세션 목록을, 이후 요청에는 세션 상태만 붙인다.
 // sessions: 같은 프로젝트의 세션(최근 순)
-export function orchestratorInput(session, prompt, { hub, sessions }) {
+export function orchestratorInput(session, prompt, { sessions }) {
   const status = `[현재 세션]\n${sessionLines(session, sessions)}`;
-  if (session.agentSessionId) return `${status}\n\n${withRole(session, prompt, hub?.common ?? "")}`;
-  return [
-    instructions(),
-    `[역할 템플릿] (AGENTHUB.md)\n${roleLines(hub)}`,
-    status,
-    withRole(session, prompt, hub?.common ?? ""),
-  ].join("\n\n");
+  if (session.agentSessionId) return `${status}\n\n${withRole(session, prompt)}`;
+  return [instructions(), status, withRole(session, prompt)].join("\n\n");
 }
 
 // 답변에서 마지막 계획 블록을 꺼낸다. 없으면 null, 형식이 틀리면 { error }.
@@ -90,7 +77,7 @@ const str = (value, max) => String(value ?? "").trim().slice(0, max);
 
 // 계획을 검사해 실행할 수 있는 형태로 바꾼다. 틀린 곳이 있으면 오류를 던진다.
 // sessions: 같은 프로젝트의 세션
-export function normalizePlan(raw, { hub, sessions, orchestratorId }) {
+export function normalizePlan(raw, { sessions, orchestratorId }) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new Error("계획은 JSON 객체여야 합니다.");
   const known = new Map(sessions.map((s) => [s.id, s]));
   const keys = new Map(); // key → { id } 또는 { new: true }
@@ -107,13 +94,10 @@ export function normalizePlan(raw, { hub, sessions, orchestratorId }) {
       plan.sessions.push({ key, id: item.id, title: known.get(item.id).title });
       continue;
     }
-    const role = item.role ? hub?.roles.find((r) => r.name === item.role) : null;
-    if (item.role && !role) throw new Error(`AGENTHUB.md에 역할 "${item.role}"이 없습니다.`);
-    const agent = str(item.agent ?? role?.agent ?? "claude", 20).toLowerCase();
+    const agent = str(item.agent ?? "claude", 20).toLowerCase();
     if (!AGENTS[agent]) throw new Error(`세션 "${key}": agent는 claude 또는 codex입니다.`);
     const modes = AGENTS[agent].PERMISSION_MODES;
-    const permission = item.permission ?? (role?.agent === agent ? role.permission : null)
-      ?? (agent === "claude" ? "acceptEdits" : "workspace-write");
+    const permission = item.permission ?? (agent === "claude" ? "acceptEdits" : "workspace-write");
     if (!modes.includes(permission)) throw new Error(`세션 "${key}": ${agent} 권한은 ${modes.join(", ")} 중 하나입니다.`);
     const isolate = item.isolate === true;
     const worktreeName = isolate ? validateWorktreeName(item.worktreeName) : "";
@@ -127,12 +111,11 @@ export function normalizePlan(raw, { hub, sessions, orchestratorId }) {
       key,
       agent,
       permission,
-      model: str(item.model ?? role?.model, 64),
+      model: str(item.model, 64),
       isolate,
       worktreeName,
-      roleName: role?.name ?? "",
-      roleText: str(item.roleText ?? role?.body, 4000),
-      title: str(item.title, 100) || role?.name || key,
+      roleText: str(item.roleText, 4000),
+      title: str(item.title, 100) || key,
       prompt: str(item.prompt, 20000),
     });
   }

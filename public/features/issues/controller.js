@@ -13,7 +13,7 @@ const markdown = (text) => renderMarkdown(String(text ?? "")
   .replace(/<\/details>/g, ""));
 
 // 프로젝트 화면의 "팀 작업" 탭과 사이드바 받은 작업함. 작업 내용·댓글은 GitHub 이슈에만 저장한다.
-export function createIssuesController({ api, account, connectAccount, goProject, showProjectTab, projectTab, selectSession, loadHub, navigation }) {
+export function createIssuesController({ api, account, connectAccount, goProject, showProjectTab, projectTab, selectSession, navigation }) {
   let state = null;
   const inbox = { items: [], known: null, loading: false };
   const send = { projectPath: null, context: null };
@@ -165,13 +165,6 @@ export function createIssuesController({ api, account, connectAccount, goProject
     ];
   }
 
-  async function flowOptions(s, selected) {
-    let hub = null;
-    try { hub = await loadHub(s.project); } catch {}
-    const flows = hub?.flows?.map((f) => f.name) ?? [];
-    return { flows, value: flows.includes(selected) ? selected : flows.find((f) => f === "이슈 해결") ?? flows[0] ?? "" };
-  }
-
   function detailView(s) {
     const { issue } = s.detail;
     const open = issue.state === "open";
@@ -184,17 +177,9 @@ export function createIssuesController({ api, account, connectAccount, goProject
     const button = (label, action, cls = "ghost sm", title = "") => el("button", { type: "button", class: cls, "data-issue-action": "1", title, onclick: action }, label);
 
     if (open && mine) {
-      const flow = el("select", { "aria-label": "시작할 흐름", "data-issue-action": "1" });
-      flowOptions(s, meta.flow).then(({ flows, value }) => {
-        flow.replaceChildren(...(flows.length ? flows.map((f) => el("option", { value: f }, f)) : [el("option", { value: "" }, "AGENTHUB.md 흐름 없음")]));
-        flow.value = value;
-        startFlow.disabled = !flows.length || !!s.busy;
-      });
-      const startFlow = button("흐름으로 시작", () => start(s, { mode: "flow", flowName: flow.value }), "primary sm", "AGENTHUB.md의 흐름으로 세션들을 만들고 이슈 내용을 첫 요청으로 보냅니다");
-      startFlow.disabled = true;
       const agent = el("select", { "aria-label": "세션 AI", "data-issue-action": "1" }, ...AGENTS.map(([value, label]) => el("option", { value }, label)));
-      actions.append(flow, startFlow, agent,
-        button("세션으로 시작", () => start(s, { mode: "session", agent: agent.value }), "sm", "세션 하나를 만들고 이슈 내용을 첫 요청으로 보냅니다"),
+      actions.append(agent,
+        button("세션으로 시작", () => start(s, { agent: agent.value }), "primary sm", "세션 하나를 만들고 이슈 내용을 첫 요청으로 보냅니다"),
         button("되돌려 보내기", () => giveBack(s)));
     }
     if (open) actions.append(button("완료로 닫기", () => {
@@ -215,8 +200,8 @@ export function createIssuesController({ api, account, connectAccount, goProject
         el("div", { class: "pr-detail-meta" }, statusBadge(issue),
           el("span", { class: "muted" }, `#${issue.number} · @${sender(issue)} → @${issue.assignees.join(", @") || "?"} · ${timeAgo(issue.updatedAt)}`)),
         el("h4", {}, issue.title),
-        meta.branch || meta.commit || meta.flow
-          ? el("p", { class: "mono muted pr-refs" }, [meta.branch && `기준 ${meta.branch}`, meta.commit && String(meta.commit).slice(0, 8), meta.flow && `추천 흐름 ${meta.flow}`].filter(Boolean).join(" · "))
+        meta.branch || meta.commit
+          ? el("p", { class: "mono muted pr-refs" }, [meta.branch && `기준 ${meta.branch}`, meta.commit && String(meta.commit).slice(0, 8)].filter(Boolean).join(" · "))
           : null),
       actions,
       el("div", { class: "issue-link", id: "i-link" }, ...linkView(s)),
@@ -255,8 +240,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
 
   function start(s, options) {
     const issue = s.detail.issue;
-    if (options.mode === "flow" && !options.flowName) return alert("시작할 흐름을 고르세요. 프로젝트에 AGENTHUB.md 흐름이 있어야 합니다.");
-    const how = options.mode === "flow" ? `흐름 "${options.flowName}"` : `${options.agent === "codex" ? "Codex" : "Claude"} 세션`;
+    const how = `${options.agent === "codex" ? "Codex" : "Claude"} 세션`;
     if (!confirm(`#${issue.number} "${issue.title}"\n\n${how}으로 시작할까요?\n이슈 내용은 다른 사람이 쓴 외부 입력입니다. 세션 권한 안에서만 따르도록 구분해 보냅니다.`)) return;
     return mutate("start", `/api/issues/${issue.number}/start`, options);
   }
@@ -282,7 +266,6 @@ export function createIssuesController({ api, account, connectAccount, goProject
     $("issue-repo").textContent = "불러오는 중…";
     $("issue-visibility").textContent = "";
     $("issue-assignee").replaceChildren();
-    $("issue-flow").replaceChildren(el("option", { value: "" }, "(지정 안 함)"));
     $("issue-dialog").showModal();
     try {
       const context = samePath(state?.project, projectPath) && state.context ? state.context : await api("GET", "/api/issues/context?" + new URLSearchParams({ path: projectPath }));
@@ -295,9 +278,6 @@ export function createIssuesController({ api, account, connectAccount, goProject
         ? "비공개 저장소입니다. 저장소 권한이 있는 사람만 볼 수 있습니다."
         : "⚠️ 공개 저장소입니다. 이 작업은 누구나 볼 수 있게 공개됩니다.";
       $("issue-visibility").classList.toggle("error", !context.private);
-      const { flows } = await flowOptions({ project: projectPath });
-      $("issue-flow").append(...flows.map((f) => el("option", { value: f }, f)));
-      $("issue-flow").value = flows.includes("이슈 해결") ? "이슈 해결" : "";
     } catch (err) {
       $("issue-repo").textContent = "";
       $("issue-error").textContent = err.message;
@@ -314,7 +294,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
       await api("POST", "/api/issues", {
         path: send.projectPath, repo: send.context.repo,
         title: $("issue-title").value, body: $("issue-body").value,
-        assignee: $("issue-assignee").value, flow: $("issue-flow").value,
+        assignee: $("issue-assignee").value,
       });
       $("issue-dialog").close();
       if (samePath(state?.project, send.projectPath)) {

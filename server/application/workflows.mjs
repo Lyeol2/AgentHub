@@ -1,20 +1,15 @@
-import fs from "node:fs";
-import path from "node:path";
-import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { summary } from "../store.mjs";
 import { isGitRepo, checkWorktreeAvailable, headCommit } from "../git.mjs";
 import { ROLE_MAX } from "../role.mjs";
 import { CONDITIONS, lastAnswer } from "../chain.mjs";
 import { extractPlan, normalizePlan } from "../orchestrator.mjs";
-import { HUB_FILE, HUB_TEMPLATE, hubFilePath, readHubFile } from "../hubfile.mjs";
 import { isCommandId, commandKind } from "../commands.mjs";
 import { samePath } from "./projects.mjs";
 import { HttpError } from "./errors.mjs";
 
 export function createWorkflowService({ store, runner, links, commands, chain, projects, sessions, nodeGroups, notify: broadcast }) {
   const { ensureProject, projectSessions } = projects;
-  const { getSession, createSession, checkSessionOptions, startTurn } = sessions;
+  const { getSession, createSession, checkSessionOptions } = sessions;
   function getCommand(id) {
     const command = commands.get(id);
     if (!command) throw new HttpError(404, "명령 노드가 없습니다.");
@@ -45,7 +40,6 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
 
   function planContext(session) {
     return {
-      hub: readHubFile(session.projectPath),
       sessions: projectSessions(session.projectPath),
       orchestratorId: session.id,
     };
@@ -79,7 +73,6 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
         permission: item.permission,
         title: item.title,
         role: item.roleText,
-        roleName: item.roleName,
         isolate: item.isolate,
         worktreeName: item.worktreeName,
         createdBy: orchestrator.id,
@@ -113,51 +106,6 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     return `세션 ${created}개 만듦 · 연결 ${linked}개${changed ? ` · 연결 ${changed}개 고침` : ""} · 요청 ${plan.send.length}건`;
   }
 
-  // AGENTHUB.md의 흐름 템플릿으로 역할마다 세션을 만들고 연결한다. prompt가 있으면 받는 연결이 없는 역할에 보낸다.
-  async function startFlow({ project, flowName, name, prompt }) {
-    const hub = readHubFile(project.path);
-    if (!hub) throw new HttpError(404, `${HUB_FILE}이 없습니다.`);
-    const flow = hub.flows.find((f) => f.name === flowName);
-    if (!flow) throw new HttpError(404, `흐름 "${flowName}"이 없습니다.`);
-    const roleNames = [...new Set(flow.steps.flatMap((s) => [s.from, s.to]))];
-    const roles = new Map(roleNames.map((n) => [n, hub.roles.find((r) => r.name === n)]));
-    const missing = roleNames.filter((n) => !roles.get(n));
-    if (missing.length) throw new HttpError(400, `${HUB_FILE}에 없는 역할입니다: ${missing.join(", ")}`);
-    for (const role of roles.values()) checkSessionOptions(role);
-
-    const label = String(name ?? "").trim().slice(0, 100);
-    const sessions = new Map();
-    for (const [roleName, role] of roles) {
-      sessions.set(roleName, await createSession({
-        project,
-        agent: role.agent,
-        model: role.model,
-        permission: role.permission,
-        title: label ? `${label} · ${roleName}` : roleName,
-        role: role.body,
-        roleName,
-      }));
-    }
-    for (const step of flow.steps) {
-      links.add({
-        id: randomBytes(4).toString("hex"),
-        from: sessions.get(step.from).id,
-        to: sessions.get(step.to).id,
-        when: step.when,
-        keyword: step.keyword,
-        note: step.note,
-        enabled: true,
-      });
-    }
-
-    const text = String(prompt ?? "").trim();
-    if (text) {
-      const targets = new Set(flow.steps.map((s) => s.to));
-      const roots = roleNames.filter((n) => !targets.has(n));
-      for (const n of roots.length ? roots : roleNames.slice(0, 1)) startTurn(sessions.get(n), text);
-    }
-    return [...sessions.values()];
-  }
   function recordPlan(session, ok) {
     if (session.kind !== "orchestrator" || !ok) return;
     const found = extractPlan(lastAnswer(session));
@@ -253,37 +201,8 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     return { ok: true };
   }
 
-  function hub(projectPath) {
-    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
-    const hub = readHubFile(projectPath);
-    return { file: hubFilePath(path.resolve(projectPath)), exists: !!hub, ...hub };
-  }
-
-  function initHub(projectPath) {
-    const file = hubFilePath(ensureProject(projectPath).path);
-    if (fs.existsSync(file)) throw new HttpError(409, `${HUB_FILE}이 이미 있습니다.`);
-    fs.writeFileSync(file, HUB_TEMPLATE);
-    return hub(projectPath);
-  }
-
-  function openHub(projectPath) {
-    const file = hubFilePath(ensureProject(projectPath).path);
-    if (!fs.existsSync(file)) throw new HttpError(404, `${HUB_FILE}이 없습니다.`);
-    const opener = process.platform === "win32" ? "explorer.exe" : process.platform === "darwin" ? "open" : "xdg-open";
-    spawn(opener, [file], { detached: true, stdio: "ignore", windowsHide: true }).on("error", () => {}).unref();
-    return { ok: true };
-  }
-
-  async function createFlow(body) {
-    const created = await startFlow({ ...body, project: ensureProject(body.projectPath) });
-    broadcast("sessions", {});
-    broadcast("links", {});
-    return created.map(summary);
-  }
-
   return {
     applyPlan, recordPlan, listLinks: () => links.list(),
     createLink, updateLink, removeLink, decideLink, runLink,
-    hub, initHub, openHub, createFlow,
   };
 }

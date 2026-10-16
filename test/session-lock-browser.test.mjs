@@ -123,7 +123,6 @@ test("browser: locked direct popup URLs, sidebar/table toggles, and disabled cha
         }
       } else if (url.pathname === "/api/projects/all") value = [project];
       else if (["/api/projects/discover", "/api/links", "/api/skills", "/api/messages"].includes(url.pathname)) value = [];
-      else if (url.pathname === "/api/hub") value = { exists: false, roles: [] };
       else if (url.pathname === "/api/commands") value = { shells: [], commands: [] };
       else if (url.pathname === "/api/limits") value = { claude: { windows: [] }, codex: { windows: [] } };
       else if (url.pathname === "/api/auth") value = { claude: false, codex: false };

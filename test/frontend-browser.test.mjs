@@ -115,7 +115,6 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
         { id: "cmd-md", kind: "markdown", title: "완료 보고서", cwdMode: "source", projectPath: project.path, state: "idle", pos: { x: 700, y: 200 } },
       ] };
       else if (url.pathname === "/api/skills" || url.pathname === "/api/messages") value = [];
-      else if (url.pathname === "/api/hub") value = { exists: false, roles: [] };
       else if (url.pathname === "/api/limits") value = { claude: { windows: [] }, codex: { windows: [] } };
       else if (url.pathname === "/api/auth") value = { claude: false, codex: false };
       else if (url.pathname === "/api/setup") value = setup;
