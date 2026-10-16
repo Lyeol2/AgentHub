@@ -791,7 +791,7 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 /* 화면 크기는 패널이 정하고, 노드의 크기와 이동·확대는 레이아웃에 영향을 주지 않는다. */
 .graph-sizer { position: absolute; inset: 0; }
 .graph-sizer > .graph-canvas { position: absolute; left: 0; top: 0; min-width: 0; transform-origin: 0 0; }
-.zoom-controls { display: inline-flex; gap: 2px; align-items: center; }
+.zoom-controls, .history-controls { display: inline-flex; gap: 2px; align-items: center; }
 .zoom-controls #p-zoom-reset { min-width: 52px; font-variant-numeric: tabular-nums; }
 
 /* 창이 낮아도 세션 목록이 아래 상태 칸에 눌려 겹치지 않게 최소 높이를 두고, 아래 칸은 넘치면 스크롤한다. */
@@ -818,6 +818,16 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 .flow-card > .card-head { flex: none; }
 .flow-card > .card-head { flex-wrap: wrap; gap: 8px; }
 .flow-card > .card-head h3 { flex-wrap: wrap; gap: 4px 10px; }
+/* 그래프 아래에 고정한 흐름 도우미 입력창. 그래프를 확대·이동해도 자리를 지킨다. */
+.flow-assistant { flex: none; display: grid; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.flow-assistant-input { display: flex; align-items: flex-end; gap: 8px; }
+.flow-assistant-input textarea { flex: 1; min-width: 0; resize: none; max-height: 140px; line-height: 1.4; }
+.flow-assistant-status { color: var(--muted); font-size: 12px; white-space: nowrap; align-self: center; }
+.flow-assistant-plan { display: grid; gap: 6px; max-height: 40vh; overflow: auto; }
+.flow-assistant-plan[hidden] { display: none; }
+.flow-assistant-summary { margin: 0; font-weight: 600; }
+.flow-assistant-steps { margin: 0; padding-left: 20px; display: grid; gap: 2px; font-size: 13px; }
+.flow-assistant-plan menu { display: flex; justify-content: flex-end; gap: 6px; margin: 0; padding: 0; }
 #p-sessions .role-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 #p-session-filter { margin: 0; width: 220px; }
 
@@ -1147,6 +1157,10 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 /* Flow nodes */
 .flow-node-settings, .flow-run-fields, .flow-input-fields { display: grid; gap: 12px; }
 .flow-node-settings[hidden], .flow-run-fields[hidden] { display: none; }
+.webhook-url-row { display: flex; gap: 6px; }
+.webhook-url-row input { flex: 1; min-width: 0; }
+#webhook-body-row { display: grid; gap: 12px; }
+#webhook-body-row[hidden] { display: none; }
 .flow-field-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .flow-input-field { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(110px, 1.2fr) 84px minmax(90px, 1fr) auto auto; align-items: end; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
 .flow-input-field > label { min-width: 0; }

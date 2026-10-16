@@ -19,12 +19,12 @@ export function describeTaskFreshness(freshness) {
   return '최신 상태 확인 필요';
 }
 
-export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW) {
+export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW, name = '') {
   const flow = gitflowSettings(settings);
   const base = type === 'hotfix' ? flow.main : flow.develop;
   const target = type === 'feature' ? flow.develop : flow.main;
   const prefix = flow[`${type}Prefix`] ?? `${type}/`;
-  const branch = type === 'release' ? `${prefix}${version || '<버전>'}` : `${prefix}<작업ID>-<이름>`;
+  const branch = `${prefix}${name || (type === 'release' ? version || '<버전>' : '<작업ID>-<이름>')}`;
   return `${base}에서 ${branch} 생성 → ${target}으로 PR`;
 }
 
@@ -220,6 +220,9 @@ export function createTasksController({
         actions.append(actionButton('기준 변경 반영', 'sync', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
       }
       if (task.state === 'merged') actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+      const remove = actionButton('작업 삭제', 'delete', task);
+      remove.classList.add('danger');
+      actions.append(remove);
       card.append(actions);
       if (task.state === 'merged' && task.type !== 'feature') card.append(node('p', 'task-note', `${flow.develop}에도 반영되어야 작업 폴더를 정리할 수 있습니다.`));
       if (task.state === 'cleaned') card.append(node('p', 'task-note', task.inPlace
@@ -412,6 +415,12 @@ export function createTasksController({
     if ($('task-worktree-row')) $('task-worktree-row').hidden = existing;
     const inPlace = !existing && $('task-worktree')?.value === 'none';
     const type = $('task-type')?.value || 'feature';
+    // 새 브랜치일 때만 브랜치 이름을, 워크트리를 만들 때만 작업 폴더 이름을 정할 수 있다.
+    if ($('task-branch-name-row')) $('task-branch-name-row').hidden = existing;
+    if ($('task-branch-name')) $('task-branch-name').disabled = existing;
+    if ($('task-branch-prefix')) $('task-branch-prefix').textContent = settings[`${type}Prefix`] ?? `${type}/`;
+    if ($('task-worktree-name-row')) $('task-worktree-name-row').hidden = existing || inPlace;
+    if ($('task-worktree-name')) $('task-worktree-name').disabled = existing || inPlace;
     const isRelease = type === 'release' && !existing;
     const versionField = $('task-version-row') || $('task-version')?.closest('label');
     if (versionField) versionField.hidden = !isRelease;
@@ -421,7 +430,7 @@ export function createTasksController({
     }
     if ($('task-branch-preview')) $('task-branch-preview').textContent = existing
       ? selected ? `${selected.name}에서 작업 → ${workBranchType(selected.name, settings) === 'feature' ? settings.develop : settings.main}으로 PR` : '기존 작업 브랜치를 선택하면 작업 유형과 PR 대상을 맞춥니다.'
-      : taskBranchPreview(type, $('task-version')?.value.trim(), settings);
+      : taskBranchPreview(type, $('task-version')?.value.trim(), settings, $('task-branch-name')?.value.trim());
     if ($('task-gitflow-summary')) $('task-gitflow-summary').textContent = `기준: ${settings.main} / ${settings.develop}`;
     if ($('task-create-hint')) $('task-create-hint').textContent = inPlace
       ? `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 원본 폴더를 새 작업 브랜치로 바꾸고 세션을 연결합니다. 원본 폴더에 커밋하지 않은 변경이 없어야 하며, 정리하면 원래 브랜치로 돌아갑니다.`
@@ -491,6 +500,8 @@ export function createTasksController({
     if (existing) payload.workBranch = workbranchPicker.selected().name;
     else if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
     if (!existing && $('task-worktree')?.value === 'none') payload.worktree = false;
+    if (!existing && $('task-branch-name')?.value.trim()) payload.branchName = $('task-branch-name').value.trim();
+    if (!existing && payload.worktree !== false && $('task-worktree-name')?.value.trim()) payload.worktreeName = $('task-worktree-name').value.trim();
     if ($('task-model')?.value.trim()) payload.model = $('task-model').value.trim();
     if ($('task-effort')?.value) payload.effort = $('task-effort').value;
     if ($('task-role')?.value.trim()) payload.role = $('task-role').value.trim();
@@ -605,6 +616,60 @@ export function createTasksController({
     }
   }
 
+  // 작업 삭제 확인 문구. 지우는 것과 남는 것을 함께 알린다.
+  function deleteSummary(task, sessionCount) {
+    const lines = [`"${task.title}" 작업을 삭제할까요?`, ''];
+    if (sessionCount) lines.push(`연결된 세션 ${sessionCount}개를 멈추고 삭제합니다. 열려 있는 세션 화면도 닫힙니다.`);
+    if (task.state === 'cleaned') lines.push('이미 정리한 작업이라 작업 기록만 지웁니다.');
+    else if (task.inPlace) lines.push('원본 폴더에서 한 작업이라 폴더는 그대로 둡니다.');
+    else if (task.ownsWorktree === false) lines.push(`선택했던 기존 작업 폴더는 보존합니다.\n${task.cwd}`);
+    else lines.push(`작업 폴더를 지웁니다.\n${task.cwd}`);
+    lines.push('원격 브랜치와 PR은 남습니다.');
+    return lines.join('\n');
+  }
+
+  // 작업을 지운다. 실행 중인 세션이나 커밋하지 않은 변경이 있으면 그 자리에서 계속할지 묻는다.
+  async function deleteTask(task) {
+    if (!task || pendingTasks.has(task.id)) return;
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    const ids = Array.isArray(task.sessionIds) ? task.sessionIds : [];
+    const sessionCount = sessions.filter(session => ids.includes(session.id) || session.taskId === task.id).length;
+    if (!confirm(deleteSummary(task, sessionCount))) return;
+    const query = new URLSearchParams();
+    if (task.state !== 'cleaned' && task.ownsBranch !== false && task.branch
+      && confirm(`로컬 브랜치 ${task.branch}도 지울까요?\n\n확인: 브랜치를 지웁니다. 게시하지 않은 커밋은 되돌릴 수 없습니다.\n취소: 브랜치는 남겨 둡니다.`)) query.set('branch', 'delete');
+    const path = projectPath;
+    const epoch = projectEpoch;
+    const id = task.id;
+    pendingTasks.add(id);
+    taskErrors.delete(id);
+    renderTasks();
+    try {
+      let result;
+      for (;;) {
+        try { result = await api('DELETE', `/api/tasks/${encodeURIComponent(id)}?${query}`); break; }
+        catch (error) {
+          if (query.has('force')) throw error;
+          const again = error.reason === 'running' ? confirm('실행 중인 세션이 있습니다. 실행을 멈추고 삭제할까요?')
+            : error.reason === 'task-dirty' ? confirm(`${error.message}\n\n변경 사항을 버리고 작업 폴더를 지울까요? 되돌릴 수 없습니다.`)
+            : null;
+          if (again === null) throw error;
+          if (!again) return;
+          query.set('force', '1');
+        }
+      }
+      uncertainTasks.delete(id);
+      if (sameProject(path, epoch)) tasks = tasks.filter(item => item.id !== id);
+      await reloadSessions();
+      if (result?.warning) alert(result.warning);
+    } catch (error) {
+      taskErrors.set(id, requestError(error));
+    } finally {
+      pendingTasks.delete(id);
+      if (sameProject(path, epoch)) renderTasks();
+    }
+  }
+
   async function newSession(task) {
     if (!task || pendingTasks.has(task.id) || uncertainTasks.has(task.id) || task.pendingAction) return;
     const path = projectPath;
@@ -653,6 +718,7 @@ export function createTasksController({
   });
   $('task-version')?.addEventListener('input', updateCreatePreview);
   $('task-worktree')?.addEventListener('change', updateCreatePreview);
+  $('task-branch-name')?.addEventListener('input', updateCreatePreview);
   $('task-agent')?.addEventListener('change', () => { if ($('task-model')) $('task-model').value = ''; updateAgentControls(); });
   $('task-model')?.addEventListener('change', () => { if ($('task-effort')) fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model').value); });
   createForm?.addEventListener('submit', createTask);
@@ -676,6 +742,7 @@ export function createTasksController({
     if (action === 'open-session') { void selectSession(button.dataset.sessionId); return; }
     if (action === 'new-session') { void newSession(task); return; }
     if (action === 'finish') { openFinish(task); return; }
+    if (action === 'delete') { void deleteTask(task); return; }
     if (['refresh', 'sync', 'cleanup'].includes(action)) void runTaskAction(action, task);
   });
   updateToolbar();

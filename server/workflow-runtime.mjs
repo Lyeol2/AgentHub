@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import { commandKind, outputTail } from "./commands.mjs";
 import { inputValues, renderTemplate, transformResult } from "./flow-nodes.mjs";
 import { createFileWatch } from "./file-watch.mjs";
+import { hookVariables, sendWebhook } from "./webhooks.mjs";
 
 // A flow is one invocation, shared by all of its branches. Results are immutable
 // snapshots so another invocation of a member cannot replace a join's inputs.
@@ -174,6 +175,41 @@ export class WorkflowRuntime {
     return node;
   }
 
+  // 웹훅 받기: 요청 하나가 새 흐름 하나를 시작한다. 요청 템플릿이 틀리면 흐름을 만들지 않고 오류를 던진다.
+  trigger(node, variables) {
+    const c = this.chain;
+    const startedAt = new Date().toISOString();
+    let text;
+    try { text = renderTemplate(node.prompt || "{{body}}", variables); }
+    catch (error) {
+      c.commands.update(node, { state: "error", lastRun: { ok: false, exitCode: 1, stopped: false, timedOut: false, startedAt, durationMs: 0,
+        cwd: node.projectPath, tail: `받은 요청으로 보낼 내용을 만들지 못했습니다: ${error.message}` } });
+      c.notify("commands");
+      throw error;
+    }
+    const flow = this.create(variables);
+    this.set(node, flow);
+    c.controls?.begin(node, flow, text, { cwd: node.projectPath });
+    this.record(node, true, text, flow);
+    const picked = c.pickFlowLinks(node, true, text);
+    c.commands.update(node, { state: "success", lastRun: { ok: true, exitCode: 0, stopped: false, timedOut: false, runId: flow.id,
+      startedAt, durationMs: 0, cwd: node.projectPath, method: variables.method, tail: outputTail(text), outputText: text.slice(0, 200_000) } });
+    c.notify("commands");
+    Promise.resolve().then(async () => {
+      for (const link of picked) {
+        if (flow.cancelled || c.disposed || !c.commands.get(node.id)) break;
+        if (link.approve) c.hold(link, node, text, 0, flow);
+        else await c.deliver(link, 0, text, null, flow);
+      }
+    }).catch((error) => {
+      if (c.disposed || !c.commands.get(node.id)) return;
+      c.controls?.fail(node, flow, error);
+      c.commands.update(node, { state: "error", lastRun: { ...node.lastRun, ok: false, exitCode: 1, tail: error.message } });
+      c.notify("commands");
+    }).finally(() => this.settle());
+    return flow;
+  }
+
   queueInfo(nodeId) {
     const queue = this.queues.get(nodeId);
     return queue?.length ? { count: queue.length, flow: queue[0].options.flow ? { id: queue[0].options.flow.id } : null } : null;
@@ -223,6 +259,8 @@ export class WorkflowRuntime {
     const c = this.chain;
     const kind = commandKind(node);
     if (kind === "watch") return this.startWatch(node);
+    // 카드의 실행 버튼은 빈 요청을 받은 것처럼 흐름을 시험한다.
+    if (kind === "webhook-in") { this.trigger(node, hookVariables({ method: "TEST" })); return node.lastRun; }
     // Bad form input is rejected before starting a run or mutating stored state.
     const variables = kind === "input" ? inputValues(node, options.values) : null;
     const flow = this.set(node, options.flow ?? this.create(variables ?? {}));
@@ -231,8 +269,10 @@ export class WorkflowRuntime {
     let stopped = false;
     let timer = null;
     let resume = null;
+    let request = null;
+    let httpStatus = null;
     c.controls?.begin(node, flow, kind === "input" ? JSON.stringify(flow.variables, null, 2) : options.prompt ?? "", options);
-    c.runs.set(node.id, { stop: () => { stopped = true; this.cancel(flow); clearTimeout(timer); resume?.(); } });
+    c.runs.set(node.id, { stop: () => { stopped = true; this.cancel(flow); clearTimeout(timer); resume?.(); request?.abort(); } });
     c.commands.update(node, { state: "running", queued: this.queueInfo(node.id), live: { startedAt: new Date(started).toISOString(), cwd: node.projectPath, tail: "" } });
     c.notify("commands");
     let text = "";
@@ -245,6 +285,16 @@ export class WorkflowRuntime {
       else if (kind === "notify") {
         text = renderTemplate(node.message ?? "{{input}}", { ...flow.variables, input: options.prompt ?? "", output: options.prompt ?? "" });
         c.controls.notification({ ...node, notificationTitle: renderTemplate(node.notificationTitle || node.title || "AgentHub", { ...flow.variables, input: options.prompt ?? "", output: options.prompt ?? "" }) }, flow, text);
+      }
+      else if (kind === "webhook") {
+        const input = options.prompt ?? "";
+        request = new AbortController();
+        const response = await sendWebhook(node, { ...flow.variables, input, output: input }, { signal: request.signal });
+        httpStatus = response.status;
+        ok = response.ok;
+        // 성공하면 응답 본문을, 실패하면 상태 코드와 본문을 다음 노드에 넘긴다.
+        text = ok ? response.text || `HTTP ${response.status} ${response.statusText}`.trim()
+          : `HTTP ${response.status} ${response.statusText}`.trim() + (response.text ? `\n${response.text}` : "");
       }
       else if (kind === "repeat") {
         const iteration = (flow.repeats[node.id] ?? 0) + 1;
@@ -262,7 +312,8 @@ export class WorkflowRuntime {
       startedAt: new Date(started).toISOString(), durationMs: Date.now() - started, cwd: options.origin?.cwd ?? node.projectPath,
       originId: options.origin?.id ?? null, originTitle: options.origin?.title ?? null,
       runId: flow.id, tail: outputTail(text), outputText: text.slice(0, 200_000),
-      ...(kind === "repeat" ? { iteration: Math.min(flow.repeats[node.id], node.maxIterations), exhausted } : {}) };
+      ...(kind === "repeat" ? { iteration: Math.min(flow.repeats[node.id], node.maxIterations), exhausted } : {}),
+      ...(kind === "webhook" ? { httpStatus } : {}) };
     c.commands.update(node, { state: stopped ? "idle" : ok ? "success" : "error", live: null, lastRun });
     c.notify("commands");
     c.controls?.finish(node, flow, { ok, output: text, stopped });

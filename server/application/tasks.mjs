@@ -8,7 +8,7 @@ import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
-  taskDirty, taskWorktreeLocation, sameTaskPath, insideTaskPath, assertTaskGitIdle } from "../tasks.mjs";
+  taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle } from "../tasks.mjs";
 import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey } from "../gitflow-settings.mjs";
 
 // 설정한 배포·개발 브랜치인지(대소문자를 구분한다)
@@ -242,7 +242,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   async function attach(task, body) {
     assertActive(task);
     if (task.provisioning && !fs.existsSync(task.cwd)) {
-      const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id);
+      const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id, task.worktreeName);
       if (!sameTaskPath(expected.cwd, task.cwd)) throw new HttpError(409, "작업 폴더 경로를 확인할 수 없습니다.", "task-worktree");
       const branch = await taskRef(task.projectPath, `refs/heads/${task.branch}`);
       if (branch) await taskGit(task.projectPath, ["worktree", "add", task.cwd, task.branch], { write: true });
@@ -274,6 +274,14 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const version = typeof body.version === "string" ? body.version.trim() : "";
     if (!selectedBranch && type === "release" && !/^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/.test(version))
       throw new HttpError(400, "배포 버전을 입력하세요. 예: 1.2.0");
+    // branchName은 유형 접두어 뒤에 붙는 이름, worktreeName은 <프로젝트>.agenthub/ 아래 작업 폴더 이름이다. 비우면 자동으로 정한다.
+    const branchName = typeof body.branchName === "string" ? body.branchName.trim() : "";
+    const worktreeName = typeof body.worktreeName === "string" ? body.worktreeName.trim() : "";
+    if ((branchName || worktreeName) && selectedBranch !== undefined) throw new HttpError(400, "기존 작업 브랜치를 선택하면 브랜치와 작업 폴더 이름을 바꿀 수 없습니다.");
+    if (branchName.length > 200) throw new HttpError(400, "브랜치 이름이 너무 깁니다.", "task-branch-name");
+    if (worktreeName && inPlace) throw new HttpError(400, "원본 폴더에서 작업할 때는 작업 폴더 이름을 정할 수 없습니다.");
+    if (worktreeName && !validTaskWorktreeName(worktreeName))
+      throw new HttpError(400, "작업 폴더 이름은 80자 이내의 영문·한글·숫자와 . _ - 만 쓸 수 있습니다.", "task-worktree-name");
     sessionService().checkSessionOptions?.({ ...body, agent: body.agent ?? "claude" });
     const project = projectService().ensureProject(body.projectPath);
     const repo = await taskRepo(project.path);
@@ -283,8 +291,15 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, `새 작업을 만들기 전에 ${gitflow.main}의 변경을 ${gitflow.develop}에 반영하세요.`, "gitflow-develop-behind");
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
       const slug = title.normalize("NFKC").replace(/[^A-Za-z0-9가-힣_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "work";
-      const branch = selectedBranch ?? `${gitflow[`${type}Prefix`]}${type === "release" ? version : `${id}-${slug}`}`;
-      await taskGit(project.path, ["check-ref-format", "--branch", branch]);
+      const branch = selectedBranch ?? `${gitflow[`${type}Prefix`]}${branchName || (type === "release" ? version : `${id}-${slug}`)}`;
+      try {
+        await taskGit(project.path, ["check-ref-format", "--branch", branch]);
+        if (branchName) await taskGit(project.path, ["check-ref-format", `refs/heads/${branch}`]);
+      } catch (error) {
+        if (!branchName || error.reason === "git-timeout") throw error;
+        throw new HttpError(400, `Git 브랜치 이름이 올바르지 않습니다: ${branch}`, "task-branch-name");
+      }
+      if (branchName && isGitflowBase(gitflow, branch)) throw new HttpError(409, `${gitflow.main}과 ${gitflow.develop}은 작업 브랜치로 쓸 수 없습니다.`, "workbranch-protected");
       if (branchOwner(repo.common, branch)) throw new HttpError(409, "이미 작업에 연결된 브랜치입니다. 해당 작업에서 세션을 추가하세요.", "task-branch-exists");
       if (selectedBranch && isGitflowBase(gitflow, branch)) throw new HttpError(409, `${gitflow.main}과 ${gitflow.develop}은 작업 브랜치로 선택할 수 없습니다.`, "workbranch-protected");
       const branchType = branch.startsWith(gitflow.hotfixPrefix) ? "hotfix" : branch.startsWith(gitflow.releasePrefix) ? "release" : "feature";
@@ -296,13 +311,15 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       const selected = selectedBranch ? await resolveWorkbranch(project.path, branch) : null;
       if (selected) assertIdle({ cwd: selected.dir });
       const previousBranch = inPlace ? await assertInPlaceReady(repo) : null;
-      const location = inPlace ? { cwd: path.resolve(repo.top), root: null } : selected ? { cwd: selected.dir, root: path.dirname(selected.dir) } : taskWorktreeLocation(repo, id);
+      const location = inPlace ? { cwd: path.resolve(repo.top), root: null } : selected ? { cwd: selected.dir, root: path.dirname(selected.dir) } : taskWorktreeLocation(repo, id, worktreeName);
+      if (worktreeName && (fs.existsSync(location.cwd) || [...records.values()].some((other) => other.state !== "cleaned" && sameTaskPath(other.cwd, location.cwd))))
+        throw new HttpError(409, `같은 이름의 작업 폴더가 이미 있습니다: ${worktreeName}`, "task-worktree-exists");
       const targetSha = type === "feature" ? current.developSha ?? current.mainSha : current.mainSha;
       const behind = !!selected && !await taskAncestor(project.path, targetSha, await taskRef(selected.dir, "HEAD"));
       const task = { id, projectPath: project.path, title, type, version: type === "release" ? version : undefined,
         agent: body.agent ?? "claude", model: body.model, effort: body.effort, permission: body.permission, role: body.role,
         branch, baseBranch, targetBranch: type === "feature" ? gitflow.develop : gitflow.main, baseCommit, gitflow: clone(gitflow),
-        cwd: location.cwd, worktreeRoot: location.root, gitCommonDir: repo.common,
+        cwd: location.cwd, worktreeRoot: location.root, gitCommonDir: repo.common, ...(worktreeName ? { worktreeName } : {}),
         ownsWorktree: !inPlace && (!selected || selected.created), ownsBranch: !selected,
         ...(selected ? { selectedWorkBranch: true } : {}),
         ...(inPlace ? { inPlace: true, previousBranch } : {}),
@@ -530,7 +547,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         const { main, develop } = taskSettings(task);
         throw new HttpError(409, `${main}의 배포·긴급 수정을 ${develop}에도 반영한 뒤 정리하세요.`, "gitflow-develop-pending");
       }
-      const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id);
+      const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id, task.worktreeName);
       const ownsWorktree = task.ownsWorktree !== false;
       const ownsBranch = task.ownsBranch !== false;
       const expectedRoot = task.selectedWorkBranch ? task.worktreeRoot : expected.root;
@@ -569,6 +586,56 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       catch { task.cleanupWarning = `작업 폴더 일부가 남았습니다. 파일을 잡고 있는 프로그램을 닫은 뒤 직접 지우세요: ${task.cwd}`; }
     }
   }
+  // 작업을 지운다. 연결된 세션을 멈추고 지운 뒤, AgentHub가 만든 작업 폴더를 지우고 작업 기록을 없앤다.
+  // 원격 브랜치와 PR은 건드리지 않는다. deleteBranch면 이 작업이 만든 로컬 브랜치도 지운다.
+  // force가 없으면 실행 중인 세션이나 커밋하지 않은 변경이 있을 때 멈추고 알린다.
+  async function remove(id, { force = false, deleteBranch = false } = {}) {
+    const task = get(id);
+    return locked(task.gitCommonDir, async () => {
+      if (records.get(id) !== task) throw new HttpError(404, "작업이 없습니다.", "task-missing");
+      if (busy.has(id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
+      const owned = store.list().filter((session) => session.taskId === id || task.sessionIds.includes(session.id));
+      if (!force && owned.some((session) => runner.isRunning(session.id)))
+        throw new HttpError(409, "이 작업에서 실행 중인 세션이 있습니다.", "running");
+      busy.add(id);
+      try {
+        const live = task.state !== "cleaned";
+        const ownsFolder = live && !task.inPlace && task.ownsWorktree !== false;
+        const removeFolder = ownsFolder && fs.existsSync(task.cwd);
+        if (removeFolder) {
+          const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id, task.worktreeName);
+          const expectedRoot = task.selectedWorkBranch ? task.worktreeRoot : expected.root;
+          if ((!task.selectedWorkBranch && !sameTaskPath(expected.cwd, task.cwd)) || !sameTaskPath(path.dirname(task.cwd), expectedRoot))
+            throw new HttpError(409, "AgentHub가 생성한 작업 폴더인지 확인할 수 없어 지우지 않았습니다.", "task-worktree");
+          if (!force && await taskDirty(task)) throw new HttpError(409, "작업 폴더에 커밋하지 않은 변경이나 새 파일이 있습니다.", "task-dirty");
+        }
+        for (const session of owned) await sessionService().remove(session.id, { force: true });
+        if (removeFolder) {
+          // 막 멈춘 세션 프로세스가 파일을 잡고 있을 수 있어 잠시 기다렸다 다시 시도한다.
+          for (let attempt = 0; ; attempt++) {
+            try { await taskGit(task.projectPath, ["worktree", "remove", ...(force ? ["--force"] : []), "--", task.cwd], { write: true }); break; }
+            catch (error) {
+              if (attempt >= 4 || error.outcomeUnknown) throw new HttpError(409, `세션은 지웠지만 작업 폴더를 지우지 못했습니다: ${error.message}`, "task-worktree");
+              await new Promise((resolve) => setTimeout(resolve, 500));
+            }
+          }
+        } else if (ownsFolder) await taskGit(task.projectPath, ["worktree", "prune"], { write: true }).catch(() => {});
+        let branchRemoved = false;
+        let warning;
+        if (deleteBranch && live && task.ownsBranch !== false && await taskRef(task.projectPath, `refs/heads/${task.branch}`)) {
+          try {
+            if (task.inPlace && readTaskBranch(task.cwd) === task.branch) await leaveInPlaceBranch(task);
+            await taskGit(task.projectPath, ["branch", "-D", task.branch], { write: true });
+            branchRemoved = true;
+          } catch (error) { warning = `작업은 지웠지만 로컬 브랜치 ${task.branch}는 남았습니다: ${error.message}`; }
+        }
+        fs.rmSync(path.join(directory, `${id}.json`), { force: true });
+        records.delete(id);
+        notify("tasks", { projectPath: task.projectPath, taskId: id });
+        return { ok: true, sessionIds: owned.map((session) => session.id), worktreeRemoved: removeFolder, branchRemoved, ...(warning ? { warning } : {}) };
+      } finally { busy.delete(id); }
+    });
+  }
   function replaceSession(previous, next) {
     for (const task of records.values()) {
       if (!task.sessionIds.includes(previous)) continue;
@@ -583,6 +650,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, context, settings, updateSettings, create, finish, refresh, sync, cleanup, assertSession, replaceSession, detachSession, workbranches, createBranchSession,
+  return { list, context, settings, updateSettings, create, finish, refresh, sync, cleanup, remove, assertSession, replaceSession, detachSession, workbranches, createBranchSession,
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }

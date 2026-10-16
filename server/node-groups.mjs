@@ -71,7 +71,7 @@ export function createNodeGroupService({ groups, store, commands, links, project
       if (!item || !["input", "output"].includes(item.direction) || !members.includes(item.nodeId)) throw new HttpError(400, "포트는 그룹 안의 노드 입력이나 출력에 연결해야 합니다.");
       const target = validNode(item.nodeId, projectPath);
       if (!target) throw new HttpError(400, "포트에 연결한 노드가 없습니다.");
-      if (item.direction === "input" && ["button", "input", "watch"].includes(target.kind)) throw new HttpError(400, "버튼·입력 폼·파일 감시에는 입력 포트를 만들 수 없습니다.");
+      if (item.direction === "input" && ["button", "input", "watch", "webhook-in"].includes(target.kind)) throw new HttpError(400, "버튼·입력 폼·파일 감시·웹훅 받기에는 입력 포트를 만들 수 없습니다.");
       if (item.direction === "output" && target.kind === "markdown") throw new HttpError(400, "Markdown 출력에는 출력 포트를 만들 수 없습니다.");
       const id = item.id ?? `port-${randomBytes(6).toString("hex")}`;
       if (typeof id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(id) || ids.has(id)) throw new HttpError(400, "포트 ID가 올바르지 않거나 중복되었습니다.");
@@ -161,7 +161,7 @@ export function createNodeGroupService({ groups, store, commands, links, project
       const nodeId = fromInside ? link.from : link.to;
       const direction = fromInside ? "output" : "input";
       const target = node(nodeId);
-      if (direction === "input" && ["button", "input", "watch"].includes(target.kind) || direction === "output" && target.kind === "markdown") continue;
+      if (direction === "input" && ["button", "input", "watch", "webhook-in"].includes(target.kind) || direction === "output" && target.kind === "markdown") continue;
       const port = { direction, nodeId, label: `${target.title || "노드"} · ${direction === "input" ? "입력" : suffix[link.when] ?? "출력"}` };
       if (direction === "output") { port.when = link.when ?? "success"; port.keyword = port.when === "keyword" ? link.keyword ?? "" : ""; }
       const key = portKey(port);

@@ -1,13 +1,15 @@
 import path from "node:path";
-import { spawnCli } from "../cli.mjs";
+import { askOnce } from "../one-shot.mjs";
 import { newCommandId, checkCommand, commandKind, shells, generatePrompt, parseGenerated } from "../commands.mjs";
 import { readMessageOutput } from "../utility-output.mjs";
 import { listGitNodeBranches } from "../git-nodes.mjs";
 import { HttpError } from "./errors.mjs";
-import { FLOW_MEMBER_KINDS, inputValues } from "../flow-nodes.mjs";
+import { FLOW_MEMBER_KINDS, inputValues, newHookToken } from "../flow-nodes.mjs";
+import { HOOK_BODY_MAX, createHookRateLimit, findHookNode, hookVariables } from "../webhooks.mjs";
 
 export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, notify: broadcast }) {
   const { ensureProject } = projects;
+  const allowHook = createHookRateLimit();
   function getCommand(id) {
     const command = commands.get(id);
     if (!command) throw new HttpError(404, "명령 노드가 없습니다.");
@@ -15,40 +17,10 @@ export function createCommandService({ commands, chain, links, store, projects, 
   }
 
   // 하고 싶은 일을 받아 Claude CLI(없으면 Codex)로 셸 명령을 만든다. 파일은 읽기만 하고, 기록은 남기지 않는다.
-  function generateCommand({ prompt, shell, projectPath }) {
-    const paths = cliPaths();
-    const agent = paths.claude ? "claude" : paths.codex ? "codex" : null;
-    if (!agent) throw new HttpError(400, "명령을 만들 Claude나 Codex CLI를 찾지 못했습니다.");
-    const args = agent === "claude"
-      ? ["-p", "--output-format", "json", "--model", "haiku", "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep",
-        "--permission-mode", "default", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
-      : ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", "--cd", projectPath, "-"];
-    return new Promise((resolve, reject) => {
-      const child = spawnCli(paths[agent], args, { cwd: projectPath, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, env: { ...process.env, NO_COLOR: "1" } });
-      let out = "";
-      let err = "";
-      child.stdout.setEncoding("utf8");
-      child.stderr.setEncoding("utf8");
-      child.stdout.on("data", (d) => (out += d));
-      child.stderr.on("data", (d) => (err += d));
-      const timer = setTimeout(() => child.kill(), 120_000);
-      child.on("error", (e) => reject(new HttpError(500, `명령 만들기 실패: ${e.message}`)));
-      child.on("close", () => {
-        clearTimeout(timer);
-        try {
-          // Claude: { result }, Codex: 줄마다 이벤트(마지막 agent_message)
-          const text = agent === "claude"
-            ? JSON.parse(out).result ?? ""
-            : out.split("\n").map((l) => { try { return JSON.parse(l); } catch { return null; } })
-              .filter((m) => m?.item?.type === "agent_message").map((m) => m.item.text).at(-1) ?? "";
-          resolve(parseGenerated(text));
-        } catch (e) {
-          reject(new HttpError(500, e instanceof SyntaxError ? `명령 만들기 실패: ${err.trim().slice(-300) || "CLI 응답을 읽지 못했습니다."}` : e.message));
-        }
-      });
-      child.stdin.on("error", () => {});
-      child.stdin.end(generatePrompt({ prompt, shell, projectPath }));
-    });
+  async function generateCommand({ prompt, shell, projectPath }) {
+    const text = await askOnce({ cliPaths, prompt: generatePrompt({ prompt, shell, projectPath }), cwd: projectPath, label: "명령 만들기" });
+    try { return parseGenerated(text); }
+    catch (error) { throw new HttpError(500, error.message); }
   }
   function list(projectPath) {
     return { shells: shells(), commands: projectPath ? commands.list(projectPath) : [] };
@@ -98,6 +70,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
       id: newCommandId(), projectPath: project.path, ...fields,
       state: "idle", lastRun: null, createdAt: new Date().toISOString(),
     };
+    if (command.kind === "webhook-in") command.hookToken = newHookToken();
     savePos(command, body.pos);
     commands.add(command);
     broadcast("commands", {});
@@ -106,8 +79,8 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   function update(id, body) {
     const command = getCommand(id);
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "message", "notificationTitle", "level", "sound"].some((key) => body[key] !== undefined);
-    if (editing && ["git", "input", "repeat", "transform", "watch", "notify", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled"].some((key) => body[key] !== undefined);
+    if (editing && ["git", "input", "repeat", "transform", "watch", "notify", "webhook", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
     try {
       if (editing) fields = checkCommand(body, command);
@@ -115,6 +88,8 @@ export function createCommandService({ commands, chain, links, store, projects, 
       throw new HttpError(400, error.message);
     }
     if (fields) Object.assign(command, checkMembers(fields, command.projectPath, id));
+    // 받는 주소가 새어 나갔으면 새 주소로 바꾼다. 이전 주소로 온 요청은 받지 않는다.
+    if (commandKind(command) === "webhook-in" && (body.regenerateToken === true || !command.hookToken)) command.hookToken = newHookToken();
     savePos(command, body.pos);
     commands.update(command, {});
     broadcast("commands", {});
@@ -151,7 +126,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     }
     const origin = links.list().filter((link) => link.to === id).map((link) => store.get(link.from)).find(Boolean) ?? null;
     const pending = chain.runCommand(command, { origin, depth: 0, values: body.values });
-    if (["button", "input", "repeat", "transform", "watch", "notify"].includes(commandKind(command))) {
+    if (["button", "input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"].includes(commandKind(command))) {
       try { await pending; }
       catch (error) { throw new HttpError(400, error.message); }
     }
@@ -171,5 +146,17 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { stopped: chain.stopCommand(getCommand(id)) };
   }
 
-  return { list, gitBranches, generate, create, update, remove, run, stop, output };
+  // 바깥에서 웹훅 받기 주소로 보낸 요청. 꺼져 있거나 없는 주소는 같은 404로 답해 주소가 있는지 드러내지 않는다.
+  function receiveHook(token, request) {
+    const command = findHookNode(commands.list(), token);
+    if (!command || command.enabled === false) throw new HttpError(404, "웹훅 주소가 없습니다.");
+    if (String(request.body ?? "").length > HOOK_BODY_MAX) throw new HttpError(413, "요청이 너무 큽니다.");
+    if (!allowHook(command.id)) throw new HttpError(429, "요청이 너무 잦습니다. 잠시 후 다시 보내세요.");
+    let flow;
+    try { flow = chain.workflow.trigger(command, hookVariables(request)); }
+    catch (error) { throw new HttpError(400, error.message); }
+    return { ok: true, node: command.title, runId: flow.id };
+  }
+
+  return { list, gitBranches, generate, create, update, remove, run, stop, output, receiveHook };
 }

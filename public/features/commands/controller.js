@@ -3,8 +3,9 @@ import { elapsedElement } from "../../shared/elapsed.js";
 import { samePath, firstLine } from "../../shared/store.js";
 import { renderMarkdown } from "../../markdown.js";
 import { createFlowNodeForms, FLOW_KINDS, KIND_LABEL, kindOf, hasBranchPorts, KIND_HINT as FLOW_HINT } from "./flow-nodes.js";
+import { commandBody } from "../graph/history.js";
 
-export function createCommandsController({ api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation }) {
+export function createCommandsController({ api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation, history, nodeSnapshot, recordNodesRemoved }) {
   const ui = {
     "editingCommand": null,
     "viewingOutput": null
@@ -51,6 +52,8 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const running = c.state === "running" || c.state === "watching";
     const run = c.lastRun;
     if (kindOf(c) === "watch") return running ? `감시 중 · ${(c.watchPaths ?? []).length}개 경로${c.live?.tail ? ` · ${firstLine(c.live.tail)}` : ""}` : run ? `${run.ok ? "변경 전달 완료" : "감시 중지 또는 오류"} · ${timeAgo(run.startedAt)}` : "▶를 눌러 감시 시작";
+    if (kindOf(c) === "webhook-in") return c.enabled === false ? "꺼짐 · 요청을 받지 않습니다" : run ? `${run.ok ? run.method === "TEST" ? "시험 실행함" : "요청 받음" : "요청 처리 실패"} · ${timeAgo(run.startedAt)}` : "POST 요청을 기다립니다";
+    if (kindOf(c) === "webhook") return running ? "보내는 중" : run ? `${run.ok ? "보냄" : "보내기 실패"}${run.httpStatus ? ` · HTTP ${run.httpStatus}` : ""} · ${timeAgo(run.startedAt)}` : "앞 노드의 결과를 보냅니다";
     if (kindOf(c) === "notify") return running ? "알림 보내는 중" : run ? `${run.ok ? "알림 보냄" : "알림 실패"} · ${timeAgo(run.startedAt)}` : "앞 노드의 결과를 알립니다";
     if (FLOW_KINDS.includes(kindOf(c))) return running ? "실행 중" : run ? `${run.ok ? "성공" : "실패"}${kindOf(c) === "repeat" && run.iteration ? ` · ${run.iteration}/${c.maxIterations}회` : ""} · ${timeAgo(run.startedAt)}` : kindOf(c) === "input" ? `입력 항목 ${(c.fields ?? []).length}개 · 입력하고 실행` : kindOf(c) === "repeat" ? `최대 ${c.maxIterations}회 실행` : "연결된 결과를 가공합니다";
     if (kindOf(c) === "git") return running ? "Git 작업 실행 중" : run ? `${run.ok ? "성공" : "실패"}${run.gitResult?.recoveryRequired ? " · 복구 필요" : ""}${run.deliveryErrors?.length ? ` · 후속 실행 실패 ${run.deliveryErrors.length}개` : ""} · ${timeAgo(run.startedAt)}` : "아직 실행하지 않음";
@@ -95,16 +98,16 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const running = ["running", "watching"].includes(c.state);
     const kind = kindOf(c);
     const output = c.lastRun?.output;
-    const detail = kind === "git" ? c.gitAction === "merge" ? c.branch + " → " + c.targetBranch : c.branch + " · 작업 폴더 사용" : kind === "button" ? c.prompt : kind === "markdown" ? output?.relativePath ?? "완료 메시지 → .md 파일" : kind === "input" ? (c.fields ?? []).map((field) => field.label).join(" · ") : kind === "repeat" ? "최대 " + c.maxIterations + "회 · 실패하면 다시 실행" : kind === "transform" ? ({ json: "JSON", lines: "줄 선택", template: "템플릿" }[c.transformMode] ?? "JSON") + " · " + (c.expression || c.template || "전체 결과") : kind === "watch" ? (c.watchPaths ?? []).join(" · ") : kind === "notify" ? c.message : c.command;
-    const stoppable = ["command", "git", "watch", "repeat"].includes(kind);
-    const actionLabel = kind === "markdown" ? "결과 보기" : running && stoppable ? kind === "watch" ? "감시 중지" : "중지" : kind === "input" ? "입력하고 실행" : kind === "watch" ? "감시 시작" : kind === "button" ? running ? "전달 중" : "실행" : "지금 실행";
+    const detail = kind === "git" ? c.gitAction === "merge" ? c.branch + " → " + c.targetBranch : c.branch + " · 작업 폴더 사용" : kind === "button" ? c.prompt : kind === "markdown" ? output?.relativePath ?? "완료 메시지 → .md 파일" : kind === "input" ? (c.fields ?? []).map((field) => field.label).join(" · ") : kind === "repeat" ? "최대 " + c.maxIterations + "회 · 실패하면 다시 실행" : kind === "transform" ? ({ json: "JSON", lines: "줄 선택", template: "템플릿" }[c.transformMode] ?? "JSON") + " · " + (c.expression || c.template || "전체 결과") : kind === "watch" ? (c.watchPaths ?? []).join(" · ") : kind === "notify" ? c.message : kind === "webhook" ? `${c.method} ${c.url}` : kind === "webhook-in" ? "POST /hooks/…" : c.command;
+    const stoppable = ["command", "git", "watch", "repeat", "webhook"].includes(kind);
+    const actionLabel = kind === "markdown" ? "결과 보기" : running && stoppable ? kind === "watch" ? "감시 중지" : "중지" : kind === "input" ? "입력하고 실행" : kind === "watch" ? "감시 시작" : kind === "webhook-in" ? "시험 실행" : kind === "button" ? running ? "전달 중" : "실행" : "지금 실행";
     const action = el("button", { type: "button", class: "gcmd-btn" + (running && stoppable ? " stop" : ""), title: kind === "markdown" && !output ? "결과를 받으면 볼 수 있습니다" : actionLabel, "aria-label": c.title + " " + actionLabel, onclick: () => kind === "markdown" ? openCommandOutput(c) : running && stoppable ? stopCommand(c) : runCommand(c) }, ["command", "watch"].includes(kind) ? running ? "■" : "▶" : actionLabel);
     action.disabled = kind === "markdown" ? !output : pendingRuns.has(c.id) || (running && !stoppable);
     const branchPorts = hasBranchPorts(c);
     return el("div", { class: "gcmd gcmd-" + kind + " " + c.state, "data-id": c.id, "data-kind": kind, title: c.title + "\n" + (detail ?? "") + "\n\n두 번 누르면 편집합니다. 손잡이를 끌어 다음 노드에 연결합니다." },
-      el("div", { class: "gcard-top" }, el("span", { class: "pill cmd " + kind }, KIND_LABEL[kind]), el("span", { class: "gcmd-shell" }, kind === "command" ? shellLabel(c.shell) : kind === "git" ? c.gitAction === "merge" ? "브랜치 병합" : "브랜치 사용" : kind === "button" ? "수동 실행" : kind === "markdown" ? "원문 저장" : kind === "watch" ? "변경 감지" : kind === "input" ? "실행 시작" : ""), el("span", { class: "pill cmd-" + c.state }, COMMAND_STATE[c.state] ?? c.state)),
+      el("div", { class: "gcard-top" }, el("span", { class: "pill cmd " + kind }, KIND_LABEL[kind]), el("span", { class: "gcmd-shell" }, kind === "command" ? shellLabel(c.shell) : kind === "git" ? c.gitAction === "merge" ? "브랜치 병합" : "브랜치 사용" : kind === "button" ? "수동 실행" : kind === "markdown" ? "원문 저장" : kind === "watch" ? "변경 감지" : kind === "input" ? "실행 시작" : kind === "webhook" ? c.method : kind === "webhook-in" ? "외부 요청" : ""), el("span", { class: "pill cmd-" + c.state }, COMMAND_STATE[c.state] ?? c.state)),
       el("div", { class: "gcard-title" }, c.title),
-      el("div", { class: "gcmd-code" + (["command", "git", "transform", "watch"].includes(kind) ? " mono" : ""), title: detail ?? "" }, firstLine(detail ?? "")),
+      el("div", { class: "gcmd-code" + (["command", "git", "transform", "watch", "webhook", "webhook-in"].includes(kind) ? " mono" : ""), title: detail ?? "" }, firstLine(detail ?? "")),
       el("div", { class: "gcmd-foot" }, el("span", { class: "gcmd-result" }, elapsedElement("command", c), el("span", { class: "gcmd-result-text" }, commandNodeFoot(c))), action),
       ...(branchPorts ? ["success", "error"].map((when) => el("span", { class: "gcard-handle git-port " + when, "data-when": when, title: (kind === "repeat" ? when === "success" ? "반복할 작업" : "횟수 초과" : when === "success" ? "성공" : "실패") + " · 끌어서 다음 노드에 연결", "aria-label": (when === "success" ? "성공" : "실패") + " 출력" }, el("span", { class: "git-port-label" }, kind === "repeat" ? when === "success" ? "반복" : "초과" : when === "success" ? "성공" : "실패"))) : [kind === "markdown" ? null : el("span", { class: "gcard-handle", title: "끌어서 다음 노드에 연결" })]));
   }
@@ -137,8 +140,10 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
 
   async function removeCommand(c) {
     if (!c || !confirm(`${KIND_LABEL[kindOf(c)]} 노드 "${c.title}"을(를) 삭제할까요? 이 노드에 이어진 연결도 지웁니다.`)) return;
+    const snapshot = nodeSnapshot?.(c);
     try {
       await api("DELETE", `/api/commands/${c.id}`);
+      if (snapshot) recordNodesRemoved(c.projectPath, [snapshot]);
     } catch (err) {
       alert(err.message);
     }
@@ -147,7 +152,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
 
   // 같은 프로젝트의 실행 가능한 노드를 모은다.
   function renderGroupMembers(selected) {
-    const nodes = [...data.sessions.filter((s) => !s.chat && samePath(s.projectPath, navigation.project)), ...(data.commands ?? []).filter((c) => !["button", "markdown", "watch", "group"].includes(kindOf(c)) && samePath(c.projectPath, navigation.project))];
+    const nodes = [...data.sessions.filter((s) => !s.chat && samePath(s.projectPath, navigation.project)), ...(data.commands ?? []).filter((c) => !["button", "markdown", "watch", "webhook-in", "group"].includes(kindOf(c)) && samePath(c.projectPath, navigation.project))];
     $("group-members").replaceChildren(...(nodes.length ? nodes.map((node) => el("li", {}, el("label", { class: "check" }, el("input", { type: "checkbox", value: node.id, ...(selected.has(node.id) ? { checked: "" } : {}) }), " " + node.title, el("span", { class: "muted" }, " · " + (node.agent ?? KIND_LABEL[kindOf(node)]))))) : [el("li", { class: "muted" }, "이 프로젝트에 모을 수 있는 노드가 없습니다.")]));
   }
 
@@ -273,7 +278,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const box = $("command-last");
     const running = ["running", "watching"].includes(cmd?.state);
     $("command-run").hidden = !cmd || (kind === "markdown" && !run?.output);
-    $("command-run").textContent = kind === "markdown" ? "결과 보기" : kind === "watch" ? running ? "감시 중지" : "감시 시작" : kind === "input" ? "입력하고 실행" : kind === "group" ? "지금 넘기기" : kind === "button" ? running ? "전달 중" : "지금 실행" : running ? "중지" : "지금 실행";
+    $("command-run").textContent = kind === "markdown" ? "결과 보기" : kind === "watch" ? running ? "감시 중지" : "감시 시작" : kind === "input" ? "입력하고 실행" : kind === "webhook-in" ? "시험 실행" : kind === "group" ? "지금 넘기기" : kind === "button" ? running ? "전달 중" : "지금 실행" : running ? "중지" : "지금 실행";
     $("command-run").disabled = pendingRuns.has(cmd?.id) || (kind === "button" && running) || (kind === "group" && !!cmd && !groupProgress(cmd).ready);
     if (!cmd || (!run && !running)) {
       box.hidden = true;
@@ -422,7 +427,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       $("command-dialog").close();
       return removeCommand(cmd);
     }
-    if (action === "run") return ["running", "watching"].includes(cmd?.state) && ["command", "git", "repeat", "watch"].includes(kind) ? stopCommand(cmd) : cmd && runCommand(cmd);
+    if (action === "run") return ["running", "watching"].includes(cmd?.state) && ["command", "git", "repeat", "watch", "webhook"].includes(kind) ? stopCommand(cmd) : cmd && runCommand(cmd);
     const body = {
       title: $("command-title").value,
       ...(kind === "command" ? {
@@ -440,8 +445,24 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     }
     try {
       let created = null;
-      if (cmd) await api("PUT", `/api/commands/${cmd.id}`, body);
-      else created = await api("POST", "/api/commands", { ...body, ...(kind === "command" ? {} : { kind }), projectPath, pos });
+      if (cmd) {
+        // 받는 주소 새로 만들기는 되돌릴 수 없으므로 되돌리기에서 다시 보내지 않는다.
+        const { regenerateToken: _regenerate, ...next } = body;
+        const previous = Object.fromEntries(Object.keys(next).filter((key) => cmd[key] !== undefined).map((key) => [key, structuredClone(cmd[key])]));
+        await api("PUT", `/api/commands/${cmd.id}`, body);
+        history?.record(projectPath, { label: `${KIND_LABEL[kind]} 편집`,
+          undo: ({ resolve }) => api("PUT", `/api/commands/${resolve(cmd.id)}`, previous),
+          redo: ({ resolve }) => api("PUT", `/api/commands/${resolve(cmd.id)}`, next) });
+      } else {
+        created = await api("POST", "/api/commands", { ...body, ...(kind === "command" ? {} : { kind }), projectPath, pos });
+        const made = structuredClone(created);
+        history?.record(projectPath, { label: `${KIND_LABEL[kind]} 만들기`,
+          undo: ({ resolve }) => api("DELETE", `/api/commands/${resolve(made.id)}`),
+          redo: async ({ resolve, remap }) => {
+            const body = commandBody(made);
+            remap(made.id, (await api("POST", "/api/commands", body.members ? { ...body, members: body.members.map(resolve) } : body)).id);
+          } });
+      }
       if (ui.editingCommand === context) {
         ui.editingCommand = null;
         $("command-dialog").close();

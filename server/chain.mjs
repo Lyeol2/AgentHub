@@ -169,7 +169,7 @@ export class Chain {
     const sourceKind = isCommandId(source.id) ? commandKind(source) : "session";
     const targetKind = isCommandId(target.id) ? commandKind(target) : "session";
     // Utility nodes keep their direction even when an old or hand-edited link bypasses API validation.
-    if (sourceKind === "markdown" || ["button", "input", "watch"].includes(targetKind)) return;
+    if (sourceKind === "markdown" || ["button", "input", "watch", "webhook-in"].includes(targetKind)) return;
     // Saving a terminal message does not launch another turn, so it must still work at the hop limit.
     if (targetKind === "markdown") {
       this.setFlow(target, flow);
@@ -195,7 +195,7 @@ export class Chain {
       return;
     }
     // 명령 노드로 넘기면 명령을 실행한다. 실행 폴더는 명령을 처음 실행시킨 세션을 따른다.
-    if (["command", "git", "repeat", "transform", "notify"].includes(targetKind)) {
+    if (["command", "git", "repeat", "transform", "notify", "webhook"].includes(targetKind)) {
       const origin = this.commandOrigin(source, sourceKind, link);
       this.note(source, `명령 "${target.title}" 실행`);
       this.startLinkedCommand(target, { origin, depth: depth + 1, prompt: answer ?? (sourceKind === "session" ? lastAnswer(source) : source.lastRun?.outputText ?? source.lastRun?.tail ?? source.prompt ?? ""), flow });
@@ -208,7 +208,7 @@ export class Chain {
   startLinkedCommand(node, options) {
     const flow = options.flow;
     try {
-      if (this.runs.has(node.id) && !["command", "repeat", "transform", "notify"].includes(commandKind(node))) {
+      if (this.runs.has(node.id) && !["command", "repeat", "transform", "notify", "webhook"].includes(commandKind(node))) {
         this.failFlowDelivery(node, new Error("이미 실행 중인 노드입니다. 앞선 실행이 끝난 뒤 다시 시작하세요."), flow, options);
         return;
       }
@@ -236,7 +236,7 @@ export class Chain {
   // 세션 하나에 넘어온 작업을 넣는다. 보낸 쪽 종류에 따라 넘기는 내용이 다르다.
   async sendSession(link, source, sourceKind, target, depth, answer, flow = this.flowFor(source)) {
     const from = { from: source.id, fromTitle: source.title, ...(flow ? { flow } : {}) };
-    if (["input", "repeat", "transform", "watch", "notify"].includes(sourceKind)) {
+    if (["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"].includes(sourceKind)) {
       const text = answer ?? source.lastRun?.outputText ?? source.lastRun?.tail ?? "";
       this.enqueue(target, [text, link.note?.trim()].filter(Boolean).join("\n\n"), from, depth + 1);
       return;
@@ -395,9 +395,9 @@ export class Chain {
   runCommand(cmd, { origin = null, depth = 0, prompt = null, values = undefined, flow = null, historyStepId = null } = {}) {
     if (this.disposed || flow?.cancelled) return null;
     const kind = commandKind(cmd);
-    if (["input", "repeat", "transform", "watch", "notify"].includes(kind)) {
+    if (["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"].includes(kind)) {
       if (this.runs.has(cmd.id)) {
-        if (["repeat", "transform"].includes(kind)) return this.workflow.enqueue(cmd, { origin, depth, prompt, values, flow, historyStepId });
+        if (["repeat", "transform", "webhook"].includes(kind)) return this.workflow.enqueue(cmd, { origin, depth, prompt, values, flow, historyStepId });
         return null;
       }
       return this.workflow.run(cmd, { origin, depth, prompt, values, flow, historyStepId });

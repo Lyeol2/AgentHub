@@ -126,6 +126,10 @@
               <button class="ghost sm" id="p-orchestrator" title="목표를 작업으로 나누고 세션을 만들어 지휘하는 세션">오케스트레이터 만들기</button>
               <button class="ghost sm" id="p-skills" title="스킬 만들기·편집·옮기기. 세션 카드의 스킬 칩을 눌러 장착합니다">스킬</button>
               <button class="ghost sm" id="p-board" title="세션들이 함께 보는 메모. API 약속·정한 사항·진행 상황을 남깁니다">공유 노트</button>
+              <span class="history-controls">
+                <button class="ghost sm" id="p-undo" aria-label="되돌리기" disabled>↶</button>
+                <button class="ghost sm" id="p-redo" aria-label="다시 실행" disabled>↷</button>
+              </span>
               <button class="ghost sm" id="p-relayout" title="옮긴 위치를 지우고 연결 순서대로 다시 배치">자동 배치</button>
               <span class="zoom-controls" title="마우스 휠로 확대·축소하고 휠 버튼을 누른 채 끌어 이동합니다">
                 <button class="ghost sm" id="p-zoom-out" aria-label="축소">−</button>
@@ -136,6 +140,22 @@
             </div>
           </div>
           <div class="graph" id="p-graph" role="region" aria-label="세션 흐름 그래프. 휠로 확대·축소, 휠 버튼을 끌어 이동, 빈 곳을 끌어 선택 후 Delete로 삭제"></div>
+          <form class="flow-assistant" id="p-flow-assistant" aria-label="흐름 도우미">
+            <div class="flow-assistant-plan" id="p-flow-assistant-plan" hidden>
+              <p class="flow-assistant-summary" id="p-flow-assistant-summary"></p>
+              <ol class="flow-assistant-steps" id="p-flow-assistant-steps"></ol>
+              <p class="error" id="p-flow-assistant-error" role="alert" hidden></p>
+              <menu>
+                <button type="button" class="ghost sm" id="p-flow-assistant-cancel">취소</button>
+                <button type="button" class="primary sm" id="p-flow-assistant-apply">적용</button>
+              </menu>
+            </div>
+            <div class="flow-assistant-input">
+              <textarea id="p-flow-assistant-prompt" rows="1" maxlength="4000" aria-label="흐름 도우미에게 할 요청" title="Enter로 보내고 Shift+Enter로 줄을 바꿉니다" placeholder="AI에게 맡길 일 · 예: 구현 세션 뒤에 Codex 리뷰 세션 붙여 줘"></textarea>
+              <span class="flow-assistant-status" id="p-flow-assistant-status" aria-live="polite"></span>
+              <button type="submit" class="primary sm" id="p-flow-assistant-send">보내기</button>
+            </div>
+          </form>
         </div>
         </div>
 
@@ -601,6 +621,23 @@
         <label>알림 내용 <textarea id="notify-message" rows="5" maxlength="20000" placeholder="{{input}}"></textarea></label>
         <div class="two"><label>표시 종류 <select id="notify-level"><option value="info">안내</option><option value="success">성공</option><option value="error">실패</option></select></label><label class="check"><input id="notify-sound" type="checkbox"> 소리 요청</label></div>
       </section>
+      <section id="webhook-settings" class="flow-node-settings" hidden>
+        <div class="two"><label>요청 방식 <select id="webhook-method"><option>POST</option><option>PUT</option><option>PATCH</option><option>GET</option><option>DELETE</option></select></label><label>응답 대기 시간(초) <input id="webhook-timeout" type="number" min="1" max="120" value="30"></label></div>
+        <label>보낼 주소 <input id="webhook-url" type="url" class="mono" spellcheck="false" maxlength="2048" placeholder="https://hooks.slack.com/services/..."></label>
+        <label>머리글 <textarea id="webhook-headers" rows="3" class="mono" spellcheck="false" placeholder="Authorization: Bearer 토큰&#10;X-Source: AgentHub"></textarea></label>
+        <div id="webhook-body-row">
+          <label>본문 형식 <select id="webhook-body-type"><option value="json">JSON</option><option value="text">텍스트</option></select></label>
+          <label>본문 <textarea id="webhook-body" rows="5" class="mono" spellcheck="false"></textarea></label>
+        </div>
+        <p class="hint">머리글은 "이름: 값"을 한 줄에 하나씩 적습니다. 머리글에 넣은 토큰은 이 PC의 AgentHub 데이터에 저장됩니다.</p>
+      </section>
+      <section id="webhook-in-settings" class="flow-node-settings" hidden>
+        <label>받는 주소 <span class="webhook-url-row"><input id="webhook-in-url" class="mono" readonly placeholder="저장하면 주소를 만듭니다"><button type="button" class="ghost sm" id="webhook-in-copy">복사</button></span></label>
+        <label class="check" id="webhook-in-regenerate-row"><input id="webhook-in-regenerate" type="checkbox"> 저장할 때 주소를 새로 만들기 (이전 주소로 온 요청은 받지 않음)</label>
+        <label class="check"><input id="webhook-in-enabled" type="checkbox" checked> 요청 받기</label>
+        <label>받으면 보낼 요청 <textarea id="webhook-in-prompt" rows="4"></textarea></label>
+        <p class="hint">{{body}} 받은 본문 · {{payload.필드}} JSON 본문의 값 · {{event}} GitHub 등의 이벤트 이름 · {{query.이름}} 주소의 쿼리 값 · {{method}} · {{receivedAt}}</p>
+      </section>
       <div id="group-members-row" class="group-members" hidden>
         <span class="group-members-label">모을 노드</span>
         <ul id="group-members" class="group-member-list"></ul>
@@ -843,6 +880,8 @@
       </div>
       <label>작업 유형 <select id="task-type"><option value="feature">기능 개발 · 일반 수정</option><option value="hotfix">긴급 수정</option><option value="release">배포 준비</option></select></label>
       <label id="task-version-row" hidden>배포 버전 <input id="task-version" maxlength="64" placeholder="예: 0.4.0" disabled></label>
+      <label id="task-branch-name-row">브랜치 이름 <span class="task-name-input"><span class="task-name-prefix" id="task-branch-prefix">feature/</span><input id="task-branch-name" maxlength="200" placeholder="비우면 자동: &lt;작업ID&gt;-&lt;제목&gt;" autocomplete="off" spellcheck="false"></span></label>
+      <label id="task-worktree-name-row">작업 폴더 이름 <input id="task-worktree-name" maxlength="80" pattern="[A-Za-z0-9가-힣_][A-Za-z0-9가-힣._\-]{0,79}" title="영문·한글·숫자와 . _ - 만 쓸 수 있습니다." placeholder="비우면 자동: task-&lt;작업ID&gt;" autocomplete="off" spellcheck="false"></label>
       <p class="hint task-branch-preview" id="task-branch-preview"></p>
       <div class="task-gitflow-controls"><span class="hint" id="task-gitflow-summary"></span><button type="button" class="ghost sm" id="task-create-settings">GitFlow 설정</button></div>
       <div class="task-form-grid">
