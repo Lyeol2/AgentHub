@@ -61,3 +61,44 @@ export function builtinCommand(text) {
   const match = String(text ?? "").trim().match(/^\/([a-z]+)$/);
   return match && BUILTIN_COMMANDS.some((c) => c.name === match[1]) ? match[1] : null;
 }
+
+// ── 고른 파일 참조 ───────────────────────────────────────────────
+// 자동 완성으로 고른 파일은 작성창에 "@파일이름"으로만 보이고, 보낼 때 전체 경로로 바꾼다.
+// 이름이 같은 다른 파일을 이미 골랐으면 겹치지 않을 만큼 상위 폴더를 붙인다.
+export function refToken(file, refs = new Map()) {
+  const parts = String(file).split("/").filter(Boolean);
+  for (let n = 1; n <= parts.length; n++) {
+    const token = parts.slice(-n).join("/");
+    const taken = refs.get(token);
+    if (!taken || taken === file) return token;
+  }
+  return file;
+}
+
+const refWord = (token) => (/\s/.test(token) ? `@"${token}"` : `@${token}`);
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+// text 안의 고른 참조 위치. 긴 이름부터 맞추고 낱말 경계(줄 처음·공백)에서만 찾는다.
+export function refMatches(text, refs = new Map()) {
+  const tokens = [...refs.keys()].sort((a, b) => b.length - a.length);
+  if (!tokens.length) return [];
+  const pattern = new RegExp(`(^|\\s)(${tokens.map((t) => escapeRegExp(refWord(t))).join("|")})(?=\\s|$)`, "g");
+  const found = [];
+  for (const m of String(text ?? "").matchAll(pattern)) {
+    const word = m[2];
+    const token = word.startsWith('@"') ? word.slice(2, -1) : word.slice(1);
+    found.push({ start: m.index + m[1].length, end: m.index + m[0].length, token, file: refs.get(token) });
+  }
+  return found;
+}
+
+// 보낼 요청: 작성창의 "@파일이름"을 CLI가 찾을 수 있는 "@전체/경로"로 바꾼다.
+export function expandRefs(text, refs = new Map()) {
+  let result = "";
+  let last = 0;
+  for (const m of refMatches(text, refs)) {
+    result += text.slice(last, m.start) + refWord(m.file);
+    last = m.end;
+  }
+  return result + String(text ?? "").slice(last);
+}

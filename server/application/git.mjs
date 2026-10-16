@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { isGitRepo } from "../git.mjs";
-import { gitOverview, fileDiff, showCommit, branchDiff, stage, unstage, commit, merge } from "../gitpanel.mjs";
+import { gitOverview, fileDiff, showCommit, branchDiff, stage, unstage, commit, merge, checkout } from "../gitpanel.mjs";
 import { githubPulls, GitHubError } from "../github.mjs";
 import { samePath } from "./projects.mjs";
 import { HttpError } from "./errors.mjs";
@@ -62,6 +62,14 @@ export function createGitService({ sessions, projects, runner, notify, tasks }) 
         if (sessionId && runner.isRunning(sessionId)) throw new HttpError(409, "세션이 실행 중입니다. 끝나거나 일시중지한 뒤 커밋하세요.");
         const files = Array.isArray(body.files) ? body.files : null;
         const result = await commit(directory, body.message, files, { staged: body.staged === true });
+        notify("git", { projectPath: repo });
+        return { ok: true, result };
+      }
+      if (action === "checkout") {
+        // 원본 폴더에서 일하는 세션이 실행 중이면 그 아래의 파일을 바꾸지 않는다.
+        const busy = projects.projectSessions(repo).find((s) => samePath(s.cwd ?? s.projectPath, repo) && runner.isRunning(s.id));
+        if (busy) throw new HttpError(409, `"${busy.title}" 세션이 원본 폴더에서 실행 중입니다. 끝나거나 일시중지한 뒤 체크아웃하세요.`);
+        const result = await checkout(repo, String(branch ?? ""));
         notify("git", { projectPath: repo });
         return { ok: true, result };
       }

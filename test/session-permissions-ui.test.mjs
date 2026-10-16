@@ -10,6 +10,7 @@ function element() {
     setAttribute(key, value) { this[key] = value; },
     removeAttribute(key) { delete this[key]; },
     append(...children) { this.children.push(...children); },
+    before() {},
     replaceChildren(...children) { this.children = children; },
     showModal() { this.open = true; },
     close() { this.open = false; },
@@ -19,10 +20,11 @@ function element() {
 function setup(t, { agent = "codex", permission = "workspace-write" } = {}) {
   const nodes = new Map(), calls = [], selected = [];
   const get = (id) => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
-  const original = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage };
+  const original = { document: globalThis.document, window: globalThis.window, localStorage: globalThis.localStorage, ResizeObserver: globalThis.ResizeObserver };
   globalThis.document = { getElementById: get, createElement: element, addEventListener() {} };
   globalThis.window = { addEventListener() {} };
   globalThis.localStorage = { getItem: () => null };
+  globalThis.ResizeObserver = class { observe() {} };
   t.after(() => { for (const [key, value] of Object.entries(original)) { if (value === undefined) delete globalThis[key]; else globalThis[key] = value; } });
   const data = {
     current: { id: "s1", title: "권한 설정", agent, permission, model: "", effort: "", state: "idle", events: [], queue: [] },

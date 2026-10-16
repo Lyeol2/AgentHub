@@ -14,7 +14,7 @@ export function gitRoutes(s) {
   return [
     ["GET", "git", (ctx) => s.execute("overview", options(ctx))],
     ...["diff", "show", "branch"].map((action) => ["GET", `git/${action}`, (ctx) => s.execute(action, options(ctx))]),
-    ...["stage", "unstage", "commit", "merge", "push"].map((action) => ["POST", `git/${action}`, (ctx) => s.execute(action, options(ctx, true))]),
+    ...["stage", "unstage", "commit", "merge", "checkout", "push"].map((action) => ["POST", `git/${action}`, (ctx) => s.execute(action, options(ctx, true))]),
     ["GET", "git/pulls", (ctx) => s.execute("pulls", options(ctx))],
     ["GET", "git/pulls/:number", (ctx) => s.execute("pull", options(ctx))],
     ["POST", "git/pulls", (ctx) => s.execute("createPull", options(ctx, true))],
