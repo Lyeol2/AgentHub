@@ -154,8 +154,9 @@ for (const outcome of ["done", "error", "canceled"]) {
     schedules.now = () => now;
     schedules.setTimer = () => ({ unref() {} });
     schedules.clearTimer = () => {};
-    const node = hub.services.commands.create({ projectPath: root, kind: "schedule", scheduleMode: "once",
-      runAt: new Date(now + 60_000).toISOString(), prompt: "보존할 예약 요청" });
+    // 서비스가 돌려주는 사본이 아니라 실행 결과가 기록되는 저장된 노드를 본다.
+    const node = hub.commands.get(hub.services.commands.create({ projectPath: root, kind: "schedule", scheduleMode: "once",
+      runAt: new Date(now + 60_000).toISOString(), prompt: "보존할 예약 요청" }).id);
     hub.links.add({ id: "schedule-link", from: node.id, to: target.id, when: "success", enabled: true });
     const job = { kind: "update", state: "running", log: "", automatic: true };
     hub.setup.jobs.set("claude", job);
