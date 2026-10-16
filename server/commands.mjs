@@ -13,7 +13,8 @@ const isWindows = process.platform === "win32";
 export const COMMAND_PREFIX = "cmd-";
 export const isCommandId = (id) => typeof id === "string" && id.startsWith(COMMAND_PREFIX);
 export const commandKind = (command) => command?.kind ?? "command";
-export const COMMAND_KINDS = ["command", "button", "markdown", "group", "git", ...FLOW_NODE_KINDS];
+export const COMMAND_KINDS = ["command", "button", "markdown", "group", "git", "task", ...FLOW_NODE_KINDS];
+export const TASK_ACTIONS = ["start", "finish"]; // 새 작업 | 작업 마무리
 export const GROUP_MAX = 20; // 세션 묶음 하나에 넣을 수 있는 세션 수
 export const CWD_MODES = ["source", "project"]; // 보낸 세션의 작업 폴더 | 프로젝트 폴더
 const OUTPUT_MAX = 200_000; // 메모리에 남기는 출력
@@ -166,6 +167,28 @@ export function checkCommand(body, current = {}) {
     const timeoutSec = Math.round(Number(body.timeoutSec ?? current.timeoutSec ?? TIMEOUT_DEFAULT));
     if (!Number.isFinite(timeoutSec) || timeoutSec < 1 || timeoutSec > TIMEOUT_MAX) throw new Error(`시간 제한은 1~${TIMEOUT_MAX}초입니다.`);
     return { kind, title: title || (gitAction === "use" ? "Git 브랜치 사용" : "Git 병합"), gitAction, branch, targetBranch, timeoutSec };
+  }
+  if (kind === "task") {
+    const taskAction = body.taskAction ?? current.taskAction ?? "start";
+    if (!TASK_ACTIONS.includes(taskAction)) throw new Error("작업 노드는 새 작업 또는 작업 마무리입니다.");
+    const template = (key, label, max, fallback = "") => {
+      const value = String(body[key] ?? current[key] ?? fallback);
+      if (value.length > max) throw new Error(`${label}은 ${max.toLocaleString("en-US")}자까지 입력할 수 있습니다.`);
+      return value;
+    };
+    if (taskAction === "finish") return { kind, title: title || "작업 마무리", taskAction,
+      commitMessage: template("commitMessage", "커밋 메시지", 2000).trim(),
+      description: template("description", "PR 설명", 40_000, "{{input}}"),
+      verification: template("verification", "검증 결과", 10_000) };
+    const taskType = body.taskType ?? current.taskType ?? "feature";
+    if (!["feature", "hotfix", "release"].includes(taskType)) throw new Error("작업 유형이 올바르지 않습니다.");
+    const inPlace = body.inPlace ?? current.inPlace ?? false;
+    if (typeof inPlace !== "boolean") throw new Error("워크트리 만들지 않기 설정이 올바르지 않습니다.");
+    const titleTemplate = template("titleTemplate", "작업 제목", 2000, "{{input}}");
+    if (!titleTemplate.trim()) throw new Error("작업 제목을 적으세요. 앞 노드의 결과는 {{input}}으로 씁니다.");
+    const version = template("version", "배포 버전", 200).trim();
+    if (taskType === "release" && !version) throw new Error("배포 준비 작업에는 배포 버전을 적으세요. 예: 1.2.0");
+    return { kind, title: title || "새 작업", taskAction, taskType, titleTemplate, version, inPlace };
   }
   if (kind === "button") {
     const prompt = String(body.prompt ?? current.prompt ?? "").trim();

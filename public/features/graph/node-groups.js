@@ -1,7 +1,7 @@
 import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { nodeSize } from "./model.js";
-import { KIND_LABEL, hasBranchPorts, isSourceOnly } from "../commands/flow-nodes.js";
+import { KIND_LABEL, hasBranchPorts, resultOnlyOutputs, isSourceOnly } from "../commands/flow-nodes.js";
 
 // A group is a canvas container. Links continue to point to its real member nodes.
 export function createNodeGroups({ api, data, navigation, ui, history, renderGraph, loadSessions, loadCommands, runCommand, saveGroupTemplate, trackGesture, canvasPoint, placeCards, openLinkDialog, openCreateMenu, syncSelection }) {
@@ -320,7 +320,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
       candidate.replaceChildren(...nodes().filter((item) => chosen.has(item.id) && (direction.value === "input" ? !isSourceOnly(item) : item.kind !== "markdown")).map((item) => el("option", { value: item.id }, `${item.title} · ${kind(item)}`)));
       if ([...candidate.options].some((option) => option.value === previous)) candidate.value = previous;
       const previousCondition = condition.value;
-      const allowed = conditionOptions.filter((item) => !hasBranchPorts(node(candidate.value)) || ["success", "error", "always", "manual"].includes(item.id));
+      const allowed = conditionOptions.filter((item) => !resultOnlyOutputs(node(candidate.value)) || ["success", "error", "always", "manual"].includes(item.id));
       condition.replaceChildren(...allowed.map((item) => el("option", { value: item.id }, item.label)));
       if (allowed.some((item) => item.id === previousCondition)) condition.value = previousCondition;
       condition.hidden = direction.value !== "output";

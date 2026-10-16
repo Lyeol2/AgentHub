@@ -1,9 +1,17 @@
 import { $, el } from "../../shared/dom.js";
 
-export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"];
-export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", notify: "알림", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기" };
+export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "notify", "task", "webhook", "webhook-in"];
+export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기" };
 export const kindOf = (node) => Object.hasOwn(KIND_LABEL, node?.kind) ? node.kind : "command";
-export const hasBranchPorts = (node) => ["git", "repeat"].includes(node?.kind);
+// 명령 노드는 kind가 없으므로 id로 세션과 구분한다.
+export const hasBranchPorts = (node) => ["git", "task", "repeat"].includes(node?.kind) || (!!node?.id?.startsWith("cmd-") && kindOf(node) === "command");
+// 성공·실패·항상·수동 조건만 쓰는 출력(명령 노드는 키워드 조건도 쓴다)
+export const resultOnlyOutputs = (node) => ["git", "task", "repeat"].includes(node?.kind);
+// 받는 세션·명령을 결과의 작업 폴더에서 실행할 수 있는 노드
+export const hasWorktreeOutput = (node) => node?.kind === "git" || (node?.kind === "task" && node.taskAction === "start");
+// 따로 정하지 않으면 성공 출력을 작업 폴더로 넘기는 노드
+export const worktreeByDefault = (node) => (node?.kind === "git" && node.gitAction === "use") || (node?.kind === "task" && node.taskAction === "start");
+export const TASK_TYPE_LABEL = { feature: "기능 개발", hotfix: "긴급 수정", release: "배포 준비" };
 export const isSourceOnly = (node) => ["button", "input", "watch", "webhook-in"].includes(node?.kind);
 // 받는 주소. 앱이 열린 주소를 기준으로 만든다.
 export const hookUrl = (node) => node?.hookToken ? `${location.origin}/hooks/${node.hookToken}` : "";
@@ -14,6 +22,7 @@ export const KIND_HINT = {
   input: "실행할 때 입력 폼을 엽니다. 입력값은 이번 실행과 뒤따르는 노드에서만 사용합니다. 프롬프트와 연결의 전달 내용에 {{key}}를 쓰세요. 명령에서는 입력값을 AGENTHUB_KEY 환경 변수로 읽습니다(예: PowerShell $env:AGENTHUB_TASK, Bash $AGENTHUB_TASK).",
   repeat: "성공 출력을 반복할 작업에 연결하고, 작업의 실패 출력을 이 노드로 되돌리세요. 같은 실행에서 최대 횟수까지 다시 시도하며, 한도를 넘으면 실패 출력으로 넘깁니다. 성공한 작업은 다음 노드로 연결합니다.",
   transform: "앞 노드의 결과를 AI 없이 가공합니다. JSON은 점으로 구분한 필드 경로, 줄 선택은 검색할 문구, 템플릿은 {{input}}와 입력값 {{key}}를 사용합니다. 결과 보기에서 출력 내용을 확인할 수 있습니다.",
+  task: "작업 탭의 새 작업·작업 마무리를 흐름에서 실행합니다. 새 작업은 GitFlow 규칙으로 브랜치와 작업 폴더를 만들고, 성공 출력에 연결한 세션을 그 작업 폴더로 옮겨 작업에 연결합니다(대화 기록이 없는 세션만). 작업 마무리는 앞 세션의 작업을 커밋·게시하고 PR을 만들며, 들어오는 연결은 기본으로 승인 후 실행합니다. 제목·커밋 메시지·PR 설명에 {{input}}와 입력값 {{key}}를 쓸 수 있습니다.",
   watch: "▶를 누른 뒤 지정한 파일이나 폴더의 변경을 감시합니다. 짧은 시간 안의 변경은 모아서 연결된 작업을 시작합니다. 중지하면 감시를 해제하며, 앱을 다시 열면 직접 시작해야 합니다.",
 };
 
@@ -45,6 +54,14 @@ export function createFlowNodeForms() {
     catch { $("webhook-in-url").select(); }
     setTimeout(() => { $("webhook-in-copy").textContent = "복사"; }, 1500);
   });
+  $("tasknode-action").addEventListener("change", syncTask);
+  $("tasknode-type").addEventListener("change", syncTask);
+  function syncTask() {
+    const finish = $("tasknode-action").value === "finish";
+    $("tasknode-start-fields").hidden = finish;
+    $("tasknode-finish-fields").hidden = !finish;
+    $("tasknode-version-row").hidden = finish || $("tasknode-type").value !== "release";
+  }
   function syncTransform() {
     const mode = $("transform-mode").value;
     $("transform-expression-row").hidden = mode === "template";
@@ -85,6 +102,15 @@ export function createFlowNodeForms() {
     $("webhook-in-prompt").value = cmd?.kind === "webhook-in" ? cmd.prompt ?? "" : "웹훅 요청을 받았습니다.\n{{body}}";
     syncTransform();
     syncWebhook();
+    $("tasknode-action").value = cmd?.taskAction ?? "start";
+    $("tasknode-type").value = cmd?.taskType ?? "feature";
+    $("tasknode-title").value = cmd?.titleTemplate ?? "{{input}}";
+    $("tasknode-version").value = cmd?.version ?? "";
+    $("tasknode-in-place").checked = cmd?.inPlace === true;
+    $("tasknode-commit").value = cmd?.commitMessage ?? "";
+    $("tasknode-description").value = cmd?.description ?? "{{input}}";
+    $("tasknode-verification").value = cmd?.verification ?? "";
+    syncTask();
   }
   function body(kind) {
     if (kind === "input") return { fields: [...$("input-fields").children].map((row) => ({ key: row.querySelector(".flow-field-key").value.trim(), label: row.querySelector(".flow-field-label").value.trim(), type: row.querySelector(".flow-field-type").value, required: row.querySelector(".flow-field-required").checked, defaultValue: row.querySelector(".flow-field-default").value })), prompt: $("input-prompt").value };
@@ -93,6 +119,9 @@ export function createFlowNodeForms() {
     if (kind === "notify") return { message: $("notify-message").value, notificationTitle: $("notify-title").value, level: $("notify-level").value, sound: $("notify-sound").checked };
     if (kind === "webhook") return { url: $("webhook-url").value.trim(), method: $("webhook-method").value, timeoutSec: Number($("webhook-timeout").value), headers: $("webhook-headers").value, bodyType: $("webhook-body-type").value, body: $("webhook-body").value };
     if (kind === "webhook-in") return { enabled: $("webhook-in-enabled").checked, prompt: $("webhook-in-prompt").value, ...($("webhook-in-regenerate").checked ? { regenerateToken: true } : {}) };
+    if (kind === "task") return $("tasknode-action").value === "finish"
+      ? { taskAction: "finish", commitMessage: $("tasknode-commit").value, description: $("tasknode-description").value, verification: $("tasknode-verification").value }
+      : { taskAction: "start", taskType: $("tasknode-type").value, titleTemplate: $("tasknode-title").value, version: $("tasknode-version").value, inPlace: $("tasknode-in-place").checked };
     if (kind === "watch") return { watchPaths: $("watch-paths").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), debounceMs: Number($("watch-debounce").value), prompt: $("watch-prompt").value };
     return {};
   }

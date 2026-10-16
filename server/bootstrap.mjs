@@ -86,6 +86,7 @@ export function createHub(options = {}) {
   const chain = deps.chain ?? new Chain({
     store, runner, links, commands, cliPaths, history: runHistory,
     autoTurnEnd: false,
+    tasks: () => tasks,
     compose: (...args) => sessions.composeInput(...args),
     notify: (kind, sessionId) => {
       if (["links", "commands", "sessions"].includes(kind)) notify(kind, {});

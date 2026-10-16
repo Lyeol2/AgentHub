@@ -546,7 +546,7 @@
         넘기기 전에 승인 받기 (조건이 맞으면 연결선 위에 승인 대기로 멈춥니다)
       </label>
       <label class="check" id="link-git-worktree-row" hidden><input type="checkbox" name="useGitWorktree" id="link-git-worktree"> Git 작업 폴더 사용</label>
-      <p class="hint" id="link-git-worktree-hint" hidden>Git 결과의 작업 폴더에서 실행합니다. 기존 대화가 있는 세션은 같은 작업 폴더일 때만 실행할 수 있습니다.</p>
+      <p class="hint" id="link-git-worktree-hint" hidden>Git 결과나 새 작업의 작업 폴더에서 실행합니다. 새 작업에서는 받는 세션을 그 작업에 연결합니다. 기존 대화가 있는 세션은 같은 작업 폴더일 때만 실행할 수 있습니다.</p>
       <label class="check"><input type="checkbox" name="enabled" id="link-enabled" checked> 사용</label>
       <p class="hint">한 세션에서 나가는 연결은 키워드 → 성공·실패 → 그 외 순서로 먼저 맞은 쪽만 따라갑니다. "항상"은 언제나 함께 넘깁니다.</p>
       <p class="hint">보내는 세션의 마지막 답변, 바뀐 파일 목록, 작업 폴더 경로가 받는 세션의 요청으로 들어갑니다. 받는 세션이 실행 중이면 끝난 뒤 시작합니다. 자동 연결은 한 흐름에서 최대 8단계까지 이어집니다.</p>
@@ -637,6 +637,23 @@
         <label class="check"><input id="webhook-in-enabled" type="checkbox" checked> 요청 받기</label>
         <label>받으면 보낼 요청 <textarea id="webhook-in-prompt" rows="4"></textarea></label>
         <p class="hint">{{body}} 받은 본문 · {{payload.필드}} JSON 본문의 값 · {{event}} GitHub 등의 이벤트 이름 · {{query.이름}} 주소의 쿼리 값 · {{method}} · {{receivedAt}}</p>
+      </section>
+      <section id="task-settings" class="flow-node-settings" hidden>
+        <label>동작 <select id="tasknode-action"><option value="start">새 작업</option><option value="finish">작업 마무리</option></select></label>
+        <div id="tasknode-start-fields" class="flow-node-settings">
+          <div class="two">
+            <label>작업 유형 <select id="tasknode-type"><option value="feature">기능 개발·일반 수정</option><option value="hotfix">긴급 수정</option><option value="release">배포 준비</option></select></label>
+            <label id="tasknode-version-row" hidden>배포 버전 <input id="tasknode-version" maxlength="200" placeholder="예: 1.2.0 또는 {{version}}"></label>
+          </div>
+          <label>작업 제목 <input id="tasknode-title" maxlength="2000" placeholder="{{input}}"></label>
+          <p class="hint">결과의 첫 줄을 제목으로 씁니다(최대 160자). 브랜치 이름은 GitFlow 설정을 따릅니다.</p>
+          <label class="check"><input id="tasknode-in-place" type="checkbox"> 워크트리 만들지 않기(원본 폴더를 작업 브랜치로 전환)</label>
+        </div>
+        <div id="tasknode-finish-fields" class="flow-node-settings" hidden>
+          <label>커밋 메시지 <input id="tasknode-commit" maxlength="2000" placeholder="비워 두면 feat: 작업 제목"></label>
+          <label>PR 설명 <textarea id="tasknode-description" rows="4" maxlength="40000" placeholder="{{input}}"></textarea></label>
+          <label>검증 결과 <textarea id="tasknode-verification" rows="3" maxlength="10000" placeholder="예: npm test 통과"></textarea></label>
+        </div>
       </section>
       <div id="group-members-row" class="group-members" hidden>
         <span class="group-members-label">모을 노드</span>

@@ -80,7 +80,7 @@ export function createNodeGroupService({ groups, store, commands, links, project
       if (item.direction === "output") {
         port.when = item.when ?? "success";
         if (!CONDITIONS.includes(port.when)) throw new HttpError(400, "포트 출력 조건이 올바르지 않습니다.");
-        if (["git", "repeat"].includes(target.kind) && !["success", "error", "always", "manual"].includes(port.when)) throw new HttpError(400, "Git 출력은 성공·실패·항상·수동 조건을 사용하세요.");
+        if (["git", "task", "repeat"].includes(target.kind) && !["success", "error", "always", "manual"].includes(port.when)) throw new HttpError(400, "Git·작업·반복 출력은 성공·실패·항상·수동 조건을 사용하세요.");
         port.keyword = port.when === "keyword" ? String(item.keyword ?? "").trim().slice(0, 100) : "";
         if (port.when === "keyword" && !port.keyword) throw new HttpError(400, "키워드 출력 포트에는 키워드를 입력하세요.");
       }

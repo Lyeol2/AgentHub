@@ -126,11 +126,15 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     const fields = linkFields(body, current);
     if (commandKind(from) === "git" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "Git 출력은 성공·실패·항상·수동 조건을 사용하세요.");
     if (commandKind(from) === "repeat" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "반복 출력은 성공·실패·항상·수동 조건을 사용하세요.");
-    const canUse = commandKind(from) === "git" && (!isCommandId(to.id) || commandKind(to) === "command");
-    const useGitWorktree = body.useGitWorktree ?? (fields.when === "error" ? false : current.useGitWorktree) ?? (canUse && from.gitAction === "use" && fields.when === "success");
+    if (isCommandId(from.id) && commandKind(from) === "task" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "작업 출력은 성공·실패·항상·수동 조건을 사용하세요.");
+    // 작업 마무리는 커밋·push·PR을 만들므로 따로 정하지 않으면 넘기기 전에 승인을 받는다.
+    if (body.approve === undefined && current.approve === undefined && isCommandId(to.id) && commandKind(to) === "task" && to.taskAction === "finish") fields.approve = true;
+    const fromTask = isCommandId(from.id) && commandKind(from) === "task" && from.taskAction === "start";
+    const canUse = (commandKind(from) === "git" || fromTask) && (!isCommandId(to.id) || commandKind(to) === "command");
+    const useGitWorktree = body.useGitWorktree ?? (fields.when === "error" ? false : current.useGitWorktree) ?? (canUse && (fromTask || from.gitAction === "use") && fields.when === "success");
     if (typeof useGitWorktree !== "boolean") throw new HttpError(400, "Git 작업 폴더 사용 설정이 올바르지 않습니다.");
     if (useGitWorktree && fields.when === "error") throw new HttpError(400, "실패 출력에는 사용할 Git 작업 폴더가 없습니다.");
-    if (useGitWorktree && !canUse) throw new HttpError(400, "Git 작업 폴더는 Git 노드에서 세션이나 명령으로 넘길 때 사용할 수 있습니다.");
+    if (useGitWorktree && !canUse) throw new HttpError(400, "Git 작업 폴더는 Git 노드나 새 작업 노드에서 세션이나 명령으로 넘길 때 사용할 수 있습니다.");
     return { ...fields, ...(canUse || current.useGitWorktree !== undefined ? { useGitWorktree } : {}) };
   }
 
@@ -159,7 +163,7 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");
     if (!samePath(from.projectPath, to.projectPath)) throw new HttpError(400, "같은 프로젝트의 세션끼리만 연결할 수 있습니다.");
     const fields = checkedLinkFields(from, to, body);
-    const multipleOutputs = ["git", "repeat", "group", "transform"].includes(commandKind(from)) || !!nodeGroups?.hasNode?.(from.id);
+    const multipleOutputs = (isCommandId(from.id) && ["command", "git", "task", "repeat", "group", "transform"].includes(commandKind(from))) || !!nodeGroups?.hasNode?.(from.id);
     if (links.list().some((l) => l.from === from.id && l.to === to.id && (!multipleOutputs || sameOutput(l, fields)))) throw new HttpError(409, "이미 연결되어 있습니다.");
     const link = { id: randomBytes(4).toString("hex"), from: from.id, to: to.id, ...fields };
     links.add(link);
@@ -173,7 +177,7 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     const to = isCommandId(link.to) ? getCommand(link.to) : getSession(link.to);
     const fields = checkedLinkFields(from, to, body, link);
     if (links.list().some((other) => other.id !== id && other.from === link.from && other.to === link.to && sameOutput(other, fields))) throw new HttpError(409, "이미 연결되어 있습니다.");
-    links.update(link, { ...fields, ...(commandKind(from) === "git" ? { pending: null } : {}) });
+    links.update(link, { ...fields, ...(["git", "task"].includes(commandKind(from)) ? { pending: null } : {}) });
     broadcast("links", {});
     return link;
   }

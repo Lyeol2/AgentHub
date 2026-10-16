@@ -41,11 +41,12 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
     if (["button", "input", "watch", "webhook-in"].includes(toKind) || fromKind === "markdown") fail("템플릿의 연결 방향이 노드 종류와 맞지 않습니다.");
     const when = item.when ?? "success";
     if (!CONDITIONS.includes(when)) fail("템플릿 연결 조건이 올바르지 않습니다.");
-    if (["git", "repeat"].includes(fromKind) && !["success", "error", "always", "manual"].includes(when)) fail("Git·반복 출력은 성공·실패·항상·수동 조건을 사용하세요.");
+    if (["git", "task", "repeat"].includes(fromKind) && !["success", "error", "always", "manual"].includes(when)) fail("Git·작업·반복 출력은 성공·실패·항상·수동 조건을 사용하세요.");
     const keyword = when === "keyword" ? String(item.keyword ?? "").trim().slice(0, 100) : "";
     if (when === "keyword" && !keyword) fail("키워드 연결에는 키워드를 입력하세요.");
-    const canUse = fromKind === "git" && ["session", "command"].includes(toKind);
-    const useGitWorktree = item.useGitWorktree ?? (canUse && from.config.gitAction === "use" && when === "success");
+    const fromTask = fromKind === "task" && from.config.taskAction === "start";
+    const canUse = (fromKind === "git" || fromTask) && ["session", "command"].includes(toKind);
+    const useGitWorktree = item.useGitWorktree ?? (canUse && (fromTask || from.config.gitAction === "use") && when === "success");
     if (typeof useGitWorktree !== "boolean" || (useGitWorktree && (!canUse || when === "error"))) fail("템플릿의 Git 작업 폴더 전달 설정이 올바르지 않습니다.");
     return { from: item.from, to: item.to, when, keyword,
       note: String(item.note ?? "").trim().slice(0, ROLE_MAX), enabled: item.enabled !== false, approve: item.approve === true,
@@ -83,7 +84,7 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
       const port = { id: item.id, direction: item.direction, nodeId: item.nodeId, label: label(item.label, "포트") };
       if (item.direction === "output") {
         port.when = item.when ?? "success";
-        if (!CONDITIONS.includes(port.when) || ["git", "repeat"].includes(kind) && !["success", "error", "always", "manual"].includes(port.when)) fail("템플릿 포트 출력 조건이 올바르지 않습니다.");
+        if (!CONDITIONS.includes(port.when) || ["git", "task", "repeat"].includes(kind) && !["success", "error", "always", "manual"].includes(port.when)) fail("템플릿 포트 출력 조건이 올바르지 않습니다.");
         port.keyword = port.when === "keyword" ? String(item.keyword ?? "").trim().slice(0, 100) : "";
         if (port.when === "keyword" && !port.keyword) fail("키워드 출력 포트에는 키워드를 입력하세요.");
       }

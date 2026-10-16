@@ -2,7 +2,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 
 export const FLOW_NODE_KINDS = ["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"];
-export const FLOW_MEMBER_KINDS = ["command", "git", "input", "repeat", "transform", "notify", "webhook"];
+export const FLOW_MEMBER_KINDS = ["command", "git", "task", "input", "repeat", "transform", "notify", "webhook"];
 export const WEBHOOK_METHODS = ["POST", "PUT", "PATCH", "GET", "DELETE"];
 // 받는 쪽 주소에 들어가는 비밀 값. 노드를 만들 때(템플릿으로 추가할 때 포함) 새로 만든다.
 export const newHookToken = () => randomBytes(24).toString("hex");

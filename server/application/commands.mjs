@@ -52,7 +52,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     for (const id of fields.members) {
       const session = store.get(id) ?? commands.get(id);
       if (!session) throw new HttpError(400, "결과를 모을 노드가 없습니다. 목록을 새로 고쳐 다시 고르세요.");
-      if (id === selfId || (commands.get(id) && !FLOW_MEMBER_KINDS.includes(commandKind(session)))) throw new HttpError(400, "결과 모으기에는 세션, 명령, Git, 입력, 반복, 가공 노드만 넣을 수 있습니다.");
+      if (id === selfId || (commands.get(id) && !FLOW_MEMBER_KINDS.includes(commandKind(session)))) throw new HttpError(400, "결과 모으기에는 세션, 명령, Git, 작업, 입력, 반복, 가공 노드만 넣을 수 있습니다.");
       if (session.chat || !session.projectPath || path.resolve(session.projectPath).toLowerCase() !== path.resolve(projectPath).toLowerCase()) {
         throw new HttpError(400, `"${session.title}"은 이 프로젝트의 노드가 아니라 결과를 모을 수 없습니다.`);
       }
@@ -79,8 +79,8 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   function update(id, body) {
     const command = getCommand(id);
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled"].some((key) => body[key] !== undefined);
-    if (editing && ["git", "input", "repeat", "transform", "watch", "notify", "webhook", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification"].some((key) => body[key] !== undefined);
+    if (editing && ["git", "task", "input", "repeat", "transform", "watch", "notify", "webhook", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
     try {
       if (editing) fields = checkCommand(body, command);

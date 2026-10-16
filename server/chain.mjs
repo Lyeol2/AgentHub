@@ -1,6 +1,7 @@
 // 연결 조건에 따라 한 세션의 결과를 다음 세션의 요청으로 넘긴다.
 import { randomBytes } from "node:crypto";
 import { runGitNode } from "./git-nodes.mjs";
+import { runTaskNode, taskResultText } from "./task-nodes.mjs";
 import { verifyGitContext, assertSessionGitContext } from "./git-context.mjs";
 import { sameTaskPath } from "./tasks.mjs";
 import { changedFiles } from "./git.mjs";
@@ -15,12 +16,17 @@ import { canContact } from "./policies/messaging.mjs";
 import { MAX_HOPS, lastAnswer, verdictLine, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
 export { CONDITIONS, CONDITION_LABELS, MAX_HOPS, lastAnswer, verdictLine, keywordList, hasKeyword, matches, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
 
+// 명령 노드 실행 기록에 남기는 시작 세션 정보. 작업 마무리 노드가 taskId로 마무리할 작업을 찾는다.
+const originRecord = (origin) => origin ? { id: origin.id, title: origin.title, cwd: origin.cwd, ...(origin.gitContext ? { gitContext: origin.gitContext } : {}), ...(origin.taskId ? { taskId: origin.taskId } : {}) } : null;
+
 export class Chain {
   // compose: CLI에 실제로 넘길 내용을 만든다(역할·오케스트레이터 맥락).
   // notify: 연결(승인 대기)이나 대기열이 바뀌면 화면에 알린다. (kind: "links" | "queue", sessionId)
   // commands: 명령 노드 저장소(없으면 명령 노드를 쓰지 않는다). notify("commands")로 명령 상태 변화를 알린다.
-  constructor({ store, runner, links, cliPaths, compose = withRole, notify = () => {}, commands = null, autoTurnEnd = true, runGit = runGitNode, runCommandShell = runShell, createWatch = undefined, history = null }) {
+  // tasks: 작업 서비스나 그것을 돌려주는 함수(작업 노드가 쓴다)
+  constructor({ store, runner, links, cliPaths, compose = withRole, notify = () => {}, commands = null, autoTurnEnd = true, runGit = runGitNode, runCommandShell = runShell, createWatch = undefined, history = null, tasks = null }) {
     this.store = store;
+    this.taskService = typeof tasks === "function" ? tasks : () => tasks;
     this.runGit = runGit;
     this.runCommandShell = runCommandShell;
     this.workflow = new WorkflowRuntime(this, createWatch);
@@ -195,7 +201,7 @@ export class Chain {
       return;
     }
     // 명령 노드로 넘기면 명령을 실행한다. 실행 폴더는 명령을 처음 실행시킨 세션을 따른다.
-    if (["command", "git", "repeat", "transform", "notify", "webhook"].includes(targetKind)) {
+    if (["command", "git", "task", "repeat", "transform", "notify", "webhook"].includes(targetKind)) {
       const origin = this.commandOrigin(source, sourceKind, link);
       this.note(source, `명령 "${target.title}" 실행`);
       this.startLinkedCommand(target, { origin, depth: depth + 1, prompt: answer ?? (sourceKind === "session" ? lastAnswer(source) : source.lastRun?.outputText ?? source.lastRun?.tail ?? source.prompt ?? ""), flow });
@@ -244,6 +250,13 @@ export class Chain {
     if (sourceKind === "button") {
       const prompt = answer ?? source.prompt;
       this.enqueue(target, [prompt, link.note?.trim()].filter(Boolean).join("\n\n"), from, depth + 1);
+      return;
+    }
+    if (sourceKind === "task") {
+      const run = source.lastRun;
+      if (!run?.taskResult) throw new Error("먼저 작업 노드를 실행하세요.");
+      if (link.useGitWorktree) this.bindTaskSession(target, run.taskResult);
+      this.enqueue(target, answer ?? [run.outputText ?? run.tail, link.note?.trim()].filter(Boolean).join("\n\n"), from, depth + 1);
       return;
     }
     if (sourceKind === "git") {
@@ -405,6 +418,7 @@ export class Chain {
     flow ??= this.newFlow();
     if (++flow.steps > 1000) throw new Error("한 흐름에서 실행할 수 있는 노드 횟수를 초과했습니다.");
     if (kind === "git") return this.runGitCommand(cmd, { origin, depth, prompt, flow });
+    if (kind === "task") return this.runTaskCommand(cmd, { origin, depth, prompt, flow });
     if (kind === "button") return this.runButton(cmd, depth, flow).catch((error) => this.failFlowDelivery(cmd, error, flow));
     if (commandKind(cmd) === "group") return this.fireGroup(cmd);
     if (commandKind(cmd) === "markdown") throw new Error("MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
@@ -496,6 +510,53 @@ export class Chain {
     return run.done.catch((error) => this.failFlowDelivery(cmd, error, flow));
   }
 
+  // Git 쓰기는 중간에 멈출 수 없으므로 중지하면 결과를 다음 노드로 넘기지만 않는다. 실패한 원격 쓰기는 다시 시도하지 않는다.
+  runTaskCommand(cmd, { origin = null, depth = 0, prompt = null, flow = null } = {}) {
+    if (this.disposed || this.runs.has(cmd.id)) return null;
+    flow = this.setFlow(cmd, flow ?? this.newFlow());
+    const started = Date.now();
+    const startedAt = new Date(started).toISOString();
+    const input = prompt ?? "";
+    this.controls.begin(cmd, flow, prompt ?? cmd.title, { origin, depth, prompt, cwd: cmd.projectPath });
+    this.commands.update(cmd, { state: "running", queued: null, live: { startedAt, cwd: cmd.projectPath, tail: cmd.taskAction === "finish" ? "커밋·게시·PR 만드는 중" : "작업 브랜치와 폴더 만드는 중" } });
+    this.notify("commands");
+    let stopped = false;
+    const run = { kind: "task", projectPath: cmd.projectPath, stop: () => { stopped = true; } };
+    this.runs.set(cmd.id, run);
+    run.done = Promise.resolve().then(() => runTaskNode({ command: { ...cmd }, tasks: this.taskService(), origin, input, flow }))
+      .catch((error) => ({ ok: false, action: cmd.taskAction, reason: error.reason ?? "task-error", message: error.message, ...(error.outcomeUnknown ? { outcomeUnknown: true } : {}) }))
+      .then(async (result) => {
+        this.runs.delete(cmd.id);
+        const text = taskResultText(result, input);
+        if (!this.commands.get(cmd.id)) { this.controls.finish(cmd, flow, { ok: false, stopped: true, output: text }); this.workflow.settle(); return; }
+        stopped ||= !!flow.cancelled;
+        const lastRun = { ok: result.ok && !stopped, exitCode: result.ok && !stopped ? 0 : 1, stopped, timedOut: false, startedAt,
+          durationMs: Date.now() - started, cwd: result.cwd ?? cmd.projectPath, tail: outputTail(text), outputText: text,
+          originId: origin?.id ?? null, originTitle: origin?.title ?? null, origin: originRecord(origin), prompt, runId: flow.id, taskResult: result };
+        this.commands.update(cmd, { state: stopped ? "idle" : result.ok ? "success" : "error", lastRun, live: null, queued: null });
+        this.notify("commands");
+        this.controls.finish(cmd, flow, { ok: lastRun.ok, output: text, stopped });
+        if (this.disposed || stopped) { this.workflow.settle(); return; }
+        this.workflow.record(cmd, lastRun.ok, text, flow);
+        const outgoing = this.links.from(cmd.id).filter((link) => ["success", "error", "always", "manual"].includes(link.when));
+        for (const link of pickLinks(outgoing, lastRun.ok, "")) {
+          if (this.disposed || !this.commands.get(cmd.id)) break;
+          try {
+            if (link.approve) this.hold(link, cmd, text, depth, flow);
+            else await this.deliver(link, depth, null, lastRun, flow);
+          } catch (error) {
+            lastRun.deliveryErrors = [...(lastRun.deliveryErrors ?? []), error.message];
+            this.note(this.node(link.to), "작업 결과를 넘기지 못했습니다: " + error.message);
+            this.commands.update(cmd, { lastRun });
+            this.notify("commands");
+          }
+        }
+        await this.checkGroups(cmd, flow);
+        this.workflow.settle();
+      });
+    return run.done.catch((error) => this.failFlowDelivery(cmd, error, flow));
+  }
+
   gitHandoffText(source, run, link) {
     const result = run?.gitResult ?? {};
     return ["[Git 노드에서 넘어온 결과]", "작업: " + source.title,
@@ -514,9 +575,7 @@ export class Chain {
     const actual = verifyGitContext(context, target.projectPath);
     if (target.worktree?.branch && target.worktree.branch !== actual.branch) throw new Error("세션에 연결된 브랜치가 달라졌습니다. 기존 대화는 새 브랜치로 옮기지 않습니다.");
     const same = sameTaskPath(target.cwd, actual.cwd);
-    if (!same && (this.busy(target) || target.taskId || target.worktree || target.gitContext || target.agentSessionId || target.cliSessionIds?.length || target.handover || (target.events ?? []).some((event) => ["user", "text", "tool", "result", "question", "permission"].includes(event.kind)))) {
-      throw new Error("기존 대화나 작업 폴더가 있는 세션은 다른 브랜치로 옮길 수 없습니다. 새 세션을 연결하거나 같은 브랜치의 세션을 사용하세요.");
-    }
+    if (!same) this.assertMovable(target);
     target.cwd = actual.cwd;
     target.gitContext = actual;
     target.baseCommit ??= actual.head;
@@ -529,7 +588,35 @@ export class Chain {
     this.notify("sessions", target.id);
   }
 
+  // 대화를 시작한 세션을 다른 폴더로 옮기면 이어 가던 대화가 엉키므로 옮기지 않는다.
+  assertMovable(target) {
+    if (this.busy(target) || target.taskId || target.worktree || target.gitContext || target.agentSessionId || target.cliSessionIds?.length || target.handover || (target.events ?? []).some((event) => ["user", "text", "tool", "result", "question", "permission"].includes(event.kind))) {
+      throw new Error("기존 대화나 작업 폴더가 있는 세션은 다른 브랜치로 옮길 수 없습니다. 새 세션을 연결하거나 같은 브랜치의 세션을 사용하세요.");
+    }
+  }
+
+  // 새 작업 노드가 만든 작업 폴더로 세션을 옮기고 작업에 연결한다.
+  bindTaskSession(target, result) {
+    if (!result?.ok || result.action !== "start" || !result.taskId || !result.context) throw new Error("성공한 새 작업이 없습니다. 작업 노드를 다시 실행하세요.");
+    if (target.taskId === result.taskId) return;
+    const service = this.taskService();
+    if (!service) throw new Error("작업 기능을 사용할 수 없습니다.");
+    const context = verifyGitContext(result.context, target.projectPath);
+    this.assertMovable(target);
+    service.adoptSession(result.taskId, target);
+    target.baseCommit = context.head;
+    this.store.touch?.(target);
+    this.store.flush?.(target.id);
+    this.notify("sessions", target.id);
+  }
+
   commandOrigin(source, sourceKind, link) {
+    if (sourceKind === "task" && source.lastRun?.taskResult?.ok && source.lastRun.taskResult.action === "start") {
+      const result = source.lastRun.taskResult;
+      if (!link.useGitWorktree) return { ...(source.lastRun.origin ?? { id: source.id, title: source.title, cwd: source.projectPath }), taskId: result.taskId };
+      const context = verifyGitContext(result.context, source.projectPath);
+      return { id: source.id, title: source.title, cwd: context.cwd, gitContext: context, taskId: result.taskId };
+    }
     if (sourceKind === "git" && link.useGitWorktree) {
       const result = source.lastRun?.gitResult;
       if (!result?.ok || !result.context) throw new Error("성공한 Git 작업 폴더가 없습니다. Git 노드를 다시 실행하세요.");
@@ -619,7 +706,7 @@ export class Chain {
       exitCode: result.exitCode, ok, timedOut: result.timedOut, stopped: result.stopped,
       durationMs: result.durationMs, startedAt, cwd, tail: outputTail(result.output), outputText: result.output.slice(0, 200_000), runId: flow?.id,
       originId: origin?.id ?? null, originTitle: origin?.title ?? null,
-      origin: origin ? { id: origin.id, title: origin.title, cwd: origin.cwd, ...(origin.gitContext ? { gitContext: origin.gitContext } : {}) } : null,
+      origin: originRecord(origin),
     };
     this.commands.update(cmd, { state: result.stopped ? "idle" : ok ? "success" : "error", lastRun, live: null });
     this.notify("commands");
