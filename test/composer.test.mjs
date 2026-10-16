@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { composerAction, completionTrigger, applyCompletion, filterCommands, builtinCommand, BUILTIN_COMMANDS } from "../public/composer.js";
+import { composerAction, completionTrigger, applyCompletion, filterCommands, builtinCommand, refToken, refMatches, expandRefs, BUILTIN_COMMANDS } from "../public/composer.js";
 
 test("요청 버튼은 빈 입력의 실행·일시중지 상태에서 제어 동작을 고른다", () => {
   assert.equal(composerAction({ state: "running" }, " \n").action, "pause");
@@ -44,4 +44,19 @@ test("고른 항목으로 커서의 낱말을 바꾸고 폴더는 이어서 고�
   assert.equal(builtinCommand("/clear 지금"), null);
   assert.equal(builtinCommand("/code-review"), null);
   assert.deepEqual(BUILTIN_COMMANDS.map((c) => c.name), ["clear", "export", "import"]);
+});
+
+test("고른 파일은 파일 이름으로 줄여 보이고 보낼 때 전체 경로로 되돌린다", () => {
+  const refs = new Map();
+  assert.equal(refToken("public/features/git/view.js", refs), "view.js");
+  refs.set("view.js", "public/features/git/view.js");
+  assert.equal(refToken("public/features/git/view.js", refs), "view.js");
+  assert.equal(refToken("public/features/graph/view.js", refs), "graph/view.js");
+  refs.set("graph/view.js", "public/features/graph/view.js");
+  refs.set("my notes.md", "docs/my notes.md");
+  const text = '@view.js 와 @graph/view.js, @"my notes.md" 그리고 메일@view.js @view.jsx';
+  assert.deepEqual(refMatches(text, refs).map((m) => m.token), ["view.js", "my notes.md"]);
+  assert.equal(expandRefs("@view.js 고치고 @graph/view.js 보기\n@\"my notes.md\"", refs),
+    '@public/features/git/view.js 고치고 @public/features/graph/view.js 보기\n@"docs/my notes.md"');
+  assert.equal(expandRefs("참조 없음", new Map()), "참조 없음");
 });

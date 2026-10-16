@@ -1,4 +1,4 @@
-// 프로젝트 화면의 Git 패널: 변경 파일을 스테이징하고 커밋하며, 기록·브랜치를 보고 병합한다.
+// 프로젝트 화면의 Git 패널: 변경 파일을 스테이징하고 커밋하며, 기록·브랜치를 보고 병합·체크아웃한다.
 // 원격(push·pull·fetch)은 다루지 않는다. 명령은 execFile로 인자를 따로 넘기고, 사용자가 고른 값은 실제 목록에 있는지 확인한 뒤에만 쓴다.
 import fs from "node:fs";
 import path from "node:path";
@@ -108,6 +108,7 @@ export async function gitOverview(repo, sessions = []) {
     git(repo, ["for-each-ref", "refs/heads", `--format=%(refname:short)${SEP}%(objectname)${SEP}%(committerdate:iso-strict)${SEP}%(subject)`]).catch(() => ""),
     git(repo, ["log", "--branches", "HEAD", "--topo-order", `-n${GRAPH_COMMITS_MAX + 1}`, "--date=iso-strict", `--pretty=format:%H${SEP}%h${SEP}%P${SEP}%an${SEP}%ad${SEP}%s${END}`]).catch(() => ""),
   ]);
+  const elsewhere = await otherWorktreeBranches(repo).catch(() => new Map());
   const branch = branchOut.trim();
   const upstream = (await git(repo, ["rev-parse", "--abbrev-ref", "@{upstream}"]).catch(() => "")).trim() || null;
   const ahead = upstream ? await count(repo, `${upstream}..HEAD`) : null;
@@ -127,7 +128,7 @@ export async function gitOverview(repo, sessions = []) {
   const branches = await Promise.all(refs.slice(0, 80).map(async ({ name, tip, date, subject }) => {
     const session = bySession.get(name);
     const current = name === branch;
-    const item = { name, tip, date, subject, current, ahead: current ? 0 : await count(repo, `HEAD..${name}`) };
+    const item = { name, tip, date, subject, current, ahead: current ? 0 : await count(repo, `HEAD..${name}`), checkedOutAt: elsewhere.get(name) ?? null };
     if (session) {
       // 세션은 보통 커밋하지 않고 작업 폴더에 변경을 남기므로 그 수도 센다.
       const dir = session.worktree.dir;
@@ -227,6 +228,22 @@ async function checkBranch(repo, branch) {
   }
 }
 
+// 이 폴더가 아닌 다른 작업 폴더(worktree)에서 체크아웃한 브랜치 → 그 폴더. git은 같은 브랜치를 두 곳에서 체크아웃하지 못한다.
+async function otherWorktreeBranches(repo) {
+  const here = fs.realpathSync((await git(repo, ["rev-parse", "--show-toplevel"])).trim());
+  const same = (a, b) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
+  const used = new Map();
+  for (const block of (await git(repo, ["worktree", "list", "--porcelain"])).split(/\r?\n\r?\n/)) {
+    const dir = block.match(/^worktree (.+)$/m)?.[1];
+    const branch = block.match(/^branch refs\/heads\/(.+)$/m)?.[1];
+    if (!dir || !branch) continue;
+    let real = path.resolve(dir);
+    try { real = fs.realpathSync(real); } catch {}
+    if (!same(real, here)) used.set(branch, real);
+  }
+  return used;
+}
+
 // 현재 브랜치와 갈라진 뒤 그 브랜치에서 바뀐 것(병합하면 들어올 내용)
 export async function branchDiff(repo, branch) {
   await checkBranch(repo, branch);
@@ -282,5 +299,28 @@ export async function merge(repo, branch) {
       throw err;
     }
     return (await git(repo, ["log", "-1", "--pretty=format:%h %s"])).trim();
+  });
+}
+
+// 다른 로컬 브랜치로 전환한다. 커밋하지 않은 변경은 git switch처럼 가져가고, 덮어써질 변경이 있으면 git이 거절한 이유를 알린다.
+export async function checkout(repo, branch) {
+  return mutate(repo, async () => {
+    await checkBranch(repo, branch);
+    const current = (await git(repo, ["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    if (current === branch) throw new Error("이미 현재 브랜치입니다.");
+    const merging = await git(repo, ["rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(() => true, () => false);
+    if (merging) throw new Error("진행 중인 병합이 있습니다. 먼저 그 병합을 끝내거나 취소하세요.");
+    const elsewhere = (await otherWorktreeBranches(repo)).get(branch);
+    if (elsewhere) throw new Error(`다른 작업 폴더에서 쓰는 브랜치라 체크아웃할 수 없습니다.\n${elsewhere}`);
+    if ((await status(repo)).some(conflicted)) throw new Error("충돌한 파일이 있습니다. 충돌을 해결한 뒤 체크아웃하세요.");
+    try {
+      await git(repo, ["switch", "--no-guess", "--quiet", branch]);
+    } catch (err) {
+      const blocked = /would be overwritten|overwritten by checkout/i.test(err.message);
+      throw new Error(blocked
+        ? `커밋하지 않은 변경이 ${branch} 브랜치의 내용과 겹쳐 체크아웃하지 않았습니다. 먼저 커밋하세요.\n${err.message}`
+        : err.message);
+    }
+    return branch;
   });
 }

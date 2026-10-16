@@ -1,8 +1,8 @@
 import { $, el, renderDiff, fmtDate } from "../../shared/dom.js";
 import { layoutGitGraph, gitWorkRows } from "../../gitgraph.js";
 
-export function createGitView({ getModel, selectSession, showSessionChanges, openBranchCommit, showGitBranch, mergeGitBranch, showGitFile, changeGitIndex, showGitTab, showGitCommit, onToggleFile }) {
-  const gitBusy = () => !!(getModel()?.indexBusy || getModel()?.committing || getModel()?.merging);
+export function createGitView({ getModel, selectSession, showSessionChanges, openBranchCommit, showGitBranch, mergeGitBranch, checkoutGitBranch, showGitFile, changeGitIndex, showGitTab, showGitCommit, onToggleFile }) {
+  const gitBusy = () => !!(getModel()?.indexBusy || getModel()?.committing || getModel()?.merging || getModel()?.checkingOut);
   const gitFiles = (area) => (getModel()?.data?.files ?? []).filter((file) => file[area]);
   const gitBranchName = (branch) => branch.sessionTitle || branch.name;
 
@@ -86,6 +86,9 @@ export function createGitView({ getModel, selectSession, showSessionChanges, ope
     if (b.sessionId && b.dirty) run("커밋", (e) => openBranchCommit(e.target.closest("li"), b), { disabled: running, title: running ? "세션이 끝난 뒤 커밋할 수 있습니다." : "세션의 변경 전체를 커밋합니다." });
     if (!b.current && b.ahead) run("비교", () => showGitBranch(b));
     if (!b.current && b.ahead) run("병합", () => mergeGitBranch(b), { title: getModel().data.branch + "에 병합" });
+    if (!b.current) run("체크아웃", () => checkoutGitBranch(b), b.checkedOutAt
+      ? { disabled: true, title: "다른 작업 폴더에서 쓰는 브랜치입니다: " + b.checkedOutAt }
+      : { disabled: gitBusy(), title: "원본 폴더를 " + b.name + " 브랜치로 바꿉니다." });
     const summary = el("summary", { title: b.name },
       el("span", { class: "git-branch-dot" + (running ? " running" : "") }),
       el("span", { class: "name" }, gitBranchName(b)),

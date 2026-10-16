@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { gitFixtures, run } from "../test-support/git-fixture.mjs";
-import { parseStatus, statusLabel, gitOverview, fileDiff, showCommit, branchDiff, commit, merge } from "../server/gitpanel.mjs";
+import { parseStatus, statusLabel, gitOverview, fileDiff, showCommit, branchDiff, commit, merge, checkout } from "../server/gitpanel.mjs";
 import { createWorktree } from "../server/git.mjs";
 
 // These tests intentionally share repository history and run in their original order.
@@ -134,4 +134,29 @@ test("git: 한글 파일 이름도 변경 보기·바뀐 파일 목록에 그대
   assert.match(files, /A\t새 파일\.txt/);
   assert.ok(!files.includes("\\"), files); // 8진수 이스케이프가 없다.
   await commit(repo, "정리");
+});
+
+test("gitpanel: 다른 브랜치로 체크아웃하고, 다른 작업 폴더의 브랜치나 겹치는 변경은 거절한다", async () => {
+  run(repo, "branch", "side");
+  const wt = await createWorktree(repo, "s5");
+  const overview = await gitOverview(repo, []);
+  assert.equal(overview.branches.find((b) => b.name === "side").checkedOutAt, null);
+  assert.ok(overview.branches.find((b) => b.name === wt.branch).checkedOutAt);
+  await assert.rejects(checkout(repo, "main"), /이미 현재 브랜치/);
+  await assert.rejects(checkout(repo, "-q"), /없는 브랜치/);
+  await assert.rejects(checkout(repo, wt.branch), /다른 작업 폴더/);
+
+  fs.writeFileSync(path.join(repo, "carry.txt"), "가져갈 변경\n");
+  assert.equal(await checkout(repo, "side"), "side");
+  assert.equal((await gitOverview(repo)).branch, "side");
+  assert.ok(fs.existsSync(path.join(repo, "carry.txt"))); // 커밋하지 않은 새 파일은 따라온다.
+  fs.rmSync(path.join(repo, "carry.txt"));
+
+  fs.writeFileSync(path.join(repo, "a.txt"), "side 쪽\n");
+  await commit(repo, "side가 a 수정");
+  fs.writeFileSync(path.join(repo, "a.txt"), "덮어쓰면 안 되는 변경\n");
+  await assert.rejects(checkout(repo, "main"), /겹쳐 체크아웃하지 않았습니다/);
+  assert.equal((await gitOverview(repo)).branch, "side");
+  run(repo, "checkout", "--", "a.txt");
+  assert.equal(await checkout(repo, "main"), "main");
 });

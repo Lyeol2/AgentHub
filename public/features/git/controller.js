@@ -10,7 +10,7 @@ export function createGitController({ api, selectSession, openSetup, currentProj
   };
   const { renderGit, renderGitFiles, renderGitControls, setGitActive, showGitView } = createGitView({
     getModel: () => ui.git, selectSession, showSessionChanges, openBranchCommit, showGitBranch: (branch) => showGitBranch(branch),
-    mergeGitBranch, showGitFile, changeGitIndex, showGitTab, showGitCommit: (commit) => showGitCommit(commit),
+    mergeGitBranch, checkoutGitBranch, showGitFile, changeGitIndex, showGitTab, showGitCommit: (commit) => showGitCommit(commit),
     onToggleFile: (area, file, selected) => {
       if (selected) ui.git.selected[area].add(file);
       else ui.git.selected[area].delete(file);
@@ -22,7 +22,7 @@ export function createGitController({ api, selectSession, openSetup, currentProj
   const GIT_TABS = ["changes", "history", "pulls"];
   const pullRequests = createPullRequests({ api, renderMarkdown, renderDiff, onSetup: () => openSetup("gh"), isProjectCurrent: (project) => samePath(project, navigation.project), pullIssues });
   const gitTab = () => GIT_TABS.includes(localStorage.getItem(GIT_TAB_KEY)) ? localStorage.getItem(GIT_TAB_KEY) : "changes";
-  const gitBusy = () => !!(ui.git?.indexBusy || ui.git?.committing || ui.git?.merging);
+  const gitBusy = () => !!(ui.git?.indexBusy || ui.git?.committing || ui.git?.merging || ui.git?.checkingOut);
   const gitFiles = (area) => (ui.git?.data?.files ?? []).filter((f) => f[area]);
 
   function closeGitDetail() {
@@ -182,6 +182,27 @@ export function createGitController({ api, selectSession, openSetup, currentProj
       alert(err.message);
     } finally {
       current.merging = false;
+      if (ui.git === current) renderGitControls();
+    }
+    if (ui.git === current && samePath(current.project, navigation.project)) await loadGit();
+  }
+
+  // 원본 폴더의 브랜치를 바꾼다. 커밋하지 않은 변경은 그대로 따라가고, 겹치면 git이 거절한다.
+  async function checkoutGitBranch(b) {
+    const current = ui.git;
+    if (gitBusy() || b.current || b.checkedOutAt) return;
+    const dirty = current.data.files.length + current.data.moreFiles;
+    const note = dirty ? "\n커밋하지 않은 변경 " + dirty + "개는 그대로 가져갑니다. 겹치는 파일이 있으면 체크아웃하지 않습니다." : "";
+    if (!confirm(current.data.branch + " → " + b.name + " 브랜치로 체크아웃할까요?" + note)) return;
+    current.checkingOut = true;
+    renderGitControls();
+    try {
+      await api("POST", "/api/git/checkout", { path: current.project, branch: b.name });
+      if (ui.git === current && samePath(current.project, navigation.project)) closeGitDetail();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      current.checkingOut = false;
       if (ui.git === current) renderGitControls();
     }
     if (ui.git === current && samePath(current.project, navigation.project)) await loadGit();
