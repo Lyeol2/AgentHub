@@ -39,6 +39,7 @@ function setup() {
   // The view's element helper uses the same minimal DOM as the real controller.
   document.createElement = (_tag) => ({ ...element(), setAttribute(key, value) { this[key] = value; } });
   get("new-agent").value = "codex";
+  get("new-isolate").value = "false";
   return { data, navigation, calls, get, controller, service };
 }
 function submit(h, fields) {
@@ -56,7 +57,7 @@ test("기존 작업 유형은 GitFlow 접두사와 슬래시를 함께 확인한
 
 async function chooseExistingMode(h) {
   await h.controller.openNew("C:/repo");
-  h.get("new-isolate").checked = true;
+  h.get("new-isolate").value = "true";
   h.get("new-isolate").handlers.change();
   h.get("new-worktree-mode").value = "existing";
   h.get("new-worktree-mode").handlers.change();
@@ -90,23 +91,23 @@ test("새 Codex 권한은 선택한 ID 그대로 세션 생성에 전달한다",
 
 test("새 세션은 취소 후 다시 열거나 오케스트레이터를 만들어도 원본 폴더가 기본이다", async () => {
   const h = setup();
-  h.get("new-isolate").checked = true;
+  h.get("new-isolate").value = "true";
   h.get("new-worktree-name").value = "previous";
   await h.controller.openNew("C:/repo");
-  assert.equal(h.get("new-isolate").checked, false);
+  assert.equal(h.get("new-isolate").value, "false");
   assert.equal(h.get("new-worktree-name").value, "");
   assert.equal(h.get("new-worktree-name").disabled, true);
-  h.get("new-isolate").checked = true;
+  h.get("new-isolate").value = "true";
   h.get("new-worktree-name").value = "another";
   await h.controller.openNew("C:/repo", { orchestrator: true });
   assert.equal(h.get("new-orchestrator").checked, true);
-  assert.equal(h.get("new-isolate").checked, false);
+  assert.equal(h.get("new-isolate").value, "false");
   assert.equal(h.get("new-worktree-name").value, "");
 });
 
 test("워크트리를 선택해야 이름 입력이 필수이며 채팅으로 바꾸면 해제한다", () => {
   const h = setup();
-  h.get("new-isolate").checked = true;
+  h.get("new-isolate").value = "true";
   h.get("new-worktree-name").handlers.input();
   assert.equal(h.get("new-worktree-row").hidden, false);
   assert.equal(h.get("new-worktree-name").disabled, false);
@@ -117,7 +118,7 @@ test("워크트리를 선택해야 이름 입력이 필수이며 채팅으로 �
   assert.equal(h.get("new-worktree-name").validationMessage, "");
   h.get("new-agent").value = "codex-chat";
   h.get("new-agent").handlers.change();
-  assert.equal(h.get("new-isolate").checked, false);
+  assert.equal(h.get("new-isolate").value, "false");
   assert.equal(h.get("new-isolate").disabled, true);
   assert.equal(h.get("new-worktree-name").required, false);
   assert.equal(h.get("new-worktree-name").disabled, true);
@@ -127,15 +128,36 @@ test("워크트리를 선택해야 이름 입력이 필수이며 채팅으로 �
 test("워크트리 이름이 없거나 안전하지 않으면 세션을 만들지 않는다", async () => {
   const h = setup();
   for (const name of ["", " ", "../escape", "-leading", "has space", "a".repeat(65), "CON", "lpt1"]) {
-    await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeName", name]]);
+    await submit(h, [["projectPath", "C:/repo"], ["isolate", "true"], ["worktreeName", name]]);
     assert.equal(h.calls.length, 0, name);
     assert.ok(h.get("new-error").textContent, name);
   }
 });
 
+test("워크트리 사용 안 함을 명시하면 남아 있는 이름과 브랜치를 보내지 않는다", async () => {
+  const h = setup();
+  await h.controller.openNew("C:/repo");
+  h.get("new-isolate").value = "true";
+  h.get("new-isolate").handlers.change();
+  h.get("new-worktree-name").value = "stale-name";
+  h.get("new-isolate").value = "false";
+  h.get("new-isolate").handlers.change();
+  assert.equal(h.get("new-worktree-mode-row").hidden, true);
+  assert.equal(h.get("new-worktree-row").hidden, true);
+  assert.equal(h.get("new-worktree-branch-row").hidden, true);
+  assert.equal(h.get("new-worktree-name").disabled, true);
+  assert.equal(h.get("new-worktree-name").required, false);
+  assert.equal(h.get("new-worktree-name").validationMessage, "");
+  assert.equal(h.get("new-submit").disabled, false);
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "false"], ["worktreeName", "stale-name"], ["workBranch", "feature/stale"]]);
+  assert.equal(h.calls[0][2].isolate, false);
+  assert.equal(Object.hasOwn(h.calls[0][2], "worktreeName"), false);
+  assert.equal(Object.hasOwn(h.calls[0][2], "workBranch"), false);
+});
+
 test("직접 입력한 워크트리 이름만 trim하여 명시적 boolean과 함께 보낸다", async () => {
   const h = setup();
-  await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeName", " 한글-ui_2 "]]);
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "true"], ["worktreeName", " 한글-ui_2 "]]);
   assert.equal(h.calls[0][2].isolate, true);
   assert.equal(h.calls[0][2].worktreeName, "한글-ui_2");
   h.calls.length = 0;
@@ -144,7 +166,7 @@ test("직접 입력한 워크트리 이름만 trim하여 명시적 boolean과 �
   assert.equal(Object.hasOwn(h.calls[0][2], "worktreeName"), false);
   h.calls.length = 0;
   h.get("new-agent").value = "codex-chat";
-  await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeName", "stale-name"]]);
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "true"], ["worktreeName", "stale-name"]]);
   assert.equal(h.calls[0][2].isolate, false);
   assert.equal(Object.hasOwn(h.calls[0][2], "worktreeName"), false);
   assert.equal(Object.hasOwn(h.calls[0][2], "projectPath"), false);
@@ -194,7 +216,7 @@ test("원본과 새 작업 브랜치 모드에서는 기존 브랜치 목록을 
   const h = setup();
   await h.controller.openNew("C:/repo");
   assert.equal(h.get("new-worktree-mode").value, "new");
-  h.get("new-isolate").checked = true;
+  h.get("new-isolate").value = "true";
   h.get("new-isolate").handlers.change();
   assert.equal(h.get("new-worktree-mode-row").hidden, false);
   assert.equal(h.get("new-worktree-name").required, true);
@@ -204,7 +226,7 @@ test("원본과 새 작업 브랜치 모드에서는 기존 브랜치 목록을 
   h.controller.cancelCreation();
   await h.controller.openNew("C:/repo");
   assert.equal(h.get("new-worktree-mode").value, "new");
-  assert.equal(h.get("new-isolate").checked, false);
+  assert.equal(h.get("new-isolate").value, "false");
   assert.equal(h.calls.length, 0);
 });
 
@@ -231,13 +253,13 @@ test("기존 작업 브랜치는 선택 가능 상태를 확인하고 이름 생
   assert.deepEqual(options.slice(1).map(option => option.disabled), [true, true, true, true, false]);
   h.get("new-worktree-branch").value = "main";
   h.get("new-worktree-branch").handlers.change();
-  await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeMode", "existing"], ["workBranch", "main"]]);
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "true"], ["worktreeMode", "existing"], ["workBranch", "main"]]);
   assert.equal(h.calls.filter(call => call[0] === "POST").length, 0);
   h.get("new-worktree-branch").value = "feature/task";
   h.get("new-worktree-branch").handlers.change();
   assert.equal(h.get("new-submit").disabled, false);
   assert.match(h.get("new-worktree-branch-status").textContent, /C:\/repo.agenthub\/task/);
-  await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeMode", "existing"], ["workBranch", "feature/task"], ["worktreeName", "stale-name"]]);
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "true"], ["worktreeMode", "existing"], ["workBranch", "feature/task"], ["worktreeName", "stale-name"]]);
   const body = h.calls.find(call => call[0] === "POST")[2];
   assert.equal(body.isolate, false);
   assert.equal(body.workBranch, "feature/task");
@@ -260,7 +282,7 @@ test("기존 브랜치 조회 실패 중에는 제출을 차단하고 명시적�
   assert.equal(h.get("new-submit").disabled, true);
   assert.equal(h.get("new-worktree-branch").disabled, true);
   assert.equal(h.get("new-worktree-branch-status").textContent, "branch lookup failed");
-  await submit(h, [["projectPath", "C:/repo"], ["isolate", "on"], ["worktreeMode", "existing"]]);
+  await submit(h, [["projectPath", "C:/repo"], ["isolate", "true"], ["worktreeMode", "existing"]]);
   assert.equal(h.calls.filter(call => call[0] === "POST").length, 0);
   fail = false;
   h.get("new-worktree-branch-refresh").handlers.click();
@@ -283,7 +305,7 @@ test("취소 뒤 같은 프로젝트에서 새 창을 열어도 이전 브랜치
   await h.controller.openNew("C:/repo");
   resolveBranches({ branches: [{ name: "feature/stale", selectable: true }] });
   await flushPicker();
-  assert.equal(h.get("new-isolate").checked, false);
+  assert.equal(h.get("new-isolate").value, "false");
   assert.equal(h.get("new-worktree-mode").value, "new");
   assert.deepEqual(h.get("new-worktree-branch").children.map(option => option.value), [""]);
 });

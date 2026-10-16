@@ -49,7 +49,7 @@ function fixture(t) {
     assert.ok(path.basename(root).startsWith("agenthub-group-template-unit-"));
     fs.rmSync(root, { recursive: true, force: true, maxRetries: 5 });
   });
-  return { root, project, target, store, commands, links, groups, nodeGroups, service, sessions, group };
+  return { root, project, target, store, commands, links, groups, nodeGroups, service, sessions, projects, group };
 }
 
 test("group template definitions persist without runtime data and instantiate with independent references", async t => {
@@ -90,4 +90,63 @@ test("group template creation failure after inserting its box removes only that 
   assert.deepEqual(f.commands.list(), before.commands);
   assert.deepEqual(f.links.list(), before.links);
   assert.deepEqual(f.groups.list(), before.groups);
+});
+
+test("group templates preserve every schedule rule but discard active runtime state", async t => {
+  const f = fixture(t);
+  const definitions = [
+    { scheduleMode: "once", runAt: "2099-01-01T00:00:00.000Z" },
+    { scheduleMode: "daily", timeOfDay: "09:30" },
+    { scheduleMode: "interval", intervalMinutes: 25 },
+  ];
+  for (const fields of definitions) f.commands.add({ id: "cmd-schedule-" + fields.scheduleMode, projectPath: f.project,
+    ...checkCommand({ kind: "schedule", title: fields.scheduleMode, prompt: "예약 테스트", ...fields }),
+    pos: { x: 100, y: 500 }, state: "scheduled", scheduleEnabled: true, nextRunAt: "2099-01-01T00:00:00.000Z" });
+  f.nodeGroups.update(f.group.id, { members: [...f.group.members, ...definitions.map(item => "cmd-schedule-" + item.scheduleMode)] });
+  const saved = f.service.create({ groupId: f.group.id });
+  const schedules = saved.nodes.filter(item => item.config.kind === "schedule");
+  assert.equal(schedules.length, 3);
+  for (const item of schedules) {
+    assert.equal(Object.hasOwn(item.config, "scheduleEnabled"), false);
+    assert.equal(Object.hasOwn(item.config, "nextRunAt"), false);
+    for (const [field, value] of Object.entries(definitions.find(rule => rule.scheduleMode === item.config.scheduleMode))) assert.equal(item.config[field], value);
+  }
+  // A legacy or externally edited template cannot reactivate its source schedule.
+  const persisted = new GroupTemplateStore({ dataDir: f.root });
+  for (const item of persisted.get(saved.id).nodes.filter(item => item.config.kind === "schedule")) Object.assign(item.config, { scheduleEnabled: true, nextRunAt: "2099-01-01T00:00:00.000Z" });
+  persisted.save();
+  const reloaded = createGroupTemplateService({ ...f, dataDir: f.root });
+  const result = await reloaded.instantiate(saved.id, { projectPath: f.target });
+  for (const command of result.nodes.commands.filter(item => item.kind === "schedule")) {
+    assert.equal(command.scheduleEnabled, false);
+    assert.equal(command.nextRunAt, null);
+    assert.equal(command.state, "idle");
+    assert.equal(command.prompt, "예약 테스트");
+    assert.equal(f.commands.get(command.id).scheduleEnabled, false);
+  }
+});
+
+test("group templates reject schedule input links, input aliases and result-collector membership", async t => {
+  const f = fixture(t);
+  f.commands.add({ id: "cmd-schedule", projectPath: f.project, ...checkCommand({ kind: "schedule", scheduleMode: "interval", intervalMinutes: 60 }),
+    pos: { x: 100, y: 500 }, state: "idle", scheduleEnabled: false, nextRunAt: null });
+  f.nodeGroups.update(f.group.id, { members: [...f.group.members, "cmd-schedule"] });
+  f.links.add({ id: "invalid-input", from: "source-ai", to: "cmd-schedule", when: "success" });
+  assert.throws(() => f.service.create({ groupId: f.group.id }), /연결 방향/);
+  f.links.remove("invalid-input");
+  const saved = f.service.create({ groupId: f.group.id });
+  const scheduleKey = saved.nodes.find(item => item.config.kind === "schedule").key;
+  const before = [f.store.list().length, f.commands.list().length, f.links.list().length, f.groups.list().length];
+  for (const change of [
+    template => template.group.ports.push({ id: "invalid-input", direction: "input", nodeId: scheduleKey }),
+    template => template.nodes.find(item => item.config.kind === "group").config.members.push(scheduleKey),
+    template => template.links.push({ from: template.nodes[0].key, to: scheduleKey, when: "success" }),
+  ]) {
+    const persisted = new GroupTemplateStore({ dataDir: f.root });
+    Object.assign(persisted.get(saved.id), structuredClone(saved));
+    change(persisted.get(saved.id)); persisted.save();
+    const reloaded = createGroupTemplateService({ ...f, dataDir: f.root });
+    await assert.rejects(reloaded.instantiate(saved.id, { projectPath: f.target }), { status: 400 });
+    assert.deepEqual([f.store.list().length, f.commands.list().length, f.links.list().length, f.groups.list().length], before);
+  }
 });

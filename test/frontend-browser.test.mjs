@@ -76,6 +76,8 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
   if (process.platform !== "win32" || !await fs.access(browserExecutable).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required for browser integration");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-browser-"));
   const streams = new Set(), requests = [];
+  const setupMode = { refreshFailure: false };
+  let cliAutoUpdate = true, updateAttempt = 0, releaseUpdate;
   const project = { path: "C:/fixture", name: "Fixture", claude: 0, codex: 0, registered: true };
   const session = (id, title, agent = "codex") => ({ id, title, agent, projectPath: project.path, projectName: project.name, cwd: project.path, state: "idle", createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-01T00:00:00Z", baseCommit: "a".repeat(40), skills: [], events: id === "s1" ? [{ seq: 0, kind: "text", text: "Hello **world**" }] : [], graphPos: { x: id === "s1" ? 20 : 360, y: 20 }, queue: [] });
   const sessions = [session("s1", "First"), session("s2", "Second", "claude")];
@@ -83,7 +85,7 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
   const setup = {
     winget: { id: "winget", label: "Windows 패키지 관리자 (winget)", path: null, version: null, installable: true,
       manual: { links: [{ label: "Microsoft 공식 설치 안내", url: "https://learn.microsoft.com/windows/package-manager/winget/" }], command: "Add-AppxPackage -RegisterByFamilyName -MainPackage Microsoft.DesktopAppInstaller_8wekyb3d8bbwe", note: "PowerShell에서 직접 설치할 수 있습니다." } },
-    tools: [{ id: "codex", label: "Codex", path: "C:/fixture/codex.cmd", version: null, loggedIn: true, installable: true,
+    tools: [{ id: "codex", label: "Codex", path: "C:/fixture/codex.cmd", version: null, loggedIn: true, installable: true, updatable: false, updateReason: "Fixture installation method is not verified",
       manual: { links: [{ label: "Codex 공식 설치 안내", url: "https://developers.openai.com/codex/cli/" }], command: "npm install -g @openai/codex", note: "Node.js를 설치한 뒤 실행하세요." } }],
     jobs: { codex: { kind: "install", state: "error", log: "Fixture install failed" } },
   };
@@ -96,9 +98,33 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
       const body = chunks.length ? JSON.parse(Buffer.concat(chunks)) : undefined;
       requests.push({ method: req.method, path: url.pathname, search: url.search, body });
       if (url.pathname === "/fixture/emit") { emit(body.type, body.payload ?? {}); res.end("{}"); return; }
+      if (url.pathname === "/fixture/requests") { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(requests)); return; }
+      if (url.pathname === "/fixture/setup-mode") {
+        Object.assign(setupMode, body);
+        if (body.updateReady) {
+          Object.assign(setup.tools[0], { version: "codex 1.0.0", updatable: true, updateReason: "" });
+          Object.assign(agents.codex, { path: setup.tools[0].path, autoPath: setup.tools[0].path, version: "1.0.0" });
+          delete setup.jobs.codex;
+        }
+        res.end("{}"); return;
+      }
+      if (url.pathname === "/fixture/release-update") { releaseUpdate?.(); releaseUpdate = null; res.end("{}"); return; }
+      if (setupMode.refreshFailure && url.searchParams.get("fresh") === "1" && ["/api/status", "/api/auth", "/api/setup"].includes(url.pathname)) {
+        throw Error("Fixture " + url.pathname.split("/").at(-1) + " refresh failed");
+      }
       let value;
-      if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
-      else if (url.pathname === "/api/sessions") value = sessions;
+      if (url.pathname === "/api/status") value = { agents, projects: [project], cliOverrides: { claude: "", codex: "" }, cliAutoUpdate, linkConditions: [{ id: "success", label: "성공 시" }] };
+      else if (url.pathname === "/api/settings" && req.method === "PUT") { cliAutoUpdate = body.cliAutoUpdate; value = { cliAutoUpdate }; }
+      else if (url.pathname === "/api/sessions") {
+        if (req.method === "POST") {
+          value = { ...session("created-" + sessions.length, body.title, body.agent), ...body };
+          if (body.isolate) {
+            value.cwd = "C:/fixture.agenthub/" + body.worktreeName;
+            value.worktree = { branch: "agenthub/" + body.worktreeName };
+          }
+          sessions.push(value);
+        } else value = sessions;
+      }
       else if (/^\/api\/sessions\/[^/]+\/diff$/.test(url.pathname)) value = { status: "M fixture.txt", diff: "+fixture change" };
       else if (url.pathname.startsWith("/api/sessions/")) {
         const s = sessions.find((s) => s.id === url.pathname.split("/")[3]);
@@ -131,6 +157,18 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
         setup.jobs.winget = { ...setup.jobs.winget, state: "canceled" };
         emit("setup", setup.jobs); value = { canceled: true };
       }
+      else if (url.pathname === "/api/setup/codex/update" && req.method === "POST") {
+        const attempt = ++updateAttempt;
+        const started = { kind: "update", state: "running", log: "Fixture update pending" };
+        setup.jobs.codex = started; emit("setup", setup.jobs);
+        await new Promise((resolve) => { releaseUpdate = resolve; });
+        setup.jobs.codex = attempt === 1
+          ? { kind: "update", state: "error", error: "Fixture update failed", log: "Fixture update failed; retry after refreshing" }
+          : { kind: "update", state: "done", log: "Fixture update complete" };
+        emit("setup", setup.jobs);
+        // The retry intentionally returns an older snapshot after its terminal event.
+        value = attempt === 1 ? setup.jobs.codex : started;
+      }
       else if (url.pathname === "/api/update") value = { current: "0.2.0", desktop: false };
       else if (url.pathname === "/api/git") value = { branch: "main", files: [], moreFiles: 0, stagedCount: 0, unstagedCount: 0, branches: [{ name: "main", current: true }], commits: [{ hash: "a".repeat(40), short: "aaaaaaa", subject: "Fixture", author: "test", date: "2026-10-01T00:00:00Z", parents: [], refs: ["main"] }] };
       else if (url.pathname.startsWith("/api/")) throw Error("Unexpected fixture request " + req.method + " " + req.url);
@@ -147,8 +185,24 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
     const report = await runBrowser(temp, "http://127.0.0.1:" + server.address().port);
     assert.ok(report?.checks.length >= 20); assert.deepEqual(report.errors, []);
     for (const endpoint of ["status", "auth", "setup"]) assert.ok(requests.some((request) => request.path === `/api/${endpoint}` && request.search === "?fresh=1"), `${endpoint} must bypass cached detection on recheck`);
-    assert.deepEqual(requests.filter((request) => request.method === "POST" && request.path.startsWith("/api/setup/")).map((request) => request.path), ["/api/setup/winget/install", "/api/setup/winget/cancel"], "winget buttons must reach only fixture install and cancel handlers");
+    assert.deepEqual(requests.filter((request) => request.method === "POST" && request.path.startsWith("/api/setup/")).map((request) => request.path), ["/api/setup/winget/install", "/api/setup/winget/cancel", "/api/setup/codex/update", "/api/setup/codex/update"], "setup actions stay inside fixture handlers and duplicate clicks do not start another update");
+    assert.deepEqual(requests.filter((request) => request.method === "PUT" && request.path === "/api/settings").map((request) => request.body), [
+      { cli: { claude: "", codex: "" }, cliAutoUpdate: false },
+      { cli: { claude: "", codex: "" }, cliAutoUpdate: true },
+    ], "automatic CLI update preference saves both disabled and enabled states");
+    for (const request of requests.filter((request) => request.method === "POST" && request.path === "/api/setup/codex/update")) {
+      assert.ok(requests.slice(requests.indexOf(request) + 1).some((next) => next.method === "GET" && next.path === "/api/setup" && !next.search), "updates re-read the latest job state after their response");
+    }
     assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"), "Verification must not start an agent or command");
+    const creations = requests.filter((request) => request.method === "POST" && request.path === "/api/sessions").map((request) => request.body);
+    assert.deepEqual(creations.map((body) => body.title), ["Default workspace", "Separate workspace", "Worktree disabled", "Chat without workspace"], "all workspace choices submit through the real session form");
+    assert.deepEqual(creations.map(({ isolate, worktreeName, chat, projectPath }) => ({ isolate, worktreeName, chat, projectPath })), [
+      { isolate: false, worktreeName: undefined, chat: false, projectPath: project.path },
+      { isolate: true, worktreeName: "browser-worktree", chat: false, projectPath: project.path },
+      { isolate: false, worktreeName: undefined, chat: false, projectPath: project.path },
+      { isolate: false, worktreeName: undefined, chat: true, projectPath: undefined },
+    ], "session creation preserves explicit worktree opt-in, trims its name, and omits stale workspace fields");
+    assert.ok(creations.every((body) => !Object.hasOwn(body, "worktreeMode") && !Object.hasOwn(body, "workBranch")), "new and original workspace requests do not leak branch picker fields");
     const commandMoves = requests.filter((request) => request.method === "PUT" && request.path === "/api/commands/cmd-a" && request.body?.pos !== undefined).map((request) => request.body.pos);
     assert.deepEqual(commandMoves.at(-2), { x: 20, y: 200 }, "undo restores the command node's saved position");
     assert.deepEqual(commandMoves.at(-1), commandMoves.at(-3), "redo puts the command node back where it was dragged");
@@ -158,6 +212,7 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
     const applied = requests.find((request) => request.path === "/api/flow-assistant/apply");
     assert.deepEqual(applied?.body.actions.map((action) => action.type), ["create_session", "link"], "flow assistant applies the previewed actions unchanged");
   } finally {
+    releaseUpdate?.();
     for (const stream of streams) stream.end();
     await new Promise((resolve) => server.close(resolve));
     assert.ok(path.resolve(temp).startsWith(path.resolve(os.tmpdir()) + path.sep));

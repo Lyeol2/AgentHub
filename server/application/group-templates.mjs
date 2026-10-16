@@ -30,7 +30,12 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
       skills: [...new Set((Array.isArray(item.skills) ? item.skills : []).filter((skill) => typeof skill === "string" && skill.trim()).map((skill) => skill.trim()))] };
   }
   function commandDefinition(item) {
-    try { return { ...checkCommand(item), kind: commandKind(item) }; }
+    try {
+      const config = { ...checkCommand(item), kind: commandKind(item) };
+      // A template stores the timing rule, never an active schedule or its next firing.
+      if (config.kind === "schedule") { delete config.scheduleEnabled; delete config.nextRunAt; }
+      return config;
+    }
     catch (error) { throw new HttpError(400, error.message); }
   }
   function linkDefinition(item, byKey) {
@@ -38,7 +43,7 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
     if (!from || !to || item.from === item.to) fail("템플릿 연결은 서로 다른 내부 노드에 연결해야 합니다.");
     const fromKind = from.type === "session" ? "session" : commandKind(from.config);
     const toKind = to.type === "session" ? "session" : commandKind(to.config);
-    if (["button", "input", "watch", "webhook-in"].includes(toKind) || fromKind === "markdown") fail("템플릿의 연결 방향이 노드 종류와 맞지 않습니다.");
+    if (["button", "input", "watch", "webhook-in", "schedule"].includes(toKind) || fromKind === "markdown") fail("템플릿의 연결 방향이 노드 종류와 맞지 않습니다.");
     const when = item.when ?? "success";
     if (!CONDITIONS.includes(when)) fail("템플릿 연결 조건이 올바르지 않습니다.");
     if (["git", "repeat"].includes(fromKind) && !["success", "error", "always", "manual"].includes(when)) fail("Git·반복 출력은 성공·실패·항상·수동 조건을 사용하세요.");
@@ -77,7 +82,7 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
       const target = byKey.get(item.nodeId);
       if (!target || !["input", "output"].includes(item.direction)) fail("템플릿 포트는 내부 노드에 연결해야 합니다.");
       const kind = target.type === "session" ? "session" : target.config.kind;
-      if (item.direction === "input" && ["button", "input", "watch", "webhook-in"].includes(kind) || item.direction === "output" && kind === "markdown") fail("템플릿 포트 방향이 노드 종류와 맞지 않습니다.");
+      if (item.direction === "input" && ["button", "input", "watch", "webhook-in", "schedule"].includes(kind) || item.direction === "output" && kind === "markdown") fail("템플릿 포트 방향이 노드 종류와 맞지 않습니다.");
       if (typeof item.id !== "string" || !/^[a-zA-Z0-9_-]{1,100}$/.test(item.id) || portIds.has(item.id)) fail("템플릿 포트 ID가 올바르지 않습니다.");
       portIds.add(item.id);
       const port = { id: item.id, direction: item.direction, nodeId: item.nodeId, label: label(item.label, "포트") };
@@ -171,6 +176,7 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
         if (config.kind === "group") config.members = config.members.map((key) => ids.get(key));
         // 템플릿은 받는 주소를 담지 않는다. 추가할 때마다 새 주소를 만든다.
         if (config.kind === "webhook-in") config.hookToken = newHookToken();
+        if (config.kind === "schedule") { config.scheduleEnabled = false; config.nextRunAt = null; }
         const command = { id: ids.get(item.key), projectPath: project.path, ...config,
           pos: { x: pos.x + item.pos.x, y: pos.y + item.pos.y }, state: "idle", lastRun: null, createdAt: new Date().toISOString() };
         createdCommands.push(command);

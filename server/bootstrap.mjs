@@ -16,6 +16,9 @@ import { Mailbox, createBoardStore } from "./messages.mjs";
 import { createMessagingService } from "./application/messaging.mjs";
 import { McpTokens, createMessagingTools } from "./mcp.mjs";
 import { Setup } from "./setup.mjs";
+import { CliAutoUpdater } from "./cli-auto-update.mjs";
+import { askOnce } from "./one-shot.mjs";
+import { HttpError } from "./application/errors.mjs";
 import { locateCli } from "./cli.mjs";
 import { discoverProjects } from "./discover.mjs";
 import { createLimitsService } from "./limits.mjs";
@@ -41,6 +44,7 @@ export function createHub(options = {}) {
   const dataDir = path.resolve(options.dataDir ?? DATA_DIR);
   const config = options.config == null ? loadConfig(dataDir) : structuredClone(options.config);
   config.cli ??= { claude: "", codex: "" };
+  config.cliAutoUpdate ??= true;
   config.projects ??= [];
   config.hiddenProjects ??= [];
   config.hiddenSessions ??= [];
@@ -52,7 +56,8 @@ export function createHub(options = {}) {
   const deps = options.deps ?? {};
   const persistConfig = deps.saveConfig ?? ((value) => saveConfig(value, dataDir));
   const store = deps.store ?? new SessionStore({ dataDir });
-  const runner = deps.runner ?? new Runner(store);
+  let setup;
+  const runner = deps.runner ?? new Runner(store, { isUpdating: (tool) => setup?.isUpdating?.(tool) ?? false });
   const links = deps.links ?? new LinkStore({ dataDir });
   const commands = deps.commands ?? new CommandStore({ dataDir });
   const runHistory = deps.runHistory ?? new RunHistoryStore({ dataDir });
@@ -68,9 +73,27 @@ export function createHub(options = {}) {
     claude: locateCli("claude", config.cli.claude),
     codex: locateCli("codex", config.cli.codex),
   }));
-  const setup = deps.setup ?? new Setup({
+  const oneShotRuns = new Map();
+  const isCliBusy = (tool) => (runner.running?.size ?? 0) > 0
+    || store.list().some((session) => runner.isRunning(session.id))
+    || [...(chain.runs?.values() ?? [])].some((run) => run.kind !== "schedule")
+    || (oneShotRuns.get(tool) ?? 0) > 0;
+  setup = deps.setup ?? new Setup({
     cliPath: (tool) => tool === "gh" ? locateCli("gh", "") : cliPaths()[tool],
+    isBusy: isCliBusy,
   });
+  const ask = async (request) => {
+    const paths = request.cliPaths();
+    const tool = paths.claude ? "claude" : paths.codex ? "codex" : null;
+    if (tool && setup.isUpdating?.(tool)) throw new HttpError(409, `${tool} CLI 업데이트 중입니다. 완료한 뒤 다시 시도하세요.`);
+    if (tool) oneShotRuns.set(tool, (oneShotRuns.get(tool) ?? 0) + 1);
+    try { return await (deps.ask ?? askOnce)({ ...request, cliPaths: () => paths }); }
+    finally { if (tool) oneShotRuns.set(tool, oneShotRuns.get(tool) - 1); }
+  };
+  // Never let integration/browser tests update the developer's installed CLIs.
+  const cliAutoUpdater = options.cliAutoUpdate === false ? null : deps.cliAutoUpdater
+    ?? (process.env.NODE_TEST_CONTEXT ? null : new CliAutoUpdater({ setup, enabled: () => config.cliAutoUpdate !== false,
+      isBusy: isCliBusy, logger: deps.logger ?? console }));
   const mcpTokens = deps.mcpTokens ?? new McpTokens();
   const mcpDir = path.join(dataDir, "mcp");
   const chatDir = path.join(dataDir, "chat");
@@ -124,7 +147,7 @@ export function createHub(options = {}) {
     nodeGroups: nodeGroupService,
     runs: createRunService({ history: runHistory, chain, projects, notify }),
     groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, notify }),
-    commands: createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups: () => nodeGroupService, notify }),
+    commands: createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups: () => nodeGroupService, ask, notify }),
     skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
     git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks }),
     system: createSystemService({
@@ -135,7 +158,7 @@ export function createHub(options = {}) {
     account: deps.account ?? createAccountService({ config, setup, saveConfig: persistConfig }),
   };
   services.flowAssistant = createFlowAssistantService({ store, commands, links, projects, sessions, commandService: services.commands,
-    workflowService: workflows, cliPaths, ask: deps.ask, notify });
+    workflowService: workflows, cliPaths, ask, notify });
   services.issues = deps.issues ?? createIssueService({
     config, store, sessions, notify,
     links: deps.issueLinks ?? new FileIssueLinkStore({ dataDir }),
@@ -181,8 +204,12 @@ export function createHub(options = {}) {
     notify("state", { sessionId, state, runningStartedAt });
   });
   listen(setup, "change", (jobs) => notify("setup", jobs));
-  listen(setup, "finished", (tool) => {
+  listen(setup, "finished", (tool, job) => {
     notify("cli", {});
+    if (!closed && job?.kind === "update") {
+      for (const session of store.list()) if (session.agent === tool) chain.flush(session);
+      chain.workflow?.settle();
+    }
     if (tool === "gh") {
       services.account.forget?.();
       notify("account", {});
@@ -216,6 +243,8 @@ export function createHub(options = {}) {
         server.off("error", onError);
         port = server.address().port;
         if (!closed) events.start();
+        if (!closed) chain.workflow?.restoreSchedules?.();
+        if (!closed) cliAutoUpdater?.start();
         if (!closed) logger.log?.(`AgentHub: http://127.0.0.1:${port}`);
         if (!closed && options.warmup !== false) {
           warmupTimer = setTimeout(() => {
@@ -245,6 +274,7 @@ export function createHub(options = {}) {
     closed = true;
     clearTimeout(warmupTimer);
     warmupTimer = null;
+    cliAutoUpdater?.dispose();
     events.close();
     for (const remove of listeners) remove();
     setUpdater(null);
@@ -265,7 +295,7 @@ export function createHub(options = {}) {
 
   const hub = {
     config, dataDir, store, runner, links, commands, nodeGroups, runHistory, chain, mailbox, board, limits, setup,
-    mcpTokens, server, services, events,
+    mcpTokens, server, services, events, cliAutoUpdater,
     get port() { return port; },
     start,
     shutdown,

@@ -12,7 +12,7 @@ const browserExecutable = "C:/Program Files/Google/Chrome/Application/chrome.exe
 
 // Serve the real dialog markup and CSS without bootstrapping application services.
 // The browser fixture supplies all API responses; no agent or shell is executed.
-test("browser: input, repeat, transform, watch, and mixed collector nodes", { timeout: 35000 }, async (t) => {
+test("browser: input, repeat, transform, watch, schedules, and mixed collector nodes", { timeout: 35000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(browserExecutable).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required for browser integration");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-flow-node-browser-"));
   const server = http.createServer(async (req, res) => {
@@ -76,6 +76,11 @@ test("browser: input, repeat, transform, watch, and mixed collector nodes", { ti
       await command("Runtime.evaluate", { expression: "window.__flowBrowserPreview()", awaitPromise: true });
       const shot = await command("Page.captureScreenshot", { format: "png" });
       await fs.writeFile(path.join(process.env.AGENTHUB_FLOW_SCREENSHOT_DIR, "flow-input-editor.png"), Buffer.from(shot.data, "base64"));
+      for (const view of ["editor", "graph"]) {
+        await command("Runtime.evaluate", { expression: `window.__flowSchedulePreview(${JSON.stringify(view)})`, awaitPromise: true });
+        const scheduleShot = await command("Page.captureScreenshot", { format: "png" });
+        await fs.writeFile(path.join(process.env.AGENTHUB_FLOW_SCREENSHOT_DIR, `flow-schedule-${view}.png`), Buffer.from(scheduleShot.data, "base64"));
+      }
     }
 
   } finally {
@@ -102,6 +107,7 @@ async function flowBrowserChecks() {
   const repeat = { id: 'cmd-repeat', kind: 'repeat', title: '수정 반복', projectPath: project, state: 'idle', maxIterations: 3, delayMs: 100, pos: { x: 20, y: 180 } };
   const transform = { id: 'cmd-transform', kind: 'transform', title: '실패 추출', projectPath: project, state: 'success', transformMode: 'json', expression: 'results.errors', lastRun: { ok: true, tail: '<img src=x onerror=alert(1)>\n[]', startedAt: new Date().toISOString() }, pos: { x: 400, y: 20 } };
   const watch = { id: 'cmd-watch', kind: 'watch', title: '소스 감시', projectPath: project, state: 'watching', watchPaths: ['src', 'package.json'], debounceMs: 500, prompt: '검증해 주세요', pos: { x: 20, y: 340 } };
+  const schedule = { id: 'cmd-schedule', kind: 'schedule', title: '예약 검증', projectPath: project, state: 'idle', scheduleMode: 'once', runAt: new Date(Date.now() + 7_200_000).toISOString(), scheduleEnabled: false, nextRunAt: null, prompt: '예약된 작업을 시작하세요.', pos: { x: 760, y: 340 } };
   const shell = { id: 'cmd-shell', kind: 'command', title: '테스트', projectPath: project, state: 'idle', command: 'npm test', pos: { x: 400, y: 180 } };
   const git = { id: 'cmd-git', kind: 'git', title: '통합', projectPath: project, state: 'idle', gitAction: 'merge', branch: 'a', targetBranch: 'b' };
   const button = { id: 'cmd-button', kind: 'button', title: '시작', projectPath: project, state: 'idle' };
@@ -109,18 +115,19 @@ async function flowBrowserChecks() {
   const group = { id: 'cmd-group', kind: 'group', title: '검증 모으기', projectPath: project, state: 'idle', members: ['session-1', shell.id, transform.id] };
   const other = { id: 'cmd-other', kind: 'command', title: '다른 프로젝트', projectPath: 'C:/other', state: 'idle' };
   const session = { id: 'session-1', title: '구현', agent: 'codex', projectPath: project, state: 'idle', createdAt: '2026-01-01', updatedAt: new Date().toISOString() };
-  const data = { commands: [input, repeat, transform, watch, shell, git, button, markdown, group, other], commandsProject: project, sessions: [session], shells: [{ id: 'powershell', label: 'PowerShell' }], links: [], messages: [], status: { linkConditions: [{ id: 'success', label: '성공 시' }, { id: 'error', label: '실패 시' }, { id: 'always', label: '항상' }, { id: 'manual', label: '수동' }] } };
+  const data = { commands: [input, repeat, transform, watch, schedule, shell, git, button, markdown, group, other], commandsProject: project, sessions: [session], shells: [{ id: 'powershell', label: 'PowerShell' }], links: [], messages: [], status: { linkConditions: [{ id: 'success', label: '성공 시' }, { id: 'error', label: '실패 시' }, { id: 'always', label: '항상' }, { id: 'manual', label: '수동' }] } };
   const navigation = { project, view: 'project' };
+  let nodeGroups = [];
   const byId = (id) => data.commands.find((node) => node.id === id);
   const api = async (method, url, body) => {
     requests.push({ method, url, body });
-    if (method === 'GET' && url.startsWith('/api/commands?')) return { commands: data.commands, shells: data.shells };
-    if (method === 'GET' && url.startsWith('/api/node-groups?')) return [];
+    if (method === 'GET' && url.startsWith('/api/commands?')) return { commands: data.commands, shells: data.shells, timeZone: 'Asia/Seoul' };
+    if (method === 'GET' && url.startsWith('/api/node-groups?')) return { groups: nodeGroups };
     if (method === 'GET' && url === '/api/links') return data.links;
-    if (method === 'POST' && url === '/api/commands') { const node = { ...body, id: 'cmd-created-' + requests.length, state: 'idle' }; data.commands.push(node); return node; }
+    if (method === 'POST' && url === '/api/commands') { const node = { ...body, id: 'cmd-created-' + requests.length, state: 'idle', ...(body.kind === 'schedule' ? { scheduleEnabled: false, nextRunAt: null } : {}) }; data.commands.push(node); return node; }
     if (method === 'PUT' && url.startsWith('/api/commands/')) { Object.assign(byId(url.split('/').at(-1)), body); return {}; }
-    if (method === 'POST' && url.endsWith('/run')) return {};
-    if (method === 'POST' && url.endsWith('/stop')) { byId(url.split('/')[3]).state = 'idle'; return {}; }
+    if (method === 'POST' && url.endsWith('/run')) { const node = byId(url.split('/')[3]); if (node.kind === 'schedule') Object.assign(node, { scheduleEnabled: true, nextRunAt: node.runAt || new Date(Date.now() + 3_600_000).toISOString(), state: 'scheduled' }); return {}; }
+    if (method === 'POST' && url.endsWith('/stop')) { const node = byId(url.split('/')[3]); node.state = 'idle'; if (node.kind === 'schedule') Object.assign(node, { scheduleEnabled: false, nextRunAt: null }); return {}; }
     if (method === 'POST' && url === '/api/links') { const link = { ...body, id: 'link-' + requests.length }; data.links.push(link); return link; }
     throw Error('Unexpected API ' + method + ' ' + url);
   };
@@ -129,7 +136,7 @@ async function flowBrowserChecks() {
   graph = createGraphController({ api, data, navigation, commandById: byId, sessionById: (id) => data.sessions.find((node) => node.id === id), nodeTitle: (id) => byId(id)?.title ?? session.title, commandNode: commands.commandNode, openCommandDialog: commands.openCommandDialog, runCommand: commands.runCommand, stopCommand: commands.stopCommand, removeCommand: commands.removeCommand, openCommandOutput: commands.openCommandOutput, skillChips: () => null, restartSession: () => {}, toggleSessionLock: () => {}, openNew: () => {}, openSkillsManager: () => {}, cancelNodeCreation: commands.cancelCreation, loadCommands: commands.loadCommands, loadSessions: async () => {} });
   $('view-dashboard').hidden = true; $('view-project').hidden = false;
   Object.assign($('p-graph').style, { position: 'fixed', left: '20px', top: '20px', width: '1300px', height: '800px', zIndex: '1' });
-  graph.renderGraph();
+  await commands.loadCommands();
   check($('p-graph').querySelector('[data-id="cmd-repeat"]').querySelectorAll('.gcard-handle[data-when]').length === 2, 'repeat exposes body and exhausted output ports');
   check($('p-graph').querySelector('[data-id="cmd-watch"]').textContent.includes('감시 중'), 'watching node displays its monitoring state');
   commands.openCommandDialog(input);
@@ -164,10 +171,60 @@ async function flowBrowserChecks() {
   check(requests.some((request) => request.url === '/api/commands/' + watch.id + '/stop'), 'watch action disarms existing monitoring');
   await commands.runCommand(watch);
   check(requests.some((request) => request.url === '/api/commands/' + watch.id + '/run'), 'watch action arms monitoring when idle');
+  const changeScheduleMode = (mode) => { $('schedule-mode').value = mode; $('schedule-mode').dispatchEvent(new Event('change')); };
+  const createSchedule = async (mode) => {
+    $('command-title').value = '예약 ' + mode;
+    check($('command-form').checkValidity(), mode + ' schedule has no hidden invalid controls');
+    $('command-form').requestSubmit($('command-save')); await until(() => !$('command-dialog').open);
+    return requests.filter((request) => request.method === 'POST' && request.url === '/api/commands').at(-1).body;
+  };
+  commands.openCommandDialog(null, { x: 760, y: 500 }, null, 'schedule');
+  check(!$('schedule-settings').hidden && $('schedule-mode').value === 'once' && new Date($('schedule-run-at').value).getTime() > Date.now(), 'new schedule defaults to once one hour in the future');
+  check($('schedule-prompt').value === '예약된 작업을 시작하세요.' && $('schedule-interval').value === '60' && $('command-run').hidden, 'new schedule has default prompt and interval and cannot run before saving');
+  check($('schedule-timezone').textContent.includes('Asia/Seoul') && $('command-kind-hint').textContent.includes('AgentHub가 실행 중') && $('schedule-settings').textContent.includes('{{scheduledAt}}') && $('schedule-settings').textContent.includes('{{triggeredAt}}'), 'schedule explains server timezone, runtime requirement and template variables');
+  $('schedule-run-at').value = ''; check(!$('command-form').checkValidity(), 'one-time schedule requires a date');
+  $('schedule-run-at').value = '2099-10-17T09:30';
+  const once = await createSchedule('once');
+  check(once.kind === 'schedule' && once.scheduleMode === 'once' && once.runAt === new Date('2099-10-17T09:30').toISOString() && !('timeOfDay' in once) && !('intervalMinutes' in once), 'one-time local input is serialized as an absolute ISO time');
+  check(!requests.some((request) => request.url.includes('cmd-created-') && request.url.endsWith('/run')), 'saving schedules never arms them automatically');
+  commands.openCommandDialog(null, null, null, 'schedule');
+  $('schedule-run-at').value = ''; changeScheduleMode('daily');
+  check($('schedule-run-at').disabled && !$('schedule-run-at').required && $('schedule-time-of-day').required && !$('schedule-time-of-day').disabled && $('schedule-interval').disabled, 'daily mode disables irrelevant required inputs');
+  $('schedule-time-of-day').value = ''; check(!$('command-form').checkValidity(), 'daily schedule requires a clock time');
+  $('schedule-time-of-day').value = '09:45';
+  const daily = await createSchedule('daily');
+  check(daily.scheduleMode === 'daily' && daily.timeOfDay === '09:45' && !('runAt' in daily) && !('intervalMinutes' in daily), 'daily schedule sends server-local clock time without stale one-time fields');
+  commands.openCommandDialog(null, null, null, 'schedule'); changeScheduleMode('interval');
+  check($('schedule-interval').value === '60' && $('schedule-interval').required && $('schedule-run-at').disabled && $('schedule-time-of-day').disabled, 'interval mode defaults to sixty minutes and only validates its own control');
+  for (const invalid of ['0', '10081', '1.5']) { $('schedule-interval').value = invalid; check(!$('command-form').checkValidity(), 'interval rejects out-of-range or fractional minutes: ' + invalid); }
+  $('schedule-interval').value = '15'; const interval = await createSchedule('interval');
+  check(interval.scheduleMode === 'interval' && interval.intervalMinutes === 15 && !('runAt' in interval) && !('timeOfDay' in interval), 'interval request contains only the selected timing mode');
+  commands.openCommandDialog(schedule);
+  check(new Date($('schedule-run-at').value).getTime() === Math.floor(new Date(schedule.runAt).getTime() / 60_000) * 60_000, 'editing restores the one-time date in local time');
+  $('schedule-run-at').value = ''; $('command-dialog').close(); commands.openCommandDialog(watch);
+  check($('schedule-run-at').disabled && !$('schedule-run-at').required && $('command-form').checkValidity(), 'invalid hidden schedule fields cannot block another kind of node'); $('command-dialog').close();
+  const scheduleCard = () => $('p-graph').querySelector('[data-id="' + schedule.id + '"]');
+  check(scheduleCard().querySelector('.gcmd-btn').textContent === '예약 시작', 'idle schedule offers explicit arm action');
+  const arm = scheduleCard().querySelector('.gcmd-btn'); arm.click(); arm.click();
+  await until(() => scheduleCard().classList.contains('scheduled') && !scheduleCard().querySelector('.gcmd-btn').disabled);
+  check(scheduleCard().textContent.includes('예약 중') && scheduleCard().textContent.includes('다음 ') && scheduleCard().querySelector('.gcmd-btn').textContent === '예약 중지', 'armed schedule displays next occurrence and a stop action');
+  check(requests.filter((request) => request.url === '/api/commands/' + schedule.id + '/run').length === 1, 'duplicate arm click sends only one request');
+  commands.openCommandDialog(schedule);
+  check($('command-run').textContent === '예약 중지' && !$('command-last').hidden && $('command-last-meta').textContent.includes('다음 '), 'editing an armed schedule shows its next time and stop action');
+  $('command-form').requestSubmit($('command-run'));
+  await until(() => $('command-run').textContent === '예약 시작' && !schedule.scheduleEnabled);
+  check(requests.filter((request) => request.url === '/api/commands/' + schedule.id + '/stop').length === 1 && schedule.nextRunAt === null, 'editor stop disarms and clears next occurrence'); $('command-dialog').close();
+  scheduleCard().dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1000, clientY: 600 }));
+  check(document.querySelector('.context-menu').textContent.includes('예약 시작'), 'schedule context menu uses the arm label');
+  [...document.querySelectorAll('.menu-item')].find((item) => item.textContent === '예약 시작').click();
+  await until(() => schedule.scheduleEnabled && !scheduleCard().querySelector('.gcmd-btn').disabled);
+  const stop = scheduleCard().querySelector('.gcmd-btn'); stop.click(); stop.click();
+  await until(() => !schedule.scheduleEnabled && !scheduleCard().querySelector('.gcmd-btn').disabled);
+  check(requests.filter((request) => request.url === '/api/commands/' + schedule.id + '/stop').length === 2, 'duplicate disarm click sends only one stop request');
   commands.openCommandDialog(group);
   const memberIds = [...$('group-members').querySelectorAll('input')].map((node) => node.value);
   check([session.id, input.id, repeat.id, transform.id, shell.id, git.id].every((id) => memberIds.includes(id)), 'collector accepts mixed executable node kinds');
-  check([watch.id, button.id, markdown.id, group.id, other.id].every((id) => !memberIds.includes(id)), 'collector excludes incompatible and other-project nodes');
+  check([watch.id, schedule.id, button.id, markdown.id, group.id, other.id].every((id) => !memberIds.includes(id)), 'collector excludes incompatible and other-project nodes');
   $('command-dialog').close();
   const card = (id) => $("p-graph").querySelector('[data-id="' + id + '"]');
   const drag = async (from, when, to) => {
@@ -185,12 +242,13 @@ async function flowBrowserChecks() {
   check([...$("p-graph").querySelectorAll('path.edge')].some((path) => path.getAttribute('d').startsWith('M250,258')), 'repeat saved edge starts at the exhausted port');
   await drag(transform.id, null, input.id);
   await drag(transform.id, null, watch.id);
-  check(alerts.length === 2 && alerts.every((message) => message.includes('시작점')) && !$("link-dialog").open, 'input and watch reject incoming links'); alerts.length = 0;
+  await drag(transform.id, null, schedule.id);
+  check(alerts.length === 3 && alerts.every((message) => message.includes('시작점')) && !$("link-dialog").open, 'input, watch and schedule reject incoming links'); alerts.length = 0;
   check(!card(markdown.id).querySelector('.gcard-handle'), 'markdown remains a terminal node');
   $('p-graph').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 900, clientY: 700 }));
   const menu = document.querySelector('.context-menu');
-  check(menu && ['새 입력 폼', '새 반복 제어', '새 결과 가공', '새 파일 감시'].every((name) => menu.textContent.includes(name)), 'creation menu offers all new node kinds');
-  for (const [kind, label] of [['input', '새 입력 폼'], ['repeat', '새 반복 제어'], ['transform', '새 결과 가공'], ['watch', '새 파일 감시']]) {
+  check(menu && ['새 입력 폼', '새 반복 제어', '새 결과 가공', '새 파일 감시', '새 시간 예약'].every((name) => menu.textContent.includes(name)), 'creation menu offers all new node kinds');
+  for (const [kind, label] of [['input', '새 입력 폼'], ['repeat', '새 반복 제어'], ['transform', '새 결과 가공'], ['watch', '새 파일 감시'], ['schedule', '새 시간 예약']]) {
     if (!document.querySelector('.context-menu')) $('p-graph').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 900, clientY: 700 }));
     [...document.querySelectorAll('.menu-item')].find((button) => button.textContent === label).click();
     check($('command-dialog').open && !$(kind + '-settings').hidden, 'creation opens ' + kind + ' settings');
@@ -200,7 +258,24 @@ async function flowBrowserChecks() {
     check(created.body.kind === kind && created.body.projectPath === project && (kind !== 'watch' || created.body.watchPaths[0] === 'src'), 'creation posts ' + kind + ' contract');
     if (kind !== 'watch') $('p-graph').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 900, clientY: 700 }));
   }
+  document.querySelector('.context-menu')?.remove();
+  nodeGroups = [{ id: 'grp-schedule', title: '예약 흐름', members: [schedule.id], ports: [], collapsed: true, rect: { x: 760, y: 340, w: 320, h: 200 } }];
+  await graph.loadNodeGroups();
+  const groupedSchedule = () => document.querySelector('[data-group-id="grp-schedule"] .node-group-buttons button');
+  check(groupedSchedule()?.title.includes('예약 시작') && groupedSchedule().textContent.startsWith('▶'), 'collapsed group keeps an explicit schedule start action');
+  groupedSchedule().click(); await until(() => schedule.scheduleEnabled && groupedSchedule()?.title.includes('예약 중지'));
+  check(groupedSchedule().textContent.startsWith('■'), 'collapsed active schedule shows its stop icon and label');
+  document.querySelector('[data-group-id="grp-schedule"]').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 1000, clientY: 600 }));
+  check(document.querySelector('.context-menu').textContent.includes(schedule.title + ' 예약 중지'), 'collapsed group context menu offers schedule stop');
+  [...document.querySelectorAll('.menu-item')].find((item) => item.textContent === schedule.title + ' 예약 중지').click();
+  await until(() => !schedule.scheduleEnabled && groupedSchedule()?.title.includes('예약 시작'));
+  nodeGroups = []; await graph.loadNodeGroups();
   window.__flowBrowserPreview = () => { document.querySelector(".context-menu")?.remove(); commands.openCommandDialog(input); };
+  window.__flowSchedulePreview = (view) => {
+    if ($('command-dialog').open) $('command-dialog').close();
+    Object.assign(schedule, { state: 'scheduled', scheduleEnabled: true, nextRunAt: schedule.runAt }); graph.renderGraph();
+    if (view === 'editor') commands.openCommandDialog(schedule);
+  };
   check(alerts.length === 0, 'valid feature interactions report no errors');
   return checks;
 }

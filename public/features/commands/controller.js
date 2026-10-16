@@ -2,7 +2,7 @@ import { $, el, timeAgo } from "../../shared/dom.js";
 import { elapsedElement } from "../../shared/elapsed.js";
 import { samePath, firstLine } from "../../shared/store.js";
 import { renderMarkdown } from "../../markdown.js";
-import { createFlowNodeForms, FLOW_KINDS, KIND_LABEL, kindOf, hasBranchPorts, KIND_HINT as FLOW_HINT } from "./flow-nodes.js";
+import { createFlowNodeForms, FLOW_KINDS, KIND_LABEL, kindOf, hasBranchPorts, isScheduleArmed, KIND_HINT as FLOW_HINT } from "./flow-nodes.js";
 import { commandBody } from "../graph/history.js";
 
 export function createCommandsController({ api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation, history, nodeSnapshot, recordNodesRemoved }) {
@@ -13,7 +13,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   const pendingRuns = new Set();
   const flowForms = createFlowNodeForms();
   // ── 명령 노드 ───────────────────────────────────────────────────
-  const COMMAND_STATE = { idle: "대기", running: "실행 중", watching: "감시 중", success: "성공", error: "실패" };
+  const COMMAND_STATE = { idle: "대기", running: "실행 중", watching: "감시 중", scheduled: "예약 중", success: "성공", error: "실패" };
   const KIND_HINT = {
     ...FLOW_HINT,
     git: "기존 로컬 브랜치의 작업 폴더를 준비하거나, 소스 브랜치의 커밋을 대상 브랜치에 병합합니다. 실제 Git 상태에 따라 성공·실패 연결로 넘깁니다. 병합 충돌은 취소 후 실패로 넘깁니다.",
@@ -32,14 +32,20 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   }
   const shellLabel = (id) => (data.shells ?? []).find((s) => s.id === id)?.label ?? id;
   const seconds = (ms) => `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}초`;
+  const scheduleTime = (value, compact = false) => {
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? date.toLocaleString("ko-KR", { ...(compact ? {} : { year: "numeric" }), month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false }) : "시각 확인 필요";
+  };
+  const scheduleDetail = (c) => c.scheduleMode === "daily" ? `매일 ${c.timeOfDay} · ${data.commandTimeZone || "서버 PC 시간"}` : c.scheduleMode === "interval" ? `${c.intervalMinutes}분마다` : `한 번 · ${scheduleTime(c.runAt)}`;
 
   async function loadCommands(projectPath = navigation.project) {
     if (!projectPath) return;
     try {
-      const { shells, commands } = await api("GET", `/api/commands?path=${encodeURIComponent(projectPath)}`);
+      const { shells, commands, timeZone } = await api("GET", `/api/commands?path=${encodeURIComponent(projectPath)}`);
       if (!samePath(projectPath, navigation.project)) return;
       data.shells = shells;
       data.commands = commands;
+      data.commandTimeZone = timeZone;
       data.commandsProject = projectPath;
     } catch {
       return;
@@ -51,6 +57,9 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   function commandNodeFoot(c) {
     const running = c.state === "running" || c.state === "watching";
     const run = c.lastRun;
+    if (kindOf(c) === "schedule") return isScheduleArmed(c)
+      ? c.nextRunAt ? `다음 ${scheduleTime(c.nextRunAt, true)}` : "예약 중 · 다음 시각 확인 중"
+      : run ? `${run.ok ? "예약 실행 완료" : "예약 실행 실패"} · ${timeAgo(run.startedAt)}` : "예약 시작을 눌러 활성화";
     if (kindOf(c) === "watch") return running ? `감시 중 · ${(c.watchPaths ?? []).length}개 경로${c.live?.tail ? ` · ${firstLine(c.live.tail)}` : ""}` : run ? `${run.ok ? "변경 전달 완료" : "감시 중지 또는 오류"} · ${timeAgo(run.startedAt)}` : "▶를 눌러 감시 시작";
     if (kindOf(c) === "webhook-in") return c.enabled === false ? "꺼짐 · 요청을 받지 않습니다" : run ? `${run.ok ? run.method === "TEST" ? "시험 실행함" : "요청 받음" : "요청 처리 실패"} · ${timeAgo(run.startedAt)}` : "POST 요청을 기다립니다";
     if (kindOf(c) === "webhook") return running ? "보내는 중" : run ? `${run.ok ? "보냄" : "보내기 실패"}${run.httpStatus ? ` · HTTP ${run.httpStatus}` : ""} · ${timeAgo(run.startedAt)}` : "앞 노드의 결과를 보냅니다";
@@ -95,12 +104,12 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
 
   function commandNode(c) {
     if (kindOf(c) === "group") return groupNode(c);
-    const running = ["running", "watching"].includes(c.state);
+    const running = ["running", "watching"].includes(c.state) || isScheduleArmed(c);
     const kind = kindOf(c);
     const output = c.lastRun?.output;
-    const detail = kind === "git" ? c.gitAction === "merge" ? c.branch + " → " + c.targetBranch : c.branch + " · 작업 폴더 사용" : kind === "button" ? c.prompt : kind === "markdown" ? output?.relativePath ?? "완료 메시지 → .md 파일" : kind === "input" ? (c.fields ?? []).map((field) => field.label).join(" · ") : kind === "repeat" ? "최대 " + c.maxIterations + "회 · 실패하면 다시 실행" : kind === "transform" ? ({ json: "JSON", lines: "줄 선택", template: "템플릿" }[c.transformMode] ?? "JSON") + " · " + (c.expression || c.template || "전체 결과") : kind === "watch" ? (c.watchPaths ?? []).join(" · ") : kind === "notify" ? c.message : kind === "webhook" ? `${c.method} ${c.url}` : kind === "webhook-in" ? "POST /hooks/…" : c.command;
-    const stoppable = ["command", "git", "watch", "repeat", "webhook"].includes(kind);
-    const actionLabel = kind === "markdown" ? "결과 보기" : running && stoppable ? kind === "watch" ? "감시 중지" : "중지" : kind === "input" ? "입력하고 실행" : kind === "watch" ? "감시 시작" : kind === "webhook-in" ? "시험 실행" : kind === "button" ? running ? "전달 중" : "실행" : "지금 실행";
+    const detail = kind === "schedule" ? scheduleDetail(c) : kind === "git" ? c.gitAction === "merge" ? c.branch + " → " + c.targetBranch : c.branch + " · 작업 폴더 사용" : kind === "button" ? c.prompt : kind === "markdown" ? output?.relativePath ?? "완료 메시지 → .md 파일" : kind === "input" ? (c.fields ?? []).map((field) => field.label).join(" · ") : kind === "repeat" ? "최대 " + c.maxIterations + "회 · 실패하면 다시 실행" : kind === "transform" ? ({ json: "JSON", lines: "줄 선택", template: "템플릿" }[c.transformMode] ?? "JSON") + " · " + (c.expression || c.template || "전체 결과") : kind === "watch" ? (c.watchPaths ?? []).join(" · ") : kind === "notify" ? c.message : kind === "webhook" ? `${c.method} ${c.url}` : kind === "webhook-in" ? "POST /hooks/…" : c.command;
+    const stoppable = ["command", "git", "watch", "schedule", "repeat", "webhook"].includes(kind);
+    const actionLabel = kind === "schedule" ? running ? "예약 중지" : "예약 시작" : kind === "markdown" ? "결과 보기" : running && stoppable ? kind === "watch" ? "감시 중지" : "중지" : kind === "input" ? "입력하고 실행" : kind === "watch" ? "감시 시작" : kind === "webhook-in" ? "시험 실행" : kind === "button" ? running ? "전달 중" : "실행" : "지금 실행";
     const action = el("button", { type: "button", class: "gcmd-btn" + (running && stoppable ? " stop" : ""), title: kind === "markdown" && !output ? "결과를 받으면 볼 수 있습니다" : actionLabel, "aria-label": c.title + " " + actionLabel, onclick: () => kind === "markdown" ? openCommandOutput(c) : running && stoppable ? stopCommand(c) : runCommand(c) }, ["command", "watch"].includes(kind) ? running ? "■" : "▶" : actionLabel);
     action.disabled = kind === "markdown" ? !output : pendingRuns.has(c.id) || (running && !stoppable);
     const branchPorts = hasBranchPorts(c);
@@ -113,6 +122,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   }
 
   async function runCommand(c) {
+    if (isScheduleArmed(c)) return stopCommand(c);
     if (kindOf(c) === "watch" && c.state === "watching") return stopCommand(c);
     if (kindOf(c) === "markdown") return openCommandOutput(c);
     if (pendingRuns.has(c.id) || (["button", "git"].includes(kindOf(c)) && c.state === "running")) return;
@@ -134,8 +144,13 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   }
 
   async function stopCommand(c) {
-    await api("POST", `/api/commands/${c.id}/stop`).catch((err) => alert(err.message));
-    loadCommands();
+    if (!c || pendingRuns.has(c.id)) return;
+    pendingRuns.add(c.id);
+    if (navigation.view === "project") renderGraph();
+    renderCommandRun();
+    try { await api("POST", `/api/commands/${c.id}/stop`); }
+    catch (err) { alert(err.message); }
+    finally { pendingRuns.delete(c.id); await loadCommands(); renderCommandRun(); }
   }
 
   async function removeCommand(c) {
@@ -152,7 +167,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
 
   // 같은 프로젝트의 실행 가능한 노드를 모은다.
   function renderGroupMembers(selected) {
-    const nodes = [...data.sessions.filter((s) => !s.chat && samePath(s.projectPath, navigation.project)), ...(data.commands ?? []).filter((c) => !["button", "markdown", "watch", "webhook-in", "group"].includes(kindOf(c)) && samePath(c.projectPath, navigation.project))];
+    const nodes = [...data.sessions.filter((s) => !s.chat && samePath(s.projectPath, navigation.project)), ...(data.commands ?? []).filter((c) => !["button", "markdown", "watch", "schedule", "webhook-in", "group"].includes(kindOf(c)) && samePath(c.projectPath, navigation.project))];
     $("group-members").replaceChildren(...(nodes.length ? nodes.map((node) => el("li", {}, el("label", { class: "check" }, el("input", { type: "checkbox", value: node.id, ...(selected.has(node.id) ? { checked: "" } : {}) }), " " + node.title, el("span", { class: "muted" }, " · " + (node.agent ?? KIND_LABEL[kindOf(node)]))))) : [el("li", { class: "muted" }, "이 프로젝트에 모을 수 있는 노드가 없습니다.")]));
   }
 
@@ -164,12 +179,12 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const shells = data.shells?.length ? data.shells : [{ id: "powershell", label: "PowerShell" }];
     $("command-heading").textContent = cmd ? `${KIND_LABEL[kind]} ${cmd.title}` : `새 ${KIND_LABEL[kind]}`;
     $("command-title").value = cmd?.title ?? "";
-    $("command-title").placeholder = kind === "command" ? "비워 두면 명령 첫 줄로 정합니다" : kind === "button" ? "예: 작업 시작" : kind === "group" ? "예: 병렬 구현" : kind === "git" ? "예: develop에 통합" : "예: 완료 보고서";
+    $("command-title").placeholder = kind === "schedule" ? "예: 매일 아침 검증" : kind === "command" ? "비워 두면 명령 첫 줄로 정합니다" : kind === "button" ? "예: 작업 시작" : kind === "group" ? "예: 병렬 구현" : kind === "git" ? "예: develop에 통합" : "예: 완료 보고서";
     $("command-save").disabled = false;
     $("command-generator").hidden = kind !== "command";
     $("command-explain").hidden = kind !== "command";
     $("command-settings").hidden = !["command", "markdown"].includes(kind);
-    flowForms.fill(kind, cmd);
+    flowForms.fill(kind, cmd, { timeZone: data.commandTimeZone });
     $("git-settings").hidden = kind !== "git";
     $("git-action").value = cmd?.gitAction ?? "use";
     $("git-timeout").value = cmd?.timeoutSec ?? 600;
@@ -276,9 +291,10 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const run = cmd?.lastRun;
     const kind = ui.editingCommand?.kind ?? kindOf(cmd);
     const box = $("command-last");
-    const running = ["running", "watching"].includes(cmd?.state);
+    $("command-output").hidden = kind === "schedule" && !cmd?.live?.tail && !run?.tail && !run?.error;
+    const running = ["running", "watching"].includes(cmd?.state) || isScheduleArmed(cmd);
     $("command-run").hidden = !cmd || (kind === "markdown" && !run?.output);
-    $("command-run").textContent = kind === "markdown" ? "결과 보기" : kind === "watch" ? running ? "감시 중지" : "감시 시작" : kind === "input" ? "입력하고 실행" : kind === "webhook-in" ? "시험 실행" : kind === "group" ? "지금 넘기기" : kind === "button" ? running ? "전달 중" : "지금 실행" : running ? "중지" : "지금 실행";
+    $("command-run").textContent = kind === "schedule" ? running ? "예약 중지" : "예약 시작" : kind === "markdown" ? "결과 보기" : kind === "watch" ? running ? "감시 중지" : "감시 시작" : kind === "input" ? "입력하고 실행" : kind === "webhook-in" ? "시험 실행" : kind === "group" ? "지금 넘기기" : kind === "button" ? running ? "전달 중" : "지금 실행" : running ? "중지" : "지금 실행";
     $("command-run").disabled = pendingRuns.has(cmd?.id) || (kind === "button" && running) || (kind === "group" && !!cmd && !groupProgress(cmd).ready);
     if (!cmd || (!run && !running)) {
       box.hidden = true;
@@ -427,7 +443,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       $("command-dialog").close();
       return removeCommand(cmd);
     }
-    if (action === "run") return ["running", "watching"].includes(cmd?.state) && ["command", "git", "repeat", "watch", "webhook"].includes(kind) ? stopCommand(cmd) : cmd && runCommand(cmd);
+    if (action === "run") return (["running", "watching"].includes(cmd?.state) || isScheduleArmed(cmd)) && ["command", "git", "repeat", "watch", "schedule", "webhook"].includes(kind) ? stopCommand(cmd) : cmd && runCommand(cmd);
     const body = {
       title: $("command-title").value,
       ...(kind === "command" ? {

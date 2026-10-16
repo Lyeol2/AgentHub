@@ -169,7 +169,7 @@ export class Chain {
     const sourceKind = isCommandId(source.id) ? commandKind(source) : "session";
     const targetKind = isCommandId(target.id) ? commandKind(target) : "session";
     // Utility nodes keep their direction even when an old or hand-edited link bypasses API validation.
-    if (sourceKind === "markdown" || ["button", "input", "watch", "webhook-in"].includes(targetKind)) return;
+    if (sourceKind === "markdown" || ["button", "input", "watch", "schedule", "webhook-in"].includes(targetKind)) return;
     // Saving a terminal message does not launch another turn, so it must still work at the hop limit.
     if (targetKind === "markdown") {
       this.setFlow(target, flow);
@@ -236,7 +236,7 @@ export class Chain {
   // 세션 하나에 넘어온 작업을 넣는다. 보낸 쪽 종류에 따라 넘기는 내용이 다르다.
   async sendSession(link, source, sourceKind, target, depth, answer, flow = this.flowFor(source)) {
     const from = { from: source.id, fromTitle: source.title, ...(flow ? { flow } : {}) };
-    if (["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"].includes(sourceKind)) {
+    if (["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in"].includes(sourceKind)) {
       const text = answer ?? source.lastRun?.outputText ?? source.lastRun?.tail ?? "";
       this.enqueue(target, [text, link.note?.trim()].filter(Boolean).join("\n\n"), from, depth + 1);
       return;
@@ -395,7 +395,7 @@ export class Chain {
   runCommand(cmd, { origin = null, depth = 0, prompt = null, values = undefined, flow = null, historyStepId = null } = {}) {
     if (this.disposed || flow?.cancelled) return null;
     const kind = commandKind(cmd);
-    if (["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"].includes(kind)) {
+    if (["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in"].includes(kind)) {
       if (this.runs.has(cmd.id)) {
         if (["repeat", "transform", "webhook"].includes(kind)) return this.workflow.enqueue(cmd, { origin, depth, prompt, values, flow, historyStepId });
         return null;
@@ -644,7 +644,7 @@ export class Chain {
     this.commands.update(cmd, { queued: null });
     this.workflow.clearQueue(cmd);
     const flow = this.flowFor(cmd);
-    if (flow && commandKind(cmd) !== "watch") this.workflow.cancel(flow);
+    if (flow && !["watch", "schedule"].includes(commandKind(cmd))) this.workflow.cancel(flow);
     run.stop();
     return true;
   }
@@ -705,6 +705,8 @@ export class Chain {
     if (this.disposed) return;
     const queue = this.queue.get(session.id);
     if (!queue?.length || this.runner.isRunning(session.id) || session.paused || this.gitBusy(session)) return;
+    // 업데이트가 끝날 때까지 요청과 실행 기록의 대기 단계를 그대로 둔다.
+    if (this.runner.isUpdating?.(session.agent)) return;
     while (queue.length) {
       const item = queue.shift();
       if (!queue.length) this.queue.delete(session.id);

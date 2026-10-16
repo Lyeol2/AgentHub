@@ -66,7 +66,7 @@ test("flow API: result collectors accept executable nodes from the same project 
   const members = ["session", command.id, git.id, input.id, transform.id, repeat.id];
   const group = f.create("group", { members });
   assert.deepEqual(group.members, members);
-  for (const node of [f.create("watch"), f.create("markdown"), f.create("button", { prompt: "run" }), group]) {
+  for (const node of [f.create("watch"), f.create("schedule", { scheduleMode: "interval" }), f.create("markdown"), f.create("button", { prompt: "run" }), group]) {
     assert.throws(() => f.service.update(group.id, { members: [node.id] }), error => error.status === 400);
   }
   assert.throws(() => f.service.update(group.id, { members: ["missing"] }), error => error.status === 400);
@@ -94,6 +94,7 @@ test("flow API: source nodes reject incoming edges while mixed outputs can reach
   const f = fixture();
   const input = f.create("input");
   const watch = f.create("watch");
+  const schedule = f.create("schedule", { scheduleMode: "interval" });
   const button = f.create("button", { prompt: "run" });
   const command = f.create("command", { command: "echo ready" });
   const git = f.create("git", { branch: "main" });
@@ -102,9 +103,9 @@ test("flow API: source nodes reject incoming edges while mixed outputs can reach
   const markdown = f.create("markdown");
   const group = f.create("group", { members: ["session", command.id] });
   const connect = (from, to, when = "success") => f.workflows.createLink({ from, to, when });
-  for (const node of [input, watch, button]) assert.throws(() => connect("session", node.id), error => error.status === 400);
+  for (const node of [input, watch, schedule, button]) assert.throws(() => connect("session", node.id), error => error.status === 400);
   for (const node of [command, git, transform, repeat, group]) connect(button.id, node.id);
-  for (const node of [input, watch, command, git, transform, repeat, group]) connect(node.id, markdown.id);
+  for (const node of [input, watch, schedule, command, git, transform, repeat, group]) connect(node.id, markdown.id);
   connect(git.id, group.id);
   connect(repeat.id, "session", "success");
   connect(repeat.id, "session", "error");

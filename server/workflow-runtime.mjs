@@ -3,6 +3,7 @@ import { commandKind, outputTail } from "./commands.mjs";
 import { inputValues, renderTemplate, transformResult } from "./flow-nodes.mjs";
 import { createFileWatch } from "./file-watch.mjs";
 import { hookVariables, sendWebhook } from "./webhooks.mjs";
+import { ScheduledNodes } from "./scheduled-nodes.mjs";
 
 // A flow is one invocation, shared by all of its branches. Results are immutable
 // snapshots so another invocation of a member cannot replace a join's inputs.
@@ -13,6 +14,7 @@ export class WorkflowRuntime {
     this.nodes = new Map();
     this.flows = new Map();
     this.watchers = new Map();
+    this.schedules = new ScheduledNodes(this);
     this.queues = new Map();
   }
 
@@ -87,8 +89,9 @@ export class WorkflowRuntime {
   active(flow) {
     if (!flow || flow.cancelled) return false;
     const c = this.chain;
+    if ([...this.schedules.deliveries].some((state) => state.flow?.id === flow.id)) return true;
     for (const [id, current] of this.nodes) {
-      if (current.id !== flow.id || this.watchers.has(id)) continue;
+      if (current.id !== flow.id || this.watchers.has(id) || this.schedules.states.has(id)) continue;
       if (c.runner.isRunning(id) || c.runs.has(id)) return true;
       const node = c.node(id);
       if (node?.paused || node?.waiting) return true;
@@ -175,6 +178,10 @@ export class WorkflowRuntime {
     return node;
   }
 
+  startSchedule(node, options = {}) { return this.schedules.start(node, options); }
+
+  restoreSchedules() { this.schedules.restore(); }
+
   // 웹훅 받기: 요청 하나가 새 흐름 하나를 시작한다. 요청 템플릿이 틀리면 흐름을 만들지 않고 오류를 던진다.
   trigger(node, variables) {
     const c = this.chain;
@@ -248,6 +255,7 @@ export class WorkflowRuntime {
   }
 
   dispose() {
+    this.schedules.dispose();
     for (const nodeId of this.queues.keys()) this.clearQueue({ id: nodeId });
   }
 
@@ -259,6 +267,7 @@ export class WorkflowRuntime {
     const c = this.chain;
     const kind = commandKind(node);
     if (kind === "watch") return this.startWatch(node);
+    if (kind === "schedule") return this.startSchedule(node);
     // 카드의 실행 버튼은 빈 요청을 받은 것처럼 흐름을 시험한다.
     if (kind === "webhook-in") { this.trigger(node, hookVariables({ method: "TEST" })); return node.lastRun; }
     // Bad form input is rejected before starting a run or mutating stored state.

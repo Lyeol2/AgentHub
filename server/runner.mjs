@@ -15,10 +15,11 @@ const INTERRUPT_GRACE_MS = 10000;
 
 // 세션 하나에 한 번에 한 턴만 실행한다. 다른 세션은 동시에 실행할 수 있다.
 export class Runner extends EventEmitter {
-  constructor(store, { spawn = spawnCli } = {}) {
+  constructor(store, { spawn = spawnCli, isUpdating = () => false } = {}) {
     super();
     this.store = store;
     this.spawn = spawn;
+    this.isUpdating = isUpdating;
     this.running = new Map();
     this.prompts = new Map(); // CLI가 실행 중에 물은 요청 ID → { session, child, agent, control, event }
     // 세션에 붙일 AgentHub MCP 서버 정보를 돌려주는 함수(session → { url, configFile } | null). 서버가 정한다.
@@ -135,6 +136,7 @@ export class Runner extends EventEmitter {
   // retry는 이어 갈 대화가 없어 새 대화로 다시 보낼 때 쓴다. 요청은 이미 화면에 있으므로 다시 남기지 않는다.
   send(session, prompt, cliPath, input = prompt, meta = {}, retry = false) {
     if (this.running.has(session.id)) throw new Error("이 세션은 이미 실행 중입니다.");
+    if (this.isUpdating(session.agent)) throw new Error(`${session.agent} CLI 업데이트 중입니다. 완료한 뒤 다시 시도하세요.`);
     assertSessionGitContext(session);
     if (!cliPath) throw new Error(`${session.agent} CLI를 찾지 못했습니다. 설정에서 경로를 지정하세요.`);
 

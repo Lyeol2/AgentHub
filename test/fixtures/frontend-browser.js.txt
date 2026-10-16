@@ -2,7 +2,9 @@
     const checks = [];
     const $ = (id) => document.getElementById(id);
     const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
-    const until = async (predicate) => { const end = Date.now() + 8000; while (!predicate()) { if (Date.now() > end) throw Error("Timed out waiting: " + predicate); await new Promise((resolve) => setTimeout(resolve, 20)); } };
+    const until = async (predicate) => { const end = Date.now() + 8000; while (!await predicate()) { if (Date.now() > end) throw Error("Timed out waiting: " + predicate); await new Promise((resolve) => setTimeout(resolve, 20)); } };
+    const fixtureRequests = () => fetch("/fixture/requests").then((response) => response.json());
+    const setupMode = (body) => fetch("/fixture/setup-mode", { method: "POST", body: JSON.stringify(body) });
     const pointer = (target, type, props = {}) => target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 4, clientX: 350, clientY: 350, button: 0, ...props }));
     await until(() => $("project-nav").querySelector("button") && $("kpis").children.length === 4);
     check(!$("view-dashboard").hidden, "dashboard bootstrap");
@@ -118,7 +120,15 @@
     $("open-settings").click();
     await until(() => $("settings-dialog").open);
     check($("project-list").children.length === 1, "settings view");
-    $("settings-dialog").close();
+    check($("cli-auto-update").checked, "CLI automatic updates default to enabled");
+    $("cli-auto-update").checked = false;
+    $("settings-form").requestSubmit($("settings-form").querySelector('button[value="ok"]'));
+    await until(() => !$("settings-dialog").open);
+    $("open-settings").click(); await until(() => $("settings-dialog").open);
+    check(!$("cli-auto-update").checked, "disabled automatic update preference survives reopening settings");
+    $("cli-auto-update").checked = true;
+    $("settings-form").requestSubmit($("settings-form").querySelector('button[value="ok"]'));
+    await until(() => !$("settings-dialog").open);
     $("open-setup").click();
     await until(() => $("setup-dialog").open && $("setup-list").children.length === 2);
     check($("setup-list").textContent.includes("실행 확인 실패") && $("setup-list").textContent.includes("C:/fixture/codex.cmd") && !$("setup-list").textContent.includes("로그인됨"), "CLI execution failure shows its selected path without healthy login status");
@@ -129,7 +139,8 @@
     check([...wingetCard().querySelectorAll("button")].some((button) => button.textContent === "설치·복구"), "winget offers automatic installation and repair");
     const codexManual = manualDetails(setupCard("Codex"));
     check(codexManual.open && codexManual.textContent.includes("자동 설치에 실패했습니다"), "failed automatic installation expands manual recovery instructions");
-    check(codexManual.textContent.includes("상단의 ‘다시 확인’"), "manual installation explains how to refresh CLI detection");
+    check(codexManual.textContent.includes("‘새로고침’"), "manual installation explains how to refresh CLI detection");
+    check(setupCard("Codex").textContent.includes("Fixture installation method is not verified") && ![...setupCard("Codex").querySelectorAll("button")].some((button) => button.textContent === "업데이트"), "unsupported update methods show their reason without offering an update");
     for (const [card, expectedUrl] of [[wingetCard(), "https://learn.microsoft.com/windows/package-manager/winget/"], [setupCard("Codex"), "https://developers.openai.com/codex/cli/"]]) {
       const manual = manualDetails(card), link = manual.querySelector("a");
       check(link.href === expectedUrl && link.target === "_blank" && link.rel.includes("noopener"), "manual installation keeps its official link in a safe new tab: " + expectedUrl);
@@ -138,6 +149,7 @@
     [...wingetCard().querySelectorAll("button")].find((button) => button.textContent === "설치·복구").click();
     await until(() => wingetCard().querySelector(".setup-job.running"));
     check([...wingetCard().querySelectorAll("button")].find((button) => button.textContent === "설치·복구").disabled, "winget fixture installation disables repeated starts");
+    await until(() => ![...wingetCard().querySelectorAll("button")].find((button) => button.textContent === "취소")?.disabled);
     [...wingetCard().querySelectorAll("button")].find((button) => button.textContent === "취소").click();
     await until(() => wingetCard().querySelector(".setup-job.canceled"));
     check(true, "winget cancellation updates its job through the setup event stream");
@@ -145,6 +157,43 @@
     check($("setup-refresh").disabled, "CLI recheck prevents duplicate requests");
     await until(() => !$("setup-refresh").disabled);
     check(true, "CLI recheck completes and restores its button");
+
+    await setupMode({ updateReady: true }); $("setup-refresh").click();
+    await until(() => !$("setup-refresh").disabled && setupCard("Codex").textContent.includes("codex 1.0.0"));
+    const codexButton = (label) => [...setupCard("Codex").querySelectorAll("button")].find((button) => button.textContent === label);
+    const updateRequests = async () => (await fixtureRequests()).filter((request) => request.method === "POST" && request.path === "/api/setup/codex/update");
+    const updateButton = codexButton("업데이트");
+    updateButton.click(); updateButton.click();
+    check([...setupCard("Codex").querySelectorAll(".setup-head button")].every((button) => button.disabled), "pending update immediately disables all tool actions");
+    await until(async () => (await updateRequests()).length === 1 && setupCard("Codex").querySelector(".setup-job.running"));
+    check($("cli-status").textContent.includes("업데이트 중…"), "CLI status identifies a running update");
+    await fetch("/fixture/release-update", { method: "POST" });
+    await until(() => setupCard("Codex").querySelector(".setup-job.error") && !codexButton("업데이트 다시 시도")?.disabled);
+    check(setupCard("Codex").textContent.includes("Fixture update failed") && codexButton("새로고침"), "failed update keeps its error and offers refresh and retry");
+
+    const freshRequests = (requests, endpoint) => requests.filter((request) => request.method === "GET" && request.path === "/api/" + endpoint && request.search === "?fresh=1");
+    const beforeRefreshFailure = await fixtureRequests();
+    await setupMode({ refreshFailure: true });
+    const cardRefresh = codexButton("새로고침");
+    cardRefresh.click(); cardRefresh.click(); $("setup-refresh").click();
+    check($("setup-refresh").disabled && codexButton("확인 중…")?.disabled, "refresh disables the global and failed-card controls together");
+    await until(() => !$("setup-refresh").disabled && $("setup-list").textContent.includes("Fixture setup refresh failed"));
+    check(["status", "auth", "setup"].every((endpoint) => $("setup-list").textContent.includes("Fixture " + endpoint + " refresh failed")), "refresh reports every failed check inline");
+    check(setupCard("Codex").querySelector(".setup-job.error") && wingetCard(), "refresh failure preserves tool cards and the previous failed update");
+    const afterRefreshFailure = await fixtureRequests();
+    check(["status", "auth", "setup"].every((endpoint) => freshRequests(afterRefreshFailure, endpoint).length === freshRequests(beforeRefreshFailure, endpoint).length + 1), "duplicate refresh clicks issue only one fresh request per endpoint");
+    check((await updateRequests()).length === 1, "refresh does not retry a failed update automatically");
+
+    await setupMode({ refreshFailure: false }); $("setup-refresh").click();
+    await until(() => !$("setup-refresh").disabled && !$("setup-list").querySelector(':scope > [role="alert"]'));
+    check(codexButton("업데이트 다시 시도") && !codexButton("업데이트 다시 시도").disabled, "successful refresh clears the fetch error and leaves update retry available");
+    const retryButton = codexButton("업데이트 다시 시도");
+    retryButton.click(); retryButton.click();
+    await until(async () => (await updateRequests()).length === 2 && setupCard("Codex").querySelector(".setup-job.running"));
+    check([...setupCard("Codex").querySelectorAll(".setup-head button")].every((button) => button.disabled), "retry blocks duplicate tool actions while its request is pending");
+    await fetch("/fixture/release-update", { method: "POST" });
+    await until(() => setupCard("Codex").querySelector(".setup-job.done") && !codexButton("업데이트")?.disabled);
+    check(setupCard("Codex").textContent.includes("업데이트 확인을 마쳤습니다.") && !setupCard("Codex").querySelector(".setup-job.running") && !$("cli-status").textContent.includes("업데이트 중…"), "latest setup read preserves terminal completion when the POST returns an older running state");
     $("setup-dialog").close();
     $("session-list").querySelector("button").click();
     await until(() => !$("view-session").hidden && $("s-title").textContent === "First");
@@ -197,14 +246,60 @@
     await until(() => !$("session-list").querySelector('.session-item-row.locked'));
     $("nav-dashboard").click(); $("nav-chat").click();
     check(!$("view-chat").hidden && $("c-title").textContent === "새 채팅", "new chat navigation");
-    $("open-new-top").click();
-    await until(() => $("new-dialog").open);
-    check(!$("new-isolate").checked && $("new-worktree-name").disabled, "new session defaults to original workspace");
-    $("new-isolate").checked = true; $("new-isolate").dispatchEvent(new Event("change"));
-    check($("new-worktree-name").required && !$("new-worktree-name").disabled, "explicit worktree selection");
-    $("new-agent").value = "codex-chat"; $("new-agent").dispatchEvent(new Event("change"));
-    check(!$("new-isolate").checked && !$("new-worktree-name").required, "chat mode clears workspace selection");
+    const openNewSession = async () => {
+      // Let the previous dialog's queued close event finish before reopening it.
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      $("open-new-top").click();
+      await until(() => $("new-dialog").open && !$("new-submit").disabled);
+    };
+    const setWorktree = (value) => {
+      $("new-isolate").value = String(value);
+      $("new-isolate").dispatchEvent(new Event("change"));
+    };
+    const setWorktreeName = (value) => {
+      $("new-worktree-name").value = value;
+      $("new-worktree-name").dispatchEvent(new Event("input"));
+    };
+    const controlIsVisible = (id) => {
+      const control = $(id), rect = control.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0 && rect.top >= 0 && rect.bottom <= innerHeight &&
+        document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2) === control;
+    };
+    const submitNewSession = async (title) => {
+      $("new-title").value = title;
+      check($("new-form").checkValidity(), "session form is valid: " + title);
+      $("new-form").requestSubmit($("new-submit"));
+      await until(() => !$("new-dialog").open && !$("new-submit").disabled);
+    };
+    await openNewSession();
+    check($("new-isolate").tagName === "SELECT" && $("new-isolate").value === "false" && $("new-worktree-name").disabled && !$("new-worktree-name").required, "new session explicitly defaults to no worktree");
+    check($("new-project").closest("label").nextElementSibling.contains($("new-isolate")), "worktree choice appears immediately after the project");
+    check(controlIsVisible("new-isolate"), "worktree choice is visible and accessible when the dialog opens");
+    await submitNewSession("Default workspace");
+
+    await openNewSession();
+    setWorktree(true);
+    check(!$("new-worktree-mode-row").hidden && !$("new-worktree-row").hidden && $("new-worktree-name").required && !$("new-worktree-name").disabled, "explicit worktree selection requires a name");
+    check(controlIsVisible("new-isolate") && controlIsVisible("new-worktree-name"), "worktree choice and name stay visible after opting in");
+    check(!$("new-form").checkValidity(), "native form validation blocks an unnamed worktree");
+    setWorktreeName("  browser-worktree  ");
+    await submitNewSession("Separate workspace");
+
+    await openNewSession();
+    check($("new-isolate").value === "false" && $("new-worktree-name").value === "" && $("new-worktree-mode").value === "new", "successful creation resets workspace selection on reopen");
+    setWorktree(true); setWorktreeName("stale-worktree"); setWorktree(false);
+    check($("new-worktree-name").disabled && !$("new-worktree-name").required && $("new-worktree-row").hidden, "turning worktrees off removes the name requirement");
+    await submitNewSession("Worktree disabled");
+
+    await openNewSession();
+    setWorktree(true); setWorktreeName("canceled-worktree");
     $("new-dialog").close();
+    await openNewSession();
+    check($("new-isolate").value === "false" && $("new-worktree-name").value === "" && $("new-worktree-name").disabled, "canceling and reopening clears workspace selection");
+    setWorktree(true); setWorktreeName("chat-worktree");
+    $("new-agent").value = "codex-chat"; $("new-agent").dispatchEvent(new Event("change"));
+    check($("new-isolate").value === "false" && $("new-isolate").disabled && $("new-worktree-name").disabled && !$("new-worktree-name").required, "chat mode clears and disables workspace selection");
+    await submitNewSession("Chat without workspace");
 
     $("project-nav").querySelector("button").click();
     await until(() => $("p-graph").querySelector('.gcard[data-id="s2"]') && $("p-graph").querySelector(".gcmd"));

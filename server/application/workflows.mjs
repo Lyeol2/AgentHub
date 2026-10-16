@@ -153,7 +153,7 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
       if (source.port.when === "keyword" && body.keyword != null && String(body.keyword).trim() !== source.port.keyword) throw new HttpError(400, "그룹 출력 포트의 키워드와 연결 키워드가 다릅니다.");
       body = { ...body, when: source.port.when, keyword: source.port.keyword ?? "" };
     }
-    if (["button", "input", "watch", "webhook-in"].includes(commandKind(to))) throw new HttpError(400, "버튼·입력 폼·파일 감시·웹훅 받기 노드는 시작점이므로 들어오는 연결을 만들 수 없습니다.");
+    if (["button", "input", "watch", "schedule", "webhook-in"].includes(commandKind(to))) throw new HttpError(400, "버튼·입력 폼·파일 감시·시간 예약·웹훅 받기 노드는 시작점이므로 들어오는 연결을 만들 수 없습니다.");
     if (commandKind(from) === "markdown") throw new HttpError(400, "MD 출력 노드는 완료 메시지를 저장하는 마지막 노드입니다.");
     if (from.chat || to.chat) throw new HttpError(400, "일반 채팅 세션은 연결할 수 없습니다.");
     if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");

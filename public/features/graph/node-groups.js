@@ -1,7 +1,7 @@
 import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { nodeSize } from "./model.js";
-import { KIND_LABEL, hasBranchPorts, isSourceOnly } from "../commands/flow-nodes.js";
+import { KIND_LABEL, hasBranchPorts, isSourceOnly, isScheduleArmed } from "../commands/flow-nodes.js";
 
 // A group is a canvas container. Links continue to point to its real member nodes.
 export function createNodeGroups({ api, data, navigation, ui, history, renderGraph, loadSessions, loadCommands, runCommand, saveGroupTemplate, trackGesture, canvasPoint, placeCards, openLinkDialog, openCreateMenu, syncSelection }) {
@@ -145,7 +145,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
           el("strong", { class: "node-group-title" }, group.title),
           el("button", { type: "button", class: "node-group-edit", title: "그룹 이름·멤버·입출력 편집", onclick: () => edit(group) }, "편집")),
         el("div", { class: "node-group-summary" }, summary(group)),
-        group.collapsed ? el("div", { class: "node-group-buttons" }, ...group.members.map(node).filter((item) => isSourceOnly(item)).map((button) => el("button", { type: "button", title: `${button.title} ${button.state === "watching" ? "감시 중지" : "실행"}`, ...(button.state === "running" ? { disabled: "" } : {}), onclick: () => runCommand(button) }, `${button.state === "watching" ? "■" : "▶"} ${button.title}`))) : null,
+        group.collapsed ? el("div", { class: "node-group-buttons" }, ...group.members.map(node).filter((item) => isSourceOnly(item)).map((button) => el("button", { type: "button", title: `${button.title} ${button.kind === "schedule" ? isScheduleArmed(button) ? "예약 중지" : "예약 시작" : button.state === "watching" ? "감시 중지" : "실행"}`, ...(button.state === "running" ? { disabled: "" } : {}), onclick: () => runCommand(button) }, `${button.state === "watching" || isScheduleArmed(button) ? "■" : "▶"} ${button.title}`))) : null,
         ...group.ports.map((port) => portElement(group, port)),
         group.collapsed ? null : el("span", { class: "node-group-resize", title: "그룹 크기 조절" }));
       Object.assign(frame.style, { left: `${group.rect.x}px`, top: `${group.rect.y}px`, width: `${dimensions.w}px`, height: `${dimensions.h}px` });
@@ -275,7 +275,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
   }
 
   function contextEntries(group) {
-    return [[group.collapsed ? "그룹 펼치기" : "그룹 접기", () => update(group, { collapsed: !group.collapsed })], ["이름·멤버·입출력 편집", () => edit(group)], ...(saveGroupTemplate ? [["템플릿으로 저장", () => saveGroupTemplate(group)]] : []), ...group.members.map(node).filter((item) => isSourceOnly(item)).map((button) => [`${button.title} 실행`, () => runCommand(button), { disabled: button.state === "running" }]), null, ["그룹 해제 (내부 노드 유지)", () => dissolve(group)]];
+    return [[group.collapsed ? "그룹 펼치기" : "그룹 접기", () => update(group, { collapsed: !group.collapsed })], ["이름·멤버·입출력 편집", () => edit(group)], ...(saveGroupTemplate ? [["템플릿으로 저장", () => saveGroupTemplate(group)]] : []), ...group.members.map(node).filter((item) => isSourceOnly(item)).map((button) => [`${button.title} ${button.kind === "schedule" ? isScheduleArmed(button) ? "예약 중지" : "예약 시작" : "실행"}`, () => runCommand(button), { disabled: button.state === "running" }]), null, ["그룹 해제 (내부 노드 유지)", () => dissolve(group)]];
   }
 
   async function droppedMembers(ids) {
