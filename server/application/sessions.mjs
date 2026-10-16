@@ -13,6 +13,7 @@ import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
 import { HttpError } from "./errors.mjs";
+import { assertSessionGitContext } from "../git-context.mjs";
 import { AttachmentStore, isImageAttachment, publicAttachment } from "../attachments.mjs";
 import { unsupportedChatAttachment } from "../attachment-input.mjs";
 import { exportSession } from "../session-export.mjs";
@@ -24,7 +25,7 @@ const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
 export function createSessionService({
   config, dataDir, store, runner, chain, links, mailbox, mcpTokens, mcpDir, chatDir,
-  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks, commands = null
+  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks, commands = null, nodeGroups
 }) {
   const { ensureProject, projectSessions } = projects;
   const attachments = new AttachmentStore({ dataDir: dataDir ?? path.dirname(mcpDir) });
@@ -106,6 +107,7 @@ export function createSessionService({
   }
 
   function composeBase(session, prompt) {
+    if (!session.chat) chain.assertGitAvailable?.(session);
     if (session.chat) {
       // 일반 채팅의 안내 문구는 새 대화의 첫 요청에만 붙인다(Codex는 시스템 프롬프트를 바꿀 수 없다).
       const input = withRole(session, prompt);
@@ -284,6 +286,7 @@ export function createSessionService({
   // 사용자가 직접 보낸 요청은 새 흐름(0단계)이다. 흐름 중간의 질문에 답한 것처럼 같은 흐름을 잇는 요청은 depth를 넘긴다.
   function startTurn(session, prompt, depth = 0, meta = {}, { expand = false } = {}) {
     if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
+    chain.setFlow?.(session, depth > 0 ? chain.flowFor?.(session) ?? chain.newFlow?.() : chain.newFlow?.());
     session.chainDepth = depth;
     delete session.awaitingReply;
     // 사용자가 직접 이어 가면 다른 세션의 답을 기다리지 않는다.
@@ -291,8 +294,11 @@ export function createSessionService({
     const interrupted = clearPause(session);
     const input = interrupted ? `${INTERRUPTED_NOTE}\n\n${prompt}` : prompt;
     try {
+      chain.beginSession?.(session, prompt, { meta, depth, cwd: session.cwd });
       runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, input, { expand }), meta);
     } catch (err) {
+      chain.controls?.fail(session, chain.flowFor?.(session), err);
+      chain.workflow?.settle();
       throw new HttpError(409, err.message);
     }
   }
@@ -626,6 +632,8 @@ export function createSessionService({
       } catch (err) {
         throw new HttpError(409, err.message);
       }
+      chain.controls?.continue(session);
+      chain.workflow?.settle();
       broadcast("session", { sessionId: id });
       broadcast("sessions", {});
       return event;
@@ -645,10 +653,12 @@ export function createSessionService({
   }
 
   function answerPermission(id, permissionId, { decision, message }) {
-    getSession(id);
+    const session = getSession(id);
     if (!["allow", "always", "deny"].includes(decision)) throw new HttpError(400, "decision은 allow, always, deny 중 하나입니다.");
     if (!runner.hasPrompt(permissionId, id)) throw new HttpError(409, "이미 답했거나 끝난 요청입니다.");
     const event = runner.answer(permissionId, { decision, message: String(message ?? "").trim().slice(0, 2000) });
+    chain.controls?.continue(session);
+    chain.workflow?.settle();
     broadcast("session", { sessionId: id });
     broadcast("sessions", {});
     return event;
@@ -702,6 +712,10 @@ export function createSessionService({
   async function recreateSession(id) {
     const session = getSession(id);
     if (runner.isRunning(id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
+    if (session.gitContext) {
+      try { assertSessionGitContext(session); }
+      catch (error) { throw new HttpError(409, error.message, "git-context"); }
+    }
     if (session.worktree && !fs.existsSync(session.worktree.dir)) throw new HttpError(409, session.taskId || session.worktree.shared
       ? "작업 폴더가 없습니다. 작업 탭에서 상태를 확인하세요. 대화 기록은 보관되며 작업 폴더 복구 또는 새 작업이 필요합니다."
       : "워크트리 폴더가 없습니다. 서버를 다시 시작해 원본 폴더로 전환한 뒤 재생성하세요.");
@@ -715,6 +729,7 @@ export function createSessionService({
       baseCommit: session.baseCommit ?? created.baseCommit, graphPos: session.graphPos ?? null,
       locked: !!session.locked,
       previousCwd: session.previousCwd, previousWorktree: session.previousWorktree,
+      ...(session.gitContext ? { gitContext: structuredClone(session.gitContext) } : {}),
     });
     store.touch(created);
     tasks?.()?.replaceSession?.(id, created.id);
@@ -723,6 +738,7 @@ export function createSessionService({
       if (link.to === id) links.update(link, { to: created.id, pending: null });
     }
     replaceGroupMember(id, created.id);
+    nodeGroups?.()?.replaceNode(id, created.id);
     for (const other of store.list()) {
       if (other.createdBy !== id) continue;
       other.createdBy = created.id;
@@ -762,6 +778,7 @@ export function createSessionService({
       throw new HttpError(500, `세션 파일을 지우지 못했습니다: ${err.message}`);
     }
     const records = cleanupSession(session, { deleteRecords });
+    nodeGroups?.()?.pruneNode(id);
     tasks?.()?.detachSession?.(id);
     broadcast("sessions", {});
     broadcast("links", {});

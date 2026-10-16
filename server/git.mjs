@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
+import { withGitRepoLock } from "./git-lock.mjs";
 
 export function git(cwd, args, { maxBuffer = 20 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
@@ -48,22 +49,28 @@ export async function checkWorktreeAvailable(repo, name) {
 }
 
 export async function createWorktree(repo, name) {
-  const { dir, branch } = await checkWorktreeAvailable(repo, name);
-  fs.mkdirSync(path.dirname(dir), { recursive: true });
-  await git(repo, ["worktree", "add", "-b", branch, dir, "HEAD"]);
-  return { dir, branch };
+  const common = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+  return withGitRepoLock(common, async () => {
+    const { dir, branch } = await checkWorktreeAvailable(repo, name);
+    fs.mkdirSync(path.dirname(dir), { recursive: true });
+    await git(repo, ["worktree", "add", "-b", branch, dir, "HEAD"]);
+    return { dir, branch };
+  });
 }
 
 export async function removeWorktree(repo, dir) {
   // 저장소가 사라졌으면(임시 폴더 등) 지울 worktree 기록도 없다.
   if (!fs.existsSync(repo)) return;
-  // 폴더를 이미 직접 지웠으면 git에 남은 worktree 기록만 정리한다.
-  if (!fs.existsSync(dir)) {
-    await git(repo, ["worktree", "prune"]).catch(() => {});
-    return;
-  }
-  // --force를 쓰지 않는다. 커밋하지 않은 변경이 있으면 실패하고 폴더를 남긴다.
-  await git(repo, ["worktree", "remove", dir]);
+  const common = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
+  return withGitRepoLock(common, async () => {
+    // 폴더를 이미 직접 지웠으면 git에 남은 worktree 기록만 정리한다.
+    if (!fs.existsSync(dir)) {
+      await git(repo, ["worktree", "prune"]).catch(() => {});
+      return;
+    }
+    // --force를 쓰지 않는다. 커밋하지 않은 변경이 있으면 실패하고 폴더를 남긴다.
+    await git(repo, ["worktree", "remove", dir]);
+  });
 }
 
 export async function headCommit(dir) {

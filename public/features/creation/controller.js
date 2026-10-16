@@ -126,10 +126,10 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
 
   // kind: claude | codex | claude-chat | codex-chat
   // pos: 흐름 그래프에서 우클릭한 자리(만든 세션을 거기에 놓는다)
-  async function openNew(projectPath, { orchestrator = false, kind, pos = null, connectFrom = null } = {}) {
+  async function openNew(projectPath, { orchestrator = false, kind, pos = null, connectFrom = null, connectWhen = null, connectKeyword = "" } = {}) {
     if (ui.newSessionContext) ui.newSessionContext.cancelled = true;
     branchPicker.reset();
-    const context = { projectPath, pos, connectFrom };
+    const context = { projectPath, pos, connectFrom, connectWhen, connectKeyword };
     ui.newSessionContext = context;
     try {
       await loadStatus();

@@ -1,3 +1,5 @@
+@import url("/features/graph/node-groups.css");
+@import url("/features/executions/executions.css");
 :root {
   --bg: #0d1016;
   --sidebar: #0a0c11;
@@ -1125,3 +1127,39 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .group-members-label { font-size: 12.5px; color: var(--muted); }
 .group-member-list { margin: 0; padding: 6px 10px; list-style: none; max-height: 200px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius); }
 .group-member-list li { padding: 2px 0; }
+
+/* Git 노드: 결과별 출력 포트와 브랜치 설정 */
+.gcmd-git { border-color: rgb(240 145 75 / .65); }
+.gcmd-git:hover { border-color: #f0914b; }
+.pill.cmd.git { color: #f0914b; border-color: rgb(240 145 75 / .5); background: rgb(240 145 75 / .1); }
+.gcmd-git .git-port.success { top: 40px; border-color: var(--ok); }
+.gcmd-git .git-port.error { top: 78px; border-color: var(--danger); }
+.gcmd-git .git-port.success:hover { background: var(--ok); }
+.gcmd-git .git-port.error:hover { background: var(--danger); }
+.git-port-label { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); font-size: 10px; line-height: 18px; white-space: nowrap; padding: 0 4px; background: var(--panel); border-radius: 4px; }
+.git-port.success .git-port-label { color: var(--ok); }
+.git-port.error .git-port-label { color: var(--danger); }
+.git-node-settings { display: grid; gap: 10px; }
+.git-branch-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.git-branch-toolbar .hint { margin: 0; }
+#git-branch-details, #command-last-meta { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Flow nodes */
+.flow-node-settings, .flow-run-fields, .flow-input-fields { display: grid; gap: 12px; }
+.flow-node-settings[hidden], .flow-run-fields[hidden] { display: none; }
+.flow-field-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.flow-input-field { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(110px, 1.2fr) 84px minmax(90px, 1fr) auto auto; align-items: end; gap: 8px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; }
+.flow-input-field > label { min-width: 0; }
+.flow-input-field > .check { margin-bottom: 8px; white-space: nowrap; }
+.flow-input-field > button { margin-bottom: 4px; }
+.gcmd-input { border-color: rgb(91 157 255 / .65); }
+.gcmd-transform { border-color: rgb(170 120 255 / .65); }
+.gcmd-repeat { border-color: rgb(229 180 75 / .65); }
+.gcmd-watch { border-color: rgb(76 194 138 / .65); }
+.gcmd.watching { box-shadow: 0 0 0 3px rgb(76 194 138 / .15); }
+.pill.cmd-watching { color: var(--ok); }
+.gcmd-repeat .git-port.success { top: 40px; border-color: var(--ok); }
+.gcmd-repeat .git-port.error { top: 78px; border-color: var(--danger); }
+.gcmd-repeat .git-port.success:hover { background: var(--ok); }
+.gcmd-repeat .git-port.error:hover { background: var(--danger); }
+@media (max-width: 760px) { .flow-input-field { grid-template-columns: 1fr 1fr; } }

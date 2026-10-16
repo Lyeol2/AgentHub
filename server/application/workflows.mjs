@@ -12,7 +12,7 @@ import { isCommandId, commandKind } from "../commands.mjs";
 import { samePath } from "./projects.mjs";
 import { HttpError } from "./errors.mjs";
 
-export function createWorkflowService({ store, runner, links, commands, chain, projects, sessions, notify: broadcast }) {
+export function createWorkflowService({ store, runner, links, commands, chain, projects, sessions, nodeGroups, notify: broadcast }) {
   const { ensureProject, projectSessions } = projects;
   const { getSession, createSession, checkSessionOptions, startTurn } = sessions;
   function getCommand(id) {
@@ -174,19 +174,46 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     runner.append(session, event);
   }
 
+  function checkedLinkFields(from, to, body, current = {}) {
+    const fields = linkFields(body, current);
+    if (commandKind(from) === "git" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "Git 출력은 성공·실패·항상·수동 조건을 사용하세요.");
+    if (commandKind(from) === "repeat" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "반복 출력은 성공·실패·항상·수동 조건을 사용하세요.");
+    const canUse = commandKind(from) === "git" && (!isCommandId(to.id) || commandKind(to) === "command");
+    const useGitWorktree = body.useGitWorktree ?? (fields.when === "error" ? false : current.useGitWorktree) ?? (canUse && from.gitAction === "use" && fields.when === "success");
+    if (typeof useGitWorktree !== "boolean") throw new HttpError(400, "Git 작업 폴더 사용 설정이 올바르지 않습니다.");
+    if (useGitWorktree && fields.when === "error") throw new HttpError(400, "실패 출력에는 사용할 Git 작업 폴더가 없습니다.");
+    if (useGitWorktree && !canUse) throw new HttpError(400, "Git 작업 폴더는 Git 노드에서 세션이나 명령으로 넘길 때 사용할 수 있습니다.");
+    return { ...fields, ...(canUse || current.useGitWorktree !== undefined ? { useGitWorktree } : {}) };
+  }
+
+  const sameOutput = (link, fields) => link.when === fields.when && (fields.when !== "keyword" || link.keyword === fields.keyword);
+
   function createLink(body) {
     const endpoint = (id) => isCommandId(id) ? getCommand(id) : getSession(id);
-    const from = endpoint(body.from);
-    const to = endpoint(body.to);
-    if (commandKind(to) === "button") throw new HttpError(400, "버튼 노드는 시작점이므로 들어오는 연결을 만들 수 없습니다.");
+    const resolve = (id, portId, direction) => {
+      if (typeof id !== "string" || !id.startsWith("grp-")) return { node: endpoint(id) };
+      if (!nodeGroups) throw new HttpError(404, "노드 그룹이 없습니다.");
+      const port = nodeGroups.resolvePort(id, portId, direction);
+      return { node: endpoint(port.nodeId), port };
+    };
+    const source = resolve(body.from, body.fromPort, "output");
+    const target = resolve(body.to, body.toPort, "input");
+    const from = source.node;
+    const to = target.node;
+    if (source.port?.when) {
+      if (body.when != null && body.when !== source.port.when) throw new HttpError(400, "그룹 출력 포트의 조건과 연결 조건이 다릅니다.");
+      if (source.port.when === "keyword" && body.keyword != null && String(body.keyword).trim() !== source.port.keyword) throw new HttpError(400, "그룹 출력 포트의 키워드와 연결 키워드가 다릅니다.");
+      body = { ...body, when: source.port.when, keyword: source.port.keyword ?? "" };
+    }
+    if (["button", "input", "watch"].includes(commandKind(to))) throw new HttpError(400, "버튼·입력 폼·파일 감시 노드는 시작점이므로 들어오는 연결을 만들 수 없습니다.");
     if (commandKind(from) === "markdown") throw new HttpError(400, "MD 출력 노드는 완료 메시지를 저장하는 마지막 노드입니다.");
-    if (commandKind(from) === "button" && isCommandId(to.id) && commandKind(to) !== "group") throw new HttpError(400, "버튼은 실행할 세션이나 세션 묶음에 연결하세요.");
-    if (commandKind(to) === "markdown" && isCommandId(from.id) && commandKind(from) !== "group") throw new HttpError(400, "MD 출력은 완료 메시지를 보낼 세션이나 세션 묶음에 연결하세요.");
     if (from.chat || to.chat) throw new HttpError(400, "일반 채팅 세션은 연결할 수 없습니다.");
     if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");
     if (!samePath(from.projectPath, to.projectPath)) throw new HttpError(400, "같은 프로젝트의 세션끼리만 연결할 수 있습니다.");
-    if (links.list().some((l) => l.from === from.id && l.to === to.id)) throw new HttpError(409, "이미 연결되어 있습니다.");
-    const link = { id: randomBytes(4).toString("hex"), from: from.id, to: to.id, ...linkFields(body) };
+    const fields = checkedLinkFields(from, to, body);
+    const multipleOutputs = ["git", "repeat", "group", "transform"].includes(commandKind(from)) || !!nodeGroups?.hasNode?.(from.id);
+    if (links.list().some((l) => l.from === from.id && l.to === to.id && (!multipleOutputs || sameOutput(l, fields)))) throw new HttpError(409, "이미 연결되어 있습니다.");
+    const link = { id: randomBytes(4).toString("hex"), from: from.id, to: to.id, ...fields };
     links.add(link);
     broadcast("links", {});
     return link;
@@ -194,7 +221,11 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
 
   function updateLink(id, body) {
     const link = getLink(id);
-    links.update(link, linkFields(body, link));
+    const from = isCommandId(link.from) ? getCommand(link.from) : getSession(link.from);
+    const to = isCommandId(link.to) ? getCommand(link.to) : getSession(link.to);
+    const fields = checkedLinkFields(from, to, body, link);
+    if (links.list().some((other) => other.id !== id && other.from === link.from && other.to === link.to && sameOutput(other, fields))) throw new HttpError(409, "이미 연결되어 있습니다.");
+    links.update(link, { ...fields, ...(commandKind(from) === "git" ? { pending: null } : {}) });
     broadcast("links", {});
     return link;
   }

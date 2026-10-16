@@ -8,13 +8,19 @@ import { assetRoutes } from "./routes/assets.mjs";
 import { gitRoutes } from "./routes/git.mjs";
 import { messagingRoutes } from "./routes/messaging.mjs";
 import { taskRoutes } from "./routes/tasks.mjs";
+import { nodeGroupRoutes } from "./routes/node-groups.mjs";
 import { teamRoutes } from "./routes/team.mjs";
+import { runRoutes } from "./routes/runs.mjs";
+import { groupTemplateRoutes } from "./routes/group-templates.mjs";
 
 export function createApiHandler({ services, events }) {
   const routes = [
     ...sessionRoutes(services.sessions),
     ...projectRoutes(services.projects),
     ...workflowRoutes(services.workflows),
+    ...(services.nodeGroups ? nodeGroupRoutes(services.nodeGroups) : []),
+    ...(services.runs ? runRoutes(services.runs) : []),
+    ...(services.groupTemplates ? groupTemplateRoutes(services.groupTemplates) : []),
     ...systemRoutes(services.system),
     ...assetRoutes(services),
     ...gitRoutes(services.git),

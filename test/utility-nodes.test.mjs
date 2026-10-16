@@ -117,8 +117,11 @@ test("utility nodes: graph endpoints enforce manual button sources and terminal 
   const button = await f.create("button");
   const markdown = await f.create("markdown");
   const shell = (await f.api("POST", "/commands", { projectPath: f.project, command: "echo existing" })).body;
-  for (const [from, to] of [["source", button.id], [markdown.id, "target"], [button.id, markdown.id], [shell.id, markdown.id], [button.id, shell.id]]) {
+  for (const [from, to] of [["source", button.id], [markdown.id, "target"]]) {
     assert.equal((await f.api("POST", "/links", { from, to })).status, 400);
+  }
+  for (const [from, to] of [[button.id, markdown.id], [shell.id, markdown.id], [button.id, shell.id]]) {
+    assert.equal((await f.api("POST", "/links", { from, to })).status, 200);
   }
   assert.equal((await f.api("POST", `/commands/${markdown.id}/run`, {})).status, 400);
   await f.hub.chain.deliver({ from: "source", to: button.id }, 0);

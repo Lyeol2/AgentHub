@@ -16,6 +16,7 @@ import { createCreationController } from "./features/creation/controller.js";
 import { createTasksController } from "./features/tasks/controller.js";
 import { createAccountController } from "./features/account/controller.js";
 import { createIssuesController } from "./features/issues/controller.js";
+import { createExecutionControls } from "./features/executions/controller.js";
 import { createRecordsController } from "./features/records/controller.js";
 
 const api = createApiClient();
@@ -116,6 +117,7 @@ const renderLinkConditions = (...args) => graph.renderLinkConditions(...args);
 const loadGit = (...args) => git.loadGit(...args);
 const loadTasks = (...args) => tasks.loadTasks(...args);
 const loadLinks = (...args) => graph.loadLinks(...args);
+const loadNodeGroups = (...args) => graph.loadNodeGroups(...args);
 const renderGraph = (...args) => graph.renderGraph(...args);
 const loadMessages = (...args) => graph.loadMessages(...args);
 const loadCommands = (...args) => commands.loadCommands(...args);
@@ -166,6 +168,9 @@ const loadSetup = (...args) => settings.loadSetup(...args);
 const refreshQueue = (...args) => sessions.refreshQueue(...args);
 const applyUpdate = (...args) => settings.applyUpdate(...args);
 
+const saveGroupTemplate = (...args) => executions.saveTemplate(...args);
+const openGroupTemplates = (...args) => executions.openTemplates(...args);
+const clearExecutionControls = (...args) => executions.clear(...args);
 const clearGraphTransientState = (...args) => graph.clearGraphTransientState(...args);
 const renderProject = (...args) => projects.renderProject(...args);
 const renderSession = (...args) => sessions.renderSession(...args);
@@ -190,7 +195,7 @@ const git = createGitController({
   api, selectSession, openSetup, currentProject, projectTab, pullIssues, navigation
 });
 const graph = createGraphController({
-  openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, data, navigation
+  openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation
 });
 const commands = createCommandsController({
   api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation
@@ -220,6 +225,13 @@ const tasks = createTasksController({
   reloadData: () => Promise.all([loadSessions(), loadProjects()]),
 });
 
+const executions = createExecutionControls({
+  api, navigation, refreshGraph: async (projectPath) => {
+    await Promise.all([loadSessions(), loadCommands(projectPath), loadLinks()]);
+    if (navigation.view === "project") renderGraph();
+  },
+});
+
 // 첫 로딩 중에 목록이 먼저 그려지면 사용자가 프로젝트·세션을 누를 수 있다. 그랬으면 대시보드로 되돌리지 않는다.
 const bootView = navigation.viewRevision;
 const bootSelection = sessionSelectionRevision;
@@ -231,7 +243,7 @@ if (POPUP) {
 } else if (navigation.viewRevision === bootView && sessionSelectionRevision === bootSelection) goDashboard();
 
 const stream = connectLiveUpdates({
-  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged
+  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify
 });
 loadAuth();
 loadSetup();

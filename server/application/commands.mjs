@@ -2,9 +2,11 @@ import path from "node:path";
 import { spawnCli } from "../cli.mjs";
 import { newCommandId, checkCommand, commandKind, shells, generatePrompt, parseGenerated } from "../commands.mjs";
 import { readMessageOutput } from "../utility-output.mjs";
+import { listGitNodeBranches } from "../git-nodes.mjs";
 import { HttpError } from "./errors.mjs";
+import { FLOW_MEMBER_KINDS, inputValues } from "../flow-nodes.mjs";
 
-export function createCommandService({ commands, chain, links, store, projects, cliPaths, notify: broadcast }) {
+export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, notify: broadcast }) {
   const { ensureProject } = projects;
   function getCommand(id) {
     const command = commands.get(id);
@@ -52,6 +54,12 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { shells: shells(), commands: projectPath ? commands.list(projectPath) : [] };
   }
 
+  async function gitBranches(projectPath) {
+    const project = ensureProject(projectPath);
+    const sessions = store.list().filter((session) => session.projectPath && path.resolve(session.projectPath).toLowerCase() === path.resolve(project.path).toLowerCase());
+    return listGitNodeBranches(project.path, { sessions, isSessionBusy: (session) => chain.busy?.(session) ?? session.state === "running" });
+  }
+
   function savePos(command, pos) {
     if (pos === undefined) return;
     command.pos = pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)
@@ -66,14 +74,15 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return generateCommand({ prompt: prompt.slice(0, 4000), shell: body.shell ?? shells()[0].id, projectPath: project.path });
   }
 
-  // 세션 묶음에는 같은 프로젝트의 세션(일반 채팅 제외)만 넣는다.
-  function checkMembers(fields, projectPath) {
+  // 결과 모으기에는 같은 프로젝트의 실행 노드와 세션(일반 채팅 제외)을 넣는다.
+  function checkMembers(fields, projectPath, selfId = null) {
     if (fields.kind !== "group") return fields;
     for (const id of fields.members) {
-      const session = store.get(id);
-      if (!session) throw new HttpError(400, "묶으려는 세션이 없습니다. 목록을 새로 고쳐 다시 고르세요.");
+      const session = store.get(id) ?? commands.get(id);
+      if (!session) throw new HttpError(400, "결과를 모을 노드가 없습니다. 목록을 새로 고쳐 다시 고르세요.");
+      if (id === selfId || (commands.get(id) && !FLOW_MEMBER_KINDS.includes(commandKind(session)))) throw new HttpError(400, "결과 모으기에는 세션, 명령, Git, 입력, 반복, 가공 노드만 넣을 수 있습니다.");
       if (session.chat || !session.projectPath || path.resolve(session.projectPath).toLowerCase() !== path.resolve(projectPath).toLowerCase()) {
-        throw new HttpError(400, `"${session.title}"은 이 프로젝트의 세션이 아니라 묶을 수 없습니다.`);
+        throw new HttpError(400, `"${session.title}"은 이 프로젝트의 노드가 아니라 결과를 모을 수 없습니다.`);
       }
     }
     return fields;
@@ -97,14 +106,15 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   function update(id, body) {
     const command = getCommand(id);
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members"].some((key) => body[key] !== undefined);
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "message", "notificationTitle", "level", "sound"].some((key) => body[key] !== undefined);
+    if (editing && ["git", "input", "repeat", "transform", "watch", "notify", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
     try {
       if (editing) fields = checkCommand(body, command);
     } catch (error) {
       throw new HttpError(400, error.message);
     }
-    if (fields) Object.assign(command, checkMembers(fields, command.projectPath));
+    if (fields) Object.assign(command, checkMembers(fields, command.projectPath, id));
     savePos(command, body.pos);
     commands.update(command, {});
     broadcast("commands", {});
@@ -115,13 +125,18 @@ export function createCommandService({ commands, chain, links, store, projects, 
     const command = getCommand(id);
     chain.stopCommand(command);
     commands.remove(id);
+    for (const group of commands.list()) {
+      if (commandKind(group) !== "group" || !group.members?.includes(id)) continue;
+      commands.update(group, { members: group.members.filter((memberId) => memberId !== id) });
+    }
+    nodeGroups?.()?.pruneNode(id);
     links.removeForSession(id);
     broadcast("commands", {});
     broadcast("links", {});
     return { ok: true };
   }
 
-  async function run(id) {
+  async function run(id, body = {}) {
     const command = getCommand(id);
     if (commandKind(command) === "markdown") throw new HttpError(400, "MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
     if (commandKind(command) === "group") {
@@ -130,9 +145,16 @@ export function createCommandService({ commands, chain, links, store, projects, 
       return command;
     }
     if (chain.runs.has(id)) throw new HttpError(409, "이미 실행 중입니다.");
+    if (commandKind(command) === "input") {
+      try { inputValues(command, body.values); }
+      catch (error) { throw new HttpError(400, error.message); }
+    }
     const origin = links.list().filter((link) => link.to === id).map((link) => store.get(link.from)).find(Boolean) ?? null;
-    const pending = chain.runCommand(command, { origin, depth: 0 });
-    if (commandKind(command) === "button") await pending;
+    const pending = chain.runCommand(command, { origin, depth: 0, values: body.values });
+    if (["button", "input", "repeat", "transform", "watch", "notify"].includes(commandKind(command))) {
+      try { await pending; }
+      catch (error) { throw new HttpError(400, error.message); }
+    }
     return command;
   }
 
@@ -149,5 +171,5 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { stopped: chain.stopCommand(getCommand(id)) };
   }
 
-  return { list, generate, create, update, remove, run, stop, output };
+  return { list, gitBranches, generate, create, update, remove, run, stop, output };
 }
