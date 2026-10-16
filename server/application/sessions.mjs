@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { summary, useProjectFolder } from "../store.mjs";
+import { summary as storedSummary, useProjectFolder } from "../store.mjs";
 import { AGENTS } from "../runner.mjs";
 import { isGitRepo, createWorktree, validateWorktreeName, removeWorktree, headCommit, diffSince, changedFiles } from "../git.mjs";
 import { AGENT_NAME, handoverText, mapPermission } from "../handover.mjs";
@@ -28,9 +28,10 @@ const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
 export function createSessionService({
   config, dataDir, store, runner, chain, links, mailbox, mcpTokens, mcpDir, chatDir,
-  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks, commands = null, nodeGroups
+  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks, commands = null, nodeGroups, graphTabs
 }) {
   const { ensureProject, projectSessions } = projects;
+  const summary = (session) => ({ ...storedSummary(session), ...(graphTabs && !session.chat ? { tabId: graphTabs.tabFor(session) } : {}) });
   const attachments = new AttachmentStore({ dataDir: dataDir ?? path.dirname(mcpDir) });
   const applyPlan = (...args) => workflows().applyPlan(...args);
   function checkModel(model) {
@@ -118,7 +119,7 @@ export function createSessionService({
       return intro && !session.agentSessionId ? `${intro}\n\n${input}` : input;
     }
     let input = withSkills(session, session.kind !== "orchestrator" ? withRole(session, prompt) : orchestratorInput(session, prompt, {
-      sessions: projectSessions(session.projectPath),
+      sessions: projectSessions(session.projectPath).filter((item) => !graphTabs || graphTabs.tabFor(item) === graphTabs.tabFor(session)),
     }));
     // 이전 버전의 원본 전용 안내를 받은 CLI 대화에도 현재 작업 폴더를 다시 알린다.
     if (!session.agentSessionId || session.projectFolderGuide !== "optional-worktree") {
@@ -180,8 +181,9 @@ export function createSessionService({
   // chat: 프로젝트 없이 빈 폴더에서 도구 없이 대화만 하는 일반 채팅(project는 null).
   // 기본은 원본 폴더다. isolate:true와 사용자가 지정한 이름이 있을 때만 새 worktree를 만든다.
   // 두 번째 인수는 재생성할 때 기존 작업 폴더를 이어 쓰는 내부 전용 값이다.
-  async function createSession({ project, title, role, roleName, orchestrator, createdBy, chat, isolate = false, worktreeName, ...options }, { worktree: existingWorktree = null, taskId = null } = {}) {
+  async function createSession({ project, title, role, roleName, orchestrator, createdBy, connectFrom, tabId, chat, isolate = false, worktreeName, ...options }, { worktree: existingWorktree = null, taskId = null } = {}) {
     chat = !!chat;
+    const resolvedTabId = !chat && graphTabs ? graphTabs.resolve(project.path, tabId, connectFrom ?? createdBy) : null;
     if (chat && orchestrator) throw new HttpError(400, "일반 채팅은 오케스트레이터로 만들 수 없습니다.");
     const { agent, model, effort, permission } = checkSessionOptions({ ...options, chat });
     if (isolate === true && chat) throw new HttpError(400, "일반 채팅은 워크트리를 사용할 수 없습니다.");
@@ -226,6 +228,7 @@ export function createSessionService({
       permission,
       projectName: project.name,
       projectPath: project.path,
+      ...(resolvedTabId ? { tabId: resolvedTabId } : {}),
       cwd,
       worktree,
       ...(taskId ? { taskId } : {}),
@@ -349,6 +352,7 @@ export function createSessionService({
 
   async function importSession(body) {
     const project = ensureProject(body.projectPath);
+    const tabId = graphTabs?.resolve(project.path, body.tabId, body.connectFrom);
     const existing = store.list().find((s) => cliSessionIds(s).includes(body.agentSessionId));
     if (existing) return summary(existing);
     const found = discoverSessions(project.path).find((s) => s.agent === body.agent && s.agentSessionId === body.agentSessionId);
@@ -363,6 +367,7 @@ export function createSessionService({
       agent: found.agent, model: "",
       permission: found.agent === "claude" ? "acceptEdits" : "workspace-write",
       projectName: project.name, projectPath: project.path, cwd, worktree: null,
+      ...(tabId ? { tabId } : {}),
       baseCommit: git ? await headCommit(project.path) : null,
       agentSessionId: found.agentSessionId, cliSessionIds: [found.agentSessionId],
       imported: true, locked: false, state: "idle", runningStartedAt: null,
@@ -378,7 +383,7 @@ export function createSessionService({
   function detail(id) {
     const session = getSession(id);
     if (session.locked) throw new HttpError(423, "잠긴 세션입니다. 좌물쇠를 눌러 잠금을 해제하세요.", "locked");
-    return { ...settleState(session), queue: chain.list(session.id), canInject: !!AGENTS[session.agent].interactive || AGENTS[session.agent].transport === "app-server" };
+    return { ...settleState(session), ...(graphTabs && !session.chat ? { tabId: graphTabs.tabFor(session) } : {}), queue: chain.list(session.id), canInject: !!AGENTS[session.agent].interactive || AGENTS[session.agent].transport === "app-server" };
   }
 
   function sendMessage(id, body) {
@@ -495,7 +500,7 @@ export function createSessionService({
     try { checkSessionOptions(options); }
     catch { options = { agent, permission: body.permission }; }
     const session = await createSession({
-      project, ...options,
+      project, ...options, tabId: body.tabId, connectFrom: body.connectFrom,
       ...(bundle ? { role: parsed.meta.role, roleName: parsed.meta.roleName } : {}),
       title: String(body.title ?? "").trim() || parsed.title || "가져온 기록",
     });
@@ -576,6 +581,10 @@ export function createSessionService({
 
   async function update(id, body) {
     const session = getSession(id);
+    if (body.tabId !== undefined && graphTabs) {
+      const targetId = graphTabs.resolve(session.projectPath, body.tabId);
+      if (targetId !== graphTabs.tabFor(session)) throw new HttpError(400, "세션은 탭 이동 메뉴로 옮기세요.");
+    }
     if (body.locked !== undefined && typeof body.locked !== "boolean") throw new HttpError(400, "locked는 true 또는 false여야 합니다.");
     if (body.agent !== undefined && body.agent !== session.agent) await switchAgent(session, body);
     if (body.title !== undefined) session.title = String(body.title).trim() || session.title;
@@ -728,6 +737,7 @@ export function createSessionService({
       project: session.chat ? null : ensureProject(session.projectPath),
       title: session.title, role: session.role, roleName: session.roleName,
       orchestrator: session.kind === "orchestrator", createdBy: session.createdBy,
+      ...(graphTabs && !session.chat ? { tabId: graphTabs.tabFor(session) } : {}),
       chat: session.chat, agent: session.agent, model: session.model, effort: session.effort, permission: session.permission,
     }, { worktree: session.worktree, taskId: session.taskId });
     Object.assign(created, {

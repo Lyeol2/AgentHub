@@ -1,0 +1,15 @@
+.graph-tabs { display: flex; align-items: stretch; flex: none; min-width: 0; min-height: 37px; border-top: 1px solid var(--line); background: var(--panel-2); }
+.graph-tab-list { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; scrollbar-width: thin; }
+.graph-tab { display: inline-flex; align-items: center; gap: 7px; flex: none; max-width: 240px; border: 0; border-right: 1px solid var(--line); border-bottom: 2px solid transparent; border-radius: 0; padding: 8px 13px; background: transparent; color: var(--muted); font-size: 12px; }
+.graph-tab.active { border-bottom-color: var(--accent); background: var(--panel); color: var(--text); font-weight: 650; }
+.graph-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.graph-tab-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.graph-tab-running { color: var(--accent); font-size: 10px; white-space: nowrap; }
+.graph-tab-waiting { color: var(--warn); font-size: 10px; white-space: nowrap; }
+.graph-tab-add { flex: none; min-width: 38px; border: 0; border-radius: 0; font-size: 19px; }
+.graph-tab-error { flex: none; font-size: 11px; color: var(--warn); }
+.graph-remote-links { position: absolute; left: 12px; bottom: 10px; z-index: 6; display: flex; gap: 5px; flex-wrap: wrap; max-width: calc(100% - 24px); max-height: 86px; overflow-y: auto; }
+.graph-remote-links button { padding: 4px 8px; font-size: 11px; background: var(--panel); border: 1px solid var(--line-strong); box-shadow: 0 2px 8px rgb(0 0 0 / .1); }
+.graph-remote-links button.pending { color: var(--warn); border-color: var(--warn); }
+.graph-remote-gate { display: inline-flex; align-items: center; gap: 5px; padding-inline: 6px; background: var(--panel); border: 1px solid var(--warn); border-radius: 5px; font-size: 11px; }
+#p-graph-tab-dialog { width: min(440px, calc(100vw - 32px)); }

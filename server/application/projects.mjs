@@ -5,7 +5,7 @@ import { removeWorktree } from "../git.mjs";
 import { HttpError } from "./errors.mjs";
 export const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
-export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks, nodeGroups }) {
+export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks, nodeGroups, graphTabs }) {
   const cleanupSession = (...args) => sessions().cleanupSession(...args);
   const cliSessionIds = (...args) => sessions().cliSessionIds(...args);
   const clearBoard = (...args) => board.clear(...args);
@@ -17,7 +17,7 @@ export function createProjectService({ config, store, runner, links, commands, c
   function ensureProject(projectPath) {
     if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
     const existing = config.projects.find((p) => samePath(p.path, projectPath));
-    if (existing) return existing;
+    if (existing) { graphTabs?.ensure(existing.path); return existing; }
     const dir = path.resolve(projectPath);
     if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
     const project = { name: path.basename(dir), path: dir };
@@ -25,6 +25,7 @@ export function createProjectService({ config, store, runner, links, commands, c
     unhideProject(dir);
     // 제거했던 프로젝트에서 다시 세션을 만들면 다시 보인다.
     saveConfig(config);
+    graphTabs?.ensure(dir);
     return project;
   }
 
@@ -57,6 +58,7 @@ export function createProjectService({ config, store, runner, links, commands, c
       links.removeForSession(c.id);
     }
     nodeGroups?.()?.removeProject(dir);
+    graphTabs?.removeProject(dir);
     clearBoard(dir);
     delete config.skillLayout?.[dir.toLowerCase()];
     config.projects = config.projects.filter((p) => !samePath(p.path, dir));
@@ -72,6 +74,7 @@ export function createProjectService({ config, store, runner, links, commands, c
     config.projects.push({ name: String(body.name ?? "").trim() || path.basename(dir), path: dir });
     unhideProject(dir);
     saveConfig(config);
+    graphTabs?.ensure(dir);
     broadcast("projects", {});
     return config.projects;
   }

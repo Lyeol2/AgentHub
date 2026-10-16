@@ -6,6 +6,7 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
     "editingSkill": null,
     "equipping": null
   };
+  let request = 0;
   // ── 스킬 ────────────────────────────────────────────────────────
   const skillByName = (name) => (data.skills ?? []).find((k) => k.name === name);
 
@@ -41,12 +42,12 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
       ? skill.file
       : scope === "personal"
         ? `~\\.claude\\skills\\${name}\\SKILL.md, ~\\.agents\\skills\\${name}\\SKILL.md`
-        : `${navigation.project}\\.agenthub\\skills\\${name}\\SKILL.md`;
+        : `${ui.editingSkill?.projectPath ?? navigation.project}\\.agenthub\\skills\\${name}\\SKILL.md`;
   }
 
   // skill이 없으면 새로 만든다. pos는 새 스킬 노드를 놓을 자리.
   function openSkillDialog(skill, pos = null) {
-    ui.editingSkill = { skill, pos };
+    ui.editingSkill = { skill, pos, projectPath: navigation.project };
     $("skill-heading").textContent = skill ? `${SKILL_SCOPE_LABEL[skill.scope] ?? "스킬"} ${skill.name}` : "새 스킬";
     $("skill-name").value = skill?.name ?? "";
     $("skill-name").disabled = !!skill;
@@ -71,29 +72,31 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
     const action = e.submitter?.value;
     if (action === "cancel") return;
     e.preventDefault();
-    const { skill, pos } = ui.editingSkill;
+    const context = ui.editingSkill;
+    if (!context) return;
+    const { skill, pos, projectPath } = context;
     if (action === "delete") {
       $("skill-dialog").close();
-      return removeSkill(skill);
+      return removeSkill(skill, projectPath);
     }
-    const body = { projectPath: navigation.project, description: $("skill-description").value, body: $("skill-body").value };
+    const body = { projectPath, description: $("skill-description").value, body: $("skill-body").value };
     try {
       if (skill) await api("PUT", `/api/skills/${skill.name}`, body);
       else await api("POST", "/api/skills", { ...body, name: $("skill-name").value.trim(), scope: $("skill-scope").value, pos });
-      $("skill-dialog").close();
-      await loadSkills();
+      if (ui.editingSkill === context) $("skill-dialog").close();
+      await loadSkills(projectPath);
     } catch (err) {
-      $("skill-error").textContent = err.message;
+      if (ui.editingSkill === context) $("skill-error").textContent = err.message;
     }
   });
 
-  async function removeSkill(skill) {
+  async function removeSkill(skill, projectPath = navigation.project) {
     const where = skill.scope === "personal"
       ? `~\\.claude\\skills와 ~\\.agents\\skills 두 곳의 "${skill.name}" 폴더를 지웁니다. 다른 프로젝트와 AgentHub 밖의 Claude·Codex에서도 사라집니다.`
       : `${skill.file} 폴더째 지웁니다.`;
     if (!confirm(`스킬 "${skill.name}"을(를) 삭제할까요?\n\n${where}\n이 스킬을 이어 둔 세션에서도 뺍니다.`)) return;
     try {
-      await api("DELETE", `/api/skills/${skill.name}?path=${encodeURIComponent(navigation.project)}`);
+      await api("DELETE", `/api/skills/${skill.name}?path=${encodeURIComponent(projectPath)}`);
     } catch (err) {
       alert(err.message);
     }
@@ -147,12 +150,15 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
 
   // 사이드바에서 우클릭해 열 수도 있으므로 보고 있는 프로젝트와 상관없이 그 세션의 프로젝트 스킬을 읽는다.
   async function openEquipDialog(s) {
+    const mine = ++request;
     let skills;
     try {
       skills = await api("GET", `/api/skills?path=${encodeURIComponent(s.projectPath)}`);
     } catch (err) {
-      return alert(err.message);
+      if (mine === request) alert(err.message);
+      return;
     }
+    if (mine !== request) return;
     ui.equipping = s;
     const on = new Set(s.skills ?? []);
     $("equip-session").textContent = s.title;
@@ -192,7 +198,9 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
   // ── 스킬 관리 ───────────────────────────────────────────────────
   // 만들기·편집·옮기기·삭제. 스킬에 마우스를 올리면 그 스킬을 장착한 카드를 강조한다.
   async function openSkillsManager() {
+    const mine = ++request;
     await loadSkills();
+    if (mine !== request) return;
     renderSkillsManager();
     if (!$("skills-dialog").open) $("skills-dialog").showModal();
   }
@@ -238,5 +246,13 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
     if ($("skills-dialog").open) renderSkillsManager();
   }
 
-  return { loadSkills, skillChips, openSkillsManager, openEquipDialog, openSkillDialog, setSessionSkills };
+  $("skill-dialog").addEventListener("close", () => { ui.editingSkill = null; });
+  function cancelCreation() {
+    request++;
+    ui.editingSkill = null;
+    ui.equipping = null;
+    for (const id of ["skill-dialog", "equip-dialog", "skills-dialog"]) if ($(id).open) $(id).close();
+  }
+
+  return { loadSkills, skillChips, openSkillsManager, openEquipDialog, openSkillDialog, setSessionSkills, cancelCreation };
 }

@@ -13,6 +13,7 @@ import { teamRoutes } from "./routes/team.mjs";
 import { runRoutes } from "./routes/runs.mjs";
 import { groupTemplateRoutes } from "./routes/group-templates.mjs";
 import { flowAssistantRoutes } from "./routes/flow-assistant.mjs";
+import { graphTabRoutes } from "./routes/graph-tabs.mjs";
 
 export function createApiHandler({ services, events }) {
   const routes = [
@@ -20,6 +21,7 @@ export function createApiHandler({ services, events }) {
     ...projectRoutes(services.projects),
     ...workflowRoutes(services.workflows),
     ...(services.nodeGroups ? nodeGroupRoutes(services.nodeGroups) : []),
+    ...(services.graphTabs ? graphTabRoutes(services.graphTabs) : []),
     ...(services.runs ? runRoutes(services.runs) : []),
     ...(services.groupTemplates ? groupTemplateRoutes(services.groupTemplates) : []),
     ...(services.flowAssistant ? flowAssistantRoutes(services.flowAssistant) : []),

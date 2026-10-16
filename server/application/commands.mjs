@@ -7,9 +7,10 @@ import { HttpError } from "./errors.mjs";
 import { FLOW_MEMBER_KINDS, inputValues, newHookToken } from "../flow-nodes.mjs";
 import { HOOK_BODY_MAX, createHookRateLimit, findHookNode, hookVariables } from "../webhooks.mjs";
 
-export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, ask = askOnce, notify: broadcast }) {
+export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, graphTabs, ask = askOnce, notify: broadcast }) {
   const { ensureProject } = projects;
   const allowHook = createHookRateLimit();
+  const view = (command) => graphTabs ? { ...command, tabId: graphTabs.tabFor(command) } : command;
   function getCommand(id) {
     const command = commands.get(id);
     if (!command) throw new HttpError(404, "명령 노드가 없습니다.");
@@ -23,7 +24,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     catch (error) { throw new HttpError(500, error.message); }
   }
   function list(projectPath) {
-    return { shells: shells(), commands: projectPath ? commands.list(projectPath) : [], timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+    return { shells: shells(), commands: projectPath ? commands.list(projectPath).map(view) : [], timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
   }
 
   async function gitBranches(projectPath) {
@@ -62,12 +63,14 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   function create(body) {
     const project = ensureProject(body.projectPath);
+    const tabId = graphTabs?.resolve(project.path, body.tabId, body.connectFrom ?? body.createdBy);
     let fields;
     try { fields = checkCommand(body); }
     catch (error) { throw new HttpError(400, error.message); }
     checkMembers(fields, project.path);
     const command = {
       id: newCommandId(), projectPath: project.path, ...fields,
+      ...(tabId ? { tabId } : {}),
       state: "idle", lastRun: null, createdAt: new Date().toISOString(),
     };
     if (command.kind === "webhook-in") command.hookToken = newHookToken();
@@ -75,11 +78,15 @@ export function createCommandService({ commands, chain, links, store, projects, 
     savePos(command, body.pos);
     commands.add(command);
     broadcast("commands", {});
-    return command;
+    return view(command);
   }
 
   function update(id, body) {
     const command = getCommand(id);
+    if (body.tabId !== undefined && graphTabs) {
+      const targetId = graphTabs.resolve(command.projectPath, body.tabId);
+      if (targetId !== graphTabs.tabFor(command)) throw new HttpError(400, "노드는 탭 이동 메뉴로 옮기세요.");
+    }
     const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification"].some((key) => body[key] !== undefined);
     if (editing && ["git", "task", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching", "scheduled"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
@@ -94,7 +101,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     savePos(command, body.pos);
     commands.update(command, {});
     broadcast("commands", {});
-    return command;
+    return view(command);
   }
 
   function remove(id) {
@@ -118,7 +125,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     if (commandKind(command) === "group") {
       const result = await chain.fireGroup(command);
       if (result.busy.length) throw new HttpError(409, `아직 진행 중인 세션이 있어 넘길 수 없습니다: ${result.busy.map((s) => s.title).join(", ")}`);
-      return command;
+      return view(command);
     }
     if (chain.runs.has(id)) throw new HttpError(409, "이미 실행 중입니다.");
     if (commandKind(command) === "input") {
@@ -131,7 +138,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
       try { await pending; }
       catch (error) { throw new HttpError(400, error.message); }
     }
-    return command;
+    return view(command);
   }
 
   function output(id) {

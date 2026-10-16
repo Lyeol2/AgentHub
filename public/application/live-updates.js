@@ -1,7 +1,7 @@
 import { connectEventStream } from "../shared/stream.js";
 import { applySessionState, samePath } from "../shared/store.js";
 
-export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved }) {
+export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved }) {
   const source = connectEventStream({ handlers: {
   event: (e) => {
     const { sessionId, event } = JSON.parse(e.data);
@@ -51,6 +51,10 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
   notification: (e) => notifyFlow?.(JSON.parse(e.data)),
   links: loadLinks,
   "node-groups": () => navigation.view === "project" && loadNodeGroups?.(),
+  "graph-tabs": (e) => {
+    const event = JSON.parse(e.data);
+    if (navigation.view === "project" && (!event.projectPath || samePath(event.projectPath, navigation.project))) loadGraphTabs?.(navigation.project, event);
+  },
   messages: (e) => {
     if (samePath(JSON.parse(e.data).projectPath, navigation.project)) loadMessages();
   },
@@ -82,7 +86,7 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
   open: () => {
     loadSessions();
     refreshRuns?.();
-    if (navigation.view === "project") loadNodeGroups?.();
+    if (navigation.view === "project") { loadNodeGroups?.(); loadGraphTabs?.(); loadCommands(); loadLinks(); }
     if (data.current) selectSession(data.current.id);
     if (navigation.view === "project" && projectTab() === "tasks") loadTasks?.(navigation.project);
   },

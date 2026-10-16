@@ -34,7 +34,7 @@ export class NodeGroupStore {
   save() { writeJsonAtomic(this.file, this.groups); }
 }
 
-export function createNodeGroupService({ groups, store, commands, links, projects, notify = () => {} }) {
+export function createNodeGroupService({ groups, store, commands, links, projects, graphTabs, notify = () => {} }) {
   const node = (id) => store.get(id) ?? commands.get(id);
   const isSession = (id) => !!store.get(id);
   const validNode = (id, projectPath) => {
@@ -46,13 +46,14 @@ export function createNodeGroupService({ groups, store, commands, links, project
     if (!group) throw new HttpError(404, "노드 그룹이 없습니다.");
     return group;
   };
-  function checkMembers(value, projectPath, currentId, { allowEmpty = true } = {}) {
+  function checkMembers(value, projectPath, currentId, { allowEmpty = true, tabId } = {}) {
     if (!Array.isArray(value) || value.some((id) => typeof id !== "string" || !id)) throw new HttpError(400, "그룹에 넣을 노드를 선택하세요.");
     const members = [...new Set(value)];
     if (!allowEmpty && !members.length) throw new HttpError(400, "그룹에 넣을 노드를 하나 이상 선택하세요.");
     for (const id of members) {
       if (isNodeGroupId(id)) throw new HttpError(400, "그룹 안에 다른 그룹을 넣을 수 없습니다.");
       if (!validNode(id, projectPath)) throw new HttpError(400, "같은 프로젝트의 노드만 그룹에 넣을 수 있습니다. 일반 채팅은 제외됩니다.");
+      if (graphTabs && tabId && graphTabs.tabFor(node(id)) !== tabId) throw new HttpError(400, "같은 그리드 탭의 노드만 그룹에 넣을 수 있습니다.");
       if (groups.list().some((other) => other.id !== currentId && (other.members ?? []).includes(id))) throw new HttpError(409, "이미 다른 그룹에 들어 있는 노드입니다.");
     }
     return members;
@@ -92,9 +93,10 @@ export function createNodeGroupService({ groups, store, commands, links, project
   }
 
   // Mirror the graph's automatic layout for nodes that have not been dragged yet.
-  function positions(projectPath) {
-    const sessions = store.list().filter((item) => !item.chat && sameProject(item.projectPath, projectPath)).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
-    const cmds = commands.list(projectPath).filter((item) => sameProject(item.projectPath, projectPath));
+  function positions(projectPath, tabId) {
+    const inTab = (item) => !graphTabs || !tabId || graphTabs.tabFor(item) === tabId;
+    const sessions = store.list().filter((item) => !item.chat && sameProject(item.projectPath, projectPath) && inTab(item)).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")));
+    const cmds = commands.list(projectPath).filter((item) => sameProject(item.projectPath, projectPath) && inTab(item));
     const nodes = [...sessions, ...cmds];
     const ids = new Set(nodes.map((item) => item.id));
     const edges = [
@@ -185,15 +187,17 @@ export function createNodeGroupService({ groups, store, commands, links, project
     if (JSON.stringify(group.members) !== JSON.stringify(next.members) || JSON.stringify(group.ports ?? []) !== JSON.stringify(next.ports)) groups.update(group, next);
     return group;
   }
-  function list(projectPath) { return { groups: projectPath ? groups.list(projectPath).map(sync) : [] }; }
+  function list(projectPath) { return { groups: projectPath ? groups.list(projectPath).map(sync).map((group) => graphTabs ? { ...group, tabId: graphTabs.tabFor(group) } : group) : [] }; }
   function create(body) {
     const project = projects.ensureProject(body.projectPath);
-    const members = checkMembers(body.members, project.path, null, { allowEmpty: false });
-    const allPositions = positions(project.path);
+    const tabId = graphTabs?.resolve(project.path, body.tabId);
+    const members = checkMembers(body.members, project.path, null, { allowEmpty: false, tabId });
+    const allPositions = positions(project.path, tabId);
     const rect = body.rect === undefined ? bounds(members, allPositions) : checkRect(body.rect);
     if (body.collapsed !== undefined && typeof body.collapsed !== "boolean") throw new HttpError(400, "그룹 접힘 설정이 올바르지 않습니다.");
     const ports = checkPorts(body.ports ?? [], members, project.path);
     const group = { id: `${NODE_GROUP_PREFIX}${randomBytes(6).toString("hex")}`, projectPath: project.path, title: String(body.title ?? "").trim().slice(0, 100) || "노드 그룹", members, rect, collapsed: body.collapsed ?? false, ports };
+    if (tabId) group.tabId = tabId;
     group.ports = boundaryPorts(group, members, ports);
     savePositions(members, allPositions, 0, 0, true);
     groups.add(group);
@@ -203,8 +207,10 @@ export function createNodeGroupService({ groups, store, commands, links, project
   function update(id, body) {
     const group = groupById(id);
     if (own(body, "projectPath") && !sameProject(body.projectPath, group.projectPath)) throw new HttpError(400, "그룹의 프로젝트는 바꿀 수 없습니다.");
-    const members = checkMembers(body.members === undefined ? group.members : body.members, group.projectPath, id);
-    const allPositions = positions(group.projectPath);
+    const tabId = graphTabs?.tabFor(group);
+    if (body.tabId !== undefined && graphTabs?.resolve(group.projectPath, body.tabId) !== tabId) throw new HttpError(400, "그룹은 탭 이동 메뉴로 옮기세요.");
+    const members = checkMembers(body.members === undefined ? group.members : body.members, group.projectPath, id, { tabId });
+    const allPositions = positions(group.projectPath, tabId);
     let rect = body.rect === undefined ? { ...group.rect } : checkRect(body.rect);
     if (body.rect === undefined && members.some((member) => !group.members.includes(member))) {
       const memberBounds = bounds(members, allPositions);
@@ -215,6 +221,7 @@ export function createNodeGroupService({ groups, store, commands, links, project
     const existingPorts = (group.ports ?? []).filter((port) => members.includes(port.nodeId));
     const ports = checkPorts(body.ports === undefined ? existingPorts : body.ports, members, group.projectPath);
     const next = { title: body.title === undefined ? group.title : String(body.title).trim().slice(0, 100) || "노드 그룹", members, rect, collapsed: body.collapsed ?? group.collapsed, ports: boundaryPorts(group, members, ports) };
+    if (tabId) next.tabId = tabId;
     const dx = body.rect === undefined ? 0 : rect.x - group.rect.x;
     const dy = body.rect === undefined ? 0 : rect.y - group.rect.y;
     // Validate every field before moving any member or mutating persistence.
