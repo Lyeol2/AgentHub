@@ -321,6 +321,23 @@ test("api: 공유 노트·메시지 목록과 MCP 주소 검사", async () => {
   assert.equal((await rpc({ Origin: "http://evil.example" })).status, 403); // 브라우저에서 온 요청
 });
 
+test("api: 다른 사이트에서 온 요청과 MCP 경로 우회를 막고 화면에 보안 헤더를 붙인다", async () => {
+  const base = "http://127.0.0.1:45177";
+  const get = (headers) => fetch(`${base}/api/board?path=${encodeURIComponent(repo)}`, { headers });
+  assert.equal((await get({ "Sec-Fetch-Site": "cross-site" })).status, 403); // <img src> 같은 다른 사이트 요청
+  assert.equal((await get({ "Sec-Fetch-Site": "same-site" })).status, 403);
+  assert.equal((await get({ Origin: "http://evil.example" })).status, 403);
+  assert.equal((await get({ "Sec-Fetch-Site": "same-origin" })).status, 200);
+  assert.equal((await get({ "Sec-Fetch-Site": "none" })).status, 200); // 주소창에 직접 입력
+  assert.equal((await get({ Origin: base })).status, 200);
+  // 정규화하면 /api/board가 되는 경로는 MCP 예외를 빌리지 못한다.
+  const sneak = await fetch(`${base}/mcp/%2e%2e/api/board`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: repo, text: "x" }) });
+  assert.equal(sneak.status, 403);
+  const page = await fetch(`${base}/`);
+  assert.match(page.headers.get("content-security-policy"), /script-src 'self'.*frame-ancestors 'none'/);
+  assert.equal(page.headers.get("x-frame-options"), "DENY");
+});
+
 test("api: 쉬고 있는 세션을 일시중지·재개·중지한다", async () => {
   const s = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, title: "P", permission: "acceptEdits" })).body;
   const paused = await api("POST", `/sessions/${s.id}/pause`);

@@ -2,7 +2,7 @@ import { assertSessionGitContext } from "./git-context.mjs";
 import { EventEmitter } from "node:events";
 import * as claude from "./agents/claude.mjs";
 import * as codex from "./agents/codex.mjs";
-import { spawnCli } from "./cli.mjs";
+import { spawnCli, killProcessTree, missingFolder } from "./cli.mjs";
 import { CodexAppServer } from "./codex-app-server.mjs";
 
 const publicMeta = (meta) => ({ ...meta, ...(meta.attachments ? { attachments: meta.attachments.map(({ id, name, mimeType, size, url }) => ({ id, name, mimeType, size, url })) } : {}) });
@@ -275,7 +275,7 @@ export class Runner extends EventEmitter {
 
     child.on("error", (err) => {
       sawError = true;
-      this.append(session, { kind: "error", text: `실행 실패: ${err.message}` });
+      this.append(session, { kind: "error", text: `실행 실패: ${missingFolder(err, session.cwd) ?? err.message}` });
     });
 
     child.on("close", (code, signal) => {
@@ -378,7 +378,7 @@ export class Runner extends EventEmitter {
   kill(child) {
     if (process.platform === "win32") {
       // cmd.exe를 거친 경우 자식 프로세스까지 종료해야 한다.
-      spawnCli("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" });
+      killProcessTree(child.pid);
     } else {
       child.kill("SIGINT");
     }

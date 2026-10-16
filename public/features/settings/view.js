@@ -92,7 +92,7 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
     if (job.kind === "login" && running) {
       if (job.url) {
         box.append(el("p", { class: "hint" }, "브라우저에서 로그인 페이지를 열었습니다. 열리지 않았으면 아래 버튼을 누르세요."),
-          el("button", { type: "button", class: "ghost sm", onclick: () => window.open(job.url, "_blank") }, "브라우저에서 열기"));
+          el("button", { type: "button", class: "ghost sm", onclick: () => window.open(job.url, "_blank", "noopener,noreferrer") }, "브라우저에서 열기"));
       }
       if (job.code) {
         box.append(el("div", { class: "setup-code" },

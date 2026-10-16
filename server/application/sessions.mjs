@@ -19,6 +19,10 @@ import { exportSession } from "../session-export.mjs";
 import { exportBundle, isBundleName, BUNDLE_MAX_BYTES, recordReadText } from "../session-bundle.mjs";
 import { expandPrompt, projectFiles, rankFiles } from "../prompt-refs.mjs";
 import { parseRecord, listRecords as listRecords_, readRecord, readRecordImage, recordLimitText, RECORD_MAX_BYTES } from "../session-import.mjs";
+
+// 남이 준 기록 파일에서 그대로 되살리지 않는 권한: 확인 없이 명령을 실행하거나 승인을 자동으로 넘긴다.
+const ELEVATED_PERMISSIONS = new Set(["bypassPermissions", "danger-full-access", "auto-review"]);
+
 const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
@@ -484,8 +488,10 @@ export function createSessionService({
     const bundle = parsed.format === "agenthub";
     const agent = body.agent ?? parsed.meta.agent ?? "claude";
     // .agenthub 파일은 같은 AI면 모델·추론 강도·권한·역할까지 되살린다. 이 PC에 없는 값이면 기본값을 쓴다.
+    // 파일은 남이 준 것일 수 있으므로 확인 없이 실행하는 권한은 되살리지 않는다.
     const same = bundle && agent === parsed.meta.agent;
-    let options = { agent, permission: body.permission ?? (same && parsed.meta.permission ? parsed.meta.permission : undefined), model: same ? parsed.meta.model ?? "" : "", effort: same ? parsed.meta.effort : "" };
+    const filePermission = same && !ELEVATED_PERMISSIONS.has(parsed.meta.permission) ? parsed.meta.permission : undefined;
+    let options = { agent, permission: body.permission ?? filePermission, model: same ? parsed.meta.model ?? "" : "", effort: same ? parsed.meta.effort : "" };
     try { checkSessionOptions(options); }
     catch { options = { agent, permission: body.permission }; }
     const session = await createSession({

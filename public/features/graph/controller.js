@@ -116,7 +116,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }
     const card = e.target.closest(".gcard, .gcmd");
     const cmd = card && commandById(card.dataset.id);
-    const grouping = card ? [...nodeGroups.selectedEntries(), null] : [];
+    // 그룹 묶기 항목은 노드를 둘 이상 골랐을 때만 붙인다. 하나만 골랐으면 평소 메뉴를 연다.
+    const grouping = card && ui.graphSelected.size > 1 ? [...nodeGroups.selectedEntries(), null] : [];
     if (cmd) {
       const running = ["running", "watching"].includes(cmd.state);
       const kind = cmd.kind ?? "command";

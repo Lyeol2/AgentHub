@@ -1,13 +1,11 @@
-import fs from "node:fs";
 import path from "node:path";
+import { readJsonFile, writeJsonAtomic } from "./json-file.mjs";
 
 // 받은 작업(GitHub 이슈)과 그 작업을 맡은 AgentHub 세션의 연결. 작업 내용 자체는 GitHub에만 둔다.
 export class FileIssueLinkStore {
   constructor({ dataDir }) {
     this.file = path.join(dataDir, "issue-links.json");
-    try { this.items = JSON.parse(fs.readFileSync(this.file, "utf8")); }
-    catch { this.items = []; }
-    if (!Array.isArray(this.items)) this.items = [];
+    this.items = readJsonFile(this.file, { dataDir, fallback: () => [], valid: Array.isArray });
   }
 
   static key(repo, number) { return String(repo).toLowerCase() + "#" + Number(number); }
@@ -48,7 +46,6 @@ export class FileIssueLinkStore {
   }
 
   save() {
-    fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    fs.writeFileSync(this.file, JSON.stringify(this.items, null, 2));
+    writeJsonAtomic(this.file, this.items);
   }
 }
