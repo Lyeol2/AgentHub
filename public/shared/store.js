@@ -2,8 +2,8 @@
 export function createStore() {
   return {
     data: { status: null, sessions: [], current: null, projects: null, links: [], commands: [],
-      commandsProject: null, nodeGroups: [], nodeGroupsProject: null, shells: [], skills: [], skillsProject: null, messages: [] },
-    navigation: { view: "dashboard", project: null, viewRevision: 0 },
+      commandsProject: null, nodeGroups: [], nodeGroupsProject: null, graphTabs: [], graphTabsProject: null, defaultGraphTabId: null, shells: [], skills: [], skillsProject: null, messages: [] },
+    navigation: { view: "dashboard", project: null, graphTabId: null, viewRevision: 0 },
   };
 }
 

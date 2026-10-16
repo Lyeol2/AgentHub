@@ -185,6 +185,40 @@ test("그래프에서 만든 세션은 저장한 위치와 원본 노드 연결�
   assert.equal(h.get("new-dialog").open, false);
 });
 
+test("탭을 옮기는 동안 완료된 세션 생성은 시작 탭을 유지하고 새 탭에 배치하거나 연결하지 않는다", async () => {
+  const h = setup();
+  h.navigation.graphTabId = "tab-a";
+  let finish;
+  h.service.api = async (...args) => {
+    h.calls.push(args);
+    if (args[0] === "POST") return new Promise(resolve => { finish = resolve; });
+    return {};
+  };
+  await h.controller.openNew("C:/repo", { pos: { x: 12, y: 34 }, connectFrom: "source" });
+  const pending = submit(h, [["projectPath", "C:/repo"]]);
+  assert.equal(h.calls[0][2].tabId, "tab-a");
+  h.navigation.graphTabId = "tab-b";
+  h.controller.cancelCreation();
+  finish({ id: "created" });
+  await pending;
+  assert.deepEqual(h.calls.map(call => call[0]), ["POST"]);
+  await h.controller.openNew("C:/repo");
+  h.service.api = async (...args) => { h.calls.push(args); return { id: "next" }; };
+  await submit(h, [["projectPath", "C:/repo"]]);
+  assert.equal(h.calls.at(-1)[2].tabId, "tab-b");
+});
+
+test("생성 창에서 다른 프로젝트나 일반 채팅을 고르면 원래 프로젝트의 탭을 보내지 않는다", async () => {
+  const h = setup();
+  h.navigation.graphTabId = "tab-a";
+  await h.controller.openNew("C:/repo");
+  await submit(h, [["projectPath", "C:/other"]]);
+  assert.equal(Object.hasOwn(h.calls.at(-1)[2], "tabId"), false);
+  await h.controller.openNew("C:/repo", { kind: "codex-chat" });
+  await submit(h, [["projectPath", "C:/repo"]]);
+  assert.equal(Object.hasOwn(h.calls.at(-1)[2], "tabId"), false);
+});
+
 test("화면 이동으로 생성 창을 취소한 뒤 새로 만든 세션은 이전 위치와 연결을 물려받지 않는다", async () => {
   const h = setup();
   await h.controller.openNew("C:/repo", { pos: { x: 12, y: 34 }, connectFrom: "stale" });

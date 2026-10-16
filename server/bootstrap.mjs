@@ -8,6 +8,7 @@ import { Runner } from "./runner.mjs";
 import { LinkStore } from "./links.mjs";
 import { CommandStore } from "./commands.mjs";
 import { NodeGroupStore, createNodeGroupService } from "./node-groups.mjs";
+import { GraphTabStore, createGraphTabService } from "./graph-tabs.mjs";
 import { Chain } from "./chain.mjs";
 import { RunHistoryStore } from "./run-history.mjs";
 import { createRunService } from "./application/runs.mjs";
@@ -105,6 +106,8 @@ export function createHub(options = {}) {
   let nodeGroupService;
   let updater = null;
   let updateListener = null;
+  const graphTabStore = deps.graphTabs ?? new GraphTabStore({ dataDir });
+  const graphTabs = createGraphTabService({ tabs: graphTabStore, store, commands, groups: nodeGroups, projects: () => projects, notify });
 
   const chain = deps.chain ?? new Chain({
     store, runner, links, commands, cliPaths, history: runHistory,
@@ -124,31 +127,32 @@ export function createHub(options = {}) {
     sessions: (projectPath) => projects.projectSessions(projectPath),
   });
   projects = createProjectService({
-    config, store, runner, links, commands, chain, board, notify,
+    config, store, runner, links, commands, chain, board, notify, graphTabs,
     saveConfig: persistConfig,
     sessions: () => sessions,
     tasks: () => tasks,
     nodeGroups: () => nodeGroupService,
   });
-  nodeGroupService = createNodeGroupService({ groups: nodeGroups, store, commands, links, projects, notify });
+  nodeGroupService = createNodeGroupService({ groups: nodeGroups, store, commands, links, projects, graphTabs, notify });
   sessions = createSessionService({
-    config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects, commands,
+    config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects, commands, graphTabs,
     saveConfig: persistConfig,
     workflows: () => workflows,
     tasks: () => tasks,
     nodeGroups: () => nodeGroupService,
   });
-  workflows = createWorkflowService({ store, runner, links, commands, chain, projects, sessions, nodeGroups: nodeGroupService, notify });
-  tasks = createTaskService({ dataDir, config, saveConfig: persistConfig, store, runner, sessions, projects, notify, github: deps.github });
+  workflows = createWorkflowService({ store, runner, links, commands, chain, projects, sessions, graphTabs, nodeGroups: nodeGroupService, notify });
+  tasks = createTaskService({ dataDir, config, saveConfig: persistConfig, store, runner, sessions, projects, graphTabs, notify, github: deps.github });
   const services = {
     sessions,
     projects,
     workflows,
     tasks,
     nodeGroups: nodeGroupService,
+    graphTabs,
     runs: createRunService({ history: runHistory, chain, projects, notify }),
-    groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, notify }),
-    commands: createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups: () => nodeGroupService, ask, notify }),
+    groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, graphTabs, notify }),
+    commands: createCommandService({ commands, chain, links, store, projects, cliPaths, graphTabs, nodeGroups: () => nodeGroupService, ask, notify }),
     skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
     git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks }),
     system: createSystemService({
@@ -158,7 +162,7 @@ export function createHub(options = {}) {
     messaging: createMessagingService({ mailbox, board, projects, notify }),
     account: deps.account ?? createAccountService({ config, setup, saveConfig: persistConfig }),
   };
-  services.flowAssistant = createFlowAssistantService({ store, commands, links, projects, sessions, commandService: services.commands,
+  services.flowAssistant = createFlowAssistantService({ store, commands, links, projects, sessions, graphTabs, commandService: services.commands,
     workflowService: workflows, cliPaths, ask, notify });
   services.issues = deps.issues ?? createIssueService({
     config, store, sessions, notify,

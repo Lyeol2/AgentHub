@@ -50,13 +50,14 @@ async function runBrowser(temp, url) {
       await command("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: false });
       const layout = await command("Runtime.evaluate", { expression: `new Promise(resolve => requestAnimationFrame(() => {
         const graph = document.getElementById("p-graph").getBoundingClientRect();
+        const tabs = document.getElementById("p-graph-tabs").getBoundingClientRect();
         const toolbar = document.getElementById("p-flow-assistant").getBoundingClientRect();
         const content = document.querySelector("#view-project > .content");
         const bottom = content.getBoundingClientRect().bottom - parseFloat(getComputedStyle(content).paddingBottom);
-        resolve({ height: graph.height, bottom: toolbar.bottom, graphGap: Math.abs(graph.bottom - toolbar.top), toolbarHeight: toolbar.height, expectedBottom: bottom - 1, right: graph.right, documentWidth: document.documentElement.scrollWidth, documentHeight: document.documentElement.scrollHeight });
+        resolve({ height: graph.height, bottom: toolbar.bottom, graphGap: Math.abs(graph.bottom - tabs.top), tabsGap: Math.abs(tabs.bottom - toolbar.top), tabsHeight: tabs.height, toolbarHeight: toolbar.height, expectedBottom: bottom - 1, right: graph.right, documentWidth: document.documentElement.scrollWidth, documentHeight: document.documentElement.scrollHeight });
       }))`, awaitPromise: true, returnByValue: true });
       const bounds = layout.result.value;
-      assert.ok(bounds.height > 100 && bounds.graphGap < 2 && Math.abs(bounds.bottom - bounds.expectedBottom) < 2, "Graph fills resized window above the toolbar: " + JSON.stringify({ width, height, ...bounds }));
+      assert.ok(bounds.height > 100 && bounds.tabsHeight > 0 && bounds.graphGap < 2 && bounds.tabsGap < 2 && Math.abs(bounds.bottom - bounds.expectedBottom) < 2, "Graph fills resized window above its tabs and toolbar: " + JSON.stringify({ width, height, ...bounds }));
       assert.ok(bounds.right <= width && bounds.documentWidth <= width && bounds.documentHeight <= height, "Panels stay inside resized window");
     }
     if (process.env.AGENTHUB_UI_SCREENSHOT) {
@@ -134,6 +135,7 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
       else if (url.pathname === "/api/projects/all") value = [project];
       else if (url.pathname === "/api/projects/discover") value = [];
       else if (url.pathname === "/api/links") value = [{ id: "l1", from: "s1", to: "s2", enabled: true, when: "success" }];
+      else if (url.pathname === "/api/graph-tabs") value = { tabs: [{ id: "tab-default", title: "기본", projectPath: project.path, order: 0 }], defaultTabId: "tab-default" };
       else if (url.pathname === "/api/flow-assistant/plan") value = { summary: "리뷰 세션을 붙입니다.", actions: [
         { type: "create_session", key: "rev", agent: "codex", permission: "read-only", title: "리뷰", role: "검토한다.", roleName: "", text: '새 세션 "리뷰" 만들기' },
         { type: "link", from: "s1", to: "rev", when: "success", keyword: "", note: "", text: '"First" → "리뷰" 연결 (성공하면)' }] };

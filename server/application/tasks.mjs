@@ -19,7 +19,7 @@ const now = () => new Date().toISOString();
 const remoteFingerprint = (value) => createHash("sha256").update(value).digest("hex");
 const failure = (error) => error instanceof HttpError ? error : new HttpError(error.status ?? 409, error.message, error.reason ?? "task-error", { outcomeUnknown: !!error.outcomeUnknown });
 
-export function createTaskService({ dataDir, store, runner, sessions, projects, notify = () => {}, github = githubPulls,
+export function createTaskService({ dataDir, store, runner, sessions, projects, graphTabs, notify = () => {}, github = githubPulls,
   config = {}, saveConfig = () => {} }) {
   const directory = path.join(dataDir, "tasks");
   fs.mkdirSync(directory, { recursive: true });
@@ -177,6 +177,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if (body.chat) throw new HttpError(400, "일반 채팅에서는 작업 브랜치를 선택할 수 없습니다.");
     sessionService().checkSessionOptions(body);
     const project = projectService().ensureProject(body.projectPath);
+    graphTabs?.resolve(project.path, body.tabId, body.connectFrom ?? body.createdBy);
     const repo = await taskRepo(project.path);
     const flow = projectGitflowSettings(config, repo.top);
     if (isGitflowBase(flow, body.workBranch)) throw new HttpError(409, `${flow.main}과 ${flow.develop}은 작업 브랜치로 선택할 수 없습니다.`, "workbranch-protected");
@@ -241,6 +242,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   }
   async function attach(task, body) {
     assertActive(task);
+    graphTabs?.resolve(task.projectPath, body.tabId, body.connectFrom ?? body.createdBy);
     if (task.provisioning && !fs.existsSync(task.cwd)) {
       const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id, task.worktreeName);
       if (!sameTaskPath(expected.cwd, task.cwd)) throw new HttpError(409, "작업 폴더 경로를 확인할 수 없습니다.", "task-worktree");
@@ -251,6 +253,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     await assertTaskWorktree(task);
     if (task.provisioning) { delete task.provisioning; delete task.error; save(task); }
     const session = await sessionService().createSession({ project: projectService().ensureProject(task.projectPath),
+      tabId: body.tabId, connectFrom: body.connectFrom, createdBy: body.createdBy,
       title: body.title ?? task.title, roleName: body.roleName, orchestrator: body.orchestrator,
       role: body.role ?? task.role, agent: body.agent ?? task.agent ?? "claude",
       model: body.model ?? task.model, effort: body.effort ?? task.effort, permission: body.permission ?? task.permission },
@@ -284,6 +287,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       throw new HttpError(400, "작업 폴더 이름은 80자 이내의 영문·한글·숫자와 . _ - 만 쓸 수 있습니다.", "task-worktree-name");
     sessionService().checkSessionOptions?.({ ...body, agent: body.agent ?? "claude" });
     const project = projectService().ensureProject(body.projectPath);
+    graphTabs?.resolve(project.path, body.tabId, body.connectFrom ?? body.createdBy);
     const repo = await taskRepo(project.path);
     return locked(repo.common, async () => {
       const gitflow = projectGitflowSettings(config, repo.top);

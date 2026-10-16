@@ -7,7 +7,7 @@ import { isCommandId, commandKind } from "../commands.mjs";
 import { samePath } from "./projects.mjs";
 import { HttpError } from "./errors.mjs";
 
-export function createWorkflowService({ store, runner, links, commands, chain, projects, sessions, nodeGroups, notify: broadcast }) {
+export function createWorkflowService({ store, runner, links, commands, chain, projects, sessions, nodeGroups, graphTabs, notify: broadcast }) {
   const { ensureProject, projectSessions } = projects;
   const { getSession, createSession, checkSessionOptions } = sessions;
   function getCommand(id) {
@@ -40,7 +40,7 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
 
   function planContext(session) {
     return {
-      sessions: projectSessions(session.projectPath),
+      sessions: projectSessions(session.projectPath).filter((item) => !graphTabs || graphTabs.tabFor(item) === graphTabs.tabFor(session)),
       orchestratorId: session.id,
     };
   }

@@ -8,6 +8,7 @@ import { linkLabel } from "../../shared/flow.js";
 import { openContextMenu, closeContextMenu } from "../../shared/context-menu.js";
 import { createFlowAssistant } from "./flow-assistant.js";
 import { createGraphHistory, linkBody, commandBody } from "./history.js";
+import { createGraphTabs, graphScopeKey, inGraphTab, nodeTabId } from "./tabs.js";
 
 export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
   const ui = {
@@ -18,19 +19,61 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     "editingLink": null
   };
   const view = createGraphView({ skillChips, restartSession, toggleSessionLock, commandNode });
+  // Hosts with graphTabId opt into tabs; a standalone embedded graph may omit them.
+  const tabsEnabled = Object.hasOwn(navigation, "graphTabId");
+  const tabViews = new Map();
+  const visibleNode = (node) => inGraphTab(node, data, navigation);
   const history = createGraphHistory({
     refresh: (projectPath) => Promise.all([loadSessions(), loadCommands(projectPath), loadLinks()]),
     onChange: renderHistoryButtons,
+    getScope: () => navigation.graphTabId ?? null,
   });
   // 그래프 아래 AI 입력창. 적용하면 새로 만든 노드를 골라 둔다.
   const assistant = createFlowAssistant({ api, navigation, getSelected: () => [...ui.graphSelected],
-    onApplied: async (created) => {
-      await Promise.all([loadSessions(), loadCommands(navigation.project), loadLinks()]);
+    onApplied: async (created, context = { projectPath: navigation.project, tabId: navigation.graphTabId }) => {
+      await Promise.all([loadSessions(), loadCommands(context.projectPath), loadLinks()]);
+      if (!samePath(context.projectPath, navigation.project) || context.tabId !== navigation.graphTabId) return;
       ui.graphSelected = new Set(created);
       syncGraphSelection();
     } });
 
   const nodeGroups = createNodeGroups({ api, data, navigation, ui, history, renderGraph, loadSessions, loadCommands, runCommand, saveGroupTemplate, trackGesture: trackGraphGesture, canvasPoint, placeCards, openLinkDialog, openCreateMenu: openGraphCreateMenu, syncSelection: syncGraphSelection });
+  const tabs = createGraphTabs({ api, data, navigation,
+    beforeSwitch: ({ force }) => {
+      if (!force && (history.state(navigation.project).running || ui.deletingGraphNodes || ui.graphSaving)) return false;
+      clearGraphTransientState();
+      ui.graph = null;
+      return true;
+    },
+    onSwitch: () => { if (navigation.view === "project") renderGraph(); },
+    onChanged: async (projectPath, { tabIds = [] } = {}) => {
+      history.invalidate(projectPath, tabIds);
+      for (const id of tabIds) {
+        const saved = tabViews.get(graphScopeKey(projectPath, id));
+        if (saved) saved.selected = [];
+      }
+      if (samePath(projectPath, navigation.project) && tabIds.includes(navigation.graphTabId)) ui.graphSelected.clear();
+      await Promise.all([loadSessions(), loadCommands(projectPath), loadLinks()]);
+    },
+    getSelection: () => [...ui.graphSelected],
+  });
+
+  function saveTabView() {
+    const g = ui.graph;
+    if (!g) return;
+    const value = { pan: { ...g.pan }, zoom: g.zoom, selected: [...ui.graphSelected] };
+    tabViews.set(graphScopeKey(g.projectPath, g.tabId), value);
+    try {
+      const all = JSON.parse(localStorage.getItem("agenthub-graph-views") ?? "{}");
+      all[graphScopeKey(g.projectPath, g.tabId)] = { pan: value.pan, zoom: value.zoom };
+      localStorage.setItem("agenthub-graph-views", JSON.stringify(all));
+    } catch { /* Keep the in-memory view when browser storage is unavailable. */ }
+  }
+  function tabView() {
+    const key = graphScopeKey(navigation.project, navigation.graphTabId);
+    if (tabViews.has(key)) return tabViews.get(key);
+    try { return JSON.parse(localStorage.getItem("agenthub-graph-views") ?? "{}")[key]; } catch { return null; }
+  }
 
   // ── 세션 흐름 그래프 ────────────────────────────────────────────
 
@@ -64,21 +107,36 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   function renderGraph() {
     const box = $("p-graph");
+    tabs.ensureLoaded();
+    tabs.render();
     nodeGroups.ensureLoaded();
+    if (tabsEnabled && !tabs.ready()) {
+      ui.graph = null;
+      ui.graphSelected.clear();
+      box.replaceChildren(el("div", { class: "graph-empty" }, tabs.error() || "그리드 탭을 불러오는 중…"));
+      $("p-relayout").disabled = true;
+      $("p-flow-assistant-prompt").disabled = true;
+      $("p-flow-assistant-send").disabled = true;
+      renderHistoryButtons();
+      return;
+    }
+    $("p-relayout").disabled = false;
+    assistant.selectionChanged();
     if (ui.graph?.dragging) {
       ui.graph.needsRender = true; // 데이터 변경은 끌기를 마친 뒤 한 번 반영한다.
       return;
     }
     const sessions = data.sessions
-      .filter((s) => samePath(s.projectPath, navigation.project))
+      .filter((s) => samePath(s.projectPath, navigation.project) && visibleNode(s))
       .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    const cmdNodes = samePath(data.commandsProject, navigation.project) ? data.commands ?? [] : [];
+    const cmdNodes = samePath(data.commandsProject, navigation.project) ? (data.commands ?? []).filter(visibleNode) : [];
     if (!sessions.length && !cmdNodes.length && !nodeGroups.groups().length) {
       ui.graph = null;
       ui.graphSelected.clear();
       box.replaceChildren(el("div", { class: "graph-empty" },
-        "이 프로젝트에서 만든 세션이 없습니다. 여기서 우클릭하거나 아래 입력창에 만들 노드를 적으면 카드로 보입니다."));
+        "이 그리드는 비어 있습니다. 여기서 우클릭하거나 아래 입력창에 만들 노드를 적으면 카드로 보입니다."));
       assistant.selectionChanged();
+      renderZoomLabel();
       renderHistoryButtons();
       return;
     }
@@ -95,14 +153,38 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const { canvas, svg, cards } = view.createCanvas(sessions, cmdNodes);
     // 캔버스를 배율에 맞춰 그리고, 프로젝트별 화면 이동 위치를 유지한다.
     const sizer = el("div", { class: "graph-sizer" }, canvas);
-    const pan = samePath(ui.graph?.projectPath, navigation.project) ? { ...ui.graph.pan } : { x: 0, y: 0 };
-    ui.graph = { canvas, sizer, svg, cards, pos, links, commands, members, zoom: graphZoomFor(navigation.project), pan, projectPath: navigation.project };
+    const sameGraph = samePath(ui.graph?.projectPath, navigation.project) && ui.graph?.tabId === navigation.graphTabId;
+    const saved = tabView();
+    const pan = sameGraph ? { ...ui.graph.pan } : saved?.pan && Number.isFinite(saved.pan.x) && Number.isFinite(saved.pan.y) ? { ...saved.pan } : { x: 0, y: 0 };
+    if (!sameGraph) ui.graphSelected = new Set(saved?.selected ?? []);
+    ui.graph = { canvas, sizer, svg, cards, pos, links, commands, members, zoom: graphZoomFor(navigation.project), pan, projectPath: navigation.project, tabId: navigation.graphTabId };
     nodeGroups.render(ui.graph);
     placeCards();
     syncGraphSelection();
     box.replaceChildren(sizer);
+    renderRemoteLinks(box, ids);
     renderZoomLabel();
     renderHistoryButtons();
+  }
+
+  function renderRemoteLinks(box, visibleIds) {
+    const all = new Map([...data.sessions, ...(samePath(data.commandsProject, navigation.project) ? data.commands ?? [] : [])]
+      .filter((node) => samePath(node.projectPath, navigation.project)).map((node) => [node.id, node]));
+    const remote = (data.links ?? []).filter((link) => visibleIds.has(link.from) !== visibleIds.has(link.to));
+    const buttons = remote.flatMap((link) => {
+      const target = all.get(visibleIds.has(link.from) ? link.to : link.from);
+      const tab = tabs.tabs().find((item) => item.id === nodeTabId(target, data));
+      if (!target || !tab || tab.id === navigation.graphTabId) return [];
+      const jump = el("button", { type: "button", class: link.pending ? "pending" : "", "data-remote-tab": tab.id,
+        title: `${nodeTitle(link.from)} → ${nodeTitle(link.to)} · ${linkLabel(link)}`,
+        onclick: () => tabs.select(tab.id),
+        oncontextmenu: (event) => { event.preventDefault(); event.stopPropagation(); openLinkDialog(link); } }, `${link.pending ? "승인 대기 · " : ""}${visibleIds.has(link.from) ? "→" : "←"} ${tab.title} · ${target.title}`);
+      if (!link.pending) return [jump];
+      const gate = gateLabel(link);
+      gate.className = "graph-remote-gate";
+      return [jump, gate];
+    });
+    if (buttons.length) box.append(el("div", { class: "graph-remote-links", "aria-label": "다른 탭과의 연결", onpointerdown: (event) => event.stopPropagation(), ondblclick: (event) => event.stopPropagation(), oncontextmenu: (event) => event.stopPropagation() }, ...buttons));
   }
   // 카드 끌기·연결·선택 상자. 그래프에 초점을 두면 Delete로 선택한 노드를 한 번에 지운다.
   $("p-graph").tabIndex = 0;
@@ -167,9 +249,9 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   const nodeSnapshot = (node) => ({ id: node.id, title: node.title, body: commandBody(node),
     links: data.links.filter((l) => l.from === node.id || l.to === node.id).map((l) => ({ ...l })) });
   // 노드를 지운 것을 기록한다. 되돌리면 노드를 다시 만들고 연결을 잇는다. 끝이 사라진(지운 세션 등) 연결은 건너뛴다.
-  function recordNodesRemoved(projectPath, removed) {
+  function recordNodesRemoved(projectPath, removed, tabId = navigation.graphTabId) {
     if (!removed.length) return;
-    history.record(projectPath, { label: removed.length > 1 ? `노드 ${removed.length}개 삭제` : `"${removed[0].title}" 삭제`,
+    history.record(projectPath, { tabId, label: removed.length > 1 ? `노드 ${removed.length}개 삭제` : `"${removed[0].title}" 삭제`,
       undo: async (tools) => {
         for (const node of removed) {
           const body = node.body.members ? { ...node.body, members: node.body.members.map(tools.resolve) } : node.body;
@@ -181,31 +263,34 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       redo: async ({ resolve }) => { for (const node of removed) await api("DELETE", `/api/commands/${resolve(node.id)}`); },
     });
   }
-  function recordLinkCreated(projectPath, link) {
-    history.record(projectPath, { label: "연결 만들기",
+  function recordLinkCreated(projectPath, link, tabId = navigation.graphTabId) {
+    history.record(projectPath, { tabId, label: "연결 만들기",
       undo: ({ resolve }) => api("DELETE", `/api/links/${resolve(link.id)}`),
       redo: (tools) => restoreLink(link, tools) });
   }
 
   // 흐름 그래프 우클릭: 세션 카드는 세션 메뉴, 명령 노드는 명령 메뉴, 빈 곳은 그 자리에 새 세션·명령을 만든다.
   $("p-graph").addEventListener("contextmenu", (e) => {
+    if (tabsEnabled && !tabs.ready()) { e.preventDefault(); return; }
     if (e.target.closest(".edge-label")) return;
     const frame = e.target.closest(".node-group");
     if (frame) {
       const group = nodeGroups.byId(frame.dataset.groupId);
-      if (group) openContextMenu(e, `노드 그룹 ${group.title}`, nodeGroups.contextEntries(group));
+      if (group) openContextMenu(e, `노드 그룹 ${group.title}`, [...nodeGroups.contextEntries(group), ...tabs.moveEntries([group.id])]);
       return;
     }
     const card = e.target.closest(".gcard, .gcmd");
     const cmd = card && commandById(card.dataset.id);
     // 그룹 묶기 항목은 노드를 둘 이상 골랐을 때만 붙인다. 하나만 골랐으면 평소 메뉴를 연다.
     const grouping = card && ui.graphSelected.size > 1 ? [...nodeGroups.selectedEntries(), null] : [];
+    const moving = card ? tabs.moveEntries(ui.graphSelected.has(card.dataset.id) ? [...ui.graphSelected] : [card.dataset.id]) : [];
     if (cmd) {
       const running = ["running", "watching"].includes(cmd.state) || isScheduleArmed(cmd);
       const kind = cmd.kind ?? "command";
       const label = KIND_LABEL[kindOf(cmd)];
       openContextMenu(e, `${label} ${cmd.title}`, [
         ...grouping,
+        ...moving,
         kind === "markdown"
           ? ["결과 보기", () => openCommandOutput(cmd), { disabled: !cmd.lastRun?.output }]
           : kind === "schedule" ? [running ? "예약 중지" : "예약 시작", () => running ? stopCommand(cmd) : runCommand(cmd)]
@@ -220,7 +305,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }
     if (card) {
       const s = sessionById(card.dataset.id);
-      if (s && grouping.length > 1) openContextMenu(e, s.title, [...grouping, ["세션 메뉴", () => openSessionMenu(e, s)]]);
+      if (s && (grouping.length > 1 || moving.length)) openContextMenu(e, s.title, [...grouping, ...moving, ["세션 메뉴", () => openSessionMenu(e, s)]]);
       else if (s) openSessionMenu(e, s);
       return;
     }
@@ -229,11 +314,13 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
 
   // 손잡이를 빈 곳에 놓았을 때도 같은 생성 메뉴를 쓰고, 만든 노드에 바로 잇는다.
   function openGraphCreateMenu(e, connectFrom = null, connectWhen = null, connectKeyword = "") {
+    if (tabsEnabled && !tabs.ready()) return;
     const projectPath = navigation.project;
+    const tabId = navigation.graphTabId;
     const at = ui.graph ? canvasPoint(e) : { x: PAD, y: PAD };
     const pos = { x: Math.max(0, Math.round(at.x)), y: Math.max(0, Math.round(at.y)) };
     const inProject = (action) => () => {
-      if (navigation.view === "project" && samePath(projectPath, navigation.project)) action();
+      if (navigation.view === "project" && samePath(projectPath, navigation.project) && tabId === navigation.graphTabId) action();
     };
     const node = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, kind, { connectWhen, connectKeyword }))];
     const start = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, null, kind))];
@@ -263,12 +350,15 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   }
 
   function clearGraphTransientState() {
+    saveTabView();
     ui.graphGesture?.cancel();
     assistant.reset();
     closeContextMenu();
     cancelNodeCreation();
     clearExecutionControls?.();
     document.getElementById("node-group-dialog")?.close?.();
+    document.getElementById("link-dialog")?.close?.();
+    document.getElementById("p-graph-tab-dialog")?.close?.();
     ui.graphSelected.clear();
   }
 
@@ -312,15 +402,17 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   async function connectCreatedGraphNode(context, to, projectPath) {
     if (!context?.connectFrom || context.cancelled || !samePath(context.projectPath, projectPath)) return;
     if (navigation.view !== "project" || !samePath(navigation.project, projectPath)) return;
+    if (context.tabId !== undefined && context.tabId !== navigation.graphTabId) return;
     const source = sessionById(context.connectFrom) ??
       (samePath(data.commandsProject, projectPath) ? commandById(context.connectFrom) : null);
     if (!source || (source.projectPath && !samePath(source.projectPath, projectPath))) return;
+    const tabId = context.tabId ?? navigation.graphTabId;
     try {
       const when = context.connectWhen ?? (["git", "task"].includes(source.kind) ? "success" : null);
       const target = commandById(to);
       const targetKind = target?.kind ?? context.kind ?? "session";
       const link = await api("POST", "/api/links", { from: source.id, to, ...(when ? { when, keyword: context.connectKeyword ?? "" } : defaultLinkCondition(source.id)), ...(hasWorktreeOutput(source) ? { useGitWorktree: when === "success" && worktreeByDefault(source) && ["session", "command"].includes(targetKind) } : {}), enabled: true });
-      if (link?.id) recordLinkCreated(projectPath, link);
+      if (link?.id) recordLinkCreated(projectPath, link, tabId);
       await loadLinks();
     } catch (err) {
       alert(`노드는 만들었지만 연결하지 못했습니다. 손잡이를 끌어 다시 연결해 주세요.\n\n${err.message}`);
@@ -363,8 +455,11 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   const ZOOM_MAX = 2;
 
   function graphZoomFor(projectPath) {
+    const saved = tabView()?.zoom;
+    if (Number.isFinite(saved)) return Math.min(2, Math.max(.3, saved));
     try {
-      const z = JSON.parse(localStorage.getItem(ZOOM_KEY) ?? "{}")[String(projectPath).toLowerCase()];
+      const all = JSON.parse(localStorage.getItem(ZOOM_KEY) ?? "{}");
+      const z = all[graphScopeKey(projectPath, navigation.graphTabId)] ?? (!navigation.graphTabId || navigation.graphTabId === data.defaultGraphTabId ? all[String(projectPath).toLowerCase()] : null);
       return Number.isFinite(z) ? z : 1;
     } catch {
       return 1;
@@ -378,8 +473,9 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     } catch {
       // 깨진 값은 새로 쓴다.
     }
-    all[String(projectPath).toLowerCase()] = zoom;
+    all[graphScopeKey(projectPath, navigation.graphTabId)] = zoom;
     localStorage.setItem(ZOOM_KEY, JSON.stringify(all));
+    saveTabView();
   }
 
   function applyGraphZoom() {
@@ -464,7 +560,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     g.canvas.querySelectorAll(".edge-label").forEach((n) => n.remove());
     // 메시지를 주고받은 세션 사이의 대화선(방향 없이 한 줄, 주고받은 수를 툴팁으로)
     const talks = new Map();
-    for (const m of data.messages) {
+    for (const m of data.messages ?? []) {
       if (!g.pos.has(m.from) || !g.pos.has(m.to)) continue;
       const key = [m.from, m.to].sort().join(" ");
       const talk = talks.get(key) ?? { from: m.from, to: m.to, count: 0, last: m };
@@ -574,7 +670,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const s = sessionById(link.from) ?? commandById(link.from);
     n.onclick = () => {
       window.focus();
-      if (s?.projectPath) goProject(s.projectPath);
+      if (s?.projectPath) Promise.resolve(goProject(s.projectPath)).then(async () => { await tabs.load(s.projectPath); tabs.select(nodeTabId(s, data)); });
     };
   }
 
@@ -686,18 +782,22 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
         return;
       }
       const projectPath = navigation.project;
+      const tabId = navigation.graphTabId;
       const before = new Map(group.map((n) => [n, storedPos(n)]));
       const membersBefore = groupMembers();
-      await Promise.all(group.map(saveNodePos));
-      await nodeGroups.droppedMembers(group);
-      // 그룹 박스 안팎으로 옮겨 구성원이 바뀌었으면 함께 되돌린다.
-      const after = new Map(group.map((n) => [n, storedPos(n)]));
-      const membersAfter = groupMembers();
-      const changed = [...new Set([...membersBefore.keys(), ...membersAfter.keys()])]
-        .filter((id) => membersBefore.has(id) && membersAfter.has(id) && membersBefore.get(id).join() !== membersAfter.get(id).join());
-      history.record(projectPath, { label: group.length > 1 ? `카드 ${group.length}개 이동` : "카드 이동",
-        undo: (tools) => restoreLayout(before, changed.map((id) => [id, membersBefore.get(id)]), tools),
-        redo: (tools) => restoreLayout(after, changed.map((id) => [id, membersAfter.get(id)]), tools) });
+      ui.graphSaving = (ui.graphSaving ?? 0) + 1;
+      try {
+        await Promise.all(group.map(saveNodePos));
+        await nodeGroups.droppedMembers(group);
+        // 그룹 박스 안팎으로 옮겨 구성원이 바뀌었으면 함께 되돌린다.
+        const after = new Map(group.map((n) => [n, storedPos(n)]));
+        const membersAfter = groupMembers();
+        const changed = [...new Set([...membersBefore.keys(), ...membersAfter.keys()])]
+          .filter((id) => membersBefore.has(id) && membersAfter.has(id) && membersBefore.get(id).join() !== membersAfter.get(id).join());
+        history.record(projectPath, { tabId, label: group.length > 1 ? `카드 ${group.length}개 이동` : "카드 이동",
+          undo: (tools) => restoreLayout(before, changed.map((id) => [id, membersBefore.get(id)]), tools),
+          redo: (tools) => restoreLayout(after, changed.map((id) => [id, membersAfter.get(id)]), tools) });
+      } finally { ui.graphSaving--; }
     };
 
     trackGraphGesture(e, onMove, onUp);
@@ -718,6 +818,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }, () => {
       g.dragging = false;
       box.classList.remove("panning");
+      saveTabView();
     });
   }
 
@@ -806,6 +907,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   async function deleteGraphSelection() {
     if (ui.deletingGraphNodes || navigation.view !== "project") return;
     const projectPath = navigation.project;
+    const tabId = navigation.graphTabId;
     const selectedGroups = [...ui.graphSelected].map(nodeGroups.byId).filter(Boolean);
     if (selectedGroups.length) {
       // Selecting a container never silently deletes its member nodes.
@@ -834,7 +936,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
         if (result.status === "fulfilled") { ui.graphSelected.delete(nodes[i].id); if (snapshots.has(nodes[i].id)) removed.push(snapshots.get(nodes[i].id)); }
         else errors.push(`${nodes[i].title}: ${result.reason.message}`);
       });
-      recordNodesRemoved(projectPath, removed);
+      recordNodesRemoved(projectPath, removed, tabId);
       await Promise.all([loadSessions(), loadCommands(projectPath), loadLinks()]);
       if (errors.length) alert(`일부 노드를 삭제하지 못했습니다.\n\n${errors.join("\n")}`);
     } finally {
@@ -856,14 +958,15 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   });
 
   $("p-relayout").addEventListener("click", async () => {
+    if (tabsEnabled && !tabs.ready()) return;
     const grouped = new Set(nodeGroups.groups().flatMap((group) => group.members));
-    const placed = data.sessions.filter((s) => samePath(s.projectPath, navigation.project) && s.graphPos && !grouped.has(s.id));
-    for (const s of placed) s.graphPos = null;
-    const placedCommands = (data.commands ?? []).filter((c) => c.pos && !grouped.has(c.id));
+    const placed = data.sessions.filter((s) => samePath(s.projectPath, navigation.project) && visibleNode(s) && s.graphPos && !grouped.has(s.id));
+    const placedCommands = (samePath(data.commandsProject, navigation.project) ? data.commands ?? [] : []).filter((c) => visibleNode(c) && c.pos && !grouped.has(c.id));
     const before = new Map([...placed, ...placedCommands].map((node) => [node.id, storedPos(node.id)]));
     if (before.size) history.record(navigation.project, { label: "자동 배치",
       undo: (tools) => restoreLayout(before, [], tools),
       redo: (tools) => restoreLayout(new Map([...before.keys()].map((id) => [id, null])), [], tools) });
+    for (const s of placed) s.graphPos = null;
     for (const c of placedCommands) c.pos = null;
     renderGraph();
     await Promise.all([
@@ -954,12 +1057,13 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       ...(hasWorktreeOutput(commandById(from)) ? { useGitWorktree: !$("link-git-worktree-row").hidden && $("link-git-worktree").checked } : {}),
     };
     const projectPath = navigation.project;
+    const tabId = navigation.graphTabId;
     // 연결 설정을 바꿨으면 이전 값으로 되돌릴 수 있게 남긴다.
     const recordEdit = () => {
       const previous = linkBody(link);
       const next = { ...previous, ...body, ...(body.when !== "keyword" ? { keyword: "" } : {}) };
       if (JSON.stringify(previous) === JSON.stringify(next)) return;
-      history.record(projectPath, { label: "연결 설정 변경",
+      history.record(projectPath, { tabId, label: "연결 설정 변경",
         undo: ({ resolve }) => api("PUT", `/api/links/${resolve(link.id)}`, previous),
         redo: ({ resolve }) => api("PUT", `/api/links/${resolve(link.id)}`, next) });
     };
@@ -968,7 +1072,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
         if (!confirm("이 연결을 삭제할까요?")) return;
         await api("DELETE", `/api/links/${link.id}`);
         const removed = { ...link };
-        history.record(projectPath, { label: "연결 삭제",
+        history.record(projectPath, { tabId, label: "연결 삭제",
           undo: (tools) => restoreLink(removed, tools),
           redo: ({ resolve }) => api("DELETE", `/api/links/${resolve(removed.id)}`) });
       } else if (action === "run") {
@@ -980,7 +1084,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
         recordEdit();
       } else {
         const created = await api("POST", "/api/links", { ...body, from, to });
-        if (created?.id) recordLinkCreated(projectPath, created);
+        if (created?.id) recordLinkCreated(projectPath, created, tabId);
       }
       $("link-dialog").close();
       await loadLinks();
@@ -989,6 +1093,16 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }
   });
 
-  return { loadNodeGroups: nodeGroups.load, loadMessages, loadLinks, renderGraph, clearGraphTransientState, connectCreatedGraphNode, renderLinkConditions, drawEdges, highlightSessions, clearSelection,
+  async function loadGraphTabs(projectPath = navigation.project, { affectedTabIds = [] } = {}) {
+    history.invalidate(projectPath, affectedTabIds);
+    for (const id of affectedTabIds) {
+      const saved = tabViews.get(graphScopeKey(projectPath, id));
+      if (saved) saved.selected = [];
+    }
+    if (affectedTabIds.includes(navigation.graphTabId)) ui.graphSelected.clear();
+    return tabs.load(projectPath);
+  }
+
+  return { loadGraphTabs, selectGraphTab: tabs.select, loadNodeGroups: nodeGroups.load, loadMessages, loadLinks, renderGraph, clearGraphTransientState, connectCreatedGraphNode, renderLinkConditions, drawEdges, highlightSessions, clearSelection,
     history, nodeSnapshot, recordNodesRemoved, renderHistoryButtons };
 }

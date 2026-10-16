@@ -5,10 +5,11 @@ import { samePath } from "../../shared/store.js";
 // 고른 카드가 있으면 함께 보내므로 "이 세션 역할을 테스터로 바꿔 줘"처럼 쓸 수 있다.
 export function createFlowAssistant({ api, navigation, getSelected, onApplied }) {
   const prompt = $("p-flow-assistant-prompt");
-  let pending = null; // { projectPath, actions }
+  let pending = null; // { projectPath, tabId, actions }
   let request = 0;
   let busy = false;
   let notice = ""; // 적용 결과. 다음 입력 전까지 선택 개수 대신 보여 준다.
+  const sameGraph = (projectPath, tabId) => samePath(projectPath, navigation.project) && tabId === navigation.graphTabId;
 
   function status(text = "") { $("p-flow-assistant-status").textContent = text; }
   function error(text = "") {
@@ -41,6 +42,7 @@ export function createFlowAssistant({ api, navigation, getSelected, onApplied })
     request++;
     pending = null;
     busy = false;
+    notice = "";
     error();
     $("p-flow-assistant-plan").hidden = true;
     sync();
@@ -50,6 +52,7 @@ export function createFlowAssistant({ api, navigation, getSelected, onApplied })
     e.preventDefault();
     const text = prompt.value.trim();
     const projectPath = navigation.project;
+    const tabId = navigation.graphTabId;
     if (!text || busy || !projectPath) return;
     const mine = ++request;
     busy = true;
@@ -60,12 +63,12 @@ export function createFlowAssistant({ api, navigation, getSelected, onApplied })
     sync();
     status("AI가 작업을 정리하는 중…");
     try {
-      const result = await api("POST", "/api/flow-assistant/plan", { projectPath, prompt: text, selected: getSelected() });
-      if (mine !== request || !samePath(projectPath, navigation.project)) return;
-      pending = { projectPath, actions: result.actions ?? [] };
+      const result = await api("POST", "/api/flow-assistant/plan", { projectPath, ...(tabId ? { tabId } : {}), prompt: text, selected: getSelected() });
+      if (mine !== request || !sameGraph(projectPath, tabId)) return;
+      pending = { projectPath, tabId, actions: result.actions ?? [] };
       showPlan(result.summary, pending.actions);
     } catch (err) {
-      if (mine !== request) return;
+      if (mine !== request || !sameGraph(projectPath, tabId)) return;
       showPlan("", []);
       $("p-flow-assistant-summary").textContent = "작업을 만들지 못했습니다.";
       error(err.message);
@@ -76,25 +79,28 @@ export function createFlowAssistant({ api, navigation, getSelected, onApplied })
 
   async function apply() {
     if (!pending?.actions.length || busy) return;
-    const { projectPath, actions } = pending;
-    if (!samePath(projectPath, navigation.project)) return reset();
+    const { projectPath, tabId, actions } = pending;
+    if (!sameGraph(projectPath, tabId)) return reset();
     const mine = ++request;
     busy = true;
     error();
     sync();
     status("적용하는 중…");
     try {
-      const result = await api("POST", "/api/flow-assistant/apply", { projectPath, actions });
+      const result = await api("POST", "/api/flow-assistant/apply", { projectPath, ...(tabId ? { tabId } : {}), actions });
       if (mine !== request) return;
+      if (!sameGraph(projectPath, tabId)) return reset();
       prompt.value = "";
       grow();
       reset();
+      const appliedRequest = request;
       // 그래프를 다시 불러오고 새 노드를 고른 뒤에 끝났다고 알린다.
-      await onApplied(result.created ?? []);
+      await onApplied(result.created ?? [], { projectPath, tabId });
+      if (appliedRequest !== request || !sameGraph(projectPath, tabId)) return;
       notice = `${result.done.length}개 작업을 적용했습니다.`;
       sync();
     } catch (err) {
-      if (mine !== request) return;
+      if (mine !== request || !sameGraph(projectPath, tabId)) return;
       error(err.message);
       busy = false;
       sync();

@@ -95,7 +95,8 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   async function openNew(projectPath, { orchestrator = false, kind, pos = null, connectFrom = null, connectWhen = null, connectKeyword = "" } = {}) {
     if (ui.newSessionContext) ui.newSessionContext.cancelled = true;
     branchPicker.reset();
-    const context = { projectPath, pos, connectFrom, connectWhen, connectKeyword };
+    const context = { projectPath, pos, connectFrom, connectWhen, connectKeyword,
+      tabId: navigation.graphTabId, tabProjectPath: navigation.project };
     ui.newSessionContext = context;
     try {
       await loadStatus();
@@ -105,7 +106,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       return;
     }
     if (ui.newSessionContext !== context || context.cancelled) return;
-    if (pos && (navigation.view !== "project" || !samePath(projectPath, navigation.project))) {
+    if (pos && (navigation.view !== "project" || !samePath(projectPath, navigation.project) || context.tabId !== navigation.graphTabId)) {
       ui.newSessionContext = null;
       return;
     }
@@ -196,6 +197,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       delete body.workBranch;
     }
     if (body.chat) delete body.projectPath;
+    else if (context?.tabId && samePath(context.tabProjectPath, body.projectPath)) body.tabId = context.tabId;
     ui.creating = true;
     syncNewSubmit();
     try {
@@ -208,7 +210,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       }
       // 그래프에서 만든 세션은 지정한 자리에 놓고, 손잡이에서 시작했으면 바로 연결한다.
       if (context?.pos && !context.cancelled && !body.chat && navigation.view === "project" &&
-          samePath(context.projectPath, body.projectPath) && samePath(navigation.project, body.projectPath)) {
+          context.tabId === navigation.graphTabId && samePath(context.projectPath, body.projectPath) && samePath(navigation.project, body.projectPath)) {
         await api("PUT", `/api/sessions/${created.id}`, { graphPos: context.pos }).catch(() => {});
         await connectCreatedGraphNode(context, created.id, body.projectPath);
       }

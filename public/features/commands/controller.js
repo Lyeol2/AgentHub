@@ -157,9 +157,10 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   async function removeCommand(c) {
     if (!c || !confirm(`${KIND_LABEL[kindOf(c)]} 노드 "${c.title}"을(를) 삭제할까요? 이 노드에 이어진 연결도 지웁니다.`)) return;
     const snapshot = nodeSnapshot?.(c);
+    const tabId = c.tabId ?? navigation.graphTabId;
     try {
       await api("DELETE", `/api/commands/${c.id}`);
-      if (snapshot) recordNodesRemoved(c.projectPath, [snapshot]);
+      if (snapshot) recordNodesRemoved(c.projectPath, [snapshot], tabId);
     } catch (err) {
       alert(err.message);
     }
@@ -168,7 +169,8 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
 
   // 같은 프로젝트의 실행 가능한 노드를 모은다.
   function renderGroupMembers(selected) {
-    const nodes = [...data.sessions.filter((s) => !s.chat && samePath(s.projectPath, navigation.project)), ...(data.commands ?? []).filter((c) => !["button", "markdown", "watch", "schedule", "webhook-in", "group"].includes(kindOf(c)) && samePath(c.projectPath, navigation.project))];
+    const inTab = (node) => selected.has(node.id) || !navigation.graphTabId || (node.tabId ?? data.defaultGraphTabId) === navigation.graphTabId;
+    const nodes = [...data.sessions.filter((s) => !s.chat && samePath(s.projectPath, navigation.project) && inTab(s)), ...(data.commands ?? []).filter((c) => !["button", "markdown", "watch", "schedule", "webhook-in", "group"].includes(kindOf(c)) && samePath(c.projectPath, navigation.project) && inTab(c))];
     $("group-members").replaceChildren(...(nodes.length ? nodes.map((node) => el("li", {}, el("label", { class: "check" }, el("input", { type: "checkbox", value: node.id, ...(selected.has(node.id) ? { checked: "" } : {}) }), " " + node.title, el("span", { class: "muted" }, " · " + (node.agent ?? KIND_LABEL[kindOf(node)]))))) : [el("li", { class: "muted" }, "이 프로젝트에 모을 수 있는 노드가 없습니다.")]));
   }
 
@@ -176,7 +178,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   function openCommandDialog(cmd, pos = null, connectFrom = null, kind = "command", { members = [], connectWhen = null, connectKeyword = "", taskAction = null } = {}) {
     if (ui.editingCommand) ui.editingCommand.cancelled = true;
     kind = kindOf(cmd ?? { kind });
-    ui.editingCommand = { id: cmd?.id ?? null, kind, pos, projectPath: navigation.project, connectFrom, connectWhen, connectKeyword };
+    ui.editingCommand = { id: cmd?.id ?? null, kind, pos, projectPath: navigation.project, tabId: cmd?.tabId ?? navigation.graphTabId, connectFrom, connectWhen, connectKeyword };
     const shells = data.shells?.length ? data.shells : [{ id: "powershell", label: "PowerShell" }];
     $("command-heading").textContent = cmd ? `${KIND_LABEL[kind]} ${cmd.title}` : `새 ${KIND_LABEL[kind]}`;
     $("command-title").value = cmd?.title ?? "";
@@ -407,7 +409,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     $("command-error").textContent = "";
     $("command-explain").textContent = "";
     try {
-      const made = await api("POST", "/api/commands/generate", { projectPath: navigation.project, prompt, shell: $("command-shell").value });
+      const made = await api("POST", "/api/commands/generate", { projectPath: context.projectPath, prompt, shell: $("command-shell").value });
       if (ui.editingCommand !== context || context.cancelled) return;
       $("command-text").value = made.command;
       if (!$("command-title").value.trim()) $("command-title").value = made.title;
@@ -438,7 +440,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     e.preventDefault();
     const context = ui.editingCommand;
     if (!context || context.cancelled) return;
-    const { id, pos, projectPath, kind } = context;
+    const { id, pos, projectPath, tabId, kind } = context;
     const cmd = commandById(id);
     if (action === "delete") {
       $("command-dialog").close();
@@ -467,13 +469,13 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
         const { regenerateToken: _regenerate, ...next } = body;
         const previous = Object.fromEntries(Object.keys(next).filter((key) => cmd[key] !== undefined).map((key) => [key, structuredClone(cmd[key])]));
         await api("PUT", `/api/commands/${cmd.id}`, body);
-        history?.record(projectPath, { label: `${KIND_LABEL[kind]} 편집`,
+        history?.record(projectPath, { tabId, label: `${KIND_LABEL[kind]} 편집`,
           undo: ({ resolve }) => api("PUT", `/api/commands/${resolve(cmd.id)}`, previous),
           redo: ({ resolve }) => api("PUT", `/api/commands/${resolve(cmd.id)}`, next) });
       } else {
-        created = await api("POST", "/api/commands", { ...body, ...(kind === "command" ? {} : { kind }), projectPath, pos });
+        created = await api("POST", "/api/commands", { ...body, ...(kind === "command" ? {} : { kind }), projectPath, pos, ...(tabId ? { tabId } : {}) });
         const made = structuredClone(created);
-        history?.record(projectPath, { label: `${KIND_LABEL[kind]} 만들기`,
+        history?.record(projectPath, { tabId, label: `${KIND_LABEL[kind]} 만들기`,
           undo: ({ resolve }) => api("DELETE", `/api/commands/${resolve(made.id)}`),
           redo: async ({ resolve, remap }) => {
             const body = commandBody(made);

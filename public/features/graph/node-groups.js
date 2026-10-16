@@ -1,15 +1,16 @@
 import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { nodeSize } from "./model.js";
+import { inGraphTab } from "./tabs.js";
 import { KIND_LABEL, hasBranchPorts, resultOnlyOutputs, isSourceOnly, isScheduleArmed } from "../commands/flow-nodes.js";
 
 // A group is a canvas container. Links continue to point to its real member nodes.
 export function createNodeGroups({ api, data, navigation, ui, history, renderGraph, loadSessions, loadCommands, runCommand, saveGroupTemplate, trackGesture, canvasPoint, placeCards, openLinkDialog, openCreateMenu, syncSelection }) {
   let loadingPath = null;
-  const groups = () => samePath(data.nodeGroupsProject, navigation.project) ? data.nodeGroups ?? [] : [];
+  const groups = () => samePath(data.nodeGroupsProject, navigation.project) ? (data.nodeGroups ?? []).filter((group) => inGraphTab(group, data, navigation)) : [];
   const byId = (id) => groups().find((group) => group.id === id);
   const owner = (id) => groups().find((group) => group.members.includes(id));
-  const nodes = () => [...data.sessions.filter((node) => samePath(node.projectPath, navigation.project)), ...(samePath(data.commandsProject, navigation.project) ? data.commands ?? [] : [])];
+  const nodes = () => [...data.sessions.filter((node) => samePath(node.projectPath, navigation.project)), ...(samePath(data.commandsProject, navigation.project) ? data.commands ?? [] : [])].filter((node) => inGraphTab(node, data, navigation));
   const node = (id) => nodes().find((item) => item.id === id);
   const kind = (item) => (KIND_LABEL[item?.kind] ?? (item?.orchestrator ? "지휘 세션" : "세션"));
   const title = (id) => node(id)?.title ?? id;
@@ -39,7 +40,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
 
   function replaceGroup(value) {
     if (!value?.id) return;
-    const list = groups();
+    const list = data.nodeGroups ?? [];
     const index = list.findIndex((group) => group.id === value.id);
     if (index < 0) list.push(value); else list[index] = value;
     data.nodeGroups = list;
@@ -48,6 +49,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
   async function update(group, body, { refreshNodes = false } = {}) {
     const projectPath = group.projectPath;
     if (!samePath(projectPath, navigation.project)) return false;
+    ui.graphSaving = (ui.graphSaving ?? 0) + 1;
     try {
       const result = await api("PUT", `/api/node-groups/${group.id}`, body);
       if (!samePath(projectPath, navigation.project)) return false;
@@ -57,18 +59,20 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
       await load(projectPath);
       return true;
     } catch (error) { if (samePath(projectPath, navigation.project)) { alert(error.message); await load(projectPath); } return false; }
+    finally { ui.graphSaving--; }
   }
 
   // 그룹 박스를 되살릴 때 보낼 값. 구성원과 포트는 그 사이 바뀐 노드 id를 따른다.
-  const groupBody = (group, resolve) => ({ projectPath: group.projectPath, title: group.title, members: group.members.map(resolve),
+  const groupBody = (group, resolve) => ({ projectPath: group.projectPath, ...(group.tabId ? { tabId: group.tabId } : {}), title: group.title, members: group.members.map(resolve),
     rect: group.rect, collapsed: group.collapsed, ports: (group.ports ?? []).map(({ id: _id, ...port }) => ({ ...port, nodeId: resolve(port.nodeId) })) });
 
   async function dissolve(group) {
     const projectPath = group.projectPath;
+    const tabId = group.tabId ?? navigation.graphTabId;
     try {
       await api("DELETE", `/api/node-groups/${group.id}`);
       const removed = structuredClone(group);
-      history?.record(projectPath, { label: "그룹 해제",
+      history?.record(projectPath, { tabId, label: "그룹 해제",
         undo: async ({ resolve, remap }) => { const result = await api("POST", "/api/node-groups", groupBody(removed, resolve)); remap(removed.id, (result.group ?? result).id); },
         redo: ({ resolve }) => api("DELETE", `/api/node-groups/${resolve(removed.id)}`) });
       if (!samePath(projectPath, navigation.project)) return;
@@ -87,21 +91,24 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
 
   async function create(selected = [...ui.graphSelected]) {
     const projectPath = navigation.project;
+    const tabId = navigation.graphTabId;
     const members = selected.filter((id) => node(id) && !owner(id));
     if (!members.length) return alert("그룹에 넣을 노드를 먼저 선택하세요. 이미 그룹에 속한 노드는 꺼낸 뒤 선택할 수 있습니다.");
+    ui.graphSaving = (ui.graphSaving ?? 0) + 1;
     try {
-      const result = await api("POST", "/api/node-groups", { projectPath, title: "노드 그룹", members, rect: bounds(members), collapsed: false, ports: [] });
-      if (!samePath(projectPath, navigation.project)) return;
+      const result = await api("POST", "/api/node-groups", { projectPath, ...(tabId ? { tabId } : {}), title: "노드 그룹", members, rect: bounds(members), collapsed: false, ports: [] });
       const group = result.group ?? result;
       if (group.id) {
         const made = structuredClone(group);
-        history?.record(projectPath, { label: "그룹 만들기",
+        history?.record(projectPath, { tabId, label: "그룹 만들기",
           undo: ({ resolve }) => api("DELETE", `/api/node-groups/${resolve(made.id)}`),
           redo: async ({ resolve, remap }) => { const again = await api("POST", "/api/node-groups", groupBody(made, resolve)); remap(made.id, (again.group ?? again).id); } });
       }
+      if (!samePath(projectPath, navigation.project) || tabId !== navigation.graphTabId) return;
       ui.graphSelected = new Set(group.id ? [group.id] : []);
       await load(projectPath);
     } catch (error) { if (samePath(projectPath, navigation.project)) alert(error.message); }
+    finally { ui.graphSaving--; }
   }
 
   function summary(group) {

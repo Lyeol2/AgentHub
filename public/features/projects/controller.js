@@ -206,16 +206,20 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   }
 
   async function importSession(p, f, button) {
+    const tabId = samePath(p.path, navigation.project) ? navigation.graphTabId : undefined;
+    const viewRevision = navigation.viewRevision;
+    const current = () => navigation.view === "project" && samePath(p.path, navigation.project) &&
+      tabId === navigation.graphTabId && viewRevision === navigation.viewRevision;
     button.disabled = true;
     button.textContent = "가져오는 중…";
     try {
       const created = await api("POST", "/api/sessions/import", {
-        projectPath: p.path, agent: f.agent, agentSessionId: f.agentSessionId,
+        projectPath: p.path, agent: f.agent, agentSessionId: f.agentSessionId, ...(tabId ? { tabId } : {}),
       });
       await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 가져오면서 등록된다.
-      await selectSession(created.id);
+      if (current()) await selectSession(created.id);
     } catch (err) {
-      alert(err.message);
+      if (current()) alert(err.message);
       button.disabled = false;
       button.textContent = "가져오기";
     }
