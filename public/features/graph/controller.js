@@ -151,29 +151,24 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const inProject = (action) => () => {
       if (navigation.view === "project" && samePath(projectPath, navigation.project)) action();
     };
-    const source = commandById(connectFrom);
-    const entries = [
-      ["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen, connectKeyword }))],
-    ];
-    entries.push(
-      ["새 명령", inProject(() => openCommandDialog(null, pos, connectFrom, "command", { connectWhen, connectKeyword }))]);
-    entries.push(
-      ["새 반복 제어", inProject(() => openCommandDialog(null, pos, connectFrom, "repeat", { connectWhen, connectKeyword }))],
-      ["새 결과 가공", inProject(() => openCommandDialog(null, pos, connectFrom, "transform", { connectWhen, connectKeyword }))],
-      ["새 알림", inProject(() => openCommandDialog(null, pos, connectFrom, "notify", { connectWhen, connectKeyword }))]);
-    if (!connectFrom) entries.push(
-      ["새 입력 폼", inProject(() => openCommandDialog(null, pos, null, "input"))],
-      ["새 파일 감시", inProject(() => openCommandDialog(null, pos, null, "watch"))]);
-    entries.push(["새 GIT", inProject(() => openCommandDialog(null, pos, connectFrom, "git", { connectWhen, connectKeyword }))]);
-    if (!connectFrom) entries.push(
-      ["새 버튼", inProject(() => openCommandDialog(null, pos, null, "button"))]);
-    entries.push(
-      ["새 Markdown 출력", inProject(() => openCommandDialog(null, pos, connectFrom, "markdown", { connectWhen, connectKeyword }))]);
+    const node = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, kind, { connectWhen, connectKeyword }))];
+    const start = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, null, kind))];
     // 고른 세션 카드가 있으면 그 세션들을 미리 골라 둔다.
     const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "group"].includes(node.kind); });
-    entries.push([picked.length > 1 && !connectFrom ? `선택한 노드 ${picked.length}개 결과 모으기` : "새 결과 모으기",
-      inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked, connectWhen, connectKeyword }))]);
-    openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [...(!connectFrom ? nodeGroups.selectedEntries() : []), ...entries,
+    const collect = [picked.length > 1 && !connectFrom ? `선택한 노드 ${picked.length}개 결과 모으기` : "새 결과 모으기",
+      inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked, connectWhen, connectKeyword }))];
+    // 종류별로 묶는다. 시작점 노드는 들어오는 연결을 받을 수 없으므로 손잡이에서 열었을 때는 뺀다.
+    const sections = [
+      ["AI", [["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen, connectKeyword }))]]],
+      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch")]],
+      ["실행", [node("새 명령", "command"), node("새 GIT", "git")]],
+      ["흐름 제어", [node("새 반복 제어", "repeat"), node("새 결과 가공", "transform"), collect]],
+      ["출력", [node("새 알림", "notify"), node("새 Markdown 출력", "markdown")]],
+    ];
+    const selected = !connectFrom ? nodeGroups.selectedEntries() : [];
+    openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [
+      ...selected, ...(selected.length ? [null] : []),
+      ...sections.filter(([, items]) => items.length).flatMap(([title, items]) => [title, ...items]),
       null,
       ...(!connectFrom && openGroupTemplates ? [["그룹 템플릿 추가", inProject(() => openGroupTemplates(pos))]] : []),
       ["스킬 관리", inProject(() => openSkillsManager())],

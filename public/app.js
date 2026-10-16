@@ -122,7 +122,6 @@ const renderGraph = (...args) => graph.renderGraph(...args);
 const loadMessages = (...args) => graph.loadMessages(...args);
 const loadCommands = (...args) => commands.loadCommands(...args);
 const loadSkills = (...args) => skills.loadSkills(...args);
-const renderHub = (...args) => knowledge.renderHub(...args);
 const openSessionMenu = (...args) => sessions.openSessionMenu(...args);
 const openNew = (...args) => creation.openNew(...args);
 const openSetup = (...args) => settings.openSetup(...args);
@@ -150,7 +149,6 @@ const loadStatus = (...args) => settings.loadStatus(...args);
 const openEquipDialog = (...args) => skills.openEquipDialog(...args);
 const clearSelection = (...args) => graph.clearSelection(...args);
 const sortedProjects = (...args) => projects.sortedProjects(...args);
-const loadHub = (...args) => knowledge.loadHub(...args);
 const openChat = (...args) => sessions.openChat(...args);
 const openSettings = (...args) => settings.openSettings(...args);
 const notifyQuestion = (...args) => sessions.notifyQuestion(...args);
@@ -189,7 +187,7 @@ const settings = createSettingsController({
   api, goDashboard, loadProjects, renderProjectNav, currentProject, renderLinkConditions, data, navigation
 });
 const projects = createProjectsController({
-  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, toggleSessionLock, openNew, data, navigation
+  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation
 });
 const git = createGitController({
   api, selectSession, openSetup, currentProject, projectTab, pullIssues, navigation
@@ -204,7 +202,7 @@ const skills = createSkillsController({
   api, loadSessions, sessionById, renderGraph, highlightSessions, data, navigation
 });
 const knowledge = createKnowledgeController({
-  api, loadSessions, loadProjects, currentProject, loadLinks, data, navigation
+  api, currentProject
 });
 const sessions = createSessionsController({
   POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, data, navigation
@@ -213,11 +211,11 @@ const account = createAccountController({
   api, openSetup, onChange: () => issues?.accountChanged(),
 });
 const issues = createIssuesController({
-  api, account: () => account.account(), connectAccount: () => account.connect(), goProject, showProjectTab, projectTab, selectSession, loadHub, navigation
+  api, account: () => account.account(), connectAccount: () => account.connect(), goProject, showProjectTab, projectTab, selectSession, navigation
 });
 createRecordsController({ api, loadSessions, selectSession, data, navigation });
 const creation = createCreationController({
-  api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, loadHub, fillModels, fillEfforts, openChat, openSettings, data, navigation
+  api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, fillModels, fillEfforts, openChat, openSettings, data, navigation
 });
 const tasks = createTasksController({
   api, data, navigation, loadStatus, loadSessions, loadProjects, fillModels, fillEfforts, selectSession,

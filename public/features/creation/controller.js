@@ -1,11 +1,10 @@
-import { $, AGENT_LABEL, el } from "../../shared/dom.js";
+import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 import { createWorkbranchPicker } from "../../shared/workbranches.js";
 
-export function createCreationController({ api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, loadHub, fillModels, fillEfforts, openChat, openSettings, data, navigation }) {
+export function createCreationController({ api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, fillModels, fillEfforts, openChat, openSettings, data, navigation }) {
   const ui = {
-    "templateRoles": null,
     "newSessionContext": null,
     "creating": false
   };
@@ -31,7 +30,6 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       $("new-isolate").checked = false;
     }
     syncNewWorktree();
-    $("new-template-row").hidden = chat || !ui.templateRoles?.length;
     $("new-title").placeholder = chat ? "예: 여행 일정 짜기" : "예: 가방 UI 버그 수정";
     $("new-role").placeholder = chat
       ? "예: 친절한 영어 선생님. 틀린 표현은 고쳐 준다."
@@ -85,42 +83,10 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     $("new-permission").value = defaultPermission(agent, modes);
   }
 
-  // 고른 프로젝트의 AGENTHUB.md 역할 템플릿을 채운다.
-  async function fillTemplates() {
-    const projectPath = $("new-project").value;
-    let roles = [];
-    try {
-      roles = (await loadHub(projectPath)).roles ?? [];
-    } catch {
-      // 템플릿 없이도 세션은 만들 수 있다.
-    }
-    if ($("new-project").value !== projectPath) return;
-    ui.templateRoles = roles;
-    $("new-template").replaceChildren(el("option", { value: "" }, "직접 입력"),
-      ...roles.map((r) => el("option", { value: r.name }, `${r.name} · ${AGENT_LABEL[r.agent]} · ${permissionLabel(r.permission)}`)));
-    $("new-template-row").hidden = !roles.length || newKind().chat;
-    applyTemplate();
-  }
-
-  function applyTemplate() {
-    const role = ui.templateRoles?.find((r) => r.name === $("new-template").value);
-    $("new-role-name").value = role?.name ?? "";
-    if (!role) return;
-    $("new-orchestrator").checked = false;
-    $("new-agent").value = role.agent;
-    $("new-model").value = role.model;
-    syncNewKind();
-    $("new-permission").value = role.permission;
-    $("new-role").value = role.body;
-    if (!$("new-title").value.trim()) $("new-title").value = role.name;
-  }
-
   // 오케스트레이터는 선택한 작업 폴더에서 읽기만 한다.
   function syncOrchestrator() {
     if (!$("new-orchestrator").checked) return;
     $("new-permission").value = newKind().agent === "claude" ? "default" : "read-only";
-    $("new-template").value = "";
-    $("new-role-name").value = "";
     if (!$("new-title").value.trim()) $("new-title").value = "오케스트레이터";
   }
 
@@ -156,8 +122,6 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     if (match) $("new-project").value = match.path;
     if (kind) $("new-agent").value = kind;
     else if ($("new-agent").value.endsWith("-chat")) $("new-agent").value = "claude";
-    $("new-template").replaceChildren();
-    ui.templateRoles = [];
     $("new-error").textContent = "";
     $("new-orchestrator").checked = orchestrator;
     $("new-isolate").checked = false;
@@ -166,7 +130,6 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     syncNewKind();
     syncOrchestrator();
     $("new-dialog").showModal();
-    fillTemplates();
   }
 
   $("open-new").addEventListener("click", () => openNew(navigation.project ?? data.current?.projectPath));
@@ -189,9 +152,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   $("new-project").addEventListener("change", () => {
     branchPicker.reset();
     syncNewWorktree(true);
-    void fillTemplates();
   });
-  $("new-template").addEventListener("change", applyTemplate);
 
   $("new-dialog").addEventListener("close", () => {
     if (ui.newSessionContext) ui.newSessionContext.cancelled = true;

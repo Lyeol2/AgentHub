@@ -16,7 +16,7 @@ import { MAX_HOPS, lastAnswer, verdictLine, pickLinks, noMatchNote, handoffText,
 export { CONDITIONS, CONDITION_LABELS, MAX_HOPS, lastAnswer, verdictLine, keywordList, hasKeyword, matches, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
 
 export class Chain {
-  // compose: CLI에 실제로 넘길 내용을 만든다(역할·공통 지침·오케스트레이터 맥락).
+  // compose: CLI에 실제로 넘길 내용을 만든다(역할·오케스트레이터 맥락).
   // notify: 연결(승인 대기)이나 대기열이 바뀌면 화면에 알린다. (kind: "links" | "queue", sessionId)
   // commands: 명령 노드 저장소(없으면 명령 노드를 쓰지 않는다). notify("commands")로 명령 상태 변화를 알린다.
   constructor({ store, runner, links, cliPaths, compose = withRole, notify = () => {}, commands = null, autoTurnEnd = true, runGit = runGitNode, runCommandShell = runShell, createWatch = undefined, history = null }) {

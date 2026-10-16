@@ -134,7 +134,6 @@
               </span>
             </div>
           </div>
-          <div class="hub-bar" id="p-hub"></div>
           <div class="graph" id="p-graph" role="region" aria-label="세션 흐름 그래프. 휠로 확대·축소, 휠 버튼을 끌어 이동, 빈 곳을 끌어 선택 후 Delete로 삭제"></div>
         </div>
         </div>
@@ -404,10 +403,6 @@
       <label class="for-project">프로젝트
         <select name="projectPath" id="new-project" required></select>
       </label>
-      <label id="new-template-row">역할 템플릿 <span class="muted">AGENTHUB.md</span>
-        <select id="new-template"></select>
-      </label>
-      <input type="hidden" name="roleName" id="new-role-name">
       <label>제목 <input name="title" id="new-title" placeholder="예: 가방 UI 버그 수정"></label>
       <label>역할 <textarea name="role" id="new-role" rows="3" placeholder="예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 '검토 요청'이라고 쓴다."></textarea></label>
       <div class="two">
@@ -493,21 +488,6 @@
       <menu>
         <button value="cancel" formnovalidate class="ghost">닫기</button>
         <button value="ok" class="primary">저장</button>
-      </menu>
-    </form>
-  </dialog>
-
-  <dialog id="flow-dialog">
-    <form method="dialog" id="flow-form" class="dialog-form">
-      <h3>흐름 시작 <small>AGENTHUB.md의 흐름 템플릿으로 세션을 만들고 연결합니다</small></h3>
-      <label>흐름 <select id="flow-name"></select></label>
-      <div class="flow-preview" id="flow-preview"></div>
-      <label>작업 이름 <input id="flow-label" placeholder="예: 가방 UI 개편 (세션 제목 앞에 붙습니다)"></label>
-      <label>첫 요청 <textarea id="flow-prompt" rows="4" placeholder="비워 두면 세션만 만들고 기다립니다. 적으면 받는 연결이 없는 역할에 바로 보냅니다."></textarea></label>
-      <p class="error" id="flow-error"></p>
-      <menu>
-        <button value="cancel" formnovalidate class="ghost">취소</button>
-        <button value="ok" class="primary">시작</button>
       </menu>
     </form>
   </dialog>
@@ -738,7 +718,7 @@
       <h3>프로젝트 제거 <small id="project-remove-name"></small></h3>
       <p id="project-remove-summary"></p>
       <ul class="project-remove-keep">
-        <li>프로젝트 폴더와 파일, AGENTHUB.md, 스킬 파일은 <b>그대로 둡니다</b>.</li>
+        <li>프로젝트 폴더와 파일, 스킬 파일은 <b>그대로 둡니다</b>.</li>
         <li>Claude Code·Codex의 대화 기록 파일도 그대로 두고, 목록에서만 숨깁니다.</li>
         <li>나중에 같은 폴더를 다시 추가하거나 거기서 세션을 만들면 다시 보입니다.</li>
       </ul>
@@ -760,7 +740,6 @@
       <label>제목 <input id="issue-title" maxlength="256" required placeholder="무엇을 해야 하는지 한 줄로"></label>
       <div class="row issue-row">
         <label>받을 팀원 <select id="issue-assignee" required></select></label>
-        <label>추천 흐름 <select id="issue-flow"><option value="">(지정 안 함)</option></select></label>
       </div>
       <label>내용 <textarea id="issue-body" rows="14"></textarea></label>
       <p class="hint" id="issue-visibility"></p>

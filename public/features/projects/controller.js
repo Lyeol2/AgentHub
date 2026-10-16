@@ -2,7 +2,7 @@ import { createProjectsView } from "./view.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 
-export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, renderHub, openSessionMenu, toggleSessionLock, openNew, data, navigation }) {
+export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation }) {
   const ui = {
     "filter": "",
     "removingProject": null,
@@ -155,7 +155,6 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     loadSkills(p.path);
     loadCommands(p.path);
     loadMessages(p.path);
-    renderHub();
     table("p-found", [["세션"], ["에이전트"], ["요청", "num"], ["마지막 사용", "num"], ["", "right"]], [],
       "기록을 찾는 중…");
     await renderFound(p);

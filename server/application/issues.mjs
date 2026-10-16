@@ -34,7 +34,7 @@ export function issuePrompt({ issue, comments = [] }) {
   ].join("\n\n");
 }
 
-export function createIssueService({ config, store, sessions, workflows, links, notify, client = githubIssues, runGit = runGitHubCommand, logger = console }) {
+export function createIssueService({ config, store, sessions, links, notify, client = githubIssues, runGit = runGitHubCommand, logger = console }) {
   const repoCache = { at: 0, map: new Map() };
 
   async function gitRepo(projectPath) {
@@ -159,27 +159,18 @@ export function createIssueService({ config, store, sessions, workflows, links, 
     });
   }
 
-  // 받은 작업을 AGENTHUB.md 흐름이나 세션 하나로 시작한다. 사용자가 누를 때만 실행한다.
+  // 받은 작업을 세션 하나로 시작한다. 사용자가 누를 때만 실행한다.
   async function start(projectPath, number, body = {}) {
     const dir = await gitRepo(projectPath);
-    const mode = body.mode === "session" ? "session" : "flow";
     return guard(async () => {
       const found = await client.detail(dir, number, { remote: body.remote });
       const { issue } = found;
       if (issue.state !== "open") throw new HttpError(409, "열린 작업만 시작할 수 있습니다.");
       const prompt = issuePrompt(found);
       const label = ("#" + issue.number + " " + issue.title).slice(0, 100);
-      let created;
-      if (mode === "flow") {
-        const flowName = String(body.flowName ?? issue.meta?.flow ?? "").trim();
-        if (!flowName) throw new HttpError(400, "시작할 흐름을 고르세요.");
-        created = await workflows.createFlow({ projectPath: dir, flowName, name: label, prompt });
-      } else {
-        const summary = await sessions.create({ projectPath: dir, agent: body.agent ?? "claude", permission: body.permission, title: label });
-        const session = sessions.getSession(summary.id);
-        sessions.startTurn(session, prompt);
-        created = [summary];
-      }
+      const summary = await sessions.create({ projectPath: dir, agent: body.agent ?? "claude", permission: body.permission, title: label });
+      sessions.startTurn(sessions.getSession(summary.id), prompt);
+      const created = [summary];
       const previous = links.find(issue.repo, issue.number);
       const ids = [...new Set([...(previous?.sessionIds ?? []), ...created.map((s) => s.id)])];
       const link = links.upsert(issue.repo, issue.number, {
@@ -187,8 +178,7 @@ export function createIssueService({ config, store, sessions, workflows, links, 
         progress: body.progress !== false, done: false, startedAt: new Date().toISOString(),
       });
       if (link.progress) {
-        const how = mode === "flow" ? "흐름 \"" + String(body.flowName ?? issue.meta?.flow) + "\"" : "세션 (" + (AGENT_NAME[body.agent] ?? "Claude") + ")";
-        client.comment(dir, issue.number, "🤖 AgentHub에서 작업을 시작했습니다 · " + how, { remote: body.remote })
+        client.comment(dir, issue.number, "🤖 AgentHub에서 작업을 시작했습니다 · 세션 (" + (AGENT_NAME[body.agent] ?? "Claude") + ")", { remote: body.remote })
           .catch((error) => logger.error?.(error));
       }
       notify("issues", { projectPath: dir, number: issue.number });

@@ -259,42 +259,6 @@ test("api: 세션 다시 시작은 CLI 대화와 수명만 비운다", async () 
   assert.equal((await api("DELETE", `/sessions/${s.id}`)).status, 200);
 });
 
-test("api: AGENTHUB.md 만들기와 흐름 시작", async () => {
-  assert.equal((await api("GET", `/hub?path=${encodeURIComponent(repo)}`)).body.exists, false);
-  const hub = (await api("POST", "/hub/init", { path: repo })).body;
-  assert.equal(hub.roles.length, 2);
-  assert.equal((await api("POST", "/hub/init", { path: repo })).status, 409);
-
-  const created = await api("POST", "/hub/flows", { projectPath: repo, flowName: "구현과 리뷰", name: "작업" });
-  assert.equal(created.status, 200);
-  assert.deepEqual(created.body.map((s) => [s.title, s.agent, !!s.worktree]),
-    [["작업 · 구현", "claude", false], ["작업 · 리뷰", "codex", false]]);
-  assert.equal((await api("GET", "/links")).body.length, 2);
-  for (const s of created.body) await api("DELETE", `/sessions/${s.id}?removeWorktree=1`);
-});
-
-test("api: 역할 템플릿의 Codex 새 권한과 에이전트별 기본 권한으로 흐름을 만든다", async () => {
-  const folder = fs.mkdtempSync(path.join(tmp, "permission-roles-"));
-  fs.writeFileSync(path.join(folder, "AGENTHUB.md"), [
-    "## 역할: 자동 검토", "- 에이전트: codex", "- 권한: auto-review",
-    "## 역할: 전체 접근", "- 에이전트: codex", "- 권한: danger-full-access",
-    "## 역할: Codex 기본", "- 에이전트: codex",
-    "## 역할: Claude 기본", "- 에이전트: claude",
-    "## 흐름: 권한", "- 자동 검토 -> 전체 접근: 수동", "- 전체 접근 -> Codex 기본: 수동", "- Codex 기본 -> Claude 기본: 수동",
-  ].join("\n"));
-  const hub = (await api("GET", `/hub?path=${encodeURIComponent(folder)}`)).body;
-  assert.deepEqual(hub.warnings, []);
-  assert.deepEqual(hub.roles.map((role) => role.permission), ["auto-review", "danger-full-access", "workspace-write", "acceptEdits"]);
-  const made = await api("POST", "/hub/flows", { projectPath: folder, flowName: "권한", name: "권한 테스트" });
-  assert.equal(made.status, 200);
-  try {
-    assert.deepEqual(made.body.map((session) => session.permission).sort(), ["auto-review", "danger-full-access", "workspace-write", "acceptEdits"].sort());
-    for (const session of made.body) assert.equal((await api("GET", `/sessions/${session.id}`)).body.permission, session.permission);
-  } finally {
-    for (const session of made.body) await api("DELETE", `/sessions/${session.id}`);
-  }
-});
-
 test("api: 오케스트레이터 세션과 계획 처리 경로", async () => {
   const orc = (await api("POST", "/sessions", { agent: "claude", projectPath: repo, permission: "default", orchestrator: true })).body;
   assert.equal(orc.kind, "orchestrator");

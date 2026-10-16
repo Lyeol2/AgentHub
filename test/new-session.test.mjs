@@ -17,7 +17,7 @@ function element() {
   };
 }
 function setup() {
-  const nodes = new Map(), calls = [], roles = [];
+  const nodes = new Map(), calls = [];
   const get = (id) => { if (!nodes.has(id)) nodes.set(id, element()); return nodes.get(id); };
   globalThis.document = { getElementById: get };
   globalThis.FormData = class extends Map { constructor(form) { super(form.fields); } };
@@ -32,14 +32,14 @@ function setup() {
     api: (...args) => service.api(...args),
     loadStatus: async () => {}, loadSessions: async () => {}, loadProjects: async () => {},
     sortedProjects: () => [{ path: "C:/repo", name: "repo" }],
-    loadHub: async () => ({ roles }), fillModels: () => {}, fillEfforts: () => {},
+    fillModels: () => {}, fillEfforts: () => {},
     connectCreatedGraphNode: async (...args) => calls.push(["connect", ...args]),
     openChat: () => {}, openSettings: () => {},
   });
   // The view's element helper uses the same minimal DOM as the real controller.
   document.createElement = (_tag) => ({ ...element(), setAttribute(key, value) { this[key] = value; } });
   get("new-agent").value = "codex";
-  return { data, navigation, calls, roles, get, controller, service };
+  return { data, navigation, calls, get, controller, service };
 }
 function submit(h, fields) {
   return h.get("new-form").handlers.submit({ submitter: { value: "ok" }, preventDefault() {}, target: { fields, reset() {} } });
@@ -122,22 +122,6 @@ test("워크트리를 선택해야 이름 입력이 필수이며 채팅으로 �
   assert.equal(h.get("new-worktree-name").required, false);
   assert.equal(h.get("new-worktree-name").disabled, true);
   assert.equal(h.get("new-worktree-name").validationMessage, "");
-});
-
-test("역할 템플릿의 이전 분리 설정이 워크트리를 자동 선택하지 않는다", async () => {
-  const h = setup();
-  h.roles.push(...[{ name: "구현", agent: "codex", model: "", permission: "workspace-write", body: "구현한다", isolate: true }]);
-  await h.controller.openNew("C:/repo");
-  await Promise.resolve();
-  h.get("new-template").value = "구현";
-  h.get("new-template").handlers.change();
-  assert.equal(h.get("new-isolate").checked, false);
-  assert.equal(h.get("new-worktree-name").required, false);
-  h.get("new-isolate").checked = true;
-  h.get("new-worktree-name").value = "chosen";
-  h.get("new-template").handlers.change();
-  assert.equal(h.get("new-isolate").checked, true);
-  assert.equal(h.get("new-worktree-name").value, "chosen");
 });
 
 test("워크트리 이름이 없거나 안전하지 않으면 세션을 만들지 않는다", async () => {

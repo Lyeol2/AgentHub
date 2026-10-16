@@ -463,18 +463,6 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
 .dialog-form menu .spacer { flex: 1; }
 .dialog-form textarea { resize: vertical; }
 
-/* ── AGENTHUB.md ──────────────────────────────────────────── */
-.hub-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 16px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
-.hub-bar:empty { display: none; }
-.hub-bar .spacer { flex: 1; }
-.hub-bar .hub-file { font-family: var(--mono); font-size: 12px; font-weight: 600; }
-.hub-warnings { flex-basis: 100%; margin: 2px 0 0; padding-left: 18px; color: var(--warn); font-size: 12px; }
-.flow-preview { display: grid; gap: 8px; }
-.flow-roles { display: flex; flex-wrap: wrap; gap: 6px; }
-.flow-role-chip { display: inline-flex; align-items: center; gap: 4px; padding: 3px 9px; border: 1px solid var(--line-strong); border-radius: 6px; background: var(--panel-2); font-size: 12.5px; }
-.flow-role-chip.missing { color: var(--danger); border-color: rgb(240 100 100 / .4); }
-.flow-steps { margin: 0; padding-left: 18px; font-size: 12.5px; }
-
 /* ── 오케스트레이터 ───────────────────────────────────────── */
 .pill.orch { color: var(--orch); border-color: rgb(170 120 255 / .45); background: rgb(170 120 255 / .12); }
 .gcard.orchestrator { border-color: rgb(170 120 255 / .55); background: linear-gradient(180deg, rgb(170 120 255 / .08), var(--panel-2) 60%); }
@@ -593,6 +581,9 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 }
 .context-menu .menu-title { padding: 4px 10px 6px; font-size: 11.5px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .context-menu hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--line); }
+.context-menu .menu-section { padding: 6px 10px 2px; font-size: 11px; font-weight: 600; color: var(--faint); }
+.context-menu .menu-section:not(:nth-child(2)) { margin-top: 4px; border-top: 1px solid var(--line); padding-top: 8px; }
+.context-menu hr + .menu-section { margin-top: 0; border-top: 0; padding-top: 6px; }
 .menu-item { border: 0; background: transparent; text-align: left; padding: 6px 10px; border-radius: 5px; font-size: 12.5px; }
 .menu-item:hover:not(:disabled) { background: var(--hover); }
 .menu-item.danger { color: var(--danger); }
@@ -824,7 +815,7 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 #view-project .tab-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; align-content: start; }
 #view-project .tab-panel[data-panel="flow"] { display: flex; overflow: hidden; }
 .flow-card { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
-.flow-card > .card-head, .flow-card > .hub-bar { flex: none; }
+.flow-card > .card-head { flex: none; }
 .flow-card > .card-head { flex-wrap: wrap; gap: 8px; }
 .flow-card > .card-head h3 { flex-wrap: wrap; gap: 4px 10px; }
 #p-sessions .role-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
