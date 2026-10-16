@@ -715,7 +715,9 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .setup-list { display: grid; gap: 10px; }
 .setup-item { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; }
 .setup-item.ok { border-color: rgb(76 194 138 / .4); }
-.setup-head { display: flex; align-items: center; gap: 8px; }
+.setup-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.setup-item > .hint, .setup-job > .error { overflow-wrap: anywhere; }
+.setup-retry { display: flex; gap: 8px; }
 .pill.setup-ok { color: var(--ok); border-color: rgb(76 194 138 / .45); }
 .pill.setup-need { color: var(--warn); border-color: rgb(229 180 75 / .5); }
 .setup-job { display: grid; gap: 6px; padding: 8px 10px; border-radius: 6px; background: var(--code-bg); }
@@ -1142,10 +1144,13 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .gcmd-git { border-color: rgb(240 145 75 / .65); }
 .gcmd-git:hover { border-color: #f0914b; }
 .pill.cmd.git { color: #f0914b; border-color: rgb(240 145 75 / .5); background: rgb(240 145 75 / .1); }
-.gcmd-git .git-port.success { top: 40px; border-color: var(--ok); }
-.gcmd-git .git-port.error { top: 78px; border-color: var(--danger); }
-.gcmd-git .git-port.success:hover { background: var(--ok); }
-.gcmd-git .git-port.error:hover { background: var(--danger); }
+.gcmd-git .git-port.success, .gcmd-command .git-port.success, .gcmd-task .git-port.success { top: 40px; border-color: var(--ok); }
+.gcmd-git .git-port.error, .gcmd-command .git-port.error, .gcmd-task .git-port.error { top: 78px; border-color: var(--danger); }
+.gcmd-git .git-port.success:hover, .gcmd-command .git-port.success:hover, .gcmd-task .git-port.success:hover { background: var(--ok); }
+.gcmd-git .git-port.error:hover, .gcmd-command .git-port.error:hover, .gcmd-task .git-port.error:hover { background: var(--danger); }
+.gcmd-task { border-color: rgb(91 157 255 / .65); }
+.gcmd-task:hover { border-color: #5b9dff; }
+.pill.cmd.task { color: #5b9dff; border-color: rgb(91 157 255 / .5); background: rgb(91 157 255 / .1); }
 .git-port-label { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); font-size: 10px; line-height: 18px; white-space: nowrap; padding: 0 4px; background: var(--panel); border-radius: 4px; }
 .git-port.success .git-port-label { color: var(--ok); }
 .git-port.error .git-port-label { color: var(--danger); }
@@ -1170,6 +1175,10 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .gcmd-transform { border-color: rgb(170 120 255 / .65); }
 .gcmd-repeat { border-color: rgb(229 180 75 / .65); }
 .gcmd-watch { border-color: rgb(76 194 138 / .65); }
+.gcmd-schedule { border-color: rgb(91 157 255 / .65); }
+.gcmd.scheduled { box-shadow: 0 0 0 3px rgb(91 157 255 / .15); }
+.pill.cmd-scheduled { color: var(--accent); }
+.gcmd-schedule .gcmd-result-text { white-space: normal; overflow-wrap: anywhere; }
 .gcmd.watching { box-shadow: 0 0 0 3px rgb(76 194 138 / .15); }
 .pill.cmd-watching { color: var(--ok); }
 .gcmd-repeat .git-port.success { top: 40px; border-color: var(--ok); }

@@ -9,6 +9,45 @@ import { Chain } from "../server/chain.mjs";
 import { RunHistoryStore } from "../server/run-history.mjs";
 import { createHub } from "../server/bootstrap.mjs";
 
+test("execution schedule: timed sessions share variables and history, and stopping a run disarms its reservation", async t => {
+  const f = fixture(t, { nodes: [
+    { id: "cmd-schedule", kind: "schedule", title: "매분 작업", scheduleMode: "interval", intervalMinutes: 1, prompt: "예약 요청 {{scheduledAt}}" },
+    { id: "cmd-notify", kind: "notify", title: "예약 완료", message: "{{scheduledAt}}: {{input}}" },
+  ], connections: [{ from: "cmd-schedule", to: "a" }, { from: "a", to: "cmd-notify" }] });
+  let now = Date.now(), callback;
+  const schedules = f.chain.workflow.schedules;
+  schedules.now = () => now;
+  schedules.setTimer = fn => { callback = fn; return { unref() {} }; };
+  schedules.clearTimer = () => { callback = null; };
+  const node = f.node("cmd-schedule");
+  await f.chain.runCommand(node);
+  assert.equal(f.runner.calls.length, 0);
+  const firstAt = node.nextRunAt;
+  now += 60_000; callback();
+  await until(() => f.runner.calls.length === 1, "timer should start the connected AI session");
+  assert.equal(f.runner.calls[0].prompt, `예약 요청 ${firstAt}`);
+  const firstRun = node.lastRun.runId;
+  assert.equal(f.history.get(firstRun).steps.find(step => step.nodeId === node.id).result.runId, firstRun);
+  assert.equal(f.chain.flowFor(f.sessions.get("a")).id, firstRun);
+  await f.complete("a", "정리 완료");
+  await until(() => f.history.get(firstRun)?.status === "success", "the waiting reservation must not keep completed history running");
+  assert.equal(f.history.get(firstRun).variables.scheduledAt, firstAt);
+  assert.match(f.node("cmd-notify").lastRun.outputText, /정리 완료/);
+  assert.equal(node.scheduleEnabled, true);
+  now += 60_000; callback();
+  await until(() => f.runner.calls.length === 2, "next occurrence creates another session invocation");
+  const secondRun = node.lastRun.runId;
+  assert.notEqual(secondRun, firstRun);
+  assert.equal(f.history.get(secondRun).steps.find(step => step.nodeId === node.id).result.runId, secondRun);
+  f.chain.stopRun(secondRun);
+  assert.equal(node.scheduleEnabled, false);
+  assert.equal(node.nextRunAt, null);
+  assert.equal(callback, null);
+  assert.deepEqual(f.runner.stops, ["a"]);
+  assert.equal(f.history.get(firstRun).status, "success");
+  assert.equal(f.history.get(secondRun).status, "stopped");
+});
+
 class FakeRunner extends EventEmitter {
   calls = [];
   stops = [];

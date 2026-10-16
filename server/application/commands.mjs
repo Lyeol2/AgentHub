@@ -7,7 +7,7 @@ import { HttpError } from "./errors.mjs";
 import { FLOW_MEMBER_KINDS, inputValues, newHookToken } from "../flow-nodes.mjs";
 import { HOOK_BODY_MAX, createHookRateLimit, findHookNode, hookVariables } from "../webhooks.mjs";
 
-export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, notify: broadcast }) {
+export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, ask = askOnce, notify: broadcast }) {
   const { ensureProject } = projects;
   const allowHook = createHookRateLimit();
   function getCommand(id) {
@@ -18,12 +18,12 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   // 하고 싶은 일을 받아 Claude CLI(없으면 Codex)로 셸 명령을 만든다. 파일은 읽기만 하고, 기록은 남기지 않는다.
   async function generateCommand({ prompt, shell, projectPath }) {
-    const text = await askOnce({ cliPaths, prompt: generatePrompt({ prompt, shell, projectPath }), cwd: projectPath, label: "명령 만들기" });
+    const text = await ask({ cliPaths, prompt: generatePrompt({ prompt, shell, projectPath }), cwd: projectPath, label: "명령 만들기" });
     try { return parseGenerated(text); }
     catch (error) { throw new HttpError(500, error.message); }
   }
   function list(projectPath) {
-    return { shells: shells(), commands: projectPath ? commands.list(projectPath) : [] };
+    return { shells: shells(), commands: projectPath ? commands.list(projectPath) : [], timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
   }
 
   async function gitBranches(projectPath) {
@@ -52,7 +52,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     for (const id of fields.members) {
       const session = store.get(id) ?? commands.get(id);
       if (!session) throw new HttpError(400, "결과를 모을 노드가 없습니다. 목록을 새로 고쳐 다시 고르세요.");
-      if (id === selfId || (commands.get(id) && !FLOW_MEMBER_KINDS.includes(commandKind(session)))) throw new HttpError(400, "결과 모으기에는 세션, 명령, Git, 입력, 반복, 가공 노드만 넣을 수 있습니다.");
+      if (id === selfId || (commands.get(id) && !FLOW_MEMBER_KINDS.includes(commandKind(session)))) throw new HttpError(400, "결과 모으기에는 세션, 명령, Git, 작업, 입력, 반복, 가공 노드만 넣을 수 있습니다.");
       if (session.chat || !session.projectPath || path.resolve(session.projectPath).toLowerCase() !== path.resolve(projectPath).toLowerCase()) {
         throw new HttpError(400, `"${session.title}"은 이 프로젝트의 노드가 아니라 결과를 모을 수 없습니다.`);
       }
@@ -71,6 +71,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
       state: "idle", lastRun: null, createdAt: new Date().toISOString(),
     };
     if (command.kind === "webhook-in") command.hookToken = newHookToken();
+    if (command.kind === "schedule") Object.assign(command, { scheduleEnabled: false, nextRunAt: null });
     savePos(command, body.pos);
     commands.add(command);
     broadcast("commands", {});
@@ -79,8 +80,8 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   function update(id, body) {
     const command = getCommand(id);
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled"].some((key) => body[key] !== undefined);
-    if (editing && ["git", "input", "repeat", "transform", "watch", "notify", "webhook", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification"].some((key) => body[key] !== undefined);
+    if (editing && ["git", "task", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching", "scheduled"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
     try {
       if (editing) fields = checkCommand(body, command);
@@ -126,7 +127,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     }
     const origin = links.list().filter((link) => link.to === id).map((link) => store.get(link.from)).find(Boolean) ?? null;
     const pending = chain.runCommand(command, { origin, depth: 0, values: body.values });
-    if (["button", "input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"].includes(commandKind(command))) {
+    if (["button", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in"].includes(commandKind(command))) {
       try { await pending; }
       catch (error) { throw new HttpError(400, error.message); }
     }

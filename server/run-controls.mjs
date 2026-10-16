@@ -114,7 +114,7 @@ export class RunControls {
       if (!run) continue;
       let status;
       if (flow.cancelled) {
-        const stillRunning = [...this.chain.workflow.nodes].some(([nodeId, current]) => current.id === flow.id && (this.chain.runner.isRunning(nodeId) || (this.chain.runs.has(nodeId) && !this.chain.workflow.watchers.has(nodeId))));
+        const stillRunning = [...this.chain.workflow.nodes].some(([nodeId, current]) => current.id === flow.id && (this.chain.runner.isRunning(nodeId) || (this.chain.runs.has(nodeId) && !this.chain.workflow.watchers.has(nodeId) && this.chain.runs.get(nodeId).kind !== "schedule")));
         status = stillRunning && !this.stopped.has(flow.id) ? "running" : "stopped";
         for (const step of run.steps) if (step.status === "waiting" && this.steps.get(step.nodeId)?.stepId !== step.id) this.history.finishStep(flow.id, step.id, { ok: false, stopped: true });
       }
@@ -215,7 +215,7 @@ export class RunControls {
     if (!old) throw new Error("실행 기록이 없습니다.");
     const c = this.chain;
     if ([...c.workflow.nodes].some(([nodeId, flow]) => flow.id === id &&
-      (c.runner.isRunning(nodeId) || (c.runs.has(nodeId) && !c.workflow.watchers.has(nodeId))))) {
+      (c.runner.isRunning(nodeId) || (c.runs.has(nodeId) && !c.workflow.watchers.has(nodeId) && c.runs.get(nodeId).kind !== "schedule")))) {
       throw new Error("이전 실행이 아직 종료 중입니다. 종료한 뒤 다시 시도하세요.");
     }
     const step = stepId ? old.steps.find((item) => item.id === stepId)
@@ -260,7 +260,7 @@ export class RunControls {
     } else if (kind === "markdown") {
       c.setFlow(node, flow);
       c.printMessage(node, step.options?.source ?? { id: node.id, title: node.title, cwd: step.cwd ?? node.projectPath }, step.input);
-    } else if (kind === "watch" || kind === "webhook-in") {
+    } else if (["watch", "schedule", "webhook-in"].includes(kind)) {
       c.setFlow(node, flow);
       this.begin(node, flow, step.input, step.options);
       c.workflow.record(node, true, step.input, flow);

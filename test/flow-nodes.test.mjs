@@ -49,6 +49,25 @@ test("flow nodes: retry and watch limits reject malformed or outside paths", () 
   assert.throws(() => checkCommand({ kind: "watch", debounceMs: 10 }));
 });
 
+test("flow nodes: schedules validate modes, absolute dates, daily time, interval and template variables", () => {
+  const once = checkCommand({ kind: "schedule", runAt: "2030-02-15T09:30:00+09:00", prompt: "{{scheduledAt}} / {{triggeredAt}}" });
+  assert.equal(once.scheduleMode, "once");
+  assert.equal(once.runAt, "2030-02-15T00:30:00.000Z");
+  assert.equal(once.title, "시간 예약");
+  assert.equal(checkCommand({ kind: "schedule", scheduleMode: "daily", timeOfDay: "23:59" }).timeOfDay, "23:59");
+  assert.equal(checkCommand({ kind: "schedule", scheduleMode: "interval", intervalMinutes: 10080 }).intervalMinutes, 10080);
+  for (const fields of [
+    {}, { runAt: "2030-02-30T09:30:00Z" }, { runAt: "2030-02-15T24:00:00Z" }, { runAt: "2030-02-15T09:30" },
+    { runAt: "tomorrow" }, { runAt: [] }, { scheduleMode: "cron" },
+    { scheduleMode: "daily", timeOfDay: "24:00" }, { scheduleMode: "daily", timeOfDay: "09:60" }, { scheduleMode: "daily", timeOfDay: "9:00" },
+    ...[0, -1, 1.5, 10081, "NaN"].map(intervalMinutes => ({ scheduleMode: "interval", intervalMinutes })),
+    { scheduleMode: "interval", prompt: "{{missing}}" },
+  ]) assert.throws(() => checkCommand({ kind: "schedule", ...fields }), JSON.stringify(fields));
+  const edited = checkCommand({ title: "새 예약" }, { id: "cmd-schedule", ...once });
+  assert.equal(edited.runAt, once.runAt);
+  assert.equal(edited.title, "새 예약");
+});
+
 test("flow nodes: restart leaves watches off and invalidates interrupted flow results", t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-flow-persistence-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));

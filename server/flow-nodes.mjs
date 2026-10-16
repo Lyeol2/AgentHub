@@ -1,8 +1,8 @@
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 
-export const FLOW_NODE_KINDS = ["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"];
-export const FLOW_MEMBER_KINDS = ["command", "git", "input", "repeat", "transform", "notify", "webhook"];
+export const FLOW_NODE_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in"];
+export const FLOW_MEMBER_KINDS = ["command", "git", "task", "input", "repeat", "transform", "notify", "webhook"];
 export const WEBHOOK_METHODS = ["POST", "PUT", "PATCH", "GET", "DELETE"];
 // 받는 쪽 주소에 들어가는 비밀 값. 노드를 만들 때(템플릿으로 추가할 때 포함) 새로 만든다.
 export const newHookToken = () => randomBytes(24).toString("hex");
@@ -64,6 +64,31 @@ export function checkFlowNode(body, current = {}) {
   const kind = body.kind ?? current.kind;
   if (!FLOW_NODE_KINDS.includes(kind)) return null;
   const title = text(body.title ?? current.title, "이름", 100).trim();
+  if (kind === "schedule") {
+    const scheduleMode = body.scheduleMode ?? current.scheduleMode ?? "once";
+    if (!["once", "daily", "interval"].includes(scheduleMode)) throw new Error("예약 방식은 한 번·매일·일정 간격 중 하나입니다.");
+    const fields = { kind, title: title || "시간 예약", scheduleMode,
+      prompt: text(body.prompt ?? current.prompt ?? "예약된 작업을 시작하세요.", "요청") };
+    // 선택한 방식의 설정만 검증하고 나머지는 기본값으로 정리한다.
+    const runAt = body.runAt ?? current.runAt ?? "";
+    const timeOfDay = body.timeOfDay ?? current.timeOfDay ?? "09:00";
+    const intervalMinutes = body.intervalMinutes ?? current.intervalMinutes ?? 60;
+    if (scheduleMode === "once") {
+      const match = typeof runAt === "string" && runAt.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/);
+      const date = new Date(runAt);
+      if (!match || !Number.isFinite(date.getTime()) || Number(match[2]) < 1 || Number(match[2]) > 12
+        || Number(match[3]) < 1 || Number(match[3]) > new Date(Date.UTC(Number(match[1]), Number(match[2]), 0)).getUTCDate()
+        || Number(match[4]) > 23 || Number(match[5]) > 59 || Number(match[6] ?? 0) > 59) {
+        throw new Error("예약 날짜와 시각을 시간대가 포함된 올바른 날짜로 입력하세요.");
+      }
+      fields.runAt = date.toISOString();
+    } else fields.runAt = "";
+    if (scheduleMode === "daily" && (typeof timeOfDay !== "string" || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(timeOfDay))) throw new Error("매일 실행할 시각을 HH:mm 형식으로 입력하세요.");
+    fields.timeOfDay = scheduleMode === "daily" ? timeOfDay : "09:00";
+    fields.intervalMinutes = scheduleMode === "interval" ? boundedInteger(intervalMinutes, 1, 10_080, "예약 간격(분)") : 60;
+    renderTemplate(fields.prompt, { scheduledAt: "", triggeredAt: "" });
+    return fields;
+  }
   if (kind === "input") {
     const fields = body.fields ?? current.fields ?? DEFAULT_FIELDS;
     if (!Array.isArray(fields) || !fields.length || fields.length > 20) throw new Error("입력 항목을 1~20개 만드세요.");

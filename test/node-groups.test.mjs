@@ -217,3 +217,24 @@ test("노드 그룹: 입력·감시는 시작점이며 반복 출력 조건을 �
   assert.throws(() => f.service.update(group.id, { ports: [{ direction: "output", nodeId: "cmd-repeat", when: "keyword", keyword: "실패" }] }), { status: 400 });
   assert.equal(f.groups.get(group.id).ports.length, 3);
 });
+
+test("노드 그룹: 시간 예약은 출력 포트만 허용하고 기존 잘못된 입력 포트를 정리한다", (t) => {
+  const f = fixture(t);
+  f.commandNodes.push({ id: "cmd-schedule", kind: "schedule", title: "매일 검사", projectPath: f.projectPath, pos: { x: 100, y: 100 } });
+  assert.throws(() => f.create(["cmd-schedule"], { ports: [{ direction: "input", nodeId: "cmd-schedule" }] }), { status: 400 });
+  f.wires.push(
+    { id: "invalid-incoming", from: "s-out", to: "cmd-schedule", when: "success" },
+    { id: "outgoing", from: "cmd-schedule", to: "s-out", when: "success" },
+  );
+  const group = f.create(["cmd-schedule"]);
+  assert.equal(group.ports.length, 1);
+  assert.equal(group.ports[0].direction, "output");
+  assert.equal(f.service.resolvePort(group.id, group.ports[0].id, "output").nodeId, "cmd-schedule");
+  group.ports.push({ id: "old-input", nodeId: "cmd-schedule", direction: "input", label: "기존 입력" });
+  f.groups.save();
+  const listed = f.service.list(f.projectPath).groups[0];
+  assert.equal(listed.ports.length, 1);
+  assert.equal(listed.ports[0].direction, "output");
+  assert.equal(new NodeGroupStore({ dataDir: f.dataDir }).get(group.id).ports.length, 1);
+  assert.throws(() => f.service.update(group.id, { ports: [{ direction: "input", nodeId: "cmd-schedule" }] }), { status: 400 });
+});

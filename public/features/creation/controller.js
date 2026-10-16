@@ -11,7 +11,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   const branchPicker = createWorkbranchPicker({
     api, owner: "session", select: $("new-worktree-branch"), status: $("new-worktree-branch-status"), refresh: $("new-worktree-branch-refresh"),
     getPath: () => $("new-project").value,
-    isActive: () => Boolean($("new-dialog").open && ui.newSessionContext && !ui.newSessionContext.cancelled && !newKind().chat && $("new-isolate").checked && $("new-worktree-mode").value === "existing"),
+    isActive: () => Boolean($("new-dialog").open && ui.newSessionContext && !ui.newSessionContext.cancelled && existingWorkbranchMode()),
     onChange: () => syncNewSubmit(),
   });
   // ── 새 세션 ─────────────────────────────────────────────────────
@@ -27,7 +27,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     $("new-project").required = !chat;
     if (chat) {
       $("new-orchestrator").checked = false;
-      $("new-isolate").checked = false;
+      $("new-isolate").value = "false";
     }
     syncNewWorktree();
     $("new-title").placeholder = chat ? "예: 여행 일정 짜기" : "예: 가방 UI 버그 수정";
@@ -50,7 +50,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   }
 
   function existingWorkbranchMode() {
-    return !newKind().chat && $("new-isolate").checked && $("new-worktree-mode").value === "existing";
+    return !newKind().chat && $("new-isolate").value === "true" && $("new-worktree-mode").value === "existing";
   }
 
   function syncNewSubmit() {
@@ -59,7 +59,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
 
   function syncNewWorktree(loadBranches = false) {
     const chat = newKind().chat;
-    const useWorktree = !chat && $("new-isolate").checked;
+    const useWorktree = !chat && $("new-isolate").value === "true";
     const existing = useWorktree && $("new-worktree-mode").value === "existing";
     const input = $("new-worktree-name");
     $("new-isolate").disabled = chat;
@@ -124,7 +124,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     else if ($("new-agent").value.endsWith("-chat")) $("new-agent").value = "claude";
     $("new-error").textContent = "";
     $("new-orchestrator").checked = orchestrator;
-    $("new-isolate").checked = false;
+    $("new-isolate").value = "false";
     $("new-worktree-mode").value = "new";
     $("new-worktree-name").value = "";
     syncNewKind();
@@ -144,7 +144,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   $("new-orchestrator").addEventListener("change", syncOrchestrator);
   $("new-isolate").addEventListener("change", () => {
     syncNewWorktree(true);
-    if ($("new-isolate").checked) $(existingWorkbranchMode() ? "new-worktree-branch" : "new-worktree-name").focus();
+    if ($("new-isolate").value === "true") $(existingWorkbranchMode() ? "new-worktree-branch" : "new-worktree-name").focus();
   });
   $("new-worktree-mode").addEventListener("change", () => syncNewWorktree(true));
   $("new-worktree-name").addEventListener("input", syncNewWorktree);
@@ -169,7 +169,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     const { kind, ...body } = Object.fromEntries(form);
     Object.assign(body, newKind());
     body.orchestrator = form.has("orchestrator") && !body.chat;
-    body.isolate = form.has("isolate") && !body.chat;
+    body.isolate = form.get("isolate") === "true" && !body.chat;
     const existing = body.isolate && (body.worktreeMode || $("new-worktree-mode").value) === "existing";
     delete body.worktreeMode;
     if (existing) {

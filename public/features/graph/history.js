@@ -74,6 +74,7 @@ export const linkBody = (link) => ({ from: link.from, to: link.to, when: link.wh
 
 // 노드를 되살릴 때 보낼 설정. 실행 상태·결과·받는 주소 같은 서버가 정하는 값은 뺀다.
 export function commandBody(command) {
-  const { id: _id, state: _state, lastRun: _lastRun, live: _live, queued: _queued, createdAt: _createdAt, hookToken: _hookToken, ...config } = command;
+  const { id: _id, state: _state, lastRun: _lastRun, live: _live, queued: _queued, createdAt: _createdAt, hookToken: _hookToken,
+    scheduleEnabled: _scheduleEnabled, nextRunAt: _nextRunAt, ...config } = command;
   return config;
 }

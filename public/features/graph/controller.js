@@ -1,6 +1,6 @@
 import { createGraphView } from "./view.js";
 import { createNodeGroups } from "./node-groups.js";
-import { KIND_LABEL, kindOf, hasBranchPorts, isSourceOnly } from "../commands/flow-nodes.js";
+import { KIND_LABEL, kindOf, hasBranchPorts, resultOnlyOutputs, hasWorktreeOutput, worktreeByDefault, isSourceOnly, isScheduleArmed } from "../commands/flow-nodes.js";
 import { PAD, SVG_NS, isCommandNode, nodeSize, layoutGraph, edgePath } from "./model.js";
 import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
@@ -201,13 +201,14 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     // 그룹 묶기 항목은 노드를 둘 이상 골랐을 때만 붙인다. 하나만 골랐으면 평소 메뉴를 연다.
     const grouping = card && ui.graphSelected.size > 1 ? [...nodeGroups.selectedEntries(), null] : [];
     if (cmd) {
-      const running = ["running", "watching"].includes(cmd.state);
+      const running = ["running", "watching"].includes(cmd.state) || isScheduleArmed(cmd);
       const kind = cmd.kind ?? "command";
       const label = KIND_LABEL[kindOf(cmd)];
       openContextMenu(e, `${label} ${cmd.title}`, [
         ...grouping,
         kind === "markdown"
           ? ["결과 보기", () => openCommandOutput(cmd), { disabled: !cmd.lastRun?.output }]
+          : kind === "schedule" ? [running ? "예약 중지" : "예약 시작", () => running ? stopCommand(cmd) : runCommand(cmd)]
           : kind === "group" ? ["지금 넘기기", () => runCommand(cmd), { title: "모을 노드가 모두 끝났을 때 넘깁니다" }]
             : running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
         ...(kind !== "markdown" && (cmd.lastRun || cmd.live) ? [["결과 보기", () => openCommandOutput(cmd)]] : []),
@@ -237,14 +238,17 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const node = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, kind, { connectWhen, connectKeyword }))];
     const start = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, null, kind))];
     // 고른 세션 카드가 있으면 그 세션들을 미리 골라 둔다.
-    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "webhook-in", "group"].includes(node.kind); });
+    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "schedule", "webhook-in", "group"].includes(node.kind); });
     const collect = [picked.length > 1 && !connectFrom ? `선택한 노드 ${picked.length}개 결과 모으기` : "새 결과 모으기",
       inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked, connectWhen, connectKeyword }))];
     // 종류별로 묶는다. 시작점 노드는 들어오는 연결을 받을 수 없으므로 손잡이에서 열었을 때는 뺀다.
     const sections = [
       ["AI", [["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen, connectKeyword }))]]],
-      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch"), start("새 웹훅 받기", "webhook-in")]],
+      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch"), start("새 시간 예약", "schedule"), start("새 웹훅 받기", "webhook-in")]],
       ["실행", [node("새 명령", "command"), node("새 GIT", "git")]],
+      ["작업", [
+        ["새 작업", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "start" }))],
+        ["작업 마무리", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "finish" }))]]],
       ["흐름 제어", [node("새 반복 제어", "repeat"), node("새 결과 가공", "transform"), collect]],
       ["출력", [node("새 알림", "notify"), node("새 웹훅 보내기", "webhook"), node("새 Markdown 출력", "markdown")]],
     ];
@@ -312,10 +316,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       (samePath(data.commandsProject, projectPath) ? commandById(context.connectFrom) : null);
     if (!source || (source.projectPath && !samePath(source.projectPath, projectPath))) return;
     try {
-      const when = context.connectWhen ?? (source.kind === "git" ? "success" : null);
+      const when = context.connectWhen ?? (["git", "task"].includes(source.kind) ? "success" : null);
       const target = commandById(to);
       const targetKind = target?.kind ?? context.kind ?? "session";
-      const link = await api("POST", "/api/links", { from: source.id, to, ...(when ? { when, keyword: context.connectKeyword ?? "" } : defaultLinkCondition(source.id)), ...(source.kind === "git" ? { useGitWorktree: when === "success" && source.gitAction === "use" && ["session", "command"].includes(targetKind) } : {}), enabled: true });
+      const link = await api("POST", "/api/links", { from: source.id, to, ...(when ? { when, keyword: context.connectKeyword ?? "" } : defaultLinkCondition(source.id)), ...(hasWorktreeOutput(source) ? { useGitWorktree: when === "success" && worktreeByDefault(source) && ["session", "command"].includes(targetKind) } : {}), enabled: true });
       if (link?.id) recordLinkCreated(projectPath, link);
       await loadLinks();
     } catch (err) {
@@ -873,7 +877,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   function renderLinkConditions(source = commandById(ui.editingLink?.from)) {
     const select = $("link-when");
     const value = select.value;
-    select.replaceChildren(...(data.status?.linkConditions ?? []).filter((c) => !hasBranchPorts(source) || ["success", "error", "always", "manual"].includes(c.id)).map((c) => el("option", { value: c.id }, c.label)));
+    select.replaceChildren(...(data.status?.linkConditions ?? []).filter((c) => !resultOnlyOutputs(source) || ["success", "error", "always", "manual"].includes(c.id)).map((c) => el("option", { value: c.id }, c.label)));
     if (value) select.value = value;
   }
 
@@ -917,8 +921,9 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     $("link-note").value = link?.note ?? "";
     $("link-note").placeholder = "다음 노드에 보낼 내용 · 입력값은 {{key}}, 이전 결과는 {{input}}로 사용";
     $("link-enabled").checked = link?.enabled ?? true;
-    $("link-approve").checked = link?.approve ?? false;
-    $("link-git-worktree").checked = link?.useGitWorktree ?? (source?.kind === "git" && source.gitAction === "use" && initial.when === "success");
+    // 작업 마무리는 커밋·push·PR을 만들므로 새 연결은 승인 후 실행이 기본이다.
+    $("link-approve").checked = link?.approve ?? (target?.kind === "task" && target.taskAction === "finish");
+    $("link-git-worktree").checked = link?.useGitWorktree ?? (worktreeByDefault(source) && initial.when === "success");
     $("link-delete").hidden = !link;
     $("link-run").hidden = !link;
     $("link-error").textContent = "";
@@ -929,7 +934,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   function syncLinkWhen() {
     $("link-keyword-row").hidden = $("link-when").value !== "keyword";
     const source = commandById(ui.editingLink?.from), target = commandById(ui.editingLink?.to);
-    const eligible = source?.kind === "git" && (!target || !target.kind || target.kind === "command") && $("link-when").value !== "error";
+    const eligible = hasWorktreeOutput(source) && (!target || !target.kind || target.kind === "command") && $("link-when").value !== "error";
     $("link-git-worktree-row").hidden = !eligible;
     $("link-git-worktree-hint").hidden = !eligible;
   }
@@ -946,7 +951,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       note: $("link-note").value,
       enabled: $("link-enabled").checked,
       approve: $("link-approve").checked,
-      ...(commandById(from)?.kind === "git" ? { useGitWorktree: !$("link-git-worktree-row").hidden && $("link-git-worktree").checked } : {}),
+      ...(hasWorktreeOutput(commandById(from)) ? { useGitWorktree: !$("link-git-worktree-row").hidden && $("link-git-worktree").checked } : {}),
     };
     const projectPath = navigation.project;
     // 연결 설정을 바꿨으면 이전 값으로 되돌릴 수 있게 남긴다.

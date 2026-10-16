@@ -332,6 +332,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         try { await taskGit(project.path, ["switch", "--no-guess", "-c", branch, baseCommit], { write: true }); }
         catch (error) { throw failure(error); }
         save(task);
+        if (body.session === false) return { task: clone(task) };
         try { return await attach(task, body); }
         catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
       }
@@ -347,6 +348,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       }
       if (selected) shareFolder(selected.dir, task);
       save(task);
+      if (body.session === false) return { task: clone(task) };
       try { return await attach(task, body); }
       catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
     });
@@ -636,6 +638,25 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       } finally { busy.delete(id); }
     });
   }
+  // 흐름의 작업 노드가 만든 작업에 그래프에 놓아 둔 세션을 연결한다. 대화 기록 확인은 호출하는 쪽이 한다.
+  function adoptSession(id, session) {
+    const task = get(id);
+    assertActive(task);
+    if (session.chat) throw new HttpError(400, "일반 채팅 세션은 작업에 연결할 수 없습니다.");
+    if (session.taskId && session.taskId !== task.id) throw new HttpError(409, "다른 작업에 연결된 세션입니다. 새 세션을 연결하세요.", "task-session-owned");
+    if (!sameTaskPath(session.projectPath, task.projectPath)) throw new HttpError(400, "같은 프로젝트의 세션만 작업에 연결할 수 있습니다.");
+    if (busy.has(task.id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
+    session.cwd = task.cwd;
+    session.worktree = { dir: task.cwd, branch: task.branch };
+    session.taskId = task.id;
+    delete session.gitContext;
+    if (!task.sessionIds.includes(session.id)) task.sessionIds.push(session.id);
+    save(task);
+    store.touch?.(session);
+    store.flush?.(session.id);
+    notify("sessions", {});
+    return clone(task);
+  }
   function replaceSession(previous, next) {
     for (const task of records.values()) {
       if (!task.sessionIds.includes(previous)) continue;
@@ -650,6 +671,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, context, settings, updateSettings, create, finish, refresh, sync, cleanup, remove, assertSession, replaceSession, detachSession, workbranches, createBranchSession,
+  return { list, get: (id) => clone(get(id)), adoptSession, context, settings, updateSettings, create, finish, refresh, sync, cleanup, remove, assertSession, replaceSession, detachSession, workbranches, createBranchSession,
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }

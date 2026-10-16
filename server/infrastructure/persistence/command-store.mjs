@@ -9,7 +9,14 @@ export class CommandStore {
     this.file = path.join(dataDir, "commands.json");
     this.commands = readJsonFile(this.file, { dataDir, fallback: () => [], valid: Array.isArray });
     // 서버가 꺼질 때 실행 중이던 명령은 중단된 것으로 본다.
-    for (const c of this.commands) if (c.kind === "watch") {
+    for (const c of this.commands) if (c.kind === "schedule") {
+      // 예약 사용 여부와 예정 시각은 복원을 위해 유지한다. 타이머는 서버 시작 시 다시 만든다.
+      c.scheduleEnabled = c.scheduleEnabled === true;
+      c.state = c.scheduleEnabled ? "scheduled" : c.state === "scheduled" ? "idle" : c.state;
+      if (!c.scheduleEnabled) c.nextRunAt = null;
+      c.live = null;
+      c.queued = null;
+    } else if (c.kind === "watch") {
       // 파일 감시는 서버 재시작 후 사용자가 다시 켜야 한다.
       c.state = "idle";
       c.live = null;

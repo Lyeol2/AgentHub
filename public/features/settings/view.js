@@ -1,6 +1,7 @@
 import { $, el, badge, AGENT_LABEL, timeAgo, fmtDate } from "../../shared/dom.js";
 
 const SETUP_STATE = { running: "진행 중", done: "완료", error: "실패", canceled: "취소함" };
+const SETUP_KIND = { install: "설치", update: "업데이트", login: "로그인" };
 
 const LIMIT_EMPTY = {
   claude: "Claude CLI에 로그인하면 사용률이 표시됩니다.",
@@ -10,7 +11,7 @@ const LIMIT_EMPTY = {
 const LIMIT_STATUS = { allowed: "사용 가능", allowed_warning: "한도 임박", rejected: "한도 도달" };
 const isExpired = (w) => w.resetsAt && new Date(w.resetsAt).getTime() <= Date.now();
 
-export function createSettingsView({ openSetup, setupAction, updateAction, onRemoveProject }) {
+export function createSettingsView({ openSetup, setupAction, refreshSetup, updateAction, onRemoveProject }) {
   function renderCliStatus(status, auth, setup) {
     if (!status) return;
     const rows = Object.entries(status.agents).map(([name, info]) => ({
@@ -29,17 +30,22 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
         : r.loggedIn === false ? "로그인이 필요합니다." : r.loggedIn === true ? "로그인됨" : "로그인 확인 중…";
       return el("div", { title: [r.path, note].filter(Boolean).join("\n") },
         el("span", { class: `dot ${busy ? "running" : health}` }),
-        el("span", { class: "cli-text" }, `${r.label} ${busy ? (job.kind === "install" ? "설치 중…" : "로그인 중…") : r.path ? r.version ?? "버전 확인 실패" : "없음"}`),
+        el("span", { class: "cli-text" }, `${r.label} ${busy ? `${SETUP_KIND[job.kind] ?? job.kind} 중…` : r.path ? r.version ?? "버전 확인 실패" : "없음"}`),
         action ? el("button", { type: "button", class: "login-btn", onclick: () => openSetup(r.id, action), title: "앱 안에서 설치·로그인을 진행합니다" },
           action === "install" ? "설치" : "로그인 필요") : null);
     }));
   }
 
-  function renderSetup(setup) {
+  function renderSetup(setup, { error = "", loading = false, refreshing = false, actionErrors = {}, pending = new Set() } = {}) {
+    const refreshButton = () => el("button", { type: "button", class: "ghost sm", onclick: refreshSetup, ...(refreshing ? { disabled: "" } : {}) }, refreshing ? "확인 중…" : "새로고침");
     const tools = [...(setup?.winget ? [setup.winget] : []), ...(setup?.tools ?? [])];
-    $("setup-list").replaceChildren(...tools.map((t) => {
+    $("setup-list").replaceChildren(...[
+      error ? el("div", { class: "setup-job error", role: "alert" }, el("p", { class: "error" }, `CLI 상태를 확인하지 못했습니다. ${error}`), refreshButton()) : null,
+      !setup && !error ? el("p", { class: "hint", role: "status" }, loading ? "CLI 상태를 불러오는 중…" : "CLI 상태를 새로고침해 주세요.") : null,
+      ...tools.map((t) => {
       const job = setup.jobs?.[t.id];
       const running = job?.state === "running";
+      const busy = running || pending.has(t.id);
       const packageManager = t.id === "winget";
       const status = !t.path ? "실행 파일을 찾지 못함" : !t.version ? "실행 확인 실패"
         : packageManager ? t.version : `${t.version} · ${t.loggedIn === true ? "로그인됨" : t.loggedIn === false ? "로그인 필요" : "로그인 확인 실패"}`;
@@ -49,17 +55,21 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
           el("b", {}, t.label),
           el("span", { class: `pill ${ok ? "setup-ok" : "setup-need"}` }, status),
           el("span", { class: "spacer" }),
-          t.installable && (packageManager || !t.path || !t.version) ? el("button", { type: "button", class: `${ok ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "install"), ...(running ? { disabled: "" } : {}) }, packageManager ? "설치·복구" : t.path ? "다시 설치" : "설치") : null,
-          !packageManager && t.path && t.version ? el("button", { type: "button", class: `${t.loggedIn ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "login"), ...(running ? { disabled: "" } : {}) }, t.loggedIn ? "다시 로그인" : "로그인") : null),
+          t.installable && (packageManager || !t.path || !t.version) ? el("button", { type: "button", class: `${ok ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "install"), ...(busy ? { disabled: "" } : {}) }, packageManager ? "설치·복구" : t.path ? "다시 설치" : "설치") : null,
+          t.updatable ? el("button", { type: "button", class: "ghost sm", onclick: () => setupAction(t.id, "update"), ...(busy ? { disabled: "" } : {}) }, job?.kind === "update" && job.state === "error" ? "업데이트 다시 시도" : "업데이트") : null,
+          !packageManager && t.path && t.version ? el("button", { type: "button", class: `${t.loggedIn ? "ghost" : "primary"} sm`, onclick: () => setupAction(t.id, "login"), ...(busy ? { disabled: "" } : {}) }, t.loggedIn ? "다시 로그인" : "로그인") : null),
         t.path ? el("p", { class: "hint mono" }, t.path) : null,
-        packageManager ? el("p", { class: "hint" }, "Windows에서 winget이 없으면 CLI 설치 전에 자동으로 준비합니다. 자동 설치·복구에 실패하면 아래 수동 설치 안내를 따라 설치한 뒤 상단의 ‘다시 확인’을 누르세요.") : null,
+        t.path && t.updateReason ? el("p", { class: "hint" }, t.updateReason) : null,
+        packageManager ? el("p", { class: "hint" }, "Windows에서 winget이 없으면 CLI 설치 전에 자동으로 준비합니다. 자동 설치·복구에 실패하면 아래 수동 설치 안내를 따라 설치한 뒤 ‘새로고침’을 누르세요.") : null,
         !packageManager && !t.path ? el("p", { class: "hint" }, `${!t.installable ? "자동으로 설치할 방법이 없습니다. 아래 수동 설치 안내를 확인하세요. " : ""}이미 설치했다면 설정에서 CLI 실행 파일 경로를 직접 지정한 뒤 다시 확인하세요.`) : null,
         !packageManager && t.path && !t.version ? el("p", { class: "hint" }, "이 경로의 CLI를 실행하지 못했습니다. 다시 설치하거나 아래 수동 설치 안내를 확인하세요. 설정에서 실행 파일 경로를 확인하고 터미널에서 해당 CLI의 --version을 실행할 수도 있습니다.") : null,
         !packageManager && t.path && t.version && t.loggedIn === null ? el("p", { class: "hint" }, "CLI는 실행되지만 로그인 상태를 확인하지 못했습니다. 다시 확인하거나 로그인 출력을 확인하세요.") : null);
-      if (job) item.append(setupJob(t, job, running));
+      if (job) item.append(setupJob(t, job, running, pending.has(t.id)));
+      if (actionErrors[t.id]) item.append(el("p", { class: "error", role: "alert" }, actionErrors[t.id]));
+      if (actionErrors[t.id] || job?.state === "error" || (t.path && (!t.version || (!packageManager && t.loggedIn === null)))) item.append(el("div", { class: "setup-retry" }, refreshButton()));
       if (t.manual) item.append(manualInstall(t.manual, job?.kind === "install" && job.state === "error"));
       return item;
-    }));
+    })].filter(Boolean));
   }
 
   function manualInstall(manual, failed) {
@@ -80,15 +90,15 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
       } }, "명령 복사");
       details.append(copy, el("pre", { class: "setup-log" }, manual.command));
     }
-    details.append(el("p", { class: "hint" }, "설치가 끝나면 상단의 ‘다시 확인’을 누르세요."));
+    details.append(el("p", { class: "hint" }, "설치가 끝나면 ‘새로고침’을 누르세요."));
     return details;
   }
 
-  function setupJob(t, job, running) {
+  function setupJob(t, job, running, pending) {
     const box = el("div", { class: `setup-job ${job.state}` },
       el("div", { class: "setup-job-head" },
-        el("span", {}, `${job.kind === "install" ? "설치" : "로그인"} ${SETUP_STATE[job.state] ?? job.state}`),
-        running ? el("button", { type: "button", class: "ghost sm danger", onclick: () => setupAction(t.id, "cancel") }, "취소") : null));
+        el("span", {}, `${job.automatic ? "자동 " : ""}${SETUP_KIND[job.kind] ?? job.kind} ${SETUP_STATE[job.state] ?? job.state}`),
+        running ? el("button", { type: "button", class: "ghost sm danger", onclick: () => setupAction(t.id, "cancel"), ...(pending ? { disabled: "" } : {}) }, "취소") : null));
     if (job.kind === "login" && running) {
       if (job.url) {
         box.append(el("p", { class: "hint" }, "브라우저에서 로그인 페이지를 열었습니다. 열리지 않았으면 아래 버튼을 누르세요."),
@@ -113,7 +123,8 @@ export function createSettingsView({ openSetup, setupAction, updateAction, onRem
         box.append(el("div", { class: "setup-paste" }, input, el("button", { type: "button", class: "primary sm", onclick: send }, "보내기")));
       }
     }
-    if (job.state === "done") box.append(el("p", { class: "ok-text" }, job.kind === "install" ? "설치했습니다." : "로그인했습니다."));
+    if (job.state === "done") box.append(el("p", { class: "ok-text" }, job.kind === "update" ? "업데이트 확인을 마쳤습니다." : job.kind === "install" ? "설치했습니다." : "로그인했습니다."));
+    if (job.state === "error" && job.error) box.append(el("p", { class: "error" }, job.error));
     if (job.log.trim()) box.append(el("details", { ...(job.state === "error" ? { open: "" } : {}) }, el("summary", {}, "출력"), el("pre", { class: "setup-log" }, job.log.trim().split("\n").slice(-40).join("\n"))));
     return box;
   }
