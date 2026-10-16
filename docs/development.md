@@ -31,10 +31,10 @@ npm start
 npm run release
 ```
 
-테스트, 버전 올리기, 빌드, 커밋·태그 push, GitHub Release 생성까지 한 번에 한다. 버전 단위는 release-prep이 준비한 값을 자동으로 쓰고, 준비한 값이 없으면 patch로 올린다. `npm run release -- minor`처럼 직접 지정하면 그 값이 우선한다. 앱의 업데이트 기능은 릴리스에 함께 올라가는 `latest.yml`을 읽는다. 마지막 커밋을 임시 작업 트리에 꺼내 빌드하므로 커밋하지 않은 변경은 릴리스에 들어가지 않고 그대로 남는다. 단, `package.json`·`package-lock.json`에 커밋하지 않은 변경이 있으면 시작하지 않는다.
+테스트, 버전 올리기, 빌드, 커밋·태그 push, GitHub Release 생성까지 한 번에 한다. 버전 단위는 릴리스 준비 초안의 값을 자동으로 쓰고, 준비한 값이 없으면 patch로 올린다. `npm run release -- minor`처럼 직접 지정하면 그 값이 우선한다. 앱의 업데이트 기능은 릴리스에 함께 올라가는 `latest.yml`을 읽는다. 마지막 커밋을 임시 작업 트리에 꺼내 빌드하므로 커밋하지 않은 변경은 릴리스에 들어가지 않고 그대로 남는다. 단, `package.json`·`package-lock.json`에 커밋하지 않은 변경이 있으면 시작하지 않는다.
 
 - 릴리스 노트는 지난 태그 이후 커밋으로 만든다. `feat:`·`fix:`·`chore:` 같은 앞머리로 종류를 묶고, 커밋 본문의 `- ` 줄을 아래에 붙인다(릴리스 커밋은 뺀다).
-- 릴리스 준비 단계(release-prep 스킬)가 점검을 통과하면 커밋 노트를 사용자 말투로 다시 쓴 초안을 `release-notes.draft.md`(git 제외)에 남기고, 첫 줄에 기준 커밋과 버전 단위(`bump=patch|minor|major`)를 기록한다. 큰 기능 추가나 주요 사용 흐름 변경은 minor로 자동 선택한다. 승인 전에 고칠 수 있고, 릴리스할 때 이 초안이 커밋 노트 대신 나간 뒤 지워진다. 초안을 쓴 뒤 커밋이 더 생겼으면 버전 단위와 노트를 모두 쓰지 않고 기본 patch·커밋 노트로 진행하므로, 다시 준비해야 한다.
+- 릴리스 준비 단계(Claude Code `release` 스킬)가 점검을 통과하면 커밋 노트를 사용자 말투로 다시 쓴 초안을 `release-notes.draft.md`(git 제외)에 남기고, 첫 줄에 기준 커밋과 버전 단위(`bump=patch|minor|major`)를 기록한다. 큰 기능 추가나 주요 사용 흐름 변경은 minor로 자동 선택한다. 승인 전에 고칠 수 있고, 릴리스할 때 이 초안이 커밋 노트 대신 나간 뒤 지워진다. 초안을 쓴 뒤 커밋이 더 생겼으면 버전 단위와 노트를 모두 쓰지 않고 기본 patch·커밋 노트로 진행하므로, 다시 준비해야 한다.
 - 릴리스가 끝나면 같은 노트를 **Discord 웹후크**로 보낸다. 주소는 비밀이라 저장소에 두지 않고, 환경 변수 `AGENTHUB_DISCORD_WEBHOOK`이나 저장소 루트의 `release.local.json`(git 제외)에 `{ "discordWebhook": "https://discord.com/api/webhooks/..." }`로 적는다. 없거나 보내지 못해도 릴리스는 그대로 끝난다.
 - `node scripts/release-notes.mjs`는 다음 릴리스에 들어갈 노트를 미리 보여 주고, `node scripts/release-notes.mjs v0.1.15 --discord`는 그 버전의 노트를 Discord로 다시 보낸다.
 
