@@ -83,7 +83,7 @@ async function browser(temp, url, expression) {
   }
 }
 
-test("browser: GitFlow tasks and per-project branch settings retain state and isolate delayed responses", { timeout: 60000 }, async (t) => {
+test("browser: task references, GitFlow tasks and per-project settings retain state and isolate delayed responses", { timeout: 60000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(chromium).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-tasks-browser-"));
   const streams = new Set(), requests = [], tasks = [], sessions = [];
@@ -108,7 +108,11 @@ test("browser: GitFlow tasks and per-project branch settings retain state and is
       else if (url.pathname === "/fixture/release") { releaseCreate?.(); value = {}; }
       else if (url.pathname === "/fixture/release-settings") { if (body.read) releaseSettingsRead?.(); if (body.save) releaseSettingsSave?.(); value = {}; }
       else if (url.pathname === "/fixture/requests") value = requests;
-      else if (url.pathname === "/fixture/emit") { for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n"); value = {}; }
+      else if (url.pathname === "/fixture/emit") {
+        if (body.type === "event") sessions.find((session) => session.id === body.payload.sessionId)?.events.push(body.payload.event);
+        for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n");
+        value = {};
+      }
       else if (url.pathname === "/api/status") value = { agents, projects, cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
       else if (url.pathname === "/api/tasks/context") { if (mode.contextFailure) throw Object.assign(Error("원격 확인 실패"), { status: 400 }); value = { ...context, settings: settings.get(url.searchParams.get("path")) }; }
       else if (url.pathname === "/api/tasks/settings") {

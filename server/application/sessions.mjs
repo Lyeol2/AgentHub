@@ -15,6 +15,7 @@ import { HttpError } from "./errors.mjs";
 import { assertSessionGitContext } from "../git-context.mjs";
 import { AttachmentStore, isImageAttachment, publicAttachment } from "../attachments.mjs";
 import { unsupportedChatAttachment } from "../attachment-input.mjs";
+import { resolveSessionArtifact, readSessionArtifact, readSessionArtifactContent, validateArtifactReferences } from "../session-artifacts.mjs";
 import { exportSession } from "../session-export.mjs";
 import { exportBundle, isBundleName, BUNDLE_MAX_BYTES, recordReadText } from "../session-bundle.mjs";
 import { expandPrompt, projectFiles, rankFiles } from "../prompt-refs.mjs";
@@ -392,7 +393,8 @@ export function createSessionService({
     if (session.chat && files.some(unsupportedChatAttachment)) throw new HttpError(400, "일반 채팅은 이미지와 64 KiB 이하의 UTF-8 텍스트 파일을 지원합니다. 더 큰 텍스트나 PDF·압축 파일 등 바이너리 파일은 파일 읽기가 가능한 프로젝트 세션에 첨부하세요.");
     const prompt = String(body.prompt ?? "").trim() || (files.length ? (files.every(isImageAttachment) ? "첨부한 이미지를 확인해 주세요." : "첨부한 파일을 확인해 주세요.") : "");
     if (!prompt) throw new HttpError(400, "내용이나 파일을 입력하세요.");
-    const meta = files.length ? { attachments: files } : {};
+    const references = validateArtifactReferences(session, body.references, prompt, artifactOptions(id));
+    const meta = { ...(files.length ? { attachments: files } : {}), ...(references.length ? { references } : {}) };
     if (runner.isRunning(session.id)) {
       if (body.mode === "steer" && runner.canInject(session)) {
         runner.inject(session, prompt, meta, expandPrompt(session, prompt));
@@ -421,6 +423,36 @@ export function createSessionService({
     getSession(id);
     const image = attachments.resolve(id, imageId);
     return { bytes: fs.readFileSync(image.path), mimeType: image.mimeType, name: image.name };
+  }
+
+  function artifactOptions(id) {
+    return {
+      resolveAttachment: (attachment) => attachments.resolve(id, attachment.id),
+      validateEntityReference(kind, targetId) {
+        const session = getSession(id);
+        const target = kind === "session" ? store.get(targetId) : tasks?.()?.get?.(targetId);
+        if (!target) throw new HttpError(404, "참조한 세션이나 작업을 찾지 못했습니다.");
+        if (Boolean(session.projectPath) !== Boolean(target.projectPath) || (session.projectPath && !samePath(session.projectPath, target.projectPath))) throw new HttpError(403, "같은 프로젝트의 세션과 작업만 참조할 수 있습니다.");
+      },
+    };
+  }
+
+  function artifact(id, filePath, { summary = false } = {}) {
+    if (summary) {
+      const { realPath, ...result } = resolveSessionArtifact(getSession(id), filePath, artifactOptions(id));
+      return result;
+    }
+    return readSessionArtifact(getSession(id), filePath, artifactOptions(id));
+  }
+
+  function artifactContent(id, filePath) {
+    return readSessionArtifactContent(getSession(id), filePath, artifactOptions(id));
+  }
+
+  function artifactPreview(id, filePath) {
+    const result = artifact(id, filePath);
+    if (typeof result.previewHtml !== "string") throw new HttpError(415, result.truncated ? "HTML 미리보기는 512 KiB 이하의 파일을 지원합니다." : "HTML 파일만 화면으로 미리 볼 수 있습니다.");
+    return result.previewHtml;
   }
 
   // format: "markdown"(기본, 사람이 읽는 문서) | "agenthub"(다른 세션에서 불러오거나 읽힐 수 있는 .agenthub 파일)
@@ -804,7 +836,7 @@ export function createSessionService({
 
   return {
     list: () => store.list().map((s) => summary(settleState(s))), detail,
-    create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
+    create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, artifact, artifactContent, artifactPreview, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
     stop, pause, resume, restart, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,

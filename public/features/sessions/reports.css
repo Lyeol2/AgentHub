@@ -1,0 +1,46 @@
+.report-ref { cursor: pointer; overflow-wrap: anywhere; }
+.mention-chip { display: inline; color: var(--accent); background: var(--accent-soft); border-radius: 4px; padding: 1px 5px; text-decoration: none; }
+.report-results { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); white-space: normal; }
+.report-results-title { color: var(--muted); font-size: 11px; font-weight: 600; margin-bottom: 8px; }
+.report-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr)); gap: 8px; max-width: 880px; }
+.report-card { display: flex; flex-wrap: wrap; gap: 8px; align-self: start; align-content: start; align-items: start; min-width: 0; border: 1px solid var(--line); border-radius: 8px; padding: 10px; background: var(--panel); }
+.report-card-info { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.report-card-state { color: var(--muted); font-size: 11px; }
+.report-card-open { text-align: left; background: none; border: 0; padding: 0; color: var(--accent); line-height: 1.45; overflow-wrap: anywhere; font: inherit; cursor: pointer; }
+.report-card-open:hover { text-decoration: underline; }
+.report-card-copy { margin-left: auto; font-size: 10px; }
+.report-card.unavailable .report-card-state { color: var(--warn); }
+.report-verification { font-size: 11px; }
+.report-verification.passed { color: var(--ok); }
+.report-verification.failed { color: var(--danger); }
+.report-verification.not-run { color: var(--warn); }
+.report-thumbnail { flex-basis: 100%; width: 100%; height: 160px; overflow: hidden; display: grid; place-items: center; background: var(--code-bg); border: 0; border-radius: 5px; padding: 0; cursor: zoom-in; color: var(--muted); }
+.report-thumbnail img { display: block; width: 100%; height: 160px; object-fit: contain; }
+dialog.report-preview { position: fixed; inset: 0 0 0 auto; margin: 0; width: min(960px, 92vw); max-width: none; height: 100dvh; max-height: none; padding: 0; border: 0; border-left: 1px solid var(--line-strong); border-radius: 0; background: var(--bg); color: var(--text); box-shadow: -15px 0 60px var(--shadow); }
+dialog.report-preview[open] { display: flex; flex-direction: column; }
+.report-preview-head { display: flex; align-items: center; gap: 16px; padding: 18px 20px 8px; }
+.report-preview-head h2 { flex: 1; min-width: 0; font-size: 17px; margin: 0; overflow-wrap: anywhere; }
+.report-preview-head button { flex: none; }
+.report-location { color: var(--muted); font: 11px/1.5 var(--mono); padding: 0 20px 10px; overflow-wrap: anywhere; max-height: 90px; overflow-y: auto; }
+.report-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding: 10px 20px; border-block: 1px solid var(--line); }
+.report-toolbar a { text-decoration: none; color: var(--text); }
+.report-toolbar [aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.report-message { font-size: 12px; color: var(--muted); padding: 10px 20px 0; overflow-wrap: anywhere; }
+.report-message:empty { display: none; }
+.report-body { min-height: 0; flex: 1; overflow: auto; padding: 20px; }
+.report-document { line-height: 1.65; overflow-wrap: anywhere; }
+.report-source { font: 12px/1.65 var(--mono); white-space: pre; margin: 0; tab-size: 4; }
+.report-target-line { background: var(--accent-soft); color: var(--accent); outline: 1px solid var(--accent); }
+.report-body [hidden] { display: none !important; }
+.report-frame { display: block; border: 1px solid var(--line); border-radius: 5px; background: white; width: 100%; height: max(420px, calc(100dvh - 230px)); }
+.report-image-viewport { overflow: auto; min-height: 200px; display: grid; place-items: start center; }
+.report-full-image { display: block; object-fit: contain; max-width: 100%; max-height: calc(100dvh - 240px); }
+.report-scale { font-size: 11px; min-width: 40px; text-align: center; }
+.report-copy-buffer { position: fixed; opacity: 0; width: 1px; height: 1px; }
+@media (max-width: 600px) {
+  dialog.report-preview { width: 100vw; }
+  .report-preview-head { padding: 14px 12px 8px; }
+  .report-toolbar { padding: 8px 12px; }
+  .report-location, .report-message { padding-inline: 12px; }
+  .report-body { padding: 12px; }
+}

@@ -1,6 +1,7 @@
 (async function () {
   const { createCommandsController } = await import("/features/commands/controller.js");
   const { createCompletion } = await import("/features/sessions/completion.js");
+  const { createSessionsController } = await import("/features/sessions/controller.js");
   const $ = (id) => document.getElementById(id);
   const checks = [], requests = [];
   const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
@@ -22,6 +23,8 @@
     if (method === "POST" && url.endsWith("/run")) return {};
     if (method === "POST" && url === "/api/commands") { const node = { ...body, id: "cmd-new", state: "idle" }; data.commands.push(node); return node; }
     if (method === "GET" && url.startsWith("/api/skills?")) return [{ name: "code-review", description: "변경을 리뷰한다", scope: "claude" }, { name: "issue-fix", description: "이슈를 고친다", scope: "project" }];
+    if (method === "GET" && url.startsWith("/api/tasks?")) return { tasks: [{ id: "task-ui", title: "시각 개선", branch: "feature/preview" }] };
+    if (method === "POST" && url === "/api/sessions/s1/messages") return { queued: false };
     if (method === "GET" && url.startsWith("/api/sessions/s1/files?q=")) {
       const q = decodeURIComponent(url.split("q=")[1]);
       return { files: ["src/", "src/app.js", "src/lib/", "README.md"].filter((f) => f.includes(q)) };
@@ -66,7 +69,8 @@
   $("view-project").hidden = true; $("view-session").hidden = false;
   const textarea = $("s-prompt");
   let builtin = null, submitted = 0, escaped = 0;
-  const completion = createCompletion({ textarea, api, getSession: () => ({ id: "s1", projectPath: project }), onBuiltin: (name) => { builtin = name; } });
+  let provideReferences = () => [];
+  const completion = createCompletion({ textarea, api, getSession: () => ({ id: "s1", projectPath: project }), onBuiltin: (name) => { builtin = name; }, getReferences: () => provideReferences() });
   // 작성창의 보내기(Enter) 처리는 자동 완성 뒤에 등록된다.
   textarea.addEventListener("keydown", (e) => { if (e.key === "Enter") submitted++; });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !e.defaultPrevented) escaped++; });
@@ -88,6 +92,8 @@
   const chip = textarea.parentElement.querySelector(".ref-mirror .ref-chip");
   check(textarea.parentElement.classList.contains("has-refs") && chip?.textContent === "@app.js", "the chosen file is drawn as a highlighted reference");
   check(completion.expand(textarea.value.trim()) === "검토 @src/app.js", "sending restores the full file path");
+  check(JSON.stringify(completion.references("검토 @app.js @app.js")) === JSON.stringify([{ label: "app.js", path: "src/app.js" }]), "stored references retain the label and original path once");
+  check(completion.references("고르지 않은 @README.md 와 지운 참조").length === 0, "only selected references actually present in the prompt are stored");
   type("@sr");
   await until(() => !menu.hidden && menu.children.length >= 2);
   key("ArrowDown"); key("Tab");
@@ -104,5 +110,58 @@
   await tick();
   key("Enter");
   check(menu.hidden && submitted === 1, "Enter sends when no list is open");
+  let releaseReferences;
+  provideReferences = () => new Promise((resolve) => { releaseReferences = resolve; });
+  type("@delayed");
+  await until(() => releaseReferences);
+  completion.close();
+  releaseReferences([{ type: "session", value: "delayed session", path: "agenthub://session/b" }]);
+  await tick();
+  check(menu.hidden, "closing completion cancels late file and reference results");
+
+  // Exercise the real session send handler with fresh composer elements, so the
+  // standalone completion listeners above cannot interfere with submission.
+  completion.close();
+  const oldForm = $("s-form");
+  oldForm.querySelector(".complete-menu")?.remove();
+  textarea.value = "";
+  textarea.parentElement.replaceWith(textarea);
+  oldForm.replaceWith(oldForm.cloneNode(true));
+  const sessionData = { sessions: [...sessions, { id: "duplicate", title: "서버", state: "idle", projectPath: project }], links: [], current: {
+    id: "s1", title: "참조 작성", projectPath: project, cwd: project, projectName: "Fixture", agent: "codex", state: "idle", events: [], queue: [], permission: "workspace-write",
+  } };
+  navigation.view = "session";
+  const sessionController = createSessionsController({ api, data: sessionData, navigation,
+    sessionById: (id) => sessionData.sessions.find((item) => item.id === id), eventsList: () => $("s-events"),
+  });
+  sessionController.renderSession();
+  const prompt = $("s-prompt"), realMenu = $("s-prompt-complete");
+  const input = (value) => { prompt.focus(); prompt.value = value; prompt.setSelectionRange(value.length, value.length); prompt.dispatchEvent(new Event("input")); };
+  const press = (value) => prompt.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true }));
+  input("@세션/서버");
+  await until(() => !realMenu.hidden && realMenu.textContent.includes("서버"));
+  press("Enter");
+  check(prompt.value === "@세션/서버 ", "session completion inserts a readable reference without sending");
+  input(prompt.value + "@세션/서버");
+  await until(() => !realMenu.hidden && realMenu.children.length === 2);
+  press("ArrowDown"); press("Enter");
+  check(prompt.value.includes('@"세션/서버 (2)"'), "sessions with the same title receive distinct reference labels");
+  input(prompt.value + "@작업/시각");
+  await until(() => !realMenu.hidden && realMenu.textContent.includes("시각 개선"));
+  press("Enter");
+  check(prompt.value.includes('@"작업/시각 개선"'), "task completion preserves a title containing spaces");
+  input(prompt.value + "@src/a");
+  await until(() => !realMenu.hidden && realMenu.textContent.includes("src/app.js"));
+  press("Enter");
+  press("Enter");
+  await until(() => requests.some((item) => item.url === "/api/sessions/s1/messages"));
+  const sent = requests.find((item) => item.url === "/api/sessions/s1/messages").body;
+  check(sent.prompt === "@agenthub://session/b @agenthub://session/duplicate @agenthub://task/task-ui @src/app.js", "real send expands session, task and file references to stable identifiers");
+  check(JSON.stringify(sent.references) === JSON.stringify([
+    { label: "세션/서버", path: "agenthub://session/b" },
+    { label: "세션/서버 (2)", path: "agenthub://session/duplicate" },
+    { label: "작업/시각 개선", path: "agenthub://task/task-ui" },
+    { label: "app.js", path: "src/app.js" },
+  ]), "message payload preserves all selected labels and original destinations");
   return checks;
 })()
