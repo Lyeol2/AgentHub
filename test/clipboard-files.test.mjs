@@ -231,7 +231,7 @@ function preloadFixture() {
 
 test("desktop preload: synthetic events cannot read clipboard and trusted paste is single-use", async () => {
   const f = preloadFixture();
-  assert.deepEqual(Object.keys(f.bridge), ["readClipboardFiles"]);
+  assert.deepEqual(Object.keys(f.bridge), ["readClipboardFiles", "openArtifact"]);
   assert.equal((await f.bridge.readClipboardFiles()).length, 0);
   f.dispatch("paste", { isTrusted: false });
   f.dispatch("keydown", { isTrusted: false, key: "v", ctrlKey: true });
@@ -260,4 +260,22 @@ test("desktop preload: native paste shortcut fallback expires and rejects unrela
   f.advance(1500);
   assert.equal((await f.bridge.readClipboardFiles()).length, 0);
   assert.equal(f.calls.length, 3);
+});
+
+test("desktop preload: opening artifacts requires a trusted click and consumes it once", async () => {
+  const f = preloadFixture();
+  const request = { sessionId: "s-fixture", path: "outputs/report.md", action: "open", ignored: "not forwarded" };
+  await assert.rejects(f.bridge.openArtifact(request), /버튼을 눌러/);
+  f.dispatch("click", { isTrusted: false });
+  await assert.rejects(f.bridge.openArtifact(request), /버튼을 눌러/);
+  assert.equal(f.calls.length, 0);
+  f.dispatch("click", { isTrusted: true });
+  await f.bridge.openArtifact(request);
+  assert.equal(f.calls.length, 1);
+  assert.equal(f.calls[0][0], "agenthub:open-artifact");
+  assert.equal(JSON.stringify(f.calls[0][1]), JSON.stringify({ sessionId: "s-fixture", path: "outputs/report.md", action: "open" }));
+  await assert.rejects(f.bridge.openArtifact(request), /버튼을 눌러/);
+  f.dispatch("click", { isTrusted: true });
+  f.advance(1500);
+  await assert.rejects(f.bridge.openArtifact(request), /버튼을 눌러/);
 });

@@ -3,9 +3,11 @@ import { firstLine } from "../../shared/store.js";
 import { linkLabel } from "../../shared/flow.js";
 import { renderMarkdown } from "../../markdown.js";
 import { renderAttachmentLinks } from "./image-composer.js";
+import { createReportView } from "./report-view.js";
 
 /** Render conversation history; user decisions are commands supplied by the controller. */
-export function createConversationView({ getSession, sessionById, selectSession, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision }) {
+export function createConversationView({ api, getSession, sessionById, selectSession, onTaskReference, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision }) {
+  const reports = createReportView({ api, getSession, sessionById, selectSession, onTaskReference });
   const PLAN_STATUS = { pending: "승인 대기", applied: "실행함", rejected: "거절함", invalid: "형식 오류" };
 
   // 오케스트레이터가 쓴 계획. 승인하면 세션·연결·요청을 만든다.
@@ -313,7 +315,9 @@ export function createConversationView({ getSession, sessionById, selectSession,
       const text = answerText(ev);
       if (!text) return el("li", { class: "ev hidden-empty", hidden: true });
       const node = el("li", { class: `${cls} md` });
-      node.innerHTML = renderMarkdown(text);
+      node.innerHTML = renderMarkdown(text, { sessionId: getSession()?.id });
+      reports.enhance(node, text, { references: ev.references });
+      if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
       return node;
     }
     if (ev.kind === "message") {
@@ -336,7 +340,9 @@ export function createConversationView({ getSession, sessionById, selectSession,
             ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
           el("div", { class: "handoff-body" }, ev.text)));
     }
-    const node = el("li", { class: cls }, ev.text ?? "");
+    const node = el("li", { class: cls });
+    if (ev.kind === "user") reports.renderUser(node, ev.text ?? "", ev.references);
+    else node.append(ev.text ?? "");
     if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
     if (ev.detail) node.title = ev.detail;
     return node;

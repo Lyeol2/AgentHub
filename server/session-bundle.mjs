@@ -48,6 +48,10 @@ export function bundleEvent(event) {
   const attachments = list(event.attachments).filter((a) => typeof a?.id === "string")
     .map((a) => ({ id: a.id, name: text(a.name) || "file", mimeType: String(a.mimeType ?? "application/octet-stream"), size: Number(a.size) || 0 }));
   if (attachments.length) out.attachments = attachments;
+  const references = list(event.references).slice(0, 40)
+    .filter((reference) => typeof reference?.label === "string" && reference.label.trim() && reference.label.length <= 200 && typeof reference.path === "string" && reference.path.trim() && reference.path.length <= 4096 && !/[\x00-\x1f\x7f]/.test(reference.label + reference.path))
+    .map((reference) => ({ label: text(reference.label), path: text(reference.path) }));
+  if (references.length) out.references = references;
   return out;
 }
 

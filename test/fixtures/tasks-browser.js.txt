@@ -51,6 +51,18 @@
   await until(() => card('task-1'));
   check(card('task-1').textContent.includes('feature/task-1') && card('task-1').textContent.includes('develop'), 'created task shows GitFlow branch and target');
   check(action('task-1', 'open-session'), 'task links its session');
+  action('task-1', 'open-session').click();
+  await until(() => !$('view-session').hidden && $('s-title').textContent === '로그인 버튼 수정');
+  await fetch('/fixture/emit', { method: 'POST', body: JSON.stringify({ type: 'event', payload: {
+    sessionId: 'session-task-1', event: { seq: 0, kind: 'text', text: '작업 확인: [로그인 작업](agenthub://task/task-1)' },
+  } }) });
+  await until(() => $('s-events').querySelector('[data-report-task="task-1"]'));
+  check($('s-events').querySelector('[data-report-task="task-1"]').textContent === '로그인 작업', 'session answers render task URIs as clickable references');
+  localStorage.setItem('agenthub-project-tab', 'flow');
+  $('s-events').querySelector('[data-report-task="task-1"]').click();
+  await until(() => !$('view-project').hidden && !$('tab-tasks').hidden && document.activeElement?.dataset.taskId === 'task-1');
+  check(tab().getAttribute('aria-selected') === 'true' && $('p-name').textContent === 'Fixture', 'task reference opens the owning project tasks tab');
+  check(document.activeElement === card('task-1') && card('task-1').tabIndex === -1, 'task reference focuses its existing card');
   action('task-1', 'finish').click();
   await until(() => $('finish-task-dialog').open);
   $('task-finish-message').value = 'fix: 로그인 버튼 수정';

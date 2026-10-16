@@ -761,6 +761,15 @@ export function createTasksController({
 
   return {
     loadTasks, invalidateProject, renderTasks, cancelCreation,
+    async openReference(id, path = getProjectPath()) {
+      await loadTasks(path, { localOnly: true });
+      if (!sameProject(path)) return;
+      const card = [...(list?.querySelectorAll('.task-card') || [])].find(item => item.dataset.taskId === id);
+      if (!card) throw Error('작업을 찾을 수 없습니다.');
+      card.tabIndex = -1;
+      card.focus({ preventScroll: true });
+      card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    },
     refreshIfVisible(path = getProjectPath()) { if (path === getProjectPath() && isTasksVisible()) void loadTasks(path); },
   };
 }

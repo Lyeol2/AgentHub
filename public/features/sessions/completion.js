@@ -8,7 +8,7 @@ const SCOPE_LABEL = { project: "프로젝트 스킬", claude: "Claude 스킬", p
 // ↑↓로 고르고 Enter·Tab으로 넣는다. Esc는 목록만 닫는다(작업 일시중지로 넘어가지 않는다).
 // 반드시 작성창의 다른 keydown 처리보다 먼저 만든다. 목록이 열려 있으면 Enter가 보내기로 넘어가지 않게 막는다.
 // 고른 파일은 "@파일이름"으로 줄여 파란 글씨로 보이고, 보낼 때 expand()로 전체 경로를 되살린다.
-export function createCompletion({ textarea, api, getSession, onBuiltin }) {
+export function createCompletion({ textarea, api, getSession, onBuiltin, getReferences = () => [] }) {
   const menu = el("ul", { class: "complete-menu", role: "listbox", id: `${textarea.id}-complete`, hidden: "" });
   const parent = textarea.parentElement;
   // 작성창 뒤에 같은 글자를 그리는 판을 두고, 참조가 있으면 작성창 글자를 숨겨 판의 색을 보인다.
@@ -59,6 +59,7 @@ export function createCompletion({ textarea, api, getSession, onBuiltin }) {
 
   function close() {
     paint();
+    state.seq++;
     state.trigger = null;
     state.items = [];
     clearTimeout(state.timer);
@@ -77,6 +78,11 @@ export function createCompletion({ textarea, api, getSession, onBuiltin }) {
       const active = i === state.index;
       const parts = item.type === "file"
         ? [el("span", { class: "complete-icon", "aria-hidden": "true" }, item.value.endsWith("/") ? "📁" : "📄"), el("span", { class: "complete-name mono" }, item.value)]
+        : item.type === "session" || item.type === "task"
+        ? [el("span", { class: "complete-icon", "aria-hidden": "true" }, item.type === "session" ? "◉" : "☑"),
+          el("span", { class: "complete-name" }, item.value),
+          el("span", { class: "complete-desc" }, item.description ?? ""),
+          el("span", { class: "complete-tag" }, item.type === "session" ? "세션" : "작업")]
         : [el("span", { class: "complete-name mono" }, `/${item.value}`),
           el("span", { class: "complete-desc" }, item.description ?? ""),
           el("span", { class: "complete-tag" }, item.builtin ? "기본" : SCOPE_LABEL[item.scope] ?? "스킬")];
@@ -111,14 +117,18 @@ export function createCompletion({ textarea, api, getSession, onBuiltin }) {
     }
     clearTimeout(state.timer);
     state.timer = setTimeout(async () => {
-      let files = [];
-      try {
-        ({ files } = await api("GET", `/api/sessions/${session.id}/files?q=${encodeURIComponent(trigger.query)}`));
-      } catch {
-        files = [];
-      }
+      const [fileResult, referenceResult] = await Promise.allSettled([
+        api("GET", `/api/sessions/${session.id}/files?q=${encodeURIComponent(trigger.query)}`),
+        Promise.resolve().then(() => getReferences(session)),
+      ]);
       if (seq !== state.seq) return;
-      state.items = files.map((value) => ({ type: "file", value }));
+      const files = fileResult.status === "fulfilled" && Array.isArray(fileResult.value?.files) ? fileResult.value.files : [];
+      const references = referenceResult.status === "fulfilled" && Array.isArray(referenceResult.value) ? referenceResult.value : [];
+      const query = trigger.query.toLocaleLowerCase();
+      const matches = references.filter((item) => ["session", "task"].includes(item.type)
+        && typeof item.path === "string" && typeof item.value === "string"
+        && (`${item.type === "session" ? "세션" : "작업"}/${item.value} ${item.description ?? ""}`).toLocaleLowerCase().includes(query));
+      state.items = [...matches.slice(0, 10), ...files.map((value) => ({ type: "file", value }))].slice(0, 40);
       state.index = sameWord ? Math.min(state.index, Math.max(0, state.items.length - 1)) : 0;
       render();
     }, 80);
@@ -142,6 +152,16 @@ export function createCompletion({ textarea, api, getSession, onBuiltin }) {
       const refs = refsBySession.get(id);
       value = refToken(value, refs);
       refs.set(value, item.value);
+    } else if (item.type === "session" || item.type === "task") {
+      const id = getSession()?.id;
+      if (!refsBySession.has(id)) refsBySession.set(id, new Map());
+      const refs = refsBySession.get(id);
+      const name = value.replace(/["\r\n]/g, " ").trim() || item.path.split("/").at(-1);
+      const base = `${item.type === "session" ? "세션" : "작업"}/${name}`;
+      value = base;
+      let suffix = 1;
+      while (refs.has(value) && refs.get(value) !== item.path) value = `${base} (${++suffix})`;
+      refs.set(value, item.path);
     }
     const next = applyCompletion(textarea.value, trigger, value);
     textarea.value = next.text;
@@ -186,5 +206,15 @@ export function createCompletion({ textarea, api, getSession, onBuiltin }) {
     const refs = sessionRefs();
     return refs ? expandRefs(text, refs) : text;
   };
-  return { close, isOpen: () => !menu.hidden, expand, sync: paint };
+  const references = (text) => {
+    const refs = sessionRefs();
+    const found = refs ? refMatches(text, refs) : [];
+    const seen = new Set();
+    return found.filter((match) => {
+      if (seen.has(match.file)) return false;
+      seen.add(match.file);
+      return true;
+    }).map((match) => ({ label: match.token, path: match.file }));
+  };
+  return { close, isOpen: () => !menu.hidden, expand, references, sync: paint };
 }
