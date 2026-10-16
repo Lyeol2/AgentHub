@@ -124,6 +124,7 @@ test("browser: locked direct popup URLs, sidebar/table toggles, and disabled cha
       } else if (url.pathname === "/api/projects/all") value = [project];
       else if (["/api/projects/discover", "/api/links", "/api/skills", "/api/messages"].includes(url.pathname)) value = [];
       else if (url.pathname === "/api/commands") value = { shells: [], commands: [] };
+      else if (url.pathname === "/api/graph-tabs") value = { tabs: [{ id: "tab-default", title: "기본", projectPath: project.path, order: 0 }], defaultTabId: "tab-default" };
       else if (url.pathname === "/api/limits") value = { claude: { windows: [] }, codex: { windows: [] } };
       else if (url.pathname === "/api/auth") value = { claude: false, codex: false };
       else if (url.pathname === "/api/setup") value = { tools: [], jobs: {} };
