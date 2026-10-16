@@ -54,6 +54,7 @@ export function createTasksController({
   let createBusy = false;
   let finishBusy = false;
   let createProject = null;
+  let createTabId = null;
   let finishProject = null;
   let finishTaskId = null;
   let settings = gitflowSettings();
@@ -254,6 +255,13 @@ export function createTasksController({
     if (createDialog?.open) createDialog.close();
     if (finishDialog?.open) finishDialog.close();
     updateToolbar();
+  }
+
+  function cancelCreation() {
+    createProject = null;
+    createTabId = null;
+    workbranchPicker.reset();
+    if (createDialog?.open) createDialog.close();
   }
 
   async function loadTasks(path = getProjectPath(), options = {}) {
@@ -469,6 +477,7 @@ export function createTasksController({
     const path = getProjectPath();
     if (!path || path !== projectPath || createBusy || settingsBusy || uncertainCreates.has(path)) return;
     createProject = path;
+    createTabId = navigation?.graphTabId;
     createForm?.reset();
     workbranchPicker.reset();
     showError('task-create-error');
@@ -489,11 +498,13 @@ export function createTasksController({
     }
     if (createForm && !createForm.reportValidity()) return;
     const path = createProject;
+    const tabId = createTabId;
     const epoch = projectEpoch;
     const title = $('task-title')?.value.trim();
     if (!title) { showError('task-create-error', '작업 제목을 입력해 주세요.'); return; }
     const payload = {
       projectPath: path, title, type: $('task-type')?.value || 'feature',
+      ...(tabId ? { tabId } : {}),
       agent: $('task-agent')?.value || 'codex',
       permission: $('task-permission')?.value || 'workspace-write',
     };
@@ -518,7 +529,7 @@ export function createTasksController({
         renderTasks();
         createDialog?.close();
         const sessionId = result.session?.id || result.task?.sessionIds?.at(-1);
-        if (sessionId) await selectSession(sessionId);
+        if (sessionId && tabId === navigation?.graphTabId) await selectSession(sessionId);
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainCreates.add(path);
@@ -673,6 +684,7 @@ export function createTasksController({
   async function newSession(task) {
     if (!task || pendingTasks.has(task.id) || uncertainTasks.has(task.id) || task.pendingAction) return;
     const path = projectPath;
+    const tabId = navigation?.graphTabId;
     const epoch = projectEpoch;
     pendingTasks.add(task.id);
     taskErrors.delete(task.id);
@@ -681,7 +693,7 @@ export function createTasksController({
     const ids = Array.isArray(task.sessionIds) ? task.sessionIds : [];
     const previous = sessions.find(session => session.id === ids.at(-1)) || sessions.find(session => session.taskId === task.id);
     const agent = previous?.agent || task.agent || 'codex';
-    const payload = { agent, permission: previous?.permission || task.permission || (agent === 'claude' ? 'acceptEdits' : 'workspace-write') };
+    const payload = { agent, permission: previous?.permission || task.permission || (agent === 'claude' ? 'acceptEdits' : 'workspace-write'), ...(tabId ? { tabId } : {}) };
     for (const key of ['model', 'effort', 'role']) {
       const value = previous?.[key] ?? task[key];
       if (value) payload[key] = value;
@@ -691,7 +703,7 @@ export function createTasksController({
       await reloadSessions();
       if (sameProject(path, epoch)) {
         replaceTask(result.task);
-        if (result.session?.id) await selectSession(result.session.id);
+        if (result.session?.id && tabId === navigation?.graphTabId) await selectSession(result.session.id);
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainTasks.set(task.id, 'session');
@@ -748,7 +760,7 @@ export function createTasksController({
   updateToolbar();
 
   return {
-    loadTasks, invalidateProject, renderTasks,
+    loadTasks, invalidateProject, renderTasks, cancelCreation,
     refreshIfVisible(path = getProjectPath()) { if (path === getProjectPath() && isTasksVisible()) void loadTasks(path); },
   };
 }

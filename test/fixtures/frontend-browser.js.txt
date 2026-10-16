@@ -9,7 +9,7 @@
     await until(() => $("project-nav").querySelector("button") && $("kpis").children.length === 4);
     check(!$("view-dashboard").hidden, "dashboard bootstrap");
     $("project-nav").querySelector("button").click();
-    await until(() => $("p-graph").querySelectorAll(".gcard").length === 2 && $("p-graph").querySelector(".gcmd"));
+    await until(() => $("p-graph").querySelectorAll(".gcard").length === 2 && $("p-graph").querySelector(".gcmd") && $("p-graph-tabs").querySelector('[data-graph-tab][aria-selected="true"]'));
     check(!$("view-project").hidden, "project navigation and graph rendering");
     let canvas = $("p-graph").querySelector(".graph-canvas");
     const firstCard = canvas.querySelector('.gcard[data-id="s1"]');
@@ -37,7 +37,8 @@
     const projectContent = document.querySelector("#view-project > .content");
     const contentBottom = projectContent.getBoundingClientRect().bottom - parseFloat(getComputedStyle(projectContent).paddingBottom);
     const toolbarRect = $("p-flow-assistant").getBoundingClientRect();
-    check(Math.abs(toolbarRect.bottom - contentBottom + 1) <= 2 && Math.abs(graphRect.bottom - toolbarRect.top) <= 2 && graphRect.height > 300, "graph fills the available panel height above the fixed toolbar");
+    const tabsRect = $("p-graph-tabs").getBoundingClientRect();
+    check(Math.abs(toolbarRect.bottom - contentBottom + 1) <= 2 && Math.abs(graphRect.bottom - tabsRect.top) <= 2 && Math.abs(tabsRect.bottom - toolbarRect.top) <= 2 && tabsRect.height > 0 && graphRect.height > 300, "graph fills the available panel height above its tabs and fixed toolbar");
     const graphStaysFixed = () => {
       const rect = $("p-graph").getBoundingClientRect();
       return Math.abs(rect.width - graphRect.width) < 1 && Math.abs(rect.height - graphRect.height) < 1 && Math.abs(rect.bottom - graphRect.bottom) < 1;

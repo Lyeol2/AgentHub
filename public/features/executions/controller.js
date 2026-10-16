@@ -116,13 +116,13 @@ export function createExecutionControls({ api, navigation, refreshGraph = async 
     const projectPath = navigation.project;
     if (!projectPath) return;
     templates?.node.close();
-    const state = templates = { ...dialog("group-templates-dialog", "그룹 템플릿"), projectPath, pos, busy: false };
+    const state = templates = { ...dialog("group-templates-dialog", "그룹 템플릿"), projectPath, tabId: navigation.graphTabId, pos, busy: false };
     state.list = el("div", { class: "execution-template-list" });
     state.body.append(el("p", { class: "hint" }, "저장한 그룹의 노드·연결·입출력 설정을 새 그룹으로 추가합니다."), state.list);
     state.node.addEventListener("close", () => { if (templates === state) { templates = null; templateRevision++; } });
     await loadTemplates(state);
   }
-  const stillTemplates = (state) => templates === state && state.node.open && samePath(state.projectPath, navigation.project);
+  const stillTemplates = (state) => templates === state && state.node.open && samePath(state.projectPath, navigation.project) && state.tabId === navigation.graphTabId;
   async function loadTemplates(state) {
     const revision = ++templateRevision;
     try {
@@ -136,7 +136,7 @@ export function createExecutionControls({ api, navigation, refreshGraph = async 
     if (state.busy || !stillTemplates(state)) return;
     state.busy = true; for (const button of state.list.querySelectorAll("button")) button.disabled = true;
     try {
-      await api("POST", "/api/group-templates/" + encodeURIComponent(item.id) + "/instantiate", { projectPath: state.projectPath, ...(state.pos ? { pos: state.pos } : {}) });
+      await api("POST", "/api/group-templates/" + encodeURIComponent(item.id) + "/instantiate", { projectPath: state.projectPath, ...(state.tabId ? { tabId: state.tabId } : {}), ...(state.pos ? { pos: state.pos } : {}) });
       await refreshGraph(state.projectPath);
       if (stillTemplates(state)) state.node.close();
     } catch (error) { if (stillTemplates(state)) state.error.textContent = error.message; }

@@ -69,6 +69,26 @@ test("graph history: recreated ids follow through repeated undo and redo, and fa
   assert.equal(history.state("C:/repo").redo, null, "a failed step is not retried");
 });
 
+test("graph history: tabs isolate stacks but share recreated IDs for cross-tab links", async () => {
+  let tabId = "one";
+  const history = createGraphHistory({ refresh: async () => {}, getScope: () => tabId });
+  const seen = [];
+  history.record("C:/repo", { label: "one", undo: async ({ remap }) => remap("old-link", "new-link"), redo: async () => {} });
+  tabId = "two";
+  history.record("C:/repo", { label: "two", undo: async ({ resolve }) => seen.push(resolve("old-link")), redo: async () => {} });
+  history.record("C:/repo", { tabId: "one", label: "late one", undo: async () => {}, redo: async () => {} });
+  assert.equal(history.state("C:/repo").undo, "two", "a delayed write belongs to its starting tab");
+  tabId = "one";
+  await history.undo("C:/repo"); await history.undo("C:/repo");
+  tabId = "two";
+  await history.undo("C:/repo");
+  assert.deepEqual(seen, ["new-link"]);
+  history.invalidate("C:/repo", ["one"]);
+  assert.equal(history.state("C:/repo").redo, "two", "moving another tab does not erase this stack");
+  tabId = "one";
+  assert.equal(history.state("C:/repo").redo, null);
+});
+
 test("graph history: restore payloads recreate every node kind and link through the real API", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "agenthub-history-"));
   const projectPath = path.join(root, "project");

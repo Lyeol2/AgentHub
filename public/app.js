@@ -37,7 +37,7 @@ const commandById = (id) => data.commands.find((command) => command.id === id);
 const nodeTitle = (id) => (sessionById(id) ?? commandById(id))?.title ?? "?";
 const { fillModels, fillEfforts } = createModelControls(() => data.status);
 let sessionSelectionRevision = 0;
-const cancelNodeCreation = () => { creation.cancelCreation(); commands.cancelCreation(); };
+const cancelNodeCreation = () => { creation.cancelCreation(); commands.cancelCreation(); records.cancelCreation?.(); skills.cancelCreation?.(); tasks.cancelCreation?.(); };
 
 // ── 화면 전환 ───────────────────────────────────────────────────
 function show(view) {
@@ -129,6 +129,7 @@ const loadGit = (...args) => git.loadGit(...args);
 const loadTasks = (...args) => tasks.loadTasks(...args);
 const loadLinks = (...args) => graph.loadLinks(...args);
 const loadNodeGroups = (...args) => graph.loadNodeGroups(...args);
+const loadGraphTabs = (...args) => graph.loadGraphTabs(...args);
 const renderGraph = (...args) => graph.renderGraph(...args);
 const loadMessages = (...args) => graph.loadMessages(...args);
 const loadCommands = (...args) => commands.loadCommands(...args);
@@ -225,7 +226,7 @@ const account = createAccountController({
 const issues = createIssuesController({
   api, account: () => account.account(), connectAccount: () => account.connect(), goProject, showProjectTab, projectTab, selectSession, navigation
 });
-createRecordsController({ api, loadSessions, selectSession, data, navigation });
+const records = createRecordsController({ api, loadSessions, selectSession, data, navigation });
 const creation = createCreationController({
   api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, fillModels, fillEfforts, openChat, openSettings, data, navigation
 });
@@ -253,7 +254,7 @@ if (POPUP) {
 } else if (navigation.viewRevision === bootView && sessionSelectionRevision === bootSelection) goDashboard();
 
 const stream = connectLiveUpdates({
-  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved
+  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved
 });
 loadAuth();
 loadSetup();

@@ -14,7 +14,7 @@ const fail = (message) => { throw new HttpError(400, message); };
 const label = (value, fallback) => String(value ?? "").trim().slice(0, 100) || fallback;
 const freshId = (prefix) => prefix + randomBytes(8).toString("hex");
 
-export function createGroupTemplateService({ dataDir, store, commands, links, nodeGroups, projects, sessions, notify = () => {} }) {
+export function createGroupTemplateService({ dataDir, store, commands, links, nodeGroups, projects, sessions, graphTabs, notify = () => {} }) {
   const templates = new GroupTemplateStore({ dataDir });
   const node = (id) => store.get(id) ?? commands.get(id);
   function get(id) {
@@ -147,6 +147,7 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
   async function instantiate(id, body = {}) {
     const definition = validate(get(id));
     const project = projects.ensureProject(body.projectPath);
+    const tabId = graphTabs?.resolve(project.path, body.tabId);
     if (body.pos !== undefined && (!point(body.pos) || body.pos.x < 0 || body.pos.y < 0)) fail("템플릿을 놓을 위치가 올바르지 않습니다.");
     const pos = { x: Math.max(body.pos?.x ?? 60, 0, ...definition.nodes.map((item) => -item.pos.x)),
       y: Math.max(body.pos?.y ?? 60, 0, ...definition.nodes.map((item) => -item.pos.y)) };
@@ -163,7 +164,7 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
     let group = null, groupsBefore = null;
     try {
       for (const item of definition.nodes.filter((item) => item.type === "session")) {
-        const session = await sessions.createSession({ project, ...item.config, chat: false, isolate: false });
+        const session = await sessions.createSession({ project, ...item.config, tabId, chat: false, isolate: false });
         createdSessions.push(session);
         ids.set(item.key, session.id);
         session.graphPos = { x: pos.x + item.pos.x, y: pos.y + item.pos.y };
@@ -179,6 +180,7 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
         if (config.kind === "webhook-in") config.hookToken = newHookToken();
         if (config.kind === "schedule") { config.scheduleEnabled = false; config.nextRunAt = null; }
         const command = { id: ids.get(item.key), projectPath: project.path, ...config,
+          ...(tabId ? { tabId } : {}),
           pos: { x: pos.x + item.pos.x, y: pos.y + item.pos.y }, state: "idle", lastRun: null, createdAt: new Date().toISOString() };
         createdCommands.push(command);
         commands.add(command);
@@ -189,7 +191,7 @@ export function createGroupTemplateService({ dataDir, store, commands, links, no
         links.add(link);
       }
       groupsBefore = new Set(nodeGroups.list(project.path).groups.map((item) => item.id));
-      group = nodeGroups.create({ projectPath: project.path, title: definition.group.title, members: definition.nodes.map((item) => ids.get(item.key)),
+      group = nodeGroups.create({ projectPath: project.path, tabId, title: definition.group.title, members: definition.nodes.map((item) => ids.get(item.key)),
         rect: { x: pos.x, y: pos.y, ...definition.group.rect }, collapsed: definition.group.collapsed,
         ports: definition.group.ports.map((port) => ({ ...port, id: freshId("port-"), nodeId: ids.get(port.nodeId) })) });
       notify("sessions", {});
