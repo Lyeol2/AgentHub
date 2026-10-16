@@ -87,6 +87,7 @@ test("graph history: restore payloads recreate every node kind and link through 
     { kind: "command", command: "echo hi", title: "명령" }, { kind: "button", prompt: "시작" }, { kind: "input" }, { kind: "repeat", maxIterations: 4 },
     { kind: "transform", transformMode: "template", template: "{{input}}!" }, { kind: "notify", message: "끝" }, { kind: "markdown" },
     { kind: "webhook", url: "https://example.test/hook", headers: "X-A: 1" }, { kind: "webhook-in", prompt: "{{body}}" }, { kind: "watch", watchPaths: ["."] },
+    { kind: "schedule", scheduleMode: "daily", timeOfDay: "10:30", prompt: "{{scheduledAt}}" },
   ];
   for (const definition of definitions) {
     const original = await api("POST", "/commands", { projectPath, pos: { x: 40, y: 80 }, ...definition });
@@ -95,6 +96,12 @@ test("graph history: restore payloads recreate every node kind and link through 
     assert.notEqual(restored.id, original.id);
     assert.deepEqual(commandBody(restored), commandBody(original), `${definition.kind} keeps its settings`);
     if (definition.kind === "webhook-in") assert.notEqual(restored.hookToken, original.hookToken, "a restored receiver gets a new address");
+    if (definition.kind === "schedule") {
+      const payload = commandBody({ ...original, scheduleEnabled: true, nextRunAt: "2030-01-01T00:00:00Z" });
+      assert.equal(payload.scheduleEnabled, undefined);
+      assert.equal(payload.nextRunAt, undefined);
+      assert.equal(restored.scheduleEnabled, false);
+    }
   }
   const [from, to] = (await api("GET", `/commands?path=${encodeURIComponent(projectPath)}`)).commands.filter((c) => ["command", "notify"].includes(c.kind ?? "command"));
   const link = await api("POST", "/links", { from: from.id, to: to.id, when: "keyword", keyword: "통과", note: "넘김", approve: true });

@@ -26,6 +26,7 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
         codex: agentStatus("codex", paths.codex, codexVersion),
       },
       cliOverrides: config.cli,
+      cliAutoUpdate: config.cliAutoUpdate !== false,
       projects: config.projects,
       linkConditions: Object.entries(CONDITION_LABELS).map(([id, label]) => ({ id, label })),
     };
@@ -55,6 +56,10 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
     try {
       if (action === "install") return setup.install(tool);
       if (tool === "winget" && action !== "cancel") throw new HttpError(404, "winget은 설치·복구와 취소만 지원합니다.");
+      if (action === "update") {
+        if (!["claude", "codex"].includes(tool)) throw new HttpError(400, "Claude Code와 Codex만 업데이트할 수 있습니다.");
+        return setup.update(tool);
+      }
       if (action === "login") return setup.login(tool);
       if (action === "input") {
         setup.input(tool, String(body.text ?? "").slice(0, 2000));
@@ -84,13 +89,17 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
   }
 
   function settings(body) {
+    if (body.cliAutoUpdate !== undefined && typeof body.cliAutoUpdate !== "boolean") throw new HttpError(400, "CLI 자동 업데이트 설정은 참 또는 거짓이어야 합니다.");
     const next = {};
-    for (const agent of ["claude", "codex"]) {
-      const value = normalizeCliPath(body.cli?.[agent] ?? "");
-      if (value && !isCliFile(value)) throw new HttpError(400, agent + " CLI 실행 파일을 선택하세요. 폴더나 바로가기 대신 .exe, .cmd, .bat 등의 실행 파일 경로가 필요합니다: " + value);
-      next[agent] = value;
+    if (body.cli !== undefined) {
+      for (const agent of ["claude", "codex"]) {
+        const value = normalizeCliPath(body.cli?.[agent] ?? "");
+        if (value && !isCliFile(value)) throw new HttpError(400, agent + " CLI 실행 파일을 선택하세요. 폴더나 바로가기 대신 .exe, .cmd, .bat 등의 실행 파일 경로가 필요합니다: " + value);
+        next[agent] = value;
+      }
     }
     Object.assign(config.cli, next);
+    if (body.cliAutoUpdate !== undefined) config.cliAutoUpdate = body.cliAutoUpdate;
     refreshPath();
     saveConfig(config);
     return { ok: true };

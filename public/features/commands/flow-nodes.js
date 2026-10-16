@@ -1,7 +1,7 @@
 import { $, el } from "../../shared/dom.js";
 
-export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "notify", "task", "webhook", "webhook-in"];
-export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기" };
+export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "task", "webhook", "webhook-in"];
+export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", schedule: "시간 예약", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기" };
 export const kindOf = (node) => Object.hasOwn(KIND_LABEL, node?.kind) ? node.kind : "command";
 // 명령 노드는 kind가 없으므로 id로 세션과 구분한다.
 export const hasBranchPorts = (node) => ["git", "task", "repeat"].includes(node?.kind) || (!!node?.id?.startsWith("cmd-") && kindOf(node) === "command");
@@ -12,7 +12,8 @@ export const hasWorktreeOutput = (node) => node?.kind === "git" || (node?.kind =
 // 따로 정하지 않으면 성공 출력을 작업 폴더로 넘기는 노드
 export const worktreeByDefault = (node) => (node?.kind === "git" && node.gitAction === "use") || (node?.kind === "task" && node.taskAction === "start");
 export const TASK_TYPE_LABEL = { feature: "기능 개발", hotfix: "긴급 수정", release: "배포 준비" };
-export const isSourceOnly = (node) => ["button", "input", "watch", "webhook-in"].includes(node?.kind);
+export const isSourceOnly = (node) => ["button", "input", "watch", "schedule", "webhook-in"].includes(node?.kind);
+export const isScheduleArmed = (node) => node?.kind === "schedule" && (node.scheduleEnabled === true || node.state === "scheduled");
 // 받는 주소. 앱이 열린 주소를 기준으로 만든다.
 export const hookUrl = (node) => node?.hookToken ? `${location.origin}/hooks/${node.hookToken}` : "";
 export const KIND_HINT = {
@@ -24,10 +25,29 @@ export const KIND_HINT = {
   transform: "앞 노드의 결과를 AI 없이 가공합니다. JSON은 점으로 구분한 필드 경로, 줄 선택은 검색할 문구, 템플릿은 {{input}}와 입력값 {{key}}를 사용합니다. 결과 보기에서 출력 내용을 확인할 수 있습니다.",
   task: "작업 탭의 새 작업·작업 마무리를 흐름에서 실행합니다. 새 작업은 GitFlow 규칙으로 브랜치와 작업 폴더를 만들고, 성공 출력에 연결한 세션을 그 작업 폴더로 옮겨 작업에 연결합니다(대화 기록이 없는 세션만). 작업 마무리는 앞 세션의 작업을 커밋·게시하고 PR을 만들며, 들어오는 연결은 기본으로 승인 후 실행합니다. 제목·커밋 메시지·PR 설명에 {{input}}와 입력값 {{key}}를 쓸 수 있습니다.",
   watch: "▶를 누른 뒤 지정한 파일이나 폴더의 변경을 감시합니다. 짧은 시간 안의 변경은 모아서 연결된 작업을 시작합니다. 중지하면 감시를 해제하며, 앱을 다시 열면 직접 시작해야 합니다.",
+  schedule: "저장 후 ‘예약 시작’을 누르면 정한 시간에 연결된 작업을 시작합니다. 설정을 바꾸려면 먼저 예약을 중지하세요. AgentHub가 실행 중이어야 하며 실행 중이던 예약은 앱을 다시 열면 복원합니다. 앱이 꺼져 있던 동안 지난 예약은 건너뜁니다.",
 };
 
 export function createFlowNodeForms() {
   let resolveRun = null;
+  let scheduleActive = false;
+  const localDateTime = (value) => {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "";
+    return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+  };
+  function syncSchedule() {
+    const mode = $("schedule-mode").value;
+    for (const [name, id] of [["once", "schedule-run-at"], ["daily", "schedule-time-of-day"], ["interval", "schedule-interval"]]) {
+      const active = scheduleActive && mode === name;
+      $(id + "-row").hidden = !active;
+      $(id).disabled = !active;
+      $(id).required = active;
+    }
+    $("schedule-mode").disabled = !scheduleActive;
+    $("schedule-prompt").disabled = !scheduleActive;
+  }
+  $("schedule-mode").addEventListener("change", syncSchedule);
   function addField(field = {}) {
     const row = el("div", { class: "flow-input-field" });
     const key = el("input", { class: "flow-field-key mono", placeholder: "task", "aria-label": "변수 이름", pattern: "[A-Za-z_][A-Za-z0-9_]*", maxlength: "64", required: "" });
@@ -69,7 +89,7 @@ export function createFlowNodeForms() {
     $("transform-expression-label").textContent = mode === "json" ? "JSON 필드 경로" : "포함할 문구";
     $("transform-expression").placeholder = mode === "json" ? "예: result.failures (비우면 JSON 전체)" : "예: FAIL (비우면 빈 줄 제외)";
   }
-  function fill(kind, cmd) {
+  function fill(kind, cmd, { timeZone } = {}) {
     for (const name of FLOW_KINDS) $(name + "-settings").hidden = kind !== name;
     // Hidden required controls must not block a different kind of node.
     $("input-fields").replaceChildren();
@@ -83,6 +103,14 @@ export function createFlowNodeForms() {
     $("watch-paths").value = (cmd?.watchPaths ?? ["src"]).join("\n");
     $("watch-debounce").value = cmd?.debounceMs ?? 500;
     $("watch-prompt").value = cmd?.prompt ?? "변경된 파일을 확인하고 필요한 작업을 진행해 주세요.\n{{paths}}";
+    scheduleActive = kind === "schedule";
+    $("schedule-mode").value = cmd?.scheduleMode ?? "once";
+    $("schedule-run-at").value = localDateTime(cmd?.runAt ?? Date.now() + 3_600_000);
+    $("schedule-time-of-day").value = cmd?.timeOfDay ?? "09:00";
+    $("schedule-interval").value = cmd?.intervalMinutes ?? 60;
+    $("schedule-prompt").value = cmd?.kind === "schedule" ? cmd.prompt ?? "예약된 작업을 시작하세요." : "예약된 작업을 시작하세요.";
+    $("schedule-timezone").textContent = `한 번 예약은 이 화면의 시간대(${Intl.DateTimeFormat().resolvedOptions().timeZone})로 입력합니다. 매일 예약은 AgentHub가 실행 중인 PC 시간대(${timeZone || "서버 PC의 설정"})를 따릅니다.`;
+    syncSchedule();
     $("notify-message").value = cmd?.message ?? "{{input}}";
     $("notify-title").value = cmd?.notificationTitle ?? "AgentHub";
     $("notify-level").value = cmd?.level ?? "info";
@@ -123,6 +151,13 @@ export function createFlowNodeForms() {
       ? { taskAction: "finish", commitMessage: $("tasknode-commit").value, description: $("tasknode-description").value, verification: $("tasknode-verification").value }
       : { taskAction: "start", taskType: $("tasknode-type").value, titleTemplate: $("tasknode-title").value, version: $("tasknode-version").value, inPlace: $("tasknode-in-place").checked };
     if (kind === "watch") return { watchPaths: $("watch-paths").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), debounceMs: Number($("watch-debounce").value), prompt: $("watch-prompt").value };
+    if (kind === "schedule") {
+      const scheduleMode = $("schedule-mode").value;
+      return { scheduleMode, prompt: $("schedule-prompt").value,
+        ...(scheduleMode === "once" ? { runAt: new Date($("schedule-run-at").value).toISOString() }
+          : scheduleMode === "daily" ? { timeOfDay: $("schedule-time-of-day").value }
+            : { intervalMinutes: Number($("schedule-interval").value) }) };
+    }
     return {};
   }
   function collect(cmd) {

@@ -37,6 +37,17 @@ test("시스템 서비스는 설치 상태의 fresh 요청을 Setup에 전달한
   assert.deepEqual(calls, [{ fresh: false }, { fresh: true }]);
 });
 
+test("자동 업데이트만 저장하면 CLI 경로를 유지하고 boolean만 허용한다", () => {
+  const h = service();
+  h.system.settings({ cliAutoUpdate: false });
+  assert.equal(h.config.cliAutoUpdate, false);
+  assert.deepEqual(h.config.cli, { claude: "before-claude", codex: "before-codex" });
+  assert.equal(h.saves(), 1);
+  assert.throws(() => h.system.settings({ cliAutoUpdate: "false" }), { status: 400 });
+  assert.equal(h.config.cliAutoUpdate, false);
+  assert.equal(h.saves(), 1);
+});
+
 test("CLI 설정은 따옴표를 정리하고 두 실행 파일 검증이 끝나야 저장한다", async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-cli-settings-"));
   try {
@@ -101,12 +112,13 @@ test("재확인 API가 실패해도 오류를 보이고 버튼을 다시 사용�
   const h = ui(t);
   h.request.api = async () => { throw Error("연결 확인 실패"); };
   await h.get("setup-refresh").handlers.click();
-  assert.deepEqual(h.alerts, ["연결 확인 실패"]);
+  assert.match(text(h.get("setup-list")), /연결 확인 실패/);
+  assert.deepEqual(h.alerts, []);
   assert.equal(h.get("setup-refresh").disabled, false);
   const status = h.data.status;
   h.request.api = async (_method, url) => { if (url.startsWith("/api/status")) return status; throw Error("인증 확인 실패"); };
   await h.get("setup-refresh").handlers.click();
-  assert.equal(h.alerts.at(-1), "인증 확인 실패");
+  assert.match(text(h.get("setup-list")), /인증 확인 실패/);
   assert.equal(h.get("setup-refresh").disabled, false);
 });
 
@@ -180,7 +192,7 @@ test("자동 설치가 없어도 공식 수동 설치 안내와 명령 복사를
   assert.equal(link.href, "https://cli.github.com/");
   assert.equal(link.target, "_blank");
   assert.match(link.rel, /noopener/);
-  assert.match(text(h.get("setup-list")), /상단의 ‘다시 확인’/);
+  assert.match(text(h.get("setup-list")), /‘새로고침’/);
   assert.ok(nodes.some((node) => node.tag === "pre" && text(node) === command));
   const copy = nodes.find((node) => node.tag === "button" && text(node) === "명령 복사");
   await copy.handlers.click();
@@ -202,5 +214,118 @@ test("CLI 실행이나 자동 설치가 실패하면 재설치와 열린 수동 
   const manual = nodes.find((node) => node.tag === "details" && text(node.children[0]) === "수동 설치");
   assert.equal(manual.open, "");
   assert.match(text(manual), /자동 설치에 실패했습니다/);
-  assert.match(text(manual), /상단의 ‘다시 확인’/);
+  assert.match(text(manual), /‘새로고침’/);
+});
+
+test("처음 CLI 조회가 실패해도 새로고침으로 설치 창을 복구할 수 있다", async (t) => {
+  const h = ui(t);
+  const request = h.request.api;
+  h.request.api = async (method, url) => {
+    if (url.startsWith("/api/setup")) throw Error("설치 상태 연결 실패");
+    return request(method, url);
+  };
+  await h.controller.openSetup();
+  assert.equal(h.get("setup-dialog").open, true);
+  assert.match(text(h.get("setup-list")), /설치 상태 연결 실패/);
+  const retry = descendants(h.get("setup-list")).find(node => node.tag === "button" && text(node) === "새로고침");
+  assert.ok(retry);
+  h.request.api = request;
+  await retry.handlers.click();
+  assert.doesNotMatch(text(h.get("setup-list")), /연결 실패/);
+  assert.equal(h.get("setup-refresh").disabled, false);
+});
+
+test("CLI 새로고침은 일부 조회 실패에도 나머지 조회를 끝내고 중복 요청을 막는다", async (t) => {
+  const h = ui(t), calls = [];
+  let resolveAuth;
+  h.request.api = async (_method, url) => {
+    calls.push(url);
+    if (url.startsWith("/api/status")) throw Error("버전 조회 실패");
+    if (url.startsWith("/api/auth")) return new Promise(resolve => { resolveAuth = resolve; });
+    return { tools: [{ id: "codex", label: "Codex", path: "C:/codex.cmd", version: "2.0", loggedIn: true, updatable: true }], jobs: {} };
+  };
+  const checking = h.get("setup-refresh").handlers.click();
+  await h.get("setup-refresh").handlers.click();
+  assert.equal(calls.length, 3);
+  assert.equal(h.get("setup-refresh").disabled, true);
+  resolveAuth({ codex: true });
+  await checking;
+  assert.match(text(h.get("setup-list")), /버전 조회 실패/);
+  assert.match(text(h.get("setup-list")), /2\.0/);
+  assert.equal(h.get("setup-refresh").disabled, false);
+});
+
+test("CLI 업데이트 작업을 구분하고 실패 후 새로고침과 업데이트 재시도를 제공한다", async (t) => {
+  const h = ui(t), calls = [];
+  const view = createSettingsView({ setupAction: (...args) => calls.push(args), refreshSetup: () => calls.push(["refresh"]) });
+  const tool = { id: "codex", label: "Codex", path: "C:/codex.cmd", version: "1.0", loggedIn: true, updatable: true };
+  const setup = { tools: [tool], jobs: { codex: { kind: "update", automatic: true, state: "error", error: "네트워크 오류", log: "download failed" } } };
+  view.renderSetup(setup);
+  assert.match(text(h.get("setup-list")), /자동 업데이트 실패/);
+  const buttons = descendants(h.get("setup-list")).filter(node => node.tag === "button");
+  await buttons.find(node => text(node) === "새로고침").handlers.click();
+  await buttons.find(node => text(node) === "업데이트 다시 시도").handlers.click();
+  assert.deepEqual(calls, [["refresh"], ["codex", "update"]]);
+  setup.jobs.codex.state = "running";
+  view.renderSetup(setup);
+  view.renderCliStatus(h.data.status, {}, setup);
+  assert.match(text(h.get("cli-status")), /Codex 업데이트 중/);
+  const runningButtons = descendants(h.get("setup-list")).filter(node => node.tag === "button");
+  assert.equal(runningButtons.find(node => text(node) === "업데이트").disabled, "");
+  assert.ok(runningButtons.find(node => text(node) === "취소"));
+});
+
+test("업데이트 API 오류는 카드에 남으며 요청 중에는 같은 도구를 중복 실행하지 않는다", async (t) => {
+  const h = ui(t);
+  const tool = { id: "codex", label: "Codex", path: "C:/codex.cmd", version: "1.0", loggedIn: true, updatable: true };
+  let rejectUpdate, posts = 0;
+  h.request.api = async (method) => {
+    if (method === "POST") { posts++; return new Promise((_resolve, reject) => { rejectUpdate = reject; }); }
+    return { tools: [tool], jobs: {} };
+  };
+  await h.controller.openSetup();
+  const update = descendants(h.get("setup-list")).find(node => node.tag === "button" && text(node) === "업데이트");
+  const pending = update.handlers.click();
+  await update.handlers.click();
+  assert.equal(posts, 1);
+  rejectUpdate(Error("업데이트 연결 실패"));
+  await pending;
+  assert.match(text(h.get("setup-list")), /업데이트 연결 실패/);
+  assert.ok(descendants(h.get("setup-list")).some(node => node.tag === "button" && text(node) === "새로고침"));
+  assert.deepEqual(h.alerts, []);
+});
+
+test("자동 업데이트 설정은 저장된 값을 표시하고 CLI 경로와 함께 저장한다", async (t) => {
+  const h = ui(t), writes = [];
+  h.data.status.cliAutoUpdate = false;
+  const api = h.request.api;
+  h.request.api = async (method, url, body) => {
+    if (method === "PUT") writes.push(body);
+    return api(method, url);
+  };
+  await h.controller.openSettings();
+  assert.equal(h.get("cli-auto-update").checked, false);
+  h.get("cli-auto-update").checked = true;
+  await h.get("settings-form").handlers.submit({ submitter: { value: "ok" }, preventDefault() {} });
+  assert.deepEqual(writes, [{ cli: { claude: "", codex: "" }, cliAutoUpdate: true }]);
+});
+
+test("늦은 업데이트 응답과 새로고침 실패가 먼저 도착한 완료 상태를 되돌리지 않는다", async (t) => {
+  const h = ui(t);
+  const tool = { id: "codex", label: "Codex", path: "C:/codex.cmd", version: "1.0", loggedIn: true, updatable: true };
+  let resolveUpdate, setupReads = 0;
+  h.request.api = async (method) => {
+    if (method === "POST") return new Promise(resolve => { resolveUpdate = resolve; });
+    if (++setupReads > 1) throw Error("상태 재조회 실패");
+    return { tools: [tool], jobs: {} };
+  };
+  await h.controller.openSetup();
+  const update = descendants(h.get("setup-list")).find(node => node.tag === "button" && text(node) === "업데이트");
+  const pending = update.handlers.click();
+  h.controller.applySetupJobs({ codex: { kind: "update", state: "done", log: "updated" } });
+  resolveUpdate({ kind: "update", state: "running", log: "starting" });
+  await pending;
+  assert.match(text(h.get("setup-list")), /업데이트 완료/);
+  assert.doesNotMatch(text(h.get("setup-list")), /업데이트 진행 중/);
+  assert.match(text(h.get("setup-list")), /상태 재조회 실패/);
 });

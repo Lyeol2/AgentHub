@@ -2,6 +2,9 @@
 // Windows에서는 winget을 먼저 준비하고, 실패하면 다른 공식 설치 방법과 수동 안내를 제공한다.
 import { spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { locateCli, locateCommand, spawnCli, refreshPath, cliVersion, cliAuth, forgetAuth } from "./cli.mjs";
 import { findWinget, installedWingetPaths, resolveWinget, wingetBootstrapPlan } from "./winget.mjs";
 
@@ -15,6 +18,8 @@ export const TOOLS = {
 
 const LOG_MAX = 20000;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
+// APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE (winget's signed/unsigned HRESULT).
+const WINGET_NO_UPDATE = 0x8a15002b;
 const ANSI = /\x1b\[[0-9;?]*[ -/]*[@-~]/g;
 const URL_PATTERN = /https?:\/\/[^\s"'<>]+/g;
 const CODE_PATTERN = /\b[A-Z0-9]{4}-[A-Z0-9]{4,5}\b/;
@@ -28,6 +33,66 @@ export function parseLoginOutput(text) {
 
 function findNpm() {
   return locateCommand(isWindows ? "npm.cmd" : "npm");
+}
+
+function smallFile(file) {
+  try { return fs.statSync(file).size <= 128_000 ? fs.readFileSync(file, "utf8") : ""; }
+  catch { return ""; }
+}
+
+// Resolve the selected executable, not whichever package manager happens to be installed.
+// Unrecognized wrappers, desktop-managed copies and custom binaries must keep their owner.
+export function updateInstallation(tool, file, { windows = isWindows, homeDir = os.homedir() } = {}) {
+  if (!["claude", "codex"].includes(tool)) return { reason: "Claude Code와 Codex만 업데이트할 수 있습니다." };
+  if (!file) return { reason: "먼저 CLI를 설치하세요." };
+  let resolved;
+  try { resolved = fs.realpathSync(file); } catch { return { reason: "선택한 CLI 실행 파일을 확인할 수 없습니다. 경로를 다시 확인하세요." }; }
+  const paths = windows ? path.win32 : path.posix;
+  const normalized = (value) => paths.normalize(value).replaceAll("\\", "/");
+  const original = normalized(file), actual = normalized(resolved);
+  if (windows && actual.toLowerCase().includes(`/winget/packages/${TOOLS[tool].winget.toLowerCase()}_`)) return { how: "winget" };
+  if (tool === "codex" || tool === "claude") {
+    const packageName = tool === "codex" ? "@openai/codex" : "@anthropic-ai/claude-code";
+    const packageMatch = actual.match(tool === "codex"
+      ? /^(.*)\/node_modules\/@openai\/(codex(?:-(?:win32|linux|darwin)-(?:x64|arm64))?)(?:\/|$)/i
+      : /^(.*)\/node_modules\/@anthropic-ai\/claude-code(?:\/|$)/i);
+    let modulesRoot = packageMatch ? packageMatch[1] : null;
+    if (!modulesRoot && new RegExp(`(?:^|/)${tool}(?:\\.cmd|\\.bat|\\.ps1)?$`, "i").test(original)) {
+      const shim = smallFile(file).replaceAll("\\", "/");
+      if (shim.includes(`node_modules/${packageName}/${tool === "codex" ? "bin/codex.js" : "cli.js"}`)) modulesRoot = normalized(paths.dirname(file));
+    }
+    if (modulesRoot) {
+      try {
+        const metadata = JSON.parse(smallFile(paths.join(modulesRoot, "node_modules", packageName, "package.json")));
+        if (metadata.name === packageName) {
+          if (tool === "claude") return { how: "claude" };
+          const prefix = !windows && paths.basename(modulesRoot) === "lib" ? paths.dirname(modulesRoot) : modulesRoot;
+          return { how: "npm", prefix: paths.normalize(prefix) };
+        }
+      } catch {}
+    }
+  }
+  if (tool === "claude") {
+    const key = (value) => windows ? normalized(value).toLowerCase() : normalized(value);
+    const native = paths.join(homeDir, ".local", "bin", windows ? "claude.exe" : "claude");
+    const versions = key(paths.join(homeDir, ".local", "share", "claude", "versions")) + "/";
+    if (key(file) === key(native) && (key(resolved) === key(native) || key(resolved).startsWith(versions))) return { how: "native" };
+  }
+  return { reason: "이 CLI의 설치 방식을 확인할 수 없습니다. 직접 지정한 파일이나 다른 앱이 관리하는 CLI는 기존 설치 방법으로 업데이트하세요." };
+}
+
+export function updatePlan(tool, file, { installation = updateInstallation(tool, file), winget = findWinget(), npm = findNpm() } = {}) {
+  if (installation.reason) return installation;
+  if (installation.how === "winget") return winget ? {
+    how: "winget", file: winget,
+    args: ["upgrade", "--id", TOOLS[tool].winget, "--exact", "--source", "winget", "--silent",
+      "--accept-package-agreements", "--accept-source-agreements", "--disable-interactivity"],
+  } : { reason: "현재 CLI를 설치한 winget을 실행할 수 없습니다. winget을 복구한 뒤 다시 확인하세요." };
+  if (installation.how === "npm") return npm ? {
+    how: "npm", file: npm, args: ["install", "-g", "@openai/codex@latest", "--prefix", installation.prefix],
+  } : { reason: "현재 CLI를 설치한 npm을 찾지 못했습니다. Node.js와 npm 경로를 확인하세요." };
+  // No channel argument: Claude keeps the user's configured stable/latest channel.
+  return { how: installation.how, file, args: ["update"] };
 }
 
 // 설치 방법. winget을 먼저 쓰고, 없으면 각 CLI의 다른 공식 방법을 쓴다. 방법이 없으면 null.
@@ -79,17 +144,21 @@ export const MANUAL_INSTALL = {
   },
 };
 
-// 도구마다 한 번에 하나의 작업(설치 또는 로그인)만 돈다.
+// 도구마다 한 번에 하나의 작업(설치·업데이트·로그인)만 돈다.
 export class Setup extends EventEmitter {
-  constructor({ cliPath, wingetPath = findWinget, wingetPackages = installedWingetPaths, npmPath = findNpm, version = cliVersion, platform = process.platform, installTimeoutMs = INSTALL_TIMEOUT_MS }) {
+  constructor({ cliPath, wingetPath = findWinget, wingetPackages = installedWingetPaths, npmPath = findNpm, version = cliVersion, auth = cliAuth, platform = process.platform, installTimeoutMs = INSTALL_TIMEOUT_MS, updateTimeoutMs = installTimeoutMs, isBusy = () => false, homeDir = os.homedir() }) {
     super();
     this.cliPath = cliPath; // (tool) → 실행 파일 경로(설정에서 직접 지정한 경로 포함)
     this.wingetPath = wingetPath;
     this.wingetPackages = wingetPackages;
     this.npmPath = npmPath;
     this.version = version;
+    this.auth = auth;
     this.windows = platform === "win32";
     this.installTimeoutMs = installTimeoutMs;
+    this.updateTimeoutMs = updateTimeoutMs;
+    this.isBusy = isBusy;
+    this.homeDir = homeDir;
     this.wingetPreparation = null;
     this.stopRuns = new WeakMap();
     this.jobs = new Map(); // tool → { kind, state, log, url, code, waitsForCode, child }
@@ -100,9 +169,12 @@ export class Setup extends EventEmitter {
     const wingetState = this.windows ? await this.detectWinget({ fresh }) : null;
     const tools = await Promise.all(Object.entries(TOOLS).map(async ([id, t]) => {
       const file = this.cliPath(id);
-      const [version, loggedIn] = await Promise.all([this.version(file, { fresh }), cliAuth(id, file, { fresh })]);
+      const [version, loggedIn] = await Promise.all([this.version(file, { fresh }), this.auth(id, file, { fresh })]);
       const plan = installPlan(id, { winget: wingetState?.version ? wingetState.path : null, npm: this.npmPath(), windows: this.windows });
-      return { id, label: t.label, path: file, version, loggedIn, installable: this.windows || !!plan, manual: MANUAL_INSTALL[id] };
+      const update = ["claude", "codex"].includes(id)
+        ? updatePlan(id, file, { installation: updateInstallation(id, file, this), winget: wingetState?.version ? wingetState.path : null, npm: this.npmPath() }) : null;
+      return { id, label: t.label, path: file, version, loggedIn, installable: this.windows || !!plan, manual: MANUAL_INSTALL[id],
+        ...(update ? { updatable: Boolean(version && !update.reason), updateReason: update.reason ?? (version ? null : "CLI 실행을 확인하지 못했습니다. 다시 확인하세요.") } : {}) };
     }));
     const winget = wingetState ? { id: "winget", label: "Windows 패키지 관리자 (winget)", ...wingetState, installable: true, manual: MANUAL_INSTALL.winget } : null;
     return { tools, winget, jobs: this.jobList() };
@@ -123,7 +195,7 @@ export class Setup extends EventEmitter {
   begin(tool, kind) {
     if (tool !== "winget" && !Object.hasOwn(TOOLS, tool)) throw new Error("없는 설치 도구입니다.");
     const running = this.jobs.get(tool);
-    if (running?.state === "running") throw new Error(`${TOOLS[tool]?.label ?? "winget"} ${running.kind === "install" ? "설치" : "로그인"}가 이미 진행 중입니다.`);
+    if (running?.state === "running") throw new Error(`${TOOLS[tool]?.label ?? "winget"} ${running.kind === "install" ? "설치" : running.kind === "update" ? "업데이트" : "로그인"}가 이미 진행 중입니다.`);
     const job = { kind, state: "running", log: "", url: null, code: null, waitsForCode: false, startedAt: new Date().toISOString() };
     this.jobs.set(tool, job);
     this.changed();
@@ -138,7 +210,11 @@ export class Setup extends EventEmitter {
 
   finish(tool, job, code, error = null) {
     if (job.state !== "running") return;
-    if (error) this.addLog(job, `\n${error.message}\n설치 창의 수동 설치 안내를 확인하세요.\n`);
+    if (error) {
+      job.error = error.message;
+      if (error.code) job.errorCode = error.code;
+      this.addLog(job, `\n${error.message}\n${job.kind === "update" ? "다시 확인한 뒤 업데이트를 재시도하세요." : "설치 창의 수동 설치 안내를 확인하세요."}\n`);
+    }
     job.state = job.canceled ? "canceled" : code === 0 && !error ? "done" : "error";
     job.exitCode = code;
     job.waitsForCode = false;
@@ -151,10 +227,11 @@ export class Setup extends EventEmitter {
 
   run(tool, job, file, args) {
     if (job.canceled || job.state !== "running") return Promise.resolve(null);
+    if (job.kind === "update" && this.isBusy(tool)) return Promise.reject(this.busyError(tool));
     // winget 출력은 콘솔 코드 페이지를 따르므로 UTF-8로 바꿔 실행한다.
     let child;
     try {
-      child = job.kind === "install" && /winget\.exe$/i.test(file)
+      child = ["install", "update"].includes(job.kind) && /winget\.exe$/i.test(file)
         ? spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"chcp 65001 >nul & "${file}" ${args.join(" ")}"`], { windowsHide: true, windowsVerbatimArguments: true, stdio: ["pipe", "pipe", "pipe"] })
         : spawnCli(file, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1" } });
     } catch (error) { return Promise.reject(error); }
@@ -191,10 +268,10 @@ export class Setup extends EventEmitter {
         if (job.child === child) delete job.child;
         if (error) reject(error); else resolve(code);
       };
-      const timer = job.kind === "install" ? setTimeout(() => {
-        done(new Error("설치 응답을 10분 동안 받지 못했습니다. 네트워크 상태를 확인하거나 수동 설치를 사용하세요."));
+      const timer = ["install", "update"].includes(job.kind) ? setTimeout(() => {
+        done(new Error(job.kind === "update" ? "업데이트 응답 시간이 초과되었습니다. 네트워크 상태를 확인하고 다시 시도하세요." : "설치 응답을 10분 동안 받지 못했습니다. 네트워크 상태를 확인하거나 수동 설치를 사용하세요."));
         this.kill(child);
-      }, this.installTimeoutMs) : null;
+      }, job.kind === "update" ? this.updateTimeoutMs : this.installTimeoutMs) : null;
       timer?.unref?.();
       this.stopRuns.set(job, () => done(null, null));
       child.once("error", (error) => done(error));
@@ -284,6 +361,50 @@ export class Setup extends EventEmitter {
     const job = this.begin(tool, "install");
     this.installCli(tool, job).catch((error) => this.finish(tool, job, null, error));
     return this.jobList()[tool];
+  }
+
+  isUpdating(tool) {
+    const job = this.jobs.get(tool);
+    return job?.kind === "update" && job.state === "running";
+  }
+
+  busyError(tool) {
+    return Object.assign(new Error(`${TOOLS[tool]?.label ?? tool} 세션이 실행 중입니다. 세션이 끝난 뒤 업데이트하세요.`), { code: "CLI_BUSY" });
+  }
+
+  update(tool, { automatic = false } = {}) {
+    if (!["claude", "codex"].includes(tool)) throw new Error("Claude Code와 Codex만 업데이트할 수 있습니다.");
+    if (this.isBusy(tool)) throw this.busyError(tool);
+    const file = this.cliPath(tool);
+    const installation = updateInstallation(tool, file, this);
+    if (installation.reason) throw new Error(installation.reason);
+    const job = this.begin(tool, "update");
+    job.automatic = automatic === true;
+    this.updateCli(tool, job, file, installation).catch((error) => this.finish(tool, job, job.exitCode ?? null, error));
+    return this.jobList()[tool];
+  }
+
+  async updateCli(tool, job, file, installation) {
+    const winget = installation.how === "winget" ? await this.detectWinget({ fresh: true }) : null;
+    if (job.canceled || job.state !== "running") return;
+    const plan = updatePlan(tool, file, { installation, winget: winget?.version ? winget.path : null, npm: this.npmPath() });
+    if (plan.reason) throw new Error(plan.reason);
+    // Config may change while probing the package manager; never update the old selection.
+    if (this.cliPath(tool) !== file) throw new Error("CLI 경로가 변경되었습니다. 다시 확인한 뒤 업데이트하세요.");
+    this.addLog(job, `${plan.how}으로 ${TOOLS[tool].label} 업데이트를 시작합니다.\n`);
+    const code = await this.run(tool, job, plan.file, plan.args);
+    if (job.canceled || job.state !== "running") return;
+    job.exitCode = code;
+    const noUpdate = plan.how === "winget" && Number.isInteger(code) && (code >>> 0) === WINGET_NO_UPDATE;
+    if (code !== 0 && !noUpdate) throw new Error(`업데이트에 실패했습니다 (종료 코드 ${code}).`);
+    refreshPath();
+    const updated = await this.version(file, { fresh: true });
+    if (job.canceled || job.state !== "running") return;
+    if (!updated) throw new Error("업데이트 후 CLI 실행을 확인하지 못했습니다. 설치 경로를 확인하고 다시 시도하세요.");
+    job.version = updated;
+    if (noUpdate) this.addLog(job, "적용할 업데이트가 없습니다.\n");
+    this.addLog(job, `실행 확인: ${updated}\n`);
+    this.finish(tool, job, 0);
   }
 
   login(tool) {

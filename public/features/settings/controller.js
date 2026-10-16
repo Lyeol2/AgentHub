@@ -9,13 +9,19 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
     "limits": null,
     "update": null
   };
-  const view = createSettingsView({ openSetup, setupAction, updateAction, onRemoveProject: async (index) => {
+  const setupUi = { loading: false, refreshing: false, loadError: "", refreshError: "", actionErrors: {}, pending: new Set() };
+  let setupRequest = 0;
+  const view = createSettingsView({ openSetup, setupAction, refreshSetup, updateAction, onRemoveProject: async (index) => {
     data.status.projects = await api("DELETE", `/api/projects/${index}`);
     renderProjects();
     refreshProjects();
   } });
   const renderCliStatus = () => view.renderCliStatus(data.status, cache.auth, cache.setup);
-  const renderSetup = () => view.renderSetup(cache.setup);
+  const renderSetup = () => {
+    $("setup-refresh").disabled = setupUi.refreshing;
+    $("setup-refresh").textContent = setupUi.refreshing ? "확인 중…" : "새로고침";
+    view.renderSetup(cache.setup, { ...setupUi, error: [setupUi.loadError, setupUi.refreshError].filter(Boolean).join("\n") });
+  };
   const renderLimits = () => view.renderLimits(cache.limits);
   const renderUpdate = () => view.renderUpdate(cache.update);
   const renderProjects = () => view.renderProjects(data.status.projects);
@@ -46,45 +52,76 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
   // ── CLI 설치·로그인 ─────────────────────────────────────────────
 
   async function loadSetup(fresh = false) {
-    try {
-      cache.setup = await api("GET", `/api/setup${fresh === true ? "?fresh=1" : ""}`);
-    } catch (err) {
-      if (fresh === true) throw err;
-      return;
-    }
-    renderCliStatus();
+    const request = ++setupRequest;
+    setupUi.loading = true;
     if ($("setup-dialog").open) renderSetup();
+    try {
+      const next = await api("GET", `/api/setup${fresh === true ? "?fresh=1" : ""}`);
+      if (request !== setupRequest) return;
+      cache.setup = next;
+      setupUi.loadError = "";
+    } catch (err) {
+      if (request === setupRequest) setupUi.loadError = err.message;
+      if (fresh === true) throw err;
+    } finally {
+      if (request === setupRequest) {
+        setupUi.loading = false;
+        renderCliStatus();
+        if ($("setup-dialog").open) renderSetup();
+      }
+    }
   }
 
   // 창을 열고, action이 있으면 바로 시작한다.
   async function openSetup(tool = null, action = null) {
-    if (!cache.setup) await loadSetup();
     renderSetup();
     if (!$("setup-dialog").open) $("setup-dialog").showModal();
-    if (tool && action) setupAction(tool, action);
+    await loadSetup();
+    if (tool && action) await setupAction(tool, action);
   }
 
   async function setupAction(tool, action, body) {
+    if (setupUi.pending.has(tool)) return;
+    const previousJob = cache.setup?.jobs?.[tool];
+    setupUi.pending.add(tool);
+    delete setupUi.actionErrors[tool];
+    renderSetup();
     try {
-      await api("POST", `/api/setup/${tool}/${action}`, body);
+      const result = await api("POST", `/api/setup/${tool}/${action}`, body);
+      if (result?.kind && result?.state && cache.setup && cache.setup.jobs?.[tool] === previousJob) {
+        cache.setup.jobs ??= {};
+        // Keep a newer streamed job if it arrived before the POST response.
+        cache.setup.jobs[tool] = result;
+      }
+      await loadSetup();
     } catch (err) {
-      alert(err.message);
+      setupUi.actionErrors[tool] = err.outcomeUnknown
+        ? `${err.message} 작업 상태를 새로고침한 뒤 다시 시도하세요.` : err.message;
+    } finally {
+      setupUi.pending.delete(tool);
+      renderCliStatus();
+      renderSetup();
     }
   }
 
   // 진행 중이거나 끝난 작업. 로그인이면 브라우저 주소·일회용 코드·코드 붙여넣기 칸을 보인다.
 
-  $("setup-refresh").addEventListener("click", async () => {
-    $("setup-refresh").disabled = true;
+  async function refreshSetup() {
+    if (setupUi.refreshing) return;
+    setupUi.refreshing = true;
+    setupUi.refreshError = "";
+    renderSetup();
     try {
-      await loadStatus(true);
-      await Promise.all([loadAuth(true), loadSetup(true)]);
-    } catch (err) {
-      alert(err.message);
+      const results = await Promise.allSettled([loadStatus(true), loadAuth(true), loadSetup(true)]);
+      const errors = results.filter(result => result.status === "rejected").map(result => result.reason.message);
+      setupUi.refreshError = [...new Set(errors)].filter(message => message !== setupUi.loadError).join("\n");
+      if (!errors.length) setupUi.actionErrors = {};
     } finally {
-      $("setup-refresh").disabled = false;
+      setupUi.refreshing = false;
+      renderSetup();
     }
-  });
+  }
+  $("setup-refresh").addEventListener("click", refreshSetup);
   $("cli-status").addEventListener("click", (e) => {
     if (!e.target.closest("button")) openSetup();
   });
@@ -144,6 +181,7 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
       $(`cli-${agent}`).value = data.status.cliOverrides[agent];
       renderCliField(agent);
     }
+    $("cli-auto-update").checked = data.status.cliAutoUpdate !== false;
     $("settings-error").textContent = "";
     $("settings-dialog").showModal();
     $("project-path").focus();
@@ -191,7 +229,7 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
     try {
       const cli = {};
       for (const agent of ["claude", "codex"]) cli[agent] = cliManual[agent] ? $(`cli-${agent}`).value : "";
-      await api("PUT", "/api/settings", { cli });
+      await api("PUT", "/api/settings", { cli, cliAutoUpdate: $("cli-auto-update").checked });
       $("settings-dialog").close();
       await loadStatus(true);
       await Promise.all([loadAuth(true), loadSetup(true)]);

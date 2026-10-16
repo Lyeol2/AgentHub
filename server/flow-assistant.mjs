@@ -9,10 +9,10 @@ const MAX_ACTIONS = 30;
 const MAX_NEW_SESSIONS = 8;
 const MAX_NEW_NODES = 12;
 // 브랜치·구성원처럼 이 화면에서 확인할 값이 필요한 Git·결과 모으기는 편집 창에서 만든다.
-export const ASSISTANT_NODE_KINDS = ["command", "button", "input", "repeat", "transform", "notify", "markdown", "webhook", "webhook-in", "watch"];
-const SOURCE_ONLY = ["button", "input", "watch", "webhook-in"];
+export const ASSISTANT_NODE_KINDS = ["command", "button", "input", "repeat", "transform", "notify", "markdown", "webhook", "webhook-in", "watch", "schedule"];
+const SOURCE_ONLY = ["button", "input", "watch", "webhook-in", "schedule"];
 const KIND_NAME = { session: "세션", command: "명령", button: "버튼", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", notify: "알림",
-  markdown: "Markdown 출력", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기", watch: "파일 감시", git: "GIT", group: "결과 모으기" };
+  markdown: "Markdown 출력", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기", watch: "파일 감시", schedule: "시간 예약", git: "GIT", group: "결과 모으기" };
 const WHEN_NAME = { success: "성공하면", error: "실패하면", keyword: "키워드가 있으면", always: "항상", otherwise: "그 외", manual: "수동" };
 
 const str = (value, max) => String(value ?? "").trim().slice(0, max);
@@ -38,6 +38,7 @@ export function graphOutline({ sessions, commands, links, selected = [] }) {
 export function assistantPrompt({ request, outline, projectPath }) {
   return `너는 AgentHub의 세션 흐름 그래프를 고치는 도우미다. 사용자의 요청을 그래프 작업 목록으로 바꾼다.
 프로젝트 폴더: ${projectPath} (역할을 쓰는 데 필요하면 파일을 읽어도 된다. 파일을 고치거나 명령을 실행하지 않는다.)
+현재 서버 시각: ${new Date().toISOString()} (서버 시간대: ${Intl.DateTimeFormat().resolvedOptions().timeZone})
 "이거", "선택한 것"은 사용자가 선택한 노드를 가리킨다. 노드를 지우는 작업은 없다. 지우기를 요청하면 actions를 비우고 summary에 직접 지우라고 적는다.
 
 ${outline}
@@ -51,12 +52,17 @@ actions 항목(순서대로 실행한다):
 - {"type": "create_node", "key": "test", "kind": "${ASSISTANT_NODE_KINDS.join("|")}", "title": "...", ...종류별 값}
   command: "command"(셸 명령, Windows면 PowerShell 문법) · button: "prompt"(연결된 세션에 보낼 요청) · notify: "message" · webhook: "url", "method", "body"
   transform: "transformMode"(json|lines|template), "expression", "template" · repeat: "maxIterations" · watch: "watchPaths"(배열)
+  schedule: "scheduleMode"(once|daily|interval), "prompt"(연결된 노드에 보낼 요청, 기본 "예약된 작업을 시작하세요.")
+  한 번 예약: {"type":"create_node","key":"scheduled","kind":"schedule","scheduleMode":"once","runAt":"2030-01-01T09:00:00+09:00","prompt":"예약 작업을 수행하세요."} — runAt은 사용자 요청과 현재 서버 시각을 기준으로 정한 ISO 날짜·시간(시간대 포함).
+  매일 예약: {"type":"create_node","key":"daily","kind":"schedule","scheduleMode":"daily","timeOfDay":"09:00"} — timeOfDay는 서버 시간대의 HH:mm.
+  간격 예약: {"type":"create_node","key":"hourly","kind":"schedule","scheduleMode":"interval","intervalMinutes":60} — intervalMinutes는 1~10080 정수, 기본 60.
+  새 시간 예약은 꺼진 상태로 추가되며 사용자가 예약 시작을 누르면 켜진다. scheduleEnabled·nextRunAt은 지정하지 않는다.
 - {"type": "set_role", "target": "<세션>", "role": "...", "roleName": "(선택)"}
 - {"type": "rename", "target": "<노드>", "title": "..."}
 - {"type": "link", "from": "<노드>", "to": "<노드>", "when": "${CONDITIONS.join("|")}", "keyword": "(keyword일 때)", "note": "(선택) 받는 쪽에 줄 지시"}
 - {"type": "send", "to": "<세션>", "prompt": "지금 보낼 요청"} 사용자가 일을 시키라고 했을 때만 쓴다.
 <노드>와 <세션>에는 위 목록의 id나 이번 목록에서 만든 key를 쓴다. key는 영문·숫자·_·-다.
-버튼·입력 폼·파일 감시·웹훅 받기는 시작점이라 들어오는 연결을 받지 않고, Markdown 출력에서는 나가는 연결을 만들지 않는다.
+버튼·입력 폼·파일 감시·웹훅 받기·시간 예약은 시작점이라 들어오는 연결을 받지 않고, Markdown 출력에서는 나가는 연결을 만들지 않는다.
 키워드로 넘기려면 보내는 세션의 역할에 "마지막 줄에 '검토 요청'만 쓴다"처럼 판정을 적고 같은 키워드로 연결한다.
 
 사용자 요청: ${request}`;

@@ -437,16 +437,11 @@
       <label class="for-project">프로젝트
         <select name="projectPath" id="new-project" required></select>
       </label>
-      <label>제목 <input name="title" id="new-title" placeholder="예: 가방 UI 버그 수정"></label>
-      <label>역할 <textarea name="role" id="new-role" rows="3" placeholder="예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 '검토 요청'이라고 쓴다."></textarea></label>
-      <div class="two">
-        <label>모델 <input name="model" id="new-model" list="new-models" placeholder="CLI 기본값" spellcheck="false" autocomplete="off"></label>
-        <label>추론 강도 <select name="effort" id="new-effort"></select></label>
-      </div>
-      <datalist id="new-models"></datalist>
-      <label class="for-project">권한 <select name="permission" id="new-permission"></select></label>
-      <label class="check for-project"><input type="checkbox" name="isolate" id="new-isolate">
-        워크트리에서 작업하기 (끄면 원본 폴더에서 작업)
+      <label class="for-project">워크트리 사용
+        <select name="isolate" id="new-isolate">
+          <option value="false" selected>사용 안 함 (기본 · 원본 폴더에서 작업)</option>
+          <option value="true">사용 (별도 작업 폴더에서 작업)</option>
+        </select>
       </label>
       <label class="for-project" id="new-worktree-mode-row" hidden>워크트리
         <select name="worktreeMode" id="new-worktree-mode" disabled><option value="new">새 워크트리 만들기</option><option value="existing">기존 워크트리(작업 브랜치) 선택</option></select>
@@ -460,6 +455,14 @@
         <p class="hint workbranch-status" id="new-worktree-branch-status" aria-live="polite"></p>
         <button type="button" class="ghost sm" id="new-worktree-branch-refresh">목록 새로고침</button>
       </div>
+      <label>제목 <input name="title" id="new-title" placeholder="예: 가방 UI 버그 수정"></label>
+      <label>역할 <textarea name="role" id="new-role" rows="3" placeholder="예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 '검토 요청'이라고 쓴다."></textarea></label>
+      <div class="two">
+        <label>모델 <input name="model" id="new-model" list="new-models" placeholder="CLI 기본값" spellcheck="false" autocomplete="off"></label>
+        <label>추론 강도 <select name="effort" id="new-effort"></select></label>
+      </div>
+      <datalist id="new-models"></datalist>
+      <label class="for-project">권한 <select name="permission" id="new-permission"></select></label>
       <label class="check for-project"><input type="checkbox" name="orchestrator" id="new-orchestrator">
         오케스트레이터 세션 (코드를 고치지 않고 다른 세션을 만들어 지휘)
       </label>
@@ -474,11 +477,11 @@
 
   <dialog id="setup-dialog" class="wide">
     <form method="dialog" class="dialog-form">
-      <h3>CLI 설치·로그인 <small>AgentHub가 쓰는 CLI를 이 PC에 설치하고 로그인합니다</small></h3>
+      <h3>CLI 설치·업데이트·로그인 <small>CLI 버전과 작업 상태를 확인합니다</small></h3>
       <div id="setup-list" class="setup-list"></div>
-      <p class="hint">Windows에서는 winget(Windows 패키지 관리자)이 없으면 자동으로 준비한 뒤 CLI를 설치합니다. 자동 설치가 실패하면 각 항목의 ‘수동 설치’에서 공식 설치 페이지와 명령을 확인하세요. 직접 설치한 뒤에는 ‘다시 확인’을 누르세요. 로그인은 브라우저에서 계정을 확인하는 방식이라 비밀번호를 AgentHub에 넣지 않습니다. GitHub CLI는 Pull Request·릴리스 같은 GitHub 작업에 필요하고, 앱 업데이트에는 필요 없습니다.</p>
+      <p class="hint">Windows에서는 winget(Windows 패키지 관리자)이 없으면 자동으로 준비한 뒤 CLI를 설치합니다. 자동 설치가 실패하면 각 항목의 ‘수동 설치’에서 공식 설치 페이지와 명령을 확인하세요. 직접 설치하거나 오류를 해결한 뒤에는 ‘새로고침’을 누르세요. 로그인은 브라우저에서 계정을 확인하는 방식이라 비밀번호를 AgentHub에 넣지 않습니다. GitHub CLI는 Pull Request·릴리스 같은 GitHub 작업에 필요하고, 앱 업데이트에는 필요 없습니다.</p>
       <menu>
-        <button type="button" class="ghost" id="setup-refresh">다시 확인</button>
+        <button type="button" class="ghost" id="setup-refresh">새로고침</button>
         <span class="spacer"></span>
         <button value="cancel" formnovalidate class="primary">닫기</button>
       </menu>
@@ -498,13 +501,15 @@
       </div>
       <h4>CLI 버전</h4>
       <div id="cli-status" class="cli-status"></div>
+      <label class="check"><input type="checkbox" id="cli-auto-update" checked>Codex·Claude CLI 자동 업데이트</label>
+      <p class="hint">앱 시작 후와 12시간마다 설치된 CLI를 업데이트합니다. 실행 중인 작업이 끝날 때까지 기다리며, 설치 방식을 확인할 수 없는 CLI는 수동 업데이트 안내를 표시합니다.</p>
       <h4>프로젝트</h4>
       <ul id="project-list" class="project-list"></ul>
       <div class="row">
         <input id="project-path" placeholder="예: E:\Git\Project_GBS">
         <button type="button" id="add-project" class="ghost">추가</button>
       </div>
-      <h4>CLI 경로 <button type="button" class="ghost sm" id="open-setup">설치·로그인</button></h4>
+      <h4>CLI 경로 <button type="button" class="ghost sm" id="open-setup">설치·업데이트·로그인</button></h4>
       <p class="hint">PATH, npm 전역 설치 폴더, Claude 데스크톱 앱 폴더에서 자동으로 찾습니다. 다른 실행 파일을 쓰려면 직접 지정하세요.</p>
       <div class="cli-field">
         <span class="cli-name">claude</span>
@@ -615,6 +620,15 @@
         <p class="hint">프로젝트 안의 상대 경로를 한 줄에 하나씩 입력하세요. 예: src, test/example.test.mjs</p>
         <label>변경을 모아 기다릴 시간(밀리초) <input id="watch-debounce" type="number" min="100" max="60000" value="500"></label>
         <label>변경 시 보낼 요청 <textarea id="watch-prompt" rows="4"></textarea></label>
+      </section>
+      <section id="schedule-settings" class="flow-node-settings" hidden>
+        <label>예약 방식 <select id="schedule-mode" disabled><option value="once">한 번</option><option value="daily">매일</option><option value="interval">일정 간격</option></select></label>
+        <label id="schedule-run-at-row">실행 날짜와 시간 <input id="schedule-run-at" type="datetime-local" disabled></label>
+        <label id="schedule-time-of-day-row" hidden>매일 실행할 시간 <input id="schedule-time-of-day" type="time" value="09:00" disabled></label>
+        <label id="schedule-interval-row" hidden>실행 간격(분) <input id="schedule-interval" type="number" min="1" max="10080" step="1" value="60" disabled></label>
+        <p class="hint" id="schedule-timezone"></p>
+        <label>예약 시 보낼 요청 <textarea id="schedule-prompt" rows="4" maxlength="20000" disabled></textarea></label>
+        <p class="hint">{{scheduledAt}} 예약 시각 · {{triggeredAt}} 실제 시작 시각</p>
       </section>
       <section id="notify-settings" class="flow-node-settings" hidden>
         <label>알림 제목 <input id="notify-title" maxlength="200" value="AgentHub"></label>

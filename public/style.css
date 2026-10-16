@@ -715,7 +715,9 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .setup-list { display: grid; gap: 10px; }
 .setup-item { display: grid; gap: 8px; padding: 10px 12px; border: 1px solid var(--line-strong); border-radius: 8px; }
 .setup-item.ok { border-color: rgb(76 194 138 / .4); }
-.setup-head { display: flex; align-items: center; gap: 8px; }
+.setup-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.setup-item > .hint, .setup-job > .error { overflow-wrap: anywhere; }
+.setup-retry { display: flex; gap: 8px; }
 .pill.setup-ok { color: var(--ok); border-color: rgb(76 194 138 / .45); }
 .pill.setup-need { color: var(--warn); border-color: rgb(229 180 75 / .5); }
 .setup-job { display: grid; gap: 6px; padding: 8px 10px; border-radius: 6px; background: var(--code-bg); }
@@ -1173,6 +1175,10 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .gcmd-transform { border-color: rgb(170 120 255 / .65); }
 .gcmd-repeat { border-color: rgb(229 180 75 / .65); }
 .gcmd-watch { border-color: rgb(76 194 138 / .65); }
+.gcmd-schedule { border-color: rgb(91 157 255 / .65); }
+.gcmd.scheduled { box-shadow: 0 0 0 3px rgb(91 157 255 / .15); }
+.pill.cmd-scheduled { color: var(--accent); }
+.gcmd-schedule .gcmd-result-text { white-space: normal; overflow-wrap: anywhere; }
 .gcmd.watching { box-shadow: 0 0 0 3px rgb(76 194 138 / .15); }
 .pill.cmd-watching { color: var(--ok); }
 .gcmd-repeat .git-port.success { top: 40px; border-color: var(--ok); }

@@ -12,6 +12,7 @@ const DEFAULTS = {
   port: 4517,
   // CLI 경로를 직접 지정할 때만 채운다. 비워 두면 자동 탐색한다.
   cli: { claude: "", codex: "" },
+  cliAutoUpdate: true,
   projects: [],
   // 프로젝트 화면의 Claude Code·Codex 기록 목록에서 숨긴 세션 ID. 기록 파일은 지우지 않는다.
   hiddenSessions: [],

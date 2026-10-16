@@ -107,3 +107,38 @@ test("flow assistant: rejects unusable answers and actions without changing the 
   assert.equal(after.commands.length, 1);
   assert.equal(after.links.length, 0);
 });
+
+test("flow assistant: creates disabled schedules with validated timing and source-only links", async (t) => {
+  const h = await hub(t);
+  const session = await h.api("POST", "/sessions", { projectPath: h.projectPath, agent: "claude", title: "예약 작업" });
+  h.answer({ summary: "시간 예약을 연결합니다.", actions: [
+    { type: "create_node", key: "daily", kind: "schedule", title: "매일 검사", scheduleMode: "daily", timeOfDay: "09:30", prompt: "검사를 시작하세요." },
+    { type: "create_node", key: "once", kind: "schedule", title: "한 번 검사", scheduleMode: "once", runAt: "2099-01-01T00:00:00.000Z" },
+    { type: "create_node", key: "interval", kind: "schedule", title: "정기 검사", scheduleMode: "interval", intervalMinutes: 30 },
+    { type: "link", from: "daily", to: session.id },
+  ] });
+  const planned = await h.api("POST", "/flow-assistant/plan", { projectPath: h.projectPath, prompt: "매일 오전 9시 반에 검사를 시작해 줘" });
+  assert.match(planned.actions[0].text, /새 시간 예약/);
+  assert.equal((await h.graph()).commands.length, 0);
+  for (const pattern of [/현재 서버 시각:.*서버 시간대/, /scheduleMode/, /once\|daily\|interval/, /timeOfDay/, /intervalMinutes/, /scheduleEnabled·nextRunAt은 지정하지 않는다/]) assert.match(h.asked[0], pattern);
+  await h.api("POST", "/flow-assistant/apply", { projectPath: h.projectPath, actions: planned.actions });
+  const graph = await h.graph();
+  assert.equal(graph.commands.length, 3);
+  for (const command of graph.commands) {
+    assert.equal(command.kind, "schedule");
+    assert.equal(command.scheduleEnabled, false);
+    assert.equal(command.nextRunAt, null);
+  }
+  const daily = graph.commands.find(item => item.title === "매일 검사");
+  assert.equal(daily.timeOfDay, "09:30");
+  assert.equal(daily.prompt, "검사를 시작하세요.");
+  assert.ok(graph.links.some(item => item.from === daily.id && item.to === session.id));
+  h.answer({ actions: [{ type: "link", from: session.id, to: daily.id }] });
+  const incoming = await h.request("POST", "/flow-assistant/plan", { projectPath: h.projectPath, prompt: "작업에서 예약으로 연결" });
+  assert.equal(incoming.status, 422);
+  assert.match(incoming.body.error, /시작점/);
+  assert.match(h.asked.at(-1), /시간 예약 "매일 검사"/);
+  h.answer({ actions: [{ type: "create_node", key: "bad", kind: "schedule", scheduleMode: "daily", timeOfDay: "25:00" }] });
+  assert.equal((await h.request("POST", "/flow-assistant/plan", { projectPath: h.projectPath, prompt: "잘못된 시간" })).status, 422);
+  assert.equal((await h.graph()).commands.length, 3);
+});

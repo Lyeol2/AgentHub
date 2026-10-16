@@ -1,6 +1,6 @@
 import { createGraphView } from "./view.js";
 import { createNodeGroups } from "./node-groups.js";
-import { KIND_LABEL, kindOf, hasBranchPorts, resultOnlyOutputs, hasWorktreeOutput, worktreeByDefault, isSourceOnly } from "../commands/flow-nodes.js";
+import { KIND_LABEL, kindOf, hasBranchPorts, resultOnlyOutputs, hasWorktreeOutput, worktreeByDefault, isSourceOnly, isScheduleArmed } from "../commands/flow-nodes.js";
 import { PAD, SVG_NS, isCommandNode, nodeSize, layoutGraph, edgePath } from "./model.js";
 import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
@@ -201,13 +201,14 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     // 그룹 묶기 항목은 노드를 둘 이상 골랐을 때만 붙인다. 하나만 골랐으면 평소 메뉴를 연다.
     const grouping = card && ui.graphSelected.size > 1 ? [...nodeGroups.selectedEntries(), null] : [];
     if (cmd) {
-      const running = ["running", "watching"].includes(cmd.state);
+      const running = ["running", "watching"].includes(cmd.state) || isScheduleArmed(cmd);
       const kind = cmd.kind ?? "command";
       const label = KIND_LABEL[kindOf(cmd)];
       openContextMenu(e, `${label} ${cmd.title}`, [
         ...grouping,
         kind === "markdown"
           ? ["결과 보기", () => openCommandOutput(cmd), { disabled: !cmd.lastRun?.output }]
+          : kind === "schedule" ? [running ? "예약 중지" : "예약 시작", () => running ? stopCommand(cmd) : runCommand(cmd)]
           : kind === "group" ? ["지금 넘기기", () => runCommand(cmd), { title: "모을 노드가 모두 끝났을 때 넘깁니다" }]
             : running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
         ...(kind !== "markdown" && (cmd.lastRun || cmd.live) ? [["결과 보기", () => openCommandOutput(cmd)]] : []),
@@ -237,13 +238,13 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const node = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, kind, { connectWhen, connectKeyword }))];
     const start = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, null, kind))];
     // 고른 세션 카드가 있으면 그 세션들을 미리 골라 둔다.
-    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "webhook-in", "group"].includes(node.kind); });
+    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "schedule", "webhook-in", "group"].includes(node.kind); });
     const collect = [picked.length > 1 && !connectFrom ? `선택한 노드 ${picked.length}개 결과 모으기` : "새 결과 모으기",
       inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked, connectWhen, connectKeyword }))];
     // 종류별로 묶는다. 시작점 노드는 들어오는 연결을 받을 수 없으므로 손잡이에서 열었을 때는 뺀다.
     const sections = [
       ["AI", [["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen, connectKeyword }))]]],
-      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch"), start("새 웹훅 받기", "webhook-in")]],
+      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch"), start("새 시간 예약", "schedule"), start("새 웹훅 받기", "webhook-in")]],
       ["실행", [node("새 명령", "command"), node("새 GIT", "git")]],
       ["작업", [
         ["새 작업", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "start" }))],
