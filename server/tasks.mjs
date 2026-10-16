@@ -112,8 +112,15 @@ export async function assertTaskGitIdle(task) {
   }
 }
 
-export function taskWorktreeLocation(repo, id) {
+// name은 사용자가 지정한 작업 폴더 이름이다. 없으면 task-<작업ID>를 쓴다.
+export function taskWorktreeLocation(repo, id, name) {
   const source = path.basename(repo.common).toLowerCase() === ".git" ? path.dirname(repo.common) : repo.top;
   const root = path.join(path.dirname(source), `${path.basename(source)}.agenthub`);
-  return { root, cwd: path.join(root, `task-${id}`) };
+  return { root, cwd: path.join(root, name || `task-${id}`) };
+}
+
+// 작업 폴더 이름은 <프로젝트>.agenthub/ 바로 아래 한 단계 폴더만 허용한다.
+export function validTaskWorktreeName(name) {
+  return /^[A-Za-z0-9가-힣_][A-Za-z0-9가-힣._-]{0,79}$/u.test(name) && !/\.$/.test(name)
+    && !/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(name);
 }

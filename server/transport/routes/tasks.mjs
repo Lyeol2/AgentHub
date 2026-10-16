@@ -11,5 +11,6 @@ export function taskRoutes(s) {
     ["POST", "tasks/:id/sync", ({ params }) => s.sync(params.id)],
     ["POST", "tasks/:id/cleanup", ({ params }) => s.cleanup(params.id)],
     ["POST", "tasks/:id/session", ({ params, body }) => s.addSession(params.id, body)],
+    ["DELETE", "tasks/:id", ({ params, query }) => s.remove(params.id, { force: query.get("force") === "1", deleteBranch: query.get("branch") === "delete" })],
   ];
 }

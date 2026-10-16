@@ -1,7 +1,13 @@
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 
-export const FLOW_NODE_KINDS = ["input", "repeat", "transform", "watch", "notify"];
-export const FLOW_MEMBER_KINDS = ["command", "git", "input", "repeat", "transform", "notify"];
+export const FLOW_NODE_KINDS = ["input", "repeat", "transform", "watch", "notify", "webhook", "webhook-in"];
+export const FLOW_MEMBER_KINDS = ["command", "git", "input", "repeat", "transform", "notify", "webhook"];
+export const WEBHOOK_METHODS = ["POST", "PUT", "PATCH", "GET", "DELETE"];
+// 받는 쪽 주소에 들어가는 비밀 값. 노드를 만들 때(템플릿으로 추가할 때 포함) 새로 만든다.
+export const newHookToken = () => randomBytes(24).toString("hex");
+const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+const BLOCKED_HEADERS = new Set(["host", "content-length", "connection", "transfer-encoding", "keep-alive", "upgrade"]);
 const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const UNSAFE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const MAX_TEXT = 20_000;
@@ -30,6 +36,27 @@ export function checkWatchPaths(value) {
       || /[*?\[\]{}]/.test(raw)) throw new Error("감시 경로는 .git, node_modules, data를 제외한 프로젝트 내부의 파일이나 폴더여야 합니다.");
     return path.posix.normalize(raw).replace(/\/$/, "") || ".";
   }))];
+}
+
+// 보내는 웹훅의 머리글. "이름: 값"을 한 줄에 하나씩 적는다. 값에는 {{input}} 같은 변수를 쓸 수 있다.
+export function parseWebhookHeaders(value) {
+  const lines = String(value ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  if (lines.length > 20) throw new Error("머리글은 20개까지 입력할 수 있습니다.");
+  return lines.map((line) => {
+    const index = line.indexOf(":");
+    const name = index > 0 ? line.slice(0, index).trim() : "";
+    if (!HEADER_NAME.test(name)) throw new Error(`머리글은 "이름: 값" 형식으로 입력하세요: ${line.slice(0, 80)}`);
+    if (BLOCKED_HEADERS.has(name.toLowerCase())) throw new Error(`${name} 머리글은 직접 정할 수 없습니다.`);
+    return [name, line.slice(index + 1).trim()];
+  });
+}
+
+function checkWebhookUrl(value) {
+  const raw = String(value ?? "").trim();
+  let url;
+  try { url = new URL(raw); } catch { throw new Error("보낼 주소를 http:// 또는 https://로 시작하는 URL로 입력하세요."); }
+  if (!["http:", "https:"].includes(url.protocol) || raw.length > 2048) throw new Error("보낼 주소를 http:// 또는 https://로 시작하는 URL로 입력하세요.");
+  return raw;
 }
 
 // 새 흐름 노드가 아니면 null을 반환해 기존 명령 노드 검사를 이어 간다.
@@ -66,6 +93,23 @@ export function checkFlowNode(body, current = {}) {
     const nodeTitle = title || "알림";
     return { kind, title: nodeTitle, message: text(body.message ?? current.message ?? "{{input}}", "알림 메시지"),
       notificationTitle: text(body.notificationTitle ?? current.notificationTitle ?? (title || "AgentHub"), "알림 제목", 100).trim() || "AgentHub", level, sound };
+  }
+  if (kind === "webhook") {
+    const method = String(body.method ?? current.method ?? "POST").toUpperCase();
+    if (!WEBHOOK_METHODS.includes(method)) throw new Error("요청 방식은 POST·PUT·PATCH·GET·DELETE 중 하나입니다.");
+    const bodyType = body.bodyType ?? current.bodyType ?? "json";
+    if (!["json", "text"].includes(bodyType)) throw new Error("본문 형식은 JSON 또는 텍스트입니다.");
+    const headers = text(body.headers ?? current.headers ?? "", "머리글", 8000);
+    parseWebhookHeaders(headers);
+    return { kind, title: title || "웹훅 보내기", url: checkWebhookUrl(body.url ?? current.url), method, headers, bodyType,
+      body: text(body.body ?? current.body ?? '{"text": "{{input}}"}', "본문"),
+      timeoutSec: boundedInteger(body.timeoutSec ?? current.timeoutSec ?? 30, 1, 120, "응답 대기 시간") };
+  }
+  if (kind === "webhook-in") {
+    const enabled = body.enabled ?? current.enabled ?? true;
+    if (typeof enabled !== "boolean") throw new Error("웹훅 받기 사용 여부가 올바르지 않습니다.");
+    return { kind, title: title || "웹훅 받기", enabled,
+      prompt: text(body.prompt ?? current.prompt ?? "웹훅 요청을 받았습니다.\n{{body}}", "요청") };
   }
   if (kind === "repeat") return { kind, title: title || "반복 제어",
     maxIterations: boundedInteger(body.maxIterations ?? current.maxIterations ?? 3, 1, 20, "최대 반복 횟수"),
@@ -105,9 +149,11 @@ function outputText(value) {
   return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }
 
-export function renderTemplate(value, variables = {}) {
-  return String(value ?? "").replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, key) => outputText(readValue(variables, key.trim())));
+// escape는 넣는 값을 바꾼다. JSON 본문에서는 따옴표 안에 들어가도록 문자열 이스케이프를 한다.
+export function renderTemplate(value, variables = {}, escape = (part) => part) {
+  return String(value ?? "").replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (_, key) => escape(outputText(readValue(variables, key.trim()))));
 }
+export const jsonStringEscape = (part) => JSON.stringify(part).slice(1, -1);
 
 export function inputValues(node, values = {}) {
   if (!values || typeof values !== "object" || Array.isArray(values)) throw new Error("입력값 형식이 올바르지 않습니다.");

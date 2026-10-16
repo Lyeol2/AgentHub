@@ -573,6 +573,7 @@ export function createSessionService({
     if (body.locked !== undefined && typeof body.locked !== "boolean") throw new HttpError(400, "locked는 true 또는 false여야 합니다.");
     if (body.agent !== undefined && body.agent !== session.agent) await switchAgent(session, body);
     if (body.title !== undefined) session.title = String(body.title).trim() || session.title;
+    if (body.roleName !== undefined) session.roleName = String(body.roleName ?? "").trim().slice(0, 100);
     if (body.model !== undefined) session.model = checkModel(body.model);
     if (body.effort !== undefined) session.effort = checkEffort(session.agent, body.effort);
     if (body.permission !== undefined && !session.chat) {
@@ -778,6 +779,8 @@ export function createSessionService({
     const records = cleanupSession(session, { deleteRecords });
     nodeGroups?.()?.pruneNode(id);
     tasks?.()?.detachSession?.(id);
+    // 이 세션을 열어 둔 화면·팝업 창이 닫히도록 알린다.
+    broadcast("session-removed", { sessionId: id, projectPath: session.projectPath ?? null });
     broadcast("sessions", {});
     broadcast("links", {});
     return { ok: true, records };

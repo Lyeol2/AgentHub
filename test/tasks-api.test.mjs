@@ -301,6 +301,59 @@ test('unfinished tasks cannot have their worktree cleaned up', async t => {
   assert.equal(stored.state, 'working');
 });
 
+test('tasks can be created with a custom branch name and worktree folder name', async t => {
+  const f = await fixture(t);
+  const { task } = await f.success('POST', '/tasks', {
+    projectPath: f.repo, title: 'Named task', type: 'feature', branchName: 'login-button', worktreeName: 'login-work',
+    agent: 'codex', permission: 'workspace-write',
+  });
+  assert.equal(task.branch, 'feature/login-button');
+  assert.equal(path.basename(task.cwd), 'login-work');
+  assert.equal(git(task.cwd, 'branch', '--show-current'), 'feature/login-button');
+
+  const duplicateFolder = await f.request('POST', '/tasks', {
+    projectPath: f.repo, title: 'Same folder', type: 'feature', worktreeName: 'login-work', agent: 'codex', permission: 'workspace-write',
+  });
+  assert.equal(duplicateFolder.status, 409, JSON.stringify(duplicateFolder.body));
+  const duplicateBranch = await f.request('POST', '/tasks', {
+    projectPath: f.repo, title: 'Same branch', type: 'feature', branchName: 'login-button', agent: 'codex', permission: 'workspace-write',
+  });
+  assert.equal(duplicateBranch.status, 409, JSON.stringify(duplicateBranch.body));
+  for (const body of [{ branchName: 'bad..name' }, { worktreeName: '../escape' }, { worktreeName: 'x', worktree: false }]) {
+    const invalid = await f.request('POST', '/tasks', { projectPath: f.repo, title: 'Invalid', type: 'feature', agent: 'codex', permission: 'workspace-write', ...body });
+    assert.equal(invalid.status, 400, JSON.stringify(invalid.body));
+  }
+  assert.equal((await f.tasks()).length, 1);
+});
+
+test('deleting a task removes its sessions, worktree, record and optionally its local branch', async t => {
+  const f = await fixture(t);
+  const { task, session } = await f.createTask('feature', 'Delete me');
+  await writeFile(path.join(task.cwd, 'unfinished.txt'), 'Uncommitted\n');
+  const dirty = await f.request('DELETE', `/tasks/${task.id}`);
+  assert.equal(dirty.status, 409, JSON.stringify(dirty.body));
+  assert.equal(dirty.body.reason, 'task-dirty');
+  assert.ok(existsSync(task.cwd));
+  assert.ok((await f.success('GET', '/sessions')).some(item => item.id === session.id));
+
+  const removed = await f.success('DELETE', `/tasks/${task.id}?force=1&branch=delete`);
+  assert.deepEqual(removed.sessionIds, [session.id]);
+  assert.equal(removed.worktreeRemoved, true);
+  assert.equal(removed.branchRemoved, true);
+  assert.equal(existsSync(task.cwd), false);
+  assert.equal(git(f.repo, 'branch', '--list', task.branch), '');
+  assert.equal((await f.success('GET', '/sessions')).some(item => item.id === session.id), false);
+  assert.deepEqual(await f.tasks(), []);
+  await f.restart();
+  assert.deepEqual(await f.tasks(), []);
+
+  const kept = (await f.createTask('feature', 'Keep branch')).task;
+  await f.success('DELETE', `/tasks/${kept.id}`);
+  assert.equal(existsSync(kept.cwd), false);
+  assert.equal(git(f.repo, 'branch', '--list', kept.branch).replace(/^[*+ ]+/, ''), kept.branch);
+  assert.equal((await f.request('DELETE', `/tasks/${kept.id}`)).status, 404);
+});
+
 test('removing a project preserves task worktrees and keeps their records accessible', async t => {
   const f = await fixture(t);
   const { task } = await f.createTask('feature', 'Keep task after project removal');

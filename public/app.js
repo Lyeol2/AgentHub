@@ -107,6 +107,17 @@ function onSessionLocked(session) {
   goDashboard();
 }
 
+// 보고 있던 세션이 지워졌다. 팝업 창이면 창을 닫고, 아니면 프로젝트(또는 채팅·대시보드) 화면으로 돌아간다.
+function onSessionRemoved({ sessionId, projectPath }) {
+  const current = data.current;
+  if (current?.id !== sessionId) return;
+  if (POPUP) { window.close(); return; }
+  sessionSelectionRevision++;
+  if (current.chat) openChat();
+  else if (projectPath ?? current.projectPath) goProject(projectPath ?? current.projectPath);
+  else goDashboard();
+}
+
 // 지금 보이는 대화 목록(채팅 화면이면 채팅 쪽)
 const eventsList = () => $(navigation.view === "chat" ? "c-events" : "s-events");
 
@@ -196,7 +207,8 @@ const graph = createGraphController({
   openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation
 });
 const commands = createCommandsController({
-  api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation
+  api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation,
+  history: graph.history, nodeSnapshot: graph.nodeSnapshot, recordNodesRemoved: graph.recordNodesRemoved,
 });
 const skills = createSkillsController({
   api, loadSessions, sessionById, renderGraph, highlightSessions, data, navigation
@@ -241,7 +253,7 @@ if (POPUP) {
 } else if (navigation.viewRevision === bootView && sessionSelectionRevision === bootSelection) goDashboard();
 
 const stream = connectLiveUpdates({
-  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify
+  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved
 });
 loadAuth();
 loadSetup();

@@ -84,6 +84,9 @@
 .task-note { margin: 8px 0 0; color: var(--muted, #9ca3af); font-size: 12px; line-height: 1.6; }
 .task-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; }
 .task-dialog .task-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.task-dialog .task-name-input { display: flex; align-items: stretch; }
+.task-dialog .task-name-prefix { display: flex; align-items: center; padding: 0 8px; border: 1px solid var(--line); border-right: 0; border-radius: 6px 0 0 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.task-dialog .task-name-input input { flex: 1; min-width: 0; border-top-left-radius: 0; border-bottom-left-radius: 0; }
 .task-dialog label { display: block; margin-bottom: 12px; }
 .task-dialog label > span { display: block; margin-bottom: 6px; font-size: 12px; }
 .task-dialog input, .task-dialog select, .task-dialog textarea { width: 100%; box-sizing: border-box; }

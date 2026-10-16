@@ -260,7 +260,7 @@ export class RunControls {
     } else if (kind === "markdown") {
       c.setFlow(node, flow);
       c.printMessage(node, step.options?.source ?? { id: node.id, title: node.title, cwd: step.cwd ?? node.projectPath }, step.input);
-    } else if (kind === "watch") {
+    } else if (kind === "watch" || kind === "webhook-in") {
       c.setFlow(node, flow);
       this.begin(node, flow, step.input, step.options);
       c.workflow.record(node, true, step.input, flow);
