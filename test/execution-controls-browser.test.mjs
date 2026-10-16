@@ -12,7 +12,7 @@ const browserExecutable = "C:/Program Files/Google/Chrome/Application/chrome.exe
 
 // Serve the real dialog markup and CSS without bootstrapping application services.
 // The browser fixture supplies all API responses; no agent or shell is executed.
-test("browser: execution history, scoped stop, resume, templates, and notifications", { timeout: 35000 }, async (t) => {
+test("browser: execution history, scoped stop, resume, templates, and notifications", { timeout: 90000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(browserExecutable).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required for browser integration");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-execution-browser-"));
   const server = http.createServer(async (req, res) => {
@@ -55,7 +55,8 @@ test("browser: execution history, scoped stop, resume, templates, and notificati
     await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", reject, { once: true }); });
     const command = (method, params = {}) => new Promise((resolve, reject) => {
       const requestId = ++id;
-      const timer = setTimeout(() => reject(Error("DevTools timed out: " + method + "\n" + stderr)), 12000);
+      // 전체 테스트가 브라우저 테스트를 동시에 돌리면 혼자 2초 걸리는 동작도 20초 넘게 걸린다.
+      const timer = setTimeout(() => reject(Error("DevTools timed out: " + method + "\n" + stderr)), 30000);
       pending.set(requestId, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
       socket.send(JSON.stringify({ id: requestId, method, params }));
     });

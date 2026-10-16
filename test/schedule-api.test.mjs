@@ -80,7 +80,8 @@ test("schedule lifecycle: shutdown preserves active intent, startup restores fut
   const f = fixture(t);
   const a = f.create();
   await a.start();
-  const createNode = fields => a.services.commands.create({ projectPath: f.root, kind: "schedule", ...fields });
+  // 서비스는 탭 정보를 붙인 사본을 돌려주므로, 예약 상태가 반영되는 저장된 노드를 다시 읽는다.
+  const createNode = fields => a.commands.get(a.services.commands.create({ projectPath: f.root, kind: "schedule", ...fields }).id);
   const recurring = createNode({ scheduleMode: "interval", intervalMinutes: 10 });
   const future = createNode({ runAt: new Date(Date.now() + 3_600_000).toISOString() });
   const disabled = createNode({ scheduleMode: "daily", timeOfDay: "10:30" });
