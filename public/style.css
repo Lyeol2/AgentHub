@@ -1132,10 +1132,13 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .gcmd-git { border-color: rgb(240 145 75 / .65); }
 .gcmd-git:hover { border-color: #f0914b; }
 .pill.cmd.git { color: #f0914b; border-color: rgb(240 145 75 / .5); background: rgb(240 145 75 / .1); }
-.gcmd-git .git-port.success { top: 40px; border-color: var(--ok); }
-.gcmd-git .git-port.error { top: 78px; border-color: var(--danger); }
-.gcmd-git .git-port.success:hover { background: var(--ok); }
-.gcmd-git .git-port.error:hover { background: var(--danger); }
+.gcmd-git .git-port.success, .gcmd-command .git-port.success, .gcmd-task .git-port.success { top: 40px; border-color: var(--ok); }
+.gcmd-git .git-port.error, .gcmd-command .git-port.error, .gcmd-task .git-port.error { top: 78px; border-color: var(--danger); }
+.gcmd-git .git-port.success:hover, .gcmd-command .git-port.success:hover, .gcmd-task .git-port.success:hover { background: var(--ok); }
+.gcmd-git .git-port.error:hover, .gcmd-command .git-port.error:hover, .gcmd-task .git-port.error:hover { background: var(--danger); }
+.gcmd-task { border-color: rgb(91 157 255 / .65); }
+.gcmd-task:hover { border-color: #5b9dff; }
+.pill.cmd.task { color: #5b9dff; border-color: rgb(91 157 255 / .5); background: rgb(91 157 255 / .1); }
 .git-port-label { position: absolute; left: 16px; top: 50%; transform: translateY(-50%); font-size: 10px; line-height: 18px; white-space: nowrap; padding: 0 4px; background: var(--panel); border-radius: 4px; }
 .git-port.success .git-port-label { color: var(--ok); }
 .git-port.error .git-port-label { color: var(--danger); }

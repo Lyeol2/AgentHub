@@ -1,7 +1,7 @@
 import path from "node:path";
 
 export const FLOW_NODE_KINDS = ["input", "repeat", "transform", "watch", "notify"];
-export const FLOW_MEMBER_KINDS = ["command", "git", "input", "repeat", "transform", "notify"];
+export const FLOW_MEMBER_KINDS = ["command", "git", "task", "input", "repeat", "transform", "notify"];
 const KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const UNSAFE_KEYS = new Set(["__proto__", "prototype", "constructor"]);
 const MAX_TEXT = 20_000;

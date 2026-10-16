@@ -2,7 +2,7 @@ import { $, el, timeAgo } from "../../shared/dom.js";
 import { elapsedElement } from "../../shared/elapsed.js";
 import { samePath, firstLine } from "../../shared/store.js";
 import { renderMarkdown } from "../../markdown.js";
-import { createFlowNodeForms, FLOW_KINDS, KIND_LABEL, kindOf, hasBranchPorts, KIND_HINT as FLOW_HINT } from "./flow-nodes.js";
+import { createFlowNodeForms, FLOW_KINDS, KIND_LABEL, kindOf, hasBranchPorts, TASK_TYPE_LABEL, KIND_HINT as FLOW_HINT } from "./flow-nodes.js";
 
 export function createCommandsController({ api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation }) {
   const ui = {
@@ -52,6 +52,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const run = c.lastRun;
     if (kindOf(c) === "watch") return running ? `감시 중 · ${(c.watchPaths ?? []).length}개 경로${c.live?.tail ? ` · ${firstLine(c.live.tail)}` : ""}` : run ? `${run.ok ? "변경 전달 완료" : "감시 중지 또는 오류"} · ${timeAgo(run.startedAt)}` : "▶를 눌러 감시 시작";
     if (kindOf(c) === "notify") return running ? "알림 보내는 중" : run ? `${run.ok ? "알림 보냄" : "알림 실패"} · ${timeAgo(run.startedAt)}` : "앞 노드의 결과를 알립니다";
+    if (kindOf(c) === "task") return running ? (c.taskAction === "finish" ? "커밋·게시·PR 만드는 중" : "작업 만드는 중") : run ? `${run.ok ? "성공" : "실패"}${run.taskResult?.pull ? ` · PR #${run.taskResult.pull.number}` : run.ok && run.taskResult?.branch ? ` · ${run.taskResult.branch}` : ""}${run.deliveryErrors?.length ? ` · 후속 실행 실패 ${run.deliveryErrors.length}개` : ""} · ${timeAgo(run.startedAt)}` : c.taskAction === "finish" ? "앞 세션의 작업을 마무리합니다" : "연결되면 새 작업을 만듭니다";
     if (FLOW_KINDS.includes(kindOf(c))) return running ? "실행 중" : run ? `${run.ok ? "성공" : "실패"}${kindOf(c) === "repeat" && run.iteration ? ` · ${run.iteration}/${c.maxIterations}회` : ""} · ${timeAgo(run.startedAt)}` : kindOf(c) === "input" ? `입력 항목 ${(c.fields ?? []).length}개 · 입력하고 실행` : kindOf(c) === "repeat" ? `최대 ${c.maxIterations}회 실행` : "연결된 결과를 가공합니다";
     if (kindOf(c) === "git") return running ? "Git 작업 실행 중" : run ? `${run.ok ? "성공" : "실패"}${run.gitResult?.recoveryRequired ? " · 복구 필요" : ""}${run.deliveryErrors?.length ? ` · 후속 실행 실패 ${run.deliveryErrors.length}개` : ""} · ${timeAgo(run.startedAt)}` : "아직 실행하지 않음";
     if (kindOf(c) === "group") {
@@ -95,14 +96,14 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const running = ["running", "watching"].includes(c.state);
     const kind = kindOf(c);
     const output = c.lastRun?.output;
-    const detail = kind === "git" ? c.gitAction === "merge" ? c.branch + " → " + c.targetBranch : c.branch + " · 작업 폴더 사용" : kind === "button" ? c.prompt : kind === "markdown" ? output?.relativePath ?? "완료 메시지 → .md 파일" : kind === "input" ? (c.fields ?? []).map((field) => field.label).join(" · ") : kind === "repeat" ? "최대 " + c.maxIterations + "회 · 실패하면 다시 실행" : kind === "transform" ? ({ json: "JSON", lines: "줄 선택", template: "템플릿" }[c.transformMode] ?? "JSON") + " · " + (c.expression || c.template || "전체 결과") : kind === "watch" ? (c.watchPaths ?? []).join(" · ") : kind === "notify" ? c.message : c.command;
-    const stoppable = ["command", "git", "watch", "repeat"].includes(kind);
+    const detail = kind === "git" ? c.gitAction === "merge" ? c.branch + " → " + c.targetBranch : c.branch + " · 작업 폴더 사용" : kind === "button" ? c.prompt : kind === "markdown" ? output?.relativePath ?? "완료 메시지 → .md 파일" : kind === "input" ? (c.fields ?? []).map((field) => field.label).join(" · ") : kind === "repeat" ? "최대 " + c.maxIterations + "회 · 실패하면 다시 실행" : kind === "transform" ? ({ json: "JSON", lines: "줄 선택", template: "템플릿" }[c.transformMode] ?? "JSON") + " · " + (c.expression || c.template || "전체 결과") : kind === "watch" ? (c.watchPaths ?? []).join(" · ") : kind === "notify" ? c.message : kind === "task" ? c.taskAction === "finish" ? "커밋 → 게시 → PR" : (TASK_TYPE_LABEL[c.taskType] ?? c.taskType) + " · " + c.titleTemplate : c.command;
+    const stoppable = ["command", "git", "task", "watch", "repeat"].includes(kind);
     const actionLabel = kind === "markdown" ? "결과 보기" : running && stoppable ? kind === "watch" ? "감시 중지" : "중지" : kind === "input" ? "입력하고 실행" : kind === "watch" ? "감시 시작" : kind === "button" ? running ? "전달 중" : "실행" : "지금 실행";
     const action = el("button", { type: "button", class: "gcmd-btn" + (running && stoppable ? " stop" : ""), title: kind === "markdown" && !output ? "결과를 받으면 볼 수 있습니다" : actionLabel, "aria-label": c.title + " " + actionLabel, onclick: () => kind === "markdown" ? openCommandOutput(c) : running && stoppable ? stopCommand(c) : runCommand(c) }, ["command", "watch"].includes(kind) ? running ? "■" : "▶" : actionLabel);
     action.disabled = kind === "markdown" ? !output : pendingRuns.has(c.id) || (running && !stoppable);
     const branchPorts = hasBranchPorts(c);
     return el("div", { class: "gcmd gcmd-" + kind + " " + c.state, "data-id": c.id, "data-kind": kind, title: c.title + "\n" + (detail ?? "") + "\n\n두 번 누르면 편집합니다. 손잡이를 끌어 다음 노드에 연결합니다." },
-      el("div", { class: "gcard-top" }, el("span", { class: "pill cmd " + kind }, KIND_LABEL[kind]), el("span", { class: "gcmd-shell" }, kind === "command" ? shellLabel(c.shell) : kind === "git" ? c.gitAction === "merge" ? "브랜치 병합" : "브랜치 사용" : kind === "button" ? "수동 실행" : kind === "markdown" ? "원문 저장" : kind === "watch" ? "변경 감지" : kind === "input" ? "실행 시작" : ""), el("span", { class: "pill cmd-" + c.state }, COMMAND_STATE[c.state] ?? c.state)),
+      el("div", { class: "gcard-top" }, el("span", { class: "pill cmd " + kind }, KIND_LABEL[kind]), el("span", { class: "gcmd-shell" }, kind === "command" ? shellLabel(c.shell) : kind === "git" ? c.gitAction === "merge" ? "브랜치 병합" : "브랜치 사용" : kind === "button" ? "수동 실행" : kind === "markdown" ? "원문 저장" : kind === "watch" ? "변경 감지" : kind === "input" ? "실행 시작" : kind === "task" ? c.taskAction === "finish" ? "작업 마무리" : "새 작업" : ""), el("span", { class: "pill cmd-" + c.state }, COMMAND_STATE[c.state] ?? c.state)),
       el("div", { class: "gcard-title" }, c.title),
       el("div", { class: "gcmd-code" + (["command", "git", "transform", "watch"].includes(kind) ? " mono" : ""), title: detail ?? "" }, firstLine(detail ?? "")),
       el("div", { class: "gcmd-foot" }, el("span", { class: "gcmd-result" }, elapsedElement("command", c), el("span", { class: "gcmd-result-text" }, commandNodeFoot(c))), action),
@@ -112,7 +113,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   async function runCommand(c) {
     if (kindOf(c) === "watch" && c.state === "watching") return stopCommand(c);
     if (kindOf(c) === "markdown") return openCommandOutput(c);
-    if (pendingRuns.has(c.id) || (["button", "git"].includes(kindOf(c)) && c.state === "running")) return;
+    if (pendingRuns.has(c.id) || (["button", "git", "task"].includes(kindOf(c)) && c.state === "running")) return;
     if (kindOf(c) === "group" && !groupProgress(c).ready) return alert("묶은 세션 중 진행 중인 노드가 있어 아직 넘길 수 없습니다.");
     const values = kindOf(c) === "input" ? await flowForms.collect(c) : undefined;
     if (kindOf(c) === "input" && values === null) return;
@@ -152,19 +153,19 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   }
 
   // cmd가 없으면 새로 만든다. pos는 새 노드를 놓을 자리. members: 새 결과 모으기에 미리 고를 세션
-  function openCommandDialog(cmd, pos = null, connectFrom = null, kind = "command", { members = [], connectWhen = null, connectKeyword = "" } = {}) {
+  function openCommandDialog(cmd, pos = null, connectFrom = null, kind = "command", { members = [], connectWhen = null, connectKeyword = "", taskAction = null } = {}) {
     if (ui.editingCommand) ui.editingCommand.cancelled = true;
     kind = kindOf(cmd ?? { kind });
     ui.editingCommand = { id: cmd?.id ?? null, kind, pos, projectPath: navigation.project, connectFrom, connectWhen, connectKeyword };
     const shells = data.shells?.length ? data.shells : [{ id: "powershell", label: "PowerShell" }];
     $("command-heading").textContent = cmd ? `${KIND_LABEL[kind]} ${cmd.title}` : `새 ${KIND_LABEL[kind]}`;
     $("command-title").value = cmd?.title ?? "";
-    $("command-title").placeholder = kind === "command" ? "비워 두면 명령 첫 줄로 정합니다" : kind === "button" ? "예: 작업 시작" : kind === "group" ? "예: 병렬 구현" : kind === "git" ? "예: develop에 통합" : "예: 완료 보고서";
+    $("command-title").placeholder = kind === "command" ? "비워 두면 명령 첫 줄로 정합니다" : kind === "button" ? "예: 작업 시작" : kind === "group" ? "예: 병렬 구현" : kind === "git" ? "예: develop에 통합" : kind === "task" ? "예: 기능 작업 시작" : "예: 완료 보고서";
     $("command-save").disabled = false;
     $("command-generator").hidden = kind !== "command";
     $("command-explain").hidden = kind !== "command";
     $("command-settings").hidden = !["command", "markdown"].includes(kind);
-    flowForms.fill(kind, cmd);
+    flowForms.fill(kind, cmd ?? (taskAction ? { taskAction } : null));
     $("git-settings").hidden = kind !== "git";
     $("git-action").value = cmd?.gitAction ?? "use";
     $("git-timeout").value = cmd?.timeoutSec ?? 600;
@@ -422,7 +423,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       $("command-dialog").close();
       return removeCommand(cmd);
     }
-    if (action === "run") return ["running", "watching"].includes(cmd?.state) && ["command", "git", "repeat", "watch"].includes(kind) ? stopCommand(cmd) : cmd && runCommand(cmd);
+    if (action === "run") return ["running", "watching"].includes(cmd?.state) && ["command", "git", "task", "repeat", "watch"].includes(kind) ? stopCommand(cmd) : cmd && runCommand(cmd);
     const body = {
       title: $("command-title").value,
       ...(kind === "command" ? {

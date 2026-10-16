@@ -1,6 +1,6 @@
 import { createGraphView } from "./view.js";
 import { createNodeGroups } from "./node-groups.js";
-import { KIND_LABEL, kindOf, hasBranchPorts, isSourceOnly } from "../commands/flow-nodes.js";
+import { KIND_LABEL, kindOf, hasBranchPorts, resultOnlyOutputs, hasWorktreeOutput, worktreeByDefault, isSourceOnly } from "../commands/flow-nodes.js";
 import { PAD, SVG_NS, isCommandNode, nodeSize, layoutGraph, edgePath } from "./model.js";
 import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
@@ -163,6 +163,9 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       ["AI", [["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen, connectKeyword }))]]],
       ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch")]],
       ["실행", [node("새 명령", "command"), node("새 GIT", "git")]],
+      ["작업", [
+        ["새 작업", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "start" }))],
+        ["작업 마무리", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "finish" }))]]],
       ["흐름 제어", [node("새 반복 제어", "repeat"), node("새 결과 가공", "transform"), collect]],
       ["출력", [node("새 알림", "notify"), node("새 Markdown 출력", "markdown")]],
     ];
@@ -229,10 +232,10 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       (samePath(data.commandsProject, projectPath) ? commandById(context.connectFrom) : null);
     if (!source || (source.projectPath && !samePath(source.projectPath, projectPath))) return;
     try {
-      const when = context.connectWhen ?? (source.kind === "git" ? "success" : null);
+      const when = context.connectWhen ?? (["git", "task"].includes(source.kind) ? "success" : null);
       const target = commandById(to);
       const targetKind = target?.kind ?? context.kind ?? "session";
-      await api("POST", "/api/links", { from: source.id, to, ...(when ? { when, keyword: context.connectKeyword ?? "" } : defaultLinkCondition(source.id)), ...(source.kind === "git" ? { useGitWorktree: when === "success" && source.gitAction === "use" && ["session", "command"].includes(targetKind) } : {}), enabled: true });
+      await api("POST", "/api/links", { from: source.id, to, ...(when ? { when, keyword: context.connectKeyword ?? "" } : defaultLinkCondition(source.id)), ...(hasWorktreeOutput(source) ? { useGitWorktree: when === "success" && worktreeByDefault(source) && ["session", "command"].includes(targetKind) } : {}), enabled: true });
       await loadLinks();
     } catch (err) {
       alert(`노드는 만들었지만 연결하지 못했습니다. 손잡이를 끌어 다시 연결해 주세요.\n\n${err.message}`);
@@ -768,7 +771,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   function renderLinkConditions(source = commandById(ui.editingLink?.from)) {
     const select = $("link-when");
     const value = select.value;
-    select.replaceChildren(...(data.status?.linkConditions ?? []).filter((c) => !hasBranchPorts(source) || ["success", "error", "always", "manual"].includes(c.id)).map((c) => el("option", { value: c.id }, c.label)));
+    select.replaceChildren(...(data.status?.linkConditions ?? []).filter((c) => !resultOnlyOutputs(source) || ["success", "error", "always", "manual"].includes(c.id)).map((c) => el("option", { value: c.id }, c.label)));
     if (value) select.value = value;
   }
 
@@ -812,8 +815,9 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     $("link-note").value = link?.note ?? "";
     $("link-note").placeholder = "다음 노드에 보낼 내용 · 입력값은 {{key}}, 이전 결과는 {{input}}로 사용";
     $("link-enabled").checked = link?.enabled ?? true;
-    $("link-approve").checked = link?.approve ?? false;
-    $("link-git-worktree").checked = link?.useGitWorktree ?? (source?.kind === "git" && source.gitAction === "use" && initial.when === "success");
+    // 작업 마무리는 커밋·push·PR을 만들므로 새 연결은 승인 후 실행이 기본이다.
+    $("link-approve").checked = link?.approve ?? (target?.kind === "task" && target.taskAction === "finish");
+    $("link-git-worktree").checked = link?.useGitWorktree ?? (worktreeByDefault(source) && initial.when === "success");
     $("link-delete").hidden = !link;
     $("link-run").hidden = !link;
     $("link-error").textContent = "";
@@ -824,7 +828,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   function syncLinkWhen() {
     $("link-keyword-row").hidden = $("link-when").value !== "keyword";
     const source = commandById(ui.editingLink?.from), target = commandById(ui.editingLink?.to);
-    const eligible = source?.kind === "git" && (!target || !target.kind || target.kind === "command") && $("link-when").value !== "error";
+    const eligible = hasWorktreeOutput(source) && (!target || !target.kind || target.kind === "command") && $("link-when").value !== "error";
     $("link-git-worktree-row").hidden = !eligible;
     $("link-git-worktree-hint").hidden = !eligible;
   }
@@ -841,7 +845,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       note: $("link-note").value,
       enabled: $("link-enabled").checked,
       approve: $("link-approve").checked,
-      ...(commandById(from)?.kind === "git" ? { useGitWorktree: !$("link-git-worktree-row").hidden && $("link-git-worktree").checked } : {}),
+      ...(hasWorktreeOutput(commandById(from)) ? { useGitWorktree: !$("link-git-worktree-row").hidden && $("link-git-worktree").checked } : {}),
     };
     try {
       if (action === "delete") {
