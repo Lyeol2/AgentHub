@@ -222,7 +222,9 @@ export function createTasksController({
       if (task.state === 'merged') actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
       card.append(actions);
       if (task.state === 'merged' && task.type !== 'feature') card.append(node('p', 'task-note', `${flow.develop}에도 반영되어야 작업 폴더를 정리할 수 있습니다.`));
-      if (task.state === 'cleaned') card.append(node('p', 'task-note', task.worktreePreserved
+      if (task.state === 'cleaned') card.append(node('p', 'task-note', task.inPlace
+        ? `원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌렸습니다. 작업과 PR 기록은 보관됩니다.`
+        : task.worktreePreserved
         ? '작업 기록을 정리했습니다. 선택했던 기존 작업 폴더와 브랜치는 보존됩니다.'
         : task.localBranchRemoved === false
           ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
@@ -406,6 +408,9 @@ export function createTasksController({
     if ($('task-workbranch-row')) $('task-workbranch-row').hidden = !existing;
     if ($('task-workbranch')) $('task-workbranch').required = existing;
     if ($('task-type')) $('task-type').disabled = existing;
+    // 기존 작업 브랜치는 그 브랜치의 작업 폴더를 쓰므로 워크트리 여부를 고르지 않는다.
+    if ($('task-worktree-row')) $('task-worktree-row').hidden = existing;
+    const inPlace = !existing && $('task-worktree')?.value === 'none';
     const type = $('task-type')?.value || 'feature';
     const isRelease = type === 'release' && !existing;
     const versionField = $('task-version-row') || $('task-version')?.closest('label');
@@ -418,7 +423,9 @@ export function createTasksController({
       ? selected ? `${selected.name}에서 작업 → ${workBranchType(selected.name, settings) === 'feature' ? settings.develop : settings.main}으로 PR` : '기존 작업 브랜치를 선택하면 작업 유형과 PR 대상을 맞춥니다.'
       : taskBranchPreview(type, $('task-version')?.value.trim(), settings);
     if ($('task-gitflow-summary')) $('task-gitflow-summary').textContent = `기준: ${settings.main} / ${settings.develop}`;
-    if ($('task-create-hint')) $('task-create-hint').textContent = `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.`;
+    if ($('task-create-hint')) $('task-create-hint').textContent = inPlace
+      ? `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 원본 폴더를 새 작업 브랜치로 바꾸고 세션을 연결합니다. 원본 폴더에 커밋하지 않은 변경이 없어야 하며, 정리하면 원래 브랜치로 돌아갑니다.`
+      : `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.`;
   }
 
   function updateCreateSubmit() {
@@ -483,6 +490,7 @@ export function createTasksController({
     };
     if (existing) payload.workBranch = workbranchPicker.selected().name;
     else if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
+    if (!existing && $('task-worktree')?.value === 'none') payload.worktree = false;
     if ($('task-model')?.value.trim()) payload.model = $('task-model').value.trim();
     if ($('task-effort')?.value) payload.effort = $('task-effort').value;
     if ($('task-role')?.value.trim()) payload.role = $('task-role').value.trim();
@@ -644,6 +652,7 @@ export function createTasksController({
     updateCreateSubmit();
   });
   $('task-version')?.addEventListener('input', updateCreatePreview);
+  $('task-worktree')?.addEventListener('change', updateCreatePreview);
   $('task-agent')?.addEventListener('change', () => { if ($('task-model')) $('task-model').value = ''; updateAgentControls(); });
   $('task-model')?.addEventListener('change', () => { if ($('task-effort')) fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model').value); });
   createForm?.addEventListener('submit', createTask);

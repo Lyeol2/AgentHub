@@ -1,5 +1,5 @@
 import { el } from "../../shared/dom.js";
-import { completionTrigger, applyCompletion, filterCommands, BUILTIN_COMMANDS } from "../../composer.js";
+import { completionTrigger, applyCompletion, filterCommands, refToken, refMatches, expandRefs, BUILTIN_COMMANDS } from "../../composer.js";
 
 const SKILL_TTL = 10_000;
 const SCOPE_LABEL = { project: "프로젝트 스킬", claude: "Claude 스킬", personal: "개인 스킬" };
@@ -7,12 +7,47 @@ const SCOPE_LABEL = { project: "프로젝트 스킬", claude: "Claude 스킬", p
 // 세션 작성창의 "@" 파일 참조와 "/" 명령 자동 완성.
 // ↑↓로 고르고 Enter·Tab으로 넣는다. Esc는 목록만 닫는다(작업 일시중지로 넘어가지 않는다).
 // 반드시 작성창의 다른 keydown 처리보다 먼저 만든다. 목록이 열려 있으면 Enter가 보내기로 넘어가지 않게 막는다.
+// 고른 파일은 "@파일이름"으로 줄여 파란 글씨로 보이고, 보낼 때 expand()로 전체 경로를 되살린다.
 export function createCompletion({ textarea, api, getSession, onBuiltin }) {
   const menu = el("ul", { class: "complete-menu", role: "listbox", id: `${textarea.id}-complete`, hidden: "" });
-  textarea.parentElement?.append(menu);
+  const parent = textarea.parentElement;
+  // 작성창 뒤에 같은 글자를 그리는 판을 두고, 참조가 있으면 작성창 글자를 숨겨 판의 색을 보인다.
+  const mirror = el("div", { class: "ref-mirror", "aria-hidden": "true" });
+  const field = el("div", { class: "ref-field" });
+  textarea.before(field);
+  field.append(mirror, textarea);
+  parent?.append(menu);
   textarea.setAttribute("aria-autocomplete", "list");
   const state = { trigger: null, items: [], index: 0, seq: 0, timer: null, dismissed: null };
   const skillCache = new Map(); // projectPath → { at, skills }
+  const refsBySession = new Map(); // sessionId → Map(작성창 이름 → 전체 경로)
+  const sessionRefs = () => refsBySession.get(getSession()?.id);
+
+  const MIRROR_STYLE = ["fontFamily", "fontSize", "fontWeight", "lineHeight", "letterSpacing", "tabSize", "paddingTop", "paddingLeft", "paddingBottom",
+    "borderTopWidth", "borderRightWidth", "borderBottomWidth", "borderLeftWidth", "borderRadius", "boxSizing"];
+  function paint() {
+    const text = textarea.value;
+    const refs = sessionRefs();
+    if (refs && !text) refs.clear();
+    const matches = refs ? refMatches(text, refs) : [];
+    field.classList.toggle("has-refs", matches.length > 0);
+    if (!matches.length) return mirror.replaceChildren();
+    const style = getComputedStyle(textarea);
+    for (const key of MIRROR_STYLE) mirror.style[key] = style[key];
+    // 작성창 스크롤 막대가 차지하는 폭만큼 오른쪽을 비워 줄바꿈 위치를 맞춘다.
+    const bar = textarea.offsetWidth - textarea.clientWidth - parseFloat(style.borderLeftWidth) - parseFloat(style.borderRightWidth);
+    mirror.style.paddingRight = `${parseFloat(style.paddingRight) + Math.max(0, bar)}px`;
+    const nodes = [];
+    let last = 0;
+    for (const m of matches) {
+      nodes.push(text.slice(last, m.start), el("span", { class: "ref-chip" }, text.slice(m.start, m.end)));
+      last = m.end;
+    }
+    // 끝 줄바꿈이 있어도 판의 높이가 작성창과 같게 한 줄을 더 둔다.
+    nodes.push(`${text.slice(last)}\n`);
+    mirror.replaceChildren(...nodes);
+    mirror.scrollTop = textarea.scrollTop;
+  }
 
   async function skills(projectPath) {
     const hit = skillCache.get(projectPath);
@@ -23,6 +58,7 @@ export function createCompletion({ textarea, api, getSession, onBuiltin }) {
   }
 
   function close() {
+    paint();
     state.trigger = null;
     state.items = [];
     clearTimeout(state.timer);
@@ -99,7 +135,15 @@ export function createCompletion({ textarea, api, getSession, onBuiltin }) {
       onBuiltin(item.value);
       return;
     }
-    const next = applyCompletion(textarea.value, trigger, item.value);
+    let value = item.value;
+    if (item.type === "file" && !value.endsWith("/")) {
+      const id = getSession()?.id;
+      if (!refsBySession.has(id)) refsBySession.set(id, new Map());
+      const refs = refsBySession.get(id);
+      value = refToken(value, refs);
+      refs.set(value, item.value);
+    }
+    const next = applyCompletion(textarea.value, trigger, value);
     textarea.value = next.text;
     textarea.setSelectionRange(next.caret, next.caret);
     textarea.focus();
@@ -128,12 +172,19 @@ export function createCompletion({ textarea, api, getSession, onBuiltin }) {
       close();
     }
   });
+  textarea.addEventListener("input", paint);
   textarea.addEventListener("input", update);
+  textarea.addEventListener("scroll", () => { mirror.scrollTop = textarea.scrollTop; });
+  new ResizeObserver(paint).observe(textarea);
   textarea.addEventListener("click", update);
   textarea.addEventListener("keyup", (e) => {
     if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) update();
   });
   textarea.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== textarea) close(); }, 100));
 
-  return { close, isOpen: () => !menu.hidden };
+  const expand = (text) => {
+    const refs = sessionRefs();
+    return refs ? expandRefs(text, refs) : text;
+  };
+  return { close, isOpen: () => !menu.hidden, expand, sync: paint };
 }

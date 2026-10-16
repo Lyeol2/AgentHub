@@ -59,6 +59,25 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if (taskSessions(task).some((session) => session.id !== except && runner.isRunning(session.id)))
       throw new HttpError(409, "이 작업 폴더에서 실행 중인 세션을 먼저 중지하세요.", "running");
   }
+  // 원본 폴더를 새 작업 브랜치로 바꿔도 되는지 확인하고 지금 브랜치 이름을 돌려준다.
+  async function assertInPlaceReady(repo) {
+    const cwd = path.resolve(repo.top);
+    const other = [...records.values()].find((task) => task.inPlace && task.state !== "cleaned" && sameTaskPath(task.gitCommonDir, repo.common));
+    if (other) throw new HttpError(409, `원본 폴더는 이미 "${other.title}" 작업에서 쓰고 있습니다. 그 작업을 정리하거나 워크트리를 만들어 진행하세요.`, "task-in-place");
+    assertIdle({ cwd });
+    await assertTaskGitIdle({ cwd });
+    if (await taskDirty({ cwd })) throw new HttpError(409, "원본 폴더에 커밋하지 않은 변경이 있습니다. 커밋하거나 워크트리를 만들어 진행하세요.", "task-dirty");
+    return (await taskGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "")).trim() || null;
+  }
+  // 정리할 때 원본 폴더를 작업 전 브랜치(없으면 PR 대상 브랜치)로 되돌려 작업 브랜치를 지울 수 있게 한다.
+  async function leaveInPlaceBranch(task) {
+    for (const branch of [task.previousBranch, task.targetBranch]) {
+      if (!branch || branch === task.branch || !await taskRef(task.projectPath, `refs/heads/${branch}`)) continue;
+      try { await taskGit(task.cwd, ["switch", "--no-guess", branch], { write: true }); return; }
+      catch (error) { if (error.outcomeUnknown) throw error; }
+    }
+    await taskGit(task.cwd, ["switch", "--detach", "HEAD"], { write: true });
+  }
   function assertActive(task) {
     if (["merged", "cleaned"].includes(task.state)) throw new HttpError(409, "병합이 완료된 작업입니다. 새 작업에서 이어서 진행하세요.", "task-completed");
   }
@@ -247,6 +266,9 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if (!["feature", "hotfix", "release"].includes(type)) throw new HttpError(400, "작업 유형이 올바르지 않습니다.");
     const selectedBranch = body.workBranch;
     if (selectedBranch !== undefined && (typeof selectedBranch !== "string" || !selectedBranch.trim())) throw new HttpError(400, "작업 브랜치를 선택하세요.");
+    // worktree:false는 워크트리를 만들지 않고 원본 폴더를 새 작업 브랜치로 바꿔 그 자리에서 작업한다.
+    const inPlace = body.worktree === false;
+    if (inPlace && selectedBranch !== undefined) throw new HttpError(400, "원본 폴더에서 작업할 때는 새 작업 브랜치만 만들 수 있습니다.");
     const version = typeof body.version === "string" ? body.version.trim() : "";
     if (!selectedBranch && type === "release" && !/^v?\d+\.\d+\.\d+(?:-[A-Za-z0-9]+(?:[.-][A-Za-z0-9]+)*)?$/.test(version))
       throw new HttpError(400, "배포 버전을 입력하세요. 예: 1.2.0");
@@ -271,19 +293,29 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       const baseCommit = type === "hotfix" ? current.mainSha : current.developSha ?? current.mainSha;
       const selected = selectedBranch ? await resolveWorkbranch(project.path, branch) : null;
       if (selected) assertIdle({ cwd: selected.dir });
-      const location = selected ? { cwd: selected.dir, root: path.dirname(selected.dir) } : taskWorktreeLocation(repo, id);
+      const previousBranch = inPlace ? await assertInPlaceReady(repo) : null;
+      const location = inPlace ? { cwd: path.resolve(repo.top), root: null } : selected ? { cwd: selected.dir, root: path.dirname(selected.dir) } : taskWorktreeLocation(repo, id);
       const targetSha = type === "feature" ? current.developSha ?? current.mainSha : current.mainSha;
       const behind = !!selected && !await taskAncestor(project.path, targetSha, await taskRef(selected.dir, "HEAD"));
       const task = { id, projectPath: project.path, title, type, version: type === "release" ? version : undefined,
         agent: body.agent ?? "claude", model: body.model, effort: body.effort, permission: body.permission, role: body.role,
         branch, baseBranch, targetBranch: type === "feature" ? gitflow.develop : gitflow.main, baseCommit, gitflow: clone(gitflow),
         cwd: location.cwd, worktreeRoot: location.root, gitCommonDir: repo.common,
-        ownsWorktree: !selected || selected.created, ownsBranch: !selected,
+        ownsWorktree: !inPlace && (!selected || selected.created), ownsBranch: !selected,
         ...(selected ? { selectedWorkBranch: true } : {}),
+        ...(inPlace ? { inPlace: true, previousBranch } : {}),
         remote: current.remote, remoteFingerprint: remoteFingerprint((await taskGit(project.path, ["remote", "get-url", current.remote])).trim()),
         sessionIds: [], state: "working", pull: null, createdAt: now(), updatedAt: now(),
         freshness: { ...current, targetSha, behind, state: behind ? "needs-update" : current.state },
         needsDevelopSetup: !current.developSha };
+      if (inPlace) {
+        // 실패하면 원본 폴더는 그대로이므로 작업 기록을 남기지 않는다.
+        try { await taskGit(project.path, ["switch", "--no-guess", "-c", branch, baseCommit], { write: true }); }
+        catch (error) { throw failure(error); }
+        save(task);
+        try { return await attach(task, body); }
+        catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
+      }
       fs.mkdirSync(location.root, { recursive: true });
       try { if (!selected) await taskGit(project.path, ["worktree", "add", "-b", branch, task.cwd, baseCommit], { write: true }); }
       catch (error) {
@@ -504,7 +536,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         throw new HttpError(409, "AgentHub가 생성한 작업 폴더인지 확인할 수 없습니다.", "task-worktree");
       if (await assertTaskWorktree(task) !== head || await taskDirty(task))
         throw new HttpError(409, "정리 확인 중 작업 폴더가 변경됐습니다. 다시 확인하세요.", "task-stale-head");
-      if (ownsWorktree) await taskGit(task.projectPath, ["worktree", "remove", "--", task.cwd], { write: true });
+      if (task.inPlace) await leaveInPlaceBranch(task);
+      else if (ownsWorktree) await taskGit(task.projectPath, ["worktree", "remove", "--", task.cwd], { write: true });
       else task.worktreePreserved = true;
       task.localBranchRemoved = false;
       // Compare-and-delete permits squash merges without using a destructive force flag.

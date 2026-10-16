@@ -28,6 +28,8 @@ function fakeGitHub() {
       state.calls.push({ method, endpoint, data, options });
       const fail = (status) => { throw new GitHubError("gh: failure (HTTP " + status + ")"); };
       if (endpoint === "user") return { login: state.viewer };
+      if (endpoint === "users/alice") return { login: "alice", name: " 김앨리스 " };
+      if (endpoint === "users/bob") return fail(500);
       if (endpoint === "repos/acme/widget") return { private: true, has_issues: true };
       if (endpoint === "repos/acme/widget/assignees?per_page=100") return [...state.assignable].map((login) => ({ login, avatar_url: "https://a/" + login }));
       if (endpoint.startsWith("repos/acme/widget/assignees/")) return state.assignable.has(endpoint.split("/").at(-1)) ? "" : fail(404);
@@ -83,6 +85,26 @@ test("issues: 올리기 전에 토큰을 가리고 로컬 경로를 상대 경�
   assert.ok(!/ghp_|sk-ant|abcdefghijklmnopqrstuvwxyz|user:pw/.test(masked), masked);
   assert.equal(relativizePaths("E:\\Git\\App\\src\\a.js, e:/git/app/b.js, E:\\Git\\App2\\c.js, E:\\Git\\App.wt\\d.js", ["E:\\Git\\App"]),
     ".\\src\\a.js, ./b.js, E:\\Git\\App2\\c.js, E:\\Git\\App.wt\\d.js");
+});
+
+test("issues: 받을 팀원 목록에 GitHub 프로필 이름을 붙이고 잠깐 기억한다", async () => {
+  const { state, client } = fakeGitHub();
+  const context = await client.context(tmp);
+  assert.deepEqual(context.assignees.map((p) => [p.login, p.name]), [["alice", "김앨리스"], ["bob", ""]]);
+  const lookups = () => state.calls.filter((c) => c.endpoint.startsWith("users/")).length;
+  assert.equal(lookups(), 2);
+  await client.context(tmp);
+  assert.equal(lookups(), 2); // 실패한 조회도 다시 묻지 않는다.
+});
+
+test("issues: 팀원 목록은 각자 맡은 열린 팀 작업 수를 함께 준다", async () => {
+  const { state, issue, client } = fakeGitHub();
+  state.issues.set(1, issue(1, { assignees: [{ login: "Alice" }] }));
+  state.issues.set(2, issue(2, { assignees: [{ login: "alice" }, { login: "bob" }] }));
+  const members = await client.members(tmp);
+  assert.deepEqual(members.assignees.map((p) => [p.login, p.name, p.openTasks]), [["alice", "김앨리스", 2], ["bob", "", 1]]);
+  assert.equal(members.viewer, "bob");
+  assert.equal(members.limited, false);
 });
 
 test("issues: 작업을 보내면 라벨을 만들고 담당자를 지정한 이슈를 만든다", async () => {

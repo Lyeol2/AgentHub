@@ -1101,6 +1101,15 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .complete-name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .complete-desc { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .complete-tag { flex: none; font-size: 10.5px; color: var(--faint); }
+/* 고른 파일 참조는 "@파일이름"만 파란 글씨로 보인다. 작성창 글자를 숨기고 뒤의 판이 같은 자리에 그린다. */
+.ref-field { position: relative; display: flex; flex: auto; min-width: 0; }
+.ref-field > textarea { position: relative; flex: 1; width: 100%; }
+.ref-mirror { position: absolute; inset: 0; overflow: hidden; margin: 0; border-style: solid; border-color: transparent; background: var(--panel);
+  color: var(--text); white-space: pre-wrap; overflow-wrap: break-word; word-break: normal; pointer-events: none; visibility: hidden; }
+.ref-field.has-refs .ref-mirror { visibility: visible; }
+.ref-field.has-refs > textarea { color: transparent; caret-color: var(--text); background: transparent; }
+.ref-field.has-refs > textarea::selection { color: transparent; }
+.ref-chip { color: var(--accent); }
 .record-mode { display: flex; gap: 16px; margin: 0; padding: 0; border: 0; }
 
 /* ── 세션 묶음 노드 ───────────────────────────────────────── */
@@ -1154,3 +1163,20 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .gcmd-repeat .git-port.success:hover { background: var(--ok); }
 .gcmd-repeat .git-port.error:hover { background: var(--danger); }
 @media (max-width: 760px) { .flow-input-field { grid-template-columns: 1fr 1fr; } }
+
+/* ── 팀원 탭 ─────────────────────────────────────────────────── */
+.member-card .pr-toolbar h3 { margin: 0; font-size: 14px; }
+.member-list { list-style: none; margin: 0; padding: 0 0 8px; }
+.member-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; border-top: 1px solid var(--line); }
+.member-avatar { flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--panel-2); object-fit: cover; }
+.member-info { flex: 1 1 180px; min-width: 0; display: grid; gap: 2px; }
+.member-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.member-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-sub { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-tasks { flex: none; font-size: 11.5px; }
+.member-name-input { flex: none; width: 160px; padding: 5px 8px; font-size: 12px; }
+.member-empty { padding: 14px 16px; }
+@media (max-width: 720px) {
+  .member-row { flex-wrap: wrap; }
+  .member-name-input { width: 100%; }
+}

@@ -41,11 +41,11 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
 
   function worktreeNameError(value) {
     const name = String(value ?? "").trim();
-    if (!name) return "작업 브랜치 이름을 입력하세요.";
+    if (!name) return "워크트리 이름을 입력하세요.";
     if (!/^[A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ][A-Za-z0-9가-힣ㄱ-ㅎㅏ-ㅣ_-]{0,63}$/u.test(name)) {
-      return "작업 브랜치 이름은 1~64자의 영문·숫자·한글·하이픈·밑줄만 쓸 수 있으며, 영문·숫자·한글로 시작해야 합니다.";
+      return "워크트리 이름은 1~64자의 영문·숫자·한글·하이픈·밑줄만 쓸 수 있으며, 영문·숫자·한글로 시작해야 합니다.";
     }
-    if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) return "작업 브랜치 이름으로 Windows 예약어를 사용할 수 없습니다.";
+    if (/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(name)) return "워크트리 이름으로 Windows 예약어를 사용할 수 없습니다.";
     return "";
   }
 

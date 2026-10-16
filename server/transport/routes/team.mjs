@@ -7,6 +7,7 @@ export function teamRoutes(account, issues) {
     ["POST", "account/disconnect", ({ body }) => account.disconnect({ logout: body.logout === true })],
     ["GET", "issues/inbox", () => issues.inbox()],
     ["GET", "issues/context", (ctx) => issues.context(where(ctx), { remote: ctx.query.get("remote") ?? undefined })],
+    ["GET", "issues/members", (ctx) => issues.members(where(ctx), { remote: ctx.query.get("remote") ?? undefined })],
     ["GET", "issues/draft", ({ query }) => issues.draft(query.get("session"))],
     ["GET", "issues", (ctx) => issues.list(where(ctx), { box: ctx.query.get("box") ?? "inbox", state: ctx.query.get("state") ?? "open", remote: ctx.query.get("remote") ?? undefined })],
     ["POST", "issues", (ctx) => issues.create(where(ctx), ctx.body)],

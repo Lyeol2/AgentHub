@@ -272,8 +272,9 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     renderComposerAction("s", s);
     try {
       const attachments = await uploadAttachments(api, s.id, snapshot.items);
-      const result = await api("POST", "/api/sessions/" + s.id + "/messages", { prompt, attachments, mode: composerMode(s) });
+      const result = await api("POST", "/api/sessions/" + s.id + "/messages", { prompt: completion.expand(prompt), attachments, mode: composerMode(s) });
       imageComposers.s.commit(snapshot);
+      completion.sync();
       if (result.queued) refreshQueue(s.id);
     } catch (err) {
       alert(err.message);

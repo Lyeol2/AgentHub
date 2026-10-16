@@ -60,9 +60,9 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   }
 
   // ── 프로젝트 탭 ─────────────────────────────────────────────────
-  // 프로젝트 탭(세션 흐름 / 세션 목록 / 작업 / Git / 팀 작업). 마지막에 본 탭을 이 브라우저에 기억한다.
+  // 프로젝트 탭(세션 흐름 / 세션 목록 / 작업 / Git / 팀 작업 / 팀원). 마지막에 본 탭을 이 브라우저에 기억한다.
   const TAB_KEY = "agenthub-project-tab";
-  const PROJECT_TABS = ["flow", "sessions", "tasks", "git", "issues"];
+  const PROJECT_TABS = ["flow", "sessions", "tasks", "git", "issues", "members"];
   const projectTab = () => (PROJECT_TABS.includes(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "flow");
 
   function showProjectTab(tab) {
@@ -76,6 +76,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     if (tab === "git") loadGit();
     if (tab === "tasks") loadTasks?.(navigation.project);
     if (tab === "issues") loadIssues(navigation.project);
+    if (tab === "members") loadIssues(navigation.project, "members");
   }
 
   $("p-tabs").addEventListener("click", (e) => {
