@@ -80,6 +80,11 @@ export function createTaskAssistant({ api, getContext, getStatus, fillModels, on
       if (mine !== generation || !current(context)) return;
       if (!result.draft || typeof result.draft.title !== 'string' || typeof result.draft.content !== 'string') throw Error('초안을 읽지 못했습니다. 다시 요청하거나 직접 작성하세요.');
       const previousAgent = $('task-agent').value;
+      // 작업 폴더 이름을 정했으면 워크트리를 만들어 진행한다.
+      if (result.draft.worktreeName && $('task-workbranch-mode').value !== 'existing' && $('task-worktree')?.value === 'none') {
+        $('task-worktree').value = 'create';
+        onDraft({ agentChanged: false });
+      }
       for (const [key, id] of Object.entries(fields)) {
         const field = $(id);
         if (!field || (field.disabled && ['type', 'version', 'branchName', 'worktreeName'].includes(key))) continue;
