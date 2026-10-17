@@ -6,6 +6,7 @@ import { HttpError } from "./application/errors.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
 import { validateWorktreeName } from "./git.mjs";
 import { gitErrorDetails } from "./git-errors.mjs";
+import { removeWorktreeDir } from "./tasks.mjs";
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const COMMIT_INPUT = /^[0-9a-f]{7,64}$/i;
@@ -231,12 +232,19 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
       const name = await branch(actual.cwd);
       if ((body.deleteBranch === true || body.expectedBranch !== undefined) && body.expectedBranch !== name)
         throw error("삭제할 작업 폴더의 브랜치가 바뀌었습니다. 다시 확인하세요.", "stale-head");
-      if ((await git(actual.cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"])).length)
-        throw error("Git에서 무시하는 파일이 남아 있습니다. 필요한 파일을 다른 곳에 보존하고 정리한 뒤 폴더를 삭제하세요.", "git-ignored-files");
+      // node_modules·빌드 결과처럼 Git이 무시하는 파일은 사용자가 함께 지우기로 고른 경우에만 지운다.
+      if (body.removeIgnored !== true) {
+        const ignored = (await git(actual.cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"])).split("\0").filter(Boolean);
+        if (ignored.length) throw error(`Git에서 무시하는 파일이 남아 있습니다: ${ignored.slice(0, 5).join(", ")}${ignored.length > 5 ? ` 외 ${ignored.length - 5}개` : ""}. 필요한 파일을 보존한 뒤 "무시하는 파일도 함께 삭제"를 선택하세요.`, "git-ignored-files");
+      }
+      // 원본 폴더의 현재 브랜치뿐 아니라 다른 로컬·원격 브랜치에 들어 있어도 반영된 것으로 본다(develop에 병합, 원격에 게시 등).
       const originalHead = await head(actual.original);
-      if (!await ancestor(actual.cwd, tip, originalHead)) throw error("원본 브랜치에 병합되지 않은 커밋이 있어 작업 폴더를 삭제할 수 없습니다.", "git-unmerged");
+      const containing = (await git(actual.original, ["for-each-ref", "--contains", tip, "--format=%(refname)", "refs/heads", "refs/remotes"]))
+        .split(/\r?\n/).filter((ref) => ref && ref !== "refs/heads/" + name && !ref.endsWith("/HEAD"));
+      if (!containing.length && !await ancestor(actual.cwd, tip, originalHead)) throw error("다른 브랜치에 병합되지 않은 커밋이 있어 작업 폴더를 삭제할 수 없습니다.", "git-unmerged");
       if (body.deleteBranch === true && !name) throw error("삭제할 로컬 브랜치가 없습니다.", "git-branch");
-      await git(actual.original, ["worktree", "remove", "--", actual.cwd], { write: true, timeout: 60_000 });
+      const removed = await removeWorktreeDir(actual.original, actual.cwd);
+      if (!removed.removed) throw error(`작업 폴더를 모두 지우지 못했습니다. 그 폴더를 연 편집기·탐색기·터미널을 닫고 다시 시도하세요.${removed.error ? "\n" + removed.error.message : ""}`, "git-worktree-locked");
       let branchRemoved = false, warning;
       if (body.deleteBranch === true) {
         try {
@@ -589,5 +597,13 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
       return { ok: true, head: item.head, recoveryId: rescue.id, result: "복구 지점으로 돌아왔습니다." };
     });
   }
-  return { context: resolveGitContext, write, guard, list, create, remove, remotes, fetch: fetchRemote, push, pullState, pull, createBranch, preview, execute, recovery: recoveryList, restore };
+  // 폴더가 이미 사라진 워크트리 기록만 지운다. 남아 있는 폴더와 브랜치는 건드리지 않는다.
+  async function prune(ctx) {
+    return withGitRepoLock(ctx.common, async () => {
+      const missing = (await worktreeRecords(ctx.original)).filter(w => !fs.existsSync(w.cwd)).length;
+      await git(ctx.original, ["worktree", "prune"], { write: true });
+      return { ok: true, pruned: missing };
+    });
+  }
+  return { context: resolveGitContext, write, guard, list, create, remove, prune, remotes, fetch: fetchRemote, push, pullState, pull, createBranch, preview, execute, recovery: recoveryList, restore };
 }

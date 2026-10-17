@@ -21,6 +21,7 @@ export function gitRoutes(s) {
     ["POST", "git/branches", (ctx) => s.execute("createBranch", options(ctx, true))],
     ["POST", "git/worktrees", (ctx) => s.execute("createWorktree", options(ctx, true))],
     ["POST", "git/worktrees/remove", (ctx) => s.execute("removeWorktree", options(ctx, true))],
+    ["POST", "git/worktrees/prune", (ctx) => s.execute("pruneWorktrees", options(ctx, true))],
     ["GET", "git/pulls", (ctx) => s.execute("pulls", options(ctx))],
     ["GET", "git/pulls/:number", (ctx) => s.execute("pull", options(ctx))],
     ["POST", "git/pulls", (ctx) => s.execute("createPull", options(ctx, true))],

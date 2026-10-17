@@ -153,7 +153,12 @@
   $('task-settings-cancel').click(); await mode({ settingsReadFailure: false });
   $('tasks-new').click(); await until(() => $('new-task-dialog').open);
   $('task-create-manual').click();
-  check($('task-title').value === '' && $('task-type').value === 'hotfix' && $('task-worktree').value === 'none' && $('task-permission').value === 'read-only', 'new task remembers the previous task settings but not its title');
+  check($('task-title').value === '' && $('task-type').value === 'hotfix' && $('task-worktree').value === 'create' && $('task-permission').value === 'read-only', 'new task remembers the previous task settings but not its title, and always starts with a worktree');
+  check([...document.querySelectorAll('.task-folder')].some(line => line.querySelector('.task-folder-kind')?.textContent === '워크트리' && /fixture.agenthub[\/]task-/.test(line.querySelector('.task-folder-path')?.textContent || '')), 'task cards show the folder kind and full worktree path');
+  check(!$('task-worktree-row').closest('details') && /별도 폴더 .*.agenthub/.test($('task-worktree-hint').textContent), 'worktree choice is visible outside advanced settings with the folder it will use');
+  $('task-worktree').value = 'none'; $('task-worktree').dispatchEvent(new Event('change'));
+  check(/원본 폴더(.*)를 새 작업 브랜치로/.test($('task-worktree-hint').textContent), 'choosing the original folder explains that its branch will change');
+  $('task-worktree').value = 'create'; $('task-worktree').dispatchEvent(new Event('change'));
   $('task-type').value = 'feature'; $('task-worktree').value = 'create'; $('task-type').dispatchEvent(new Event('change'));
   $('task-title').value = '보존할 작업 제목';
   const readCount = (await settingsRequests('GET')).length;

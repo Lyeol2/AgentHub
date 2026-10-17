@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { listWorkbranches, resolveWorkbranch } from "./workbranches.mjs";
-import { taskGit, taskRepo, insideTaskPath } from "./tasks.mjs";
+import { taskGit, taskRepo, insideTaskPath, removeWorktreeDir } from "./tasks.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
 
 const OUTPUT_MAX = 200_000;
@@ -143,6 +143,9 @@ export async function runGitNode({ command, sessions = [], signal, isSessionBusy
     branch: command?.branch, ...(command?.gitAction === "merge" ? { targetBranch: command?.targetBranch } : {}), exitCode: 1 };
   let writeStarted = false;
   let repoCommonDir;
+  // 대상 브랜치가 어디에도 체크아웃되어 있지 않아 병합하려고 새로 만든 작업 폴더.
+  // 흐름의 다음 노드는 이 폴더에서 이어 실행할 수 있어 남기고, 작업 마무리처럼 요청한 경우에만 병합 뒤 지운다.
+  let temporaryTarget = null;
   const add = (text) => { result.output = (result.output + text).slice(-OUTPUT_MAX); onOutput(result.output); };
   const check = () => {
     if (signal?.aborted) throw Object.assign(failure("stopped", "작업을 중지했습니다."), { stopped: true });
@@ -214,6 +217,7 @@ export async function runGitNode({ command, sessions = [], signal, isSessionBusy
       assertSessionsIdle(command.targetBranch, target?.cwd);
       if (target?.cwd) await assertIdle(target.cwd);
       const resolved = await resolveWorkbranch(projectPath, command.targetBranch, { ...worktreeOptions, forTarget: true });
+      if (resolved.created && resolved.managed) temporaryTarget = resolved.dir;
       result.cwd = resolved.dir;
       await assertIdle(result.cwd);
       assertSessionsIdle(command.targetBranch, result.cwd);
@@ -276,6 +280,16 @@ export async function runGitNode({ command, sessions = [], signal, isSessionBusy
     if ((result.stopped || result.timedOut || error.outcomeUnknown) && writeStarted) result.recoveryRequired = true;
     add(error.message + "\n");
     if (result.recoveryRequired) add("자동으로 재시도하지 않습니다. Git 상태를 확인한 뒤 다시 실행하세요.\n");
+  }
+  // 복원이 필요한 상태면 확인할 수 있게 폴더를 남긴다. 그 밖에는 대상 브랜치를 계속 점유하지 않도록 지운다.
+  if (command?.removeTemporaryTarget && temporaryTarget && !result.recoveryRequired) {
+    try {
+      await withGitRepoLock(repoCommonDir, async () => {
+        const removed = await removeWorktreeDir(command.projectPath, temporaryTarget);
+        if (!removed.removed) throw removed.error ?? Error("폴더가 남았습니다.");
+      });
+      result.temporaryWorktreeRemoved = true;
+    } catch (error) { add(`병합에 쓴 임시 작업 폴더를 지우지 못했습니다: ${temporaryTarget}\n${error.message}\n`); }
   }
   result.durationMs = Date.now() - started;
   return result;

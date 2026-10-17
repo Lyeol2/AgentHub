@@ -81,6 +81,9 @@ export function createTasksController({
   const uncertainTasks = new Map();
   const uncertainCreates = new Set();
   const pendingTasks = new Set();
+  const REVIEW_CHECK_MS = 3 * 60_000;
+  const reviewChecks = new Map(); // 작업 ID → 마지막으로 PR 병합을 자동 확인한 시각
+  const mergedNotice = new Set(); // 자동 확인으로 병합을 알게 된 작업
   // 카드 단계 표시용 로컬 Git 상태. 작업 ID → GET /api/tasks/:id/status 결과
   const statuses = new Map();
   let statusGeneration = 0;
@@ -234,6 +237,25 @@ export function createTasksController({
   }
 
   // 오류 설명과 해결 방법, 펼쳐 볼 수 있는 git 원문을 함께 보여 준다.
+  // 이 작업이 어느 폴더에서 일하는지(워크트리인지 원본 폴더인지)와 폴더가 실제로 있는지 보여 준다.
+  function folderLine(task, status) {
+    const kind = task.inPlace ? '원본 폴더' : task.ownsWorktree === false ? '기존 작업 폴더' : '워크트리';
+    const cleaned = task.state === 'cleaned';
+    const where = task.inPlace ? task.projectPath : task.cwd;
+    const line = node('p', 'task-folder');
+    line.title = where || '';
+    line.append(node('span', 'task-folder-kind', kind), node('span', 'task-folder-path', where || '준비 중'));
+    const flag = cleaned
+      ? task.folderLeft ? '정리 후 폴더가 남음' : task.inPlace || task.ownsWorktree === false ? '' : '삭제됨'
+      : status?.folder === false ? '폴더 없음' : '';
+    if (flag) {
+      const badge = node('span', 'task-folder-flag', flag);
+      badge.dataset.warn = String(flag !== '삭제됨');
+      line.append(badge);
+    }
+    return line;
+  }
+
   function errorBlock(message, { reason, hint, raw } = {}) {
     const box = node('div', 'task-inline-error');
     box.setAttribute('role', 'alert');
@@ -291,9 +313,9 @@ export function createTasksController({
       const sessionId = (connected.find(session => session.id === ids.at(-1)) || connected[0])?.id || (!known ? ids.at(-1) : null);
       const status = statuses.get(task.id) || null;
       const sessionCount = known ? connected.length : status?.sessions ?? ids.length;
+      const running = known ? connected.filter(session => session.state === 'running').length : status?.running ?? 0;
       const pipeline = buildTaskPipeline({ ...task, gitflow: flow }, status, {
-        sessionId, sessions: sessionCount,
-        running: known ? connected.filter(session => session.state === 'running').length : status?.running ?? 0,
+        sessionId, sessions: sessionCount, running,
         uncertain: uncertainTasks.has(task.id), pending: pendingTasks.has(task.id),
       });
       const card = node('article', 'task-card');
@@ -316,6 +338,7 @@ export function createTasksController({
       const updated = relativeTime(task.updatedAt || task.createdAt);
       if (updated) meta.append(node('span', 'task-updated', updated));
       card.append(meta);
+      card.append(folderLine(task, status));
       if (task.issue) card.append(issueLine(task.issue));
       card.append(renderTaskPipeline(pipeline));
       if (task.state !== 'cleaned' && task.freshness?.state && !['current', 'up-to-date'].includes(task.freshness.state)) {
@@ -390,6 +413,9 @@ export function createTasksController({
           ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
           : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
       if (task.cleanupWarning) card.append(node('p', 'task-note', typeof task.cleanupWarning === 'string' ? task.cleanupWarning : task.cleanupWarning.message || '정리 결과를 확인해 주세요.'));
+      if (task.state === 'cleaned' && task.folderLeft) card.append(actionButton('남은 폴더 다시 지우기', 'cleanup', task, { primary: true }));
+      if (mergedNotice.has(task.id) && task.state === 'merged')
+        card.append(node('p', 'task-note', 'GitHub에서 PR 병합을 확인했습니다. 작업 폴더 정리를 눌러 마무리하세요.'));
       // 화면 오류는 문자열이거나 { message, reason, hint, raw }이다. 문자열이면 서버에 남은 같은 오류의 사유를 쓴다.
       const local = taskErrors.get(task.id);
       const localMessage = typeof local === 'string' ? local : local?.message;
@@ -397,6 +423,15 @@ export function createTasksController({
       const detail = local && typeof local === 'object' ? local : fromServer ? { reason: task.errorReason, hint: task.errorHint } : {};
       const error = localMessage || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
       if (error) card.append(errorBlock(error, detail));
+      // 시간 초과 등으로 병합·리베이스가 중간에 멈춰 작업이 막혔으면 되돌릴 수 있게 한다.
+      if (error && ['task-git-operation', 'task-recovery-required'].includes(detail.reason) && task.state !== 'cleaned')
+        card.append(actionButton('진행 중인 Git 작업 취소', 'abort', task, { disabled: running > 0, reason: running > 0 ? '세션이 작업 중입니다.' : '' }));
+      // 기준 반영 충돌은 작업 세션에 해결을 맡길 수 있다. 세션이 쉬고 있을 때만 보낸다.
+      if (error && detail.reason === 'task-conflict' && sessionId && ['working', 'review'].includes(task.state)) {
+        const ask = actionButton('세션에 충돌 해결 요청', 'resolve-conflict', task, { disabled: running > 0, reason: running > 0 ? '세션이 작업 중입니다.' : '' });
+        ask.dataset.sessionId = sessionId;
+        card.append(ask);
+      }
       list.append(card);
     }
     const restored = keep?.id && [...list.querySelectorAll('.task-card')].find(item => item.dataset.taskId === keep.id);
@@ -541,6 +576,25 @@ export function createTasksController({
     if (createDialog?.open) createDialog.close();
   }
 
+  // GitHub에서 직접 병합한 PR도 알아차리도록, 탭을 열거나 목록을 다시 읽을 때 검토 대기 작업의 PR 상태를 확인한다.
+  // 같은 작업은 몇 분에 한 번만 묻고, 실패해도 카드 오류로 남기지 않는다(최신 확인을 누르면 사유를 볼 수 있다).
+  async function checkReviewTasks(path, request) {
+    const due = tasks.filter(task => task.state === 'review' && !task.pendingAction && !pendingTasks.has(task.id)
+      && Date.now() - (reviewChecks.get(task.id) || 0) > REVIEW_CHECK_MS);
+    for (const task of due) reviewChecks.set(task.id, Date.now());
+    const results = await Promise.allSettled(due.map(task => api('POST', `/api/tasks/${encodeURIComponent(task.id)}/refresh`, {})));
+    if (request !== generation || !sameProject(path)) return;
+    let changed = false;
+    results.forEach(result => {
+      const next = result.status === 'fulfilled' ? result.value?.task : null;
+      if (!next) return;
+      if (next.state === 'merged') mergedNotice.add(next.id);
+      replaceTask(next);
+      changed = true;
+    });
+    if (changed) renderTasks();
+  }
+
   async function loadTasks(path = getProjectPath(), options = {}) {
     if (!path) { invalidateProject(); return; }
     const changed = path !== projectPath;
@@ -585,6 +639,7 @@ export function createTasksController({
         uncertainCreates.delete(path);
         showError('tasks-error', '작업 목록을 확인했습니다. 이미 생성된 작업이 없는지 확인한 뒤 새 작업을 만들어 주세요.');
       }
+      if (!options.manual && !options.localOnly) void checkReviewTasks(path, request);
     } else showError('tasks-error', requestError(taskResult.reason), taskResult.reason?.reason);
     if (contextResult?.status === 'fulfilled') {
       context = contextResult.value?.context || contextResult.value;
@@ -721,6 +776,16 @@ export function createTasksController({
     if ($('task-worktree-row')) $('task-worktree-row').hidden = existing;
     const inPlace = !existing && $('task-worktree')?.value === 'none';
     const type = $('task-type')?.value || 'feature';
+    // 어느 폴더에서 일하게 되는지 세부 설정을 펼치지 않아도 보이게 한다.
+    if ($('task-worktree-hint')) {
+      const project = getProjectPath() || '';
+      const folder = $('task-worktree-name')?.value.trim() || 'task-<작업ID>';
+      $('task-worktree-hint').textContent = existing
+        ? (selected?.cwd ? `선택한 브랜치의 작업 폴더에서 이어 작업합니다: ${selected.cwd}` : '선택한 브랜치의 작업 폴더를 새로 열어 작업합니다.')
+        : inPlace
+          ? `원본 폴더(${project})를 새 작업 브랜치로 바꿔 작업합니다. 이 폴더를 쓰는 다른 세션도 바뀐 브랜치를 보게 됩니다.`
+          : `별도 폴더 ${project ? project.replace(/[\\/]+$/, '') + '.agenthub' : '<프로젝트>.agenthub'}${project.includes('\\') ? '\\' : '/'}${folder}에서 작업합니다. 원본 폴더와 브랜치는 그대로입니다.`;
+    }
     // 새 브랜치일 때만 브랜치 이름을, 워크트리를 만들 때만 작업 폴더 이름을 정할 수 있다.
     if ($('task-branch-name-row')) $('task-branch-name-row').hidden = existing;
     if ($('task-branch-name')) $('task-branch-name').disabled = existing;
@@ -800,7 +865,8 @@ export function createTasksController({
   function applyCreatePrefs() {
     const prefs = loadCreatePrefs();
     fillAgentOptions();
-    selectIfPresent('task-worktree', prefs.worktree);
+    // 원본 폴더에서 작업하면 원본 폴더의 브랜치가 바뀌므로 지난번 선택을 기억하지 않고 매번 워크트리를 기본으로 둔다.
+    if ($('task-worktree')) $('task-worktree').value = 'create';
     if (prefs.type !== 'release') selectIfPresent('task-type', prefs.type);
     selectIfPresent('task-agent', prefs.agent);
     updateAgentControls();
@@ -939,6 +1005,7 @@ export function createTasksController({
   // 되돌리기 어려운 작업 동작 전에 바뀌는 것과 남는 것을 보여 주고 확인을 받는다.
   async function confirmTaskAction(action, task) {
     const develop = task.gitflow?.develop || DEFAULT_GITFLOW.develop, main = task.gitflow?.main || DEFAULT_GITFLOW.main;
+    if (action === 'cleanup' && task.state === 'cleaned') return true; // 정리 뒤 남은 폴더만 다시 지운다.
     if (action === 'cleanup') {
       const changes = [], keeps = ['작업·대화 기록', `원격 브랜치 ${task.remote || 'origin'}/${task.branch}`, task.pull?.number ? `PR #${task.pull.number}` : ''];
       if (task.inPlace) changes.push(`원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌립니다.`);
@@ -955,6 +1022,12 @@ export function createTasksController({
         completion.developHead && completion.developPublishState !== 'done' ? `${develop} → ${task.remote}/${develop} (${completion.developHead.slice(0, 7)})` : ''];
       return (await confirmAction({ title: '대상 브랜치 푸시', subject: task.title, changes, keeps: ['강제 푸시는 하지 않습니다. 원격이 앞서 있으면 거절됩니다.'], confirmLabel: '푸시' })).ok;
     }
+    if (action === 'abort') {
+      return (await confirmAction({ title: '진행 중인 Git 작업 취소', subject: task.title,
+        changes: [`작업 폴더에서 멈춘 병합·리베이스를 취소하고 시작 전 커밋으로 되돌립니다: ${task.cwd}`],
+        keeps: ['이미 만든 커밋과 브랜치', 'Git 잠금 파일(index.lock)은 지우지 않습니다.'],
+        warnings: ['병합 중에 직접 고친 내용은 사라집니다.'], confirmLabel: '취소하고 되돌리기', danger: true })).ok;
+    }
     if (action === 'develop') {
       const local = task.completion?.kind === 'local';
       return (await confirmAction({ title: `${develop}에 역반영`, subject: task.title,
@@ -965,9 +1038,25 @@ export function createTasksController({
     return true;
   }
 
+  // 기준 반영이 충돌로 취소됐을 때 작업 세션에 대상 브랜치를 병합하고 충돌을 해결하도록 요청한다.
+  async function askConflict(task, sessionId) {
+    if (!sessionId || pendingTasks.has(task.id)) return;
+    const local = taskErrors.get(task.id);
+    const files = (local && typeof local === 'object' ? local.conflicts : null) || [];
+    const prompt = [`작업 브랜치에 ${task.remote || 'origin'}/${task.targetBranch}의 최신 변경을 병합하다 충돌이 나서 AgentHub가 병합을 취소했습니다.`,
+      `git fetch 후 ${task.remote || 'origin'}/${task.targetBranch}를 이 브랜치에 병합하고, 충돌을 양쪽 의도를 살려 해결한 뒤 테스트하고 병합 커밋을 만들어 주세요.`,
+      files.length ? `충돌 파일: ${files.join(', ')}` : ''].filter(Boolean).join('\n');
+    if (!confirm(`작업 세션에 다음 요청을 보낼까요?\n\n${prompt}`)) return;
+    try {
+      await api('POST', `/api/sessions/${encodeURIComponent(sessionId)}/messages`, { prompt });
+      taskErrors.set(task.id, { message: '세션에 충돌 해결을 요청했습니다. 세션이 병합을 마치면 최신 상태 확인을 눌러 주세요.' });
+    } catch (error) { taskErrors.set(task.id, { message: requestError(error), reason: error.reason }); }
+    renderTasks();
+  }
+
   async function runTaskAction(action, task) {
     if (!task || pendingTasks.has(task.id)) return;
-    if (action !== 'refresh' && (uncertainTasks.has(task.id) || task.pendingAction)) return;
+    if (!['refresh', 'abort'].includes(action) && (uncertainTasks.has(task.id) || task.pendingAction)) return;
     const confirmed = await confirmTaskAction(action, task);
     if (!confirmed) return;
     if (!sameProject(projectPath) || pendingTasks.has(task.id)) return;
@@ -991,8 +1080,8 @@ export function createTasksController({
       if (sameProject(path, epoch)) void loadStatuses([id]);
     } catch (error) {
       if (error.outcomeUnknown && action !== 'refresh') uncertainTasks.set(id, action);
-      const label = action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : '최신 확인';
-      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw });
+      const label = action === 'abort' ? '진행 중인 Git 작업 취소' : action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : '최신 확인';
+      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, conflicts: error.conflicts });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();
@@ -1165,6 +1254,7 @@ export function createTasksController({
   });
   $('task-version')?.addEventListener('input', updateCreatePreview);
   $('task-worktree')?.addEventListener('change', updateCreatePreview);
+  $('task-worktree-name')?.addEventListener('input', updateCreatePreview);
   $('task-branch-name')?.addEventListener('input', updateCreatePreview);
   $('task-title')?.addEventListener('input', updateCreatePreview);
   $('task-agent')?.addEventListener('change', () => { if ($('task-model')) $('task-model').value = ''; updateAgentControls(); });
@@ -1199,13 +1289,16 @@ export function createTasksController({
     if (action === 'abandon') { void abandonTask(task); return; }
     if (action === 'link-issue') { openIssue(task); return; }
     if (action === 'unlink-issue') { void unlinkIssue(task); return; }
-    if (['refresh', 'sync', 'cleanup', 'push-target', 'develop'].includes(action)) void runTaskAction(action, task);
+    if (action === 'resolve-conflict') { void askConflict(task, button.dataset.sessionId); return; }
+    if (['refresh', 'sync', 'cleanup', 'push-target', 'develop', 'abort'].includes(action)) void runTaskAction(action, task);
   });
   $('tasks-filter')?.addEventListener('click', event => {
     const button = event.target.closest('[data-task-filter]');
     if (button) setFilter(button.dataset.taskFilter);
   });
   issueForm?.addEventListener('submit', submitIssue);
+  // 작업 탭을 열어 둔 동안에도 검토 대기 작업의 병합을 주기적으로 확인한다.
+  setInterval(() => { if (projectPath && !loading && isTasksVisible()) void checkReviewTasks(projectPath, generation); }, REVIEW_CHECK_MS);
   $('task-issue-mode')?.addEventListener('change', updateIssueForm);
   updateToolbar();
 
