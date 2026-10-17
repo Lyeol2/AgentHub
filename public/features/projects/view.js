@@ -111,7 +111,7 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
     el("td", { class: "title-cell", title: s.title }, s.title, s.kind === "orchestrator" ? el("span", { class: "pill orch" }, "지휘") : null, sessionLockButton(s, toggleSessionLock)),
     el("td", {}, sessionBadge(s), s.model ? el("span", { class: "muted" }, ` ${s.model}`) : null),
     el("td", { class: "role-cell", title: s.role ?? "" }, [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ") || "—"),
-    el("td", { class: "path", title: s.cwd }, s.worktree ? s.worktree.branch : "원본"),
+    el("td", { class: "path", title: s.cwd }, s.worktree ? s.worktree.branch : s.branch ? `원본 · ${s.branch}` : "원본"),
     el("td", {}, s.waiting ? el("span", { class: "pill q-pending" }, "답 대기") : pill(s.state)),
     el("td", { class: "num" }, timeAgo(s.updatedAt))));
     table("p-sessions", [["세션"], ["AI"], ["역할"], ["작업 폴더"], ["상태"], ["업데이트", "num"]], rows,

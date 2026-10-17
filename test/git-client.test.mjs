@@ -330,3 +330,29 @@ test("git client: branch creation validates names, refuses duplicates and can sw
   assert.equal(run(f.repo, "branch", "--show-current").trim(), "hotfix/old");
   assert.equal(f.head(), f.root);
 });
+
+test("git client: 무시하는 파일은 함께 지우기로 골라야 지우고, 다른 브랜치에 반영된 커밋은 막지 않으며, 사라진 폴더 기록을 prune한다", async () => {
+  const f = fixture();
+  f.add(".gitignore", "node_modules/\n");
+  const made = await f.client.create(await f.ctx(), { name: "ignored", branch: "feature/ignored" });
+  const cwd = made.worktree.cwd;
+  fs.writeFileSync(path.join(cwd, "feature.txt"), "feature\n");
+  run(cwd, "add", "."); run(cwd, "commit", "-qm", "feature");
+  const tip = run(cwd, "rev-parse", "HEAD").trim();
+  // 원본 폴더는 main에 있고 작업은 develop에만 병합됐다.
+  run(f.repo, "branch", "develop", tip);
+  fs.mkdirSync(path.join(cwd, "node_modules", "pkg"), { recursive: true });
+  fs.writeFileSync(path.join(cwd, "node_modules", "pkg", "index.js"), "x");
+  const ctx = await f.client.context(f.repo, cwd);
+  const body = { removeFolder: true, expectedHead: tip, expectedBranch: "feature/ignored" };
+  await assert.rejects(f.client.remove(ctx, body), e => e.reason === "git-ignored-files" && /node_modules/.test(e.message));
+  assert.ok(fs.existsSync(cwd));
+  const removed = await f.client.remove(ctx, { ...body, removeIgnored: true });
+  assert.equal(removed.worktreeRemoved, true); assert.equal(fs.existsSync(cwd), false);
+
+  const gone = (await f.client.create(await f.ctx(), { name: "gone", branch: "feature/gone" })).worktree.cwd;
+  fs.rmSync(gone, { recursive: true, force: true });
+  assert.ok((await f.client.list(await f.ctx())).worktrees.some(tree => tree.missing));
+  assert.equal((await f.client.prune(await f.ctx())).pruned, 1);
+  assert.ok(!(await f.client.list(await f.ctx())).worktrees.some(tree => tree.missing));
+});

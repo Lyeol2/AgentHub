@@ -62,7 +62,8 @@ export function buildTaskPipeline(task, status = null, ctx = {}) {
   const nodes = [
     { key: 'base', kind: 'ref', label: base, state: behind ? 'warn' : 'done', sub: behind ? '새 변경 있음' : '' },
     { key: 'branch', label: '브랜치 만들기', sub: task.branch || '준비 중', state: task.provisioning ? 'current' : 'done' },
-    { key: 'folder', label: '작업 폴더', sub: folderMissing ? '폴더 없음' : folderLabel(task), state: folderMissing ? 'warn' : 'done' },
+    // 브랜치만 만들고 폴더 준비가 끝나지 않았으면 폴더 단계는 아직 끝나지 않았다.
+    { key: 'folder', label: '작업 폴더', sub: folderMissing ? '폴더 없음' : task.provisioning ? '준비 중' : folderLabel(task), state: folderMissing ? 'warn' : task.provisioning ? 'todo' : 'done' },
     { key: 'work', label: '작업', sub: workSub, state: nodeState('work') },
     { key: 'commit', label: '커밋', sub: commitSub, state: nodeState('commit') },
     { key: 'pr', label: local ? '대상 반영' : 'Pull Request', sub: prSub, state: pullClosed(pull) && !finished ? 'warn' : nodeState('pr') },

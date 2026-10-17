@@ -56,7 +56,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     renderState();
 
     const meta = [
-      s.chat ? "도구 없이 대화만" : s.worktree ? `작업 폴더 ${s.cwd} (브랜치 ${s.worktree.branch})` : `원본 폴더 ${s.cwd}`,
+      s.chat ? "도구 없이 대화만" : s.worktree ? `작업 폴더 ${s.cwd} (브랜치 ${s.worktree.branch})` : `원본 폴더 ${s.cwd}${s.branch ? ` (브랜치 ${s.branch})` : ""}`,
       s.chat ? null : `권한 ${permissionLabel(s.permission)}`,
       `모델 ${s.model || "기본값"}`,
       `추론 ${s.effort || "기본값"}`,

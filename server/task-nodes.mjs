@@ -7,6 +7,8 @@ const TYPE_LABEL = { feature: "기능 개발", hotfix: "긴급 수정", release:
 const failure = (reason, message) => Object.assign(new Error(message), { reason });
 
 // flow.tasks: 이 실행에서 새 작업 노드가 만든 작업(노드 ID → 작업 ID). 반복 노드로 다시 불려도 작업을 새로 만들지 않는다.
+// 지난 실행에서 만든 작업이 아직 병합·정리 전이면 새로 실행해도 그 작업을 이어 쓴다. 실행마다 작업을 새로 만들면
+// 연결된 세션은 이미 앞 작업에 속해 옮겨 가지 못하고, 쓰지 않는 브랜치와 작업 폴더만 쌓인다.
 // flow.taskId: 이 실행에서 마지막으로 만든 작업. 앞 세션이 작업에 속하지 않을 때 작업 마무리가 쓴다.
 export async function runTaskNode({ command, tasks, origin = null, input = "", flow }) {
   if (!tasks) throw failure("task-unavailable", "작업 기능을 사용할 수 없습니다.");
@@ -26,7 +28,15 @@ export async function runTaskNode({ command, tasks, origin = null, input = "", f
       pull: pull ? { number: pull.number, url: pull.url, state: pull.state } : null, local };
   }
   flow.tasks ??= {};
-  let task = flow.tasks[command.id] ? tasks.get(flow.tasks[command.id]) : null;
+  const open = (id) => {
+    if (!id) return null;
+    try {
+      const found = tasks.get(id);
+      return !["merged", "cleaned"].includes(found.state) && String(found.projectPath).toLowerCase() === String(command.projectPath).toLowerCase() ? found : null;
+    } catch (error) { if (error.status === 404) return null; throw error; } // 그사이 지운 작업이면 새로 만든다.
+  };
+  const previous = command.lastRun?.taskResult?.action === "start" ? command.lastRun.taskResult.taskId : null;
+  let task = open(flow.tasks[command.id]) ?? open(previous);
   const reused = !!task;
   if (!task) {
     const title = renderTemplate(command.titleTemplate ?? "{{input}}", variables).split(/\r?\n/).map((line) => line.trim()).find(Boolean)?.slice(0, 160);

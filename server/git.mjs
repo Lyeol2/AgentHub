@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { withGitRepoLock } from "./git-lock.mjs";
+import { removeWorktreeDir } from "./tasks.mjs";
 
 export function git(cwd, args, { maxBuffer = 20 * 1024 * 1024 } = {}) {
   return new Promise((resolve, reject) => {
@@ -64,13 +65,10 @@ export async function removeWorktree(repo, dir) {
   if (!fs.existsSync(repo)) return;
   const common = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
   return withGitRepoLock(common, async () => {
-    // 폴더를 이미 직접 지웠으면 git에 남은 worktree 기록만 정리한다.
-    if (!fs.existsSync(dir)) {
-      await git(repo, ["worktree", "prune"]).catch(() => {});
-      return;
-    }
     // --force를 쓰지 않는다. 커밋하지 않은 변경이 있으면 실패하고 폴더를 남긴다.
-    await git(repo, ["worktree", "remove", dir]);
+    // 막 멈춘 세션이 파일을 잡고 있으면 잠시 기다리며 다시 시도하고, 이미 지운 폴더는 남은 기록만 정리한다.
+    const result = await removeWorktreeDir(repo, dir);
+    if (!result.removed) throw new Error(`작업 폴더 ${dir}를 모두 지우지 못했습니다. 그 폴더를 연 프로그램을 닫고 다시 시도하세요.${result.error ? `\n${result.error.message}` : ""}`);
   });
 }
 
