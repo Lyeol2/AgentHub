@@ -5,6 +5,7 @@ import path from "node:path";
 import { gitFixtures, run } from "../test-support/git-fixture.mjs";
 import { createGitClient, resolveGitContext } from "../server/git-client.mjs";
 import { createGitService } from "../server/application/git.mjs";
+import { gitOverview } from "../server/gitpanel.mjs";
 
 const repoFactory = gitFixtures(test, "agenthub-git-client-");
 let counter = 0;
@@ -224,4 +225,108 @@ test("git client: reset preserves ignored local files that would otherwise be ov
   assert.match(preview.blockedReason, /무시하는 파일/);
   await assert.rejects(f.client.execute(await f.ctx(), { previewId: preview.previewId }), e => e.reason === "git-blocked");
   assert.equal(fs.readFileSync(path.join(f.repo, "private.cache"), "utf8"), "private local data\n");
+});
+test("git client: worktree list resolves every folder with the original, dirty and reference state", async () => {
+  const f = fixture();
+  const clean = (await f.client.create(await f.ctx(), { name: "clean" })).worktree.cwd;
+  const edited = (await f.client.create(await f.ctx(), { name: "edited" })).worktree.cwd;
+  const used = (await f.client.create(await f.ctx(), { name: "used" })).worktree.cwd;
+  fs.writeFileSync(path.join(edited, "pending.txt"), "keep\n");
+  const client = createGitClient({ getSessions: () => [{ id: "s", cwd: used, state: "idle" }] });
+  const { worktrees, currentCwd } = await client.list(await client.context(f.repo, clean));
+  assert.equal(currentCwd, fs.realpathSync.native(clean));
+  const row = (cwd) => worktrees.find(item => item.cwd.toLowerCase() === path.resolve(cwd).toLowerCase());
+  assert.equal(worktrees.length, 4);
+  assert.deepEqual([row(f.repo).original, row(f.repo).dirty, row(f.repo).canRemove], [true, false, false]);
+  assert.deepEqual([row(clean).original, row(clean).dirty, row(clean).canRemove, row(clean).reason], [false, false, true, null]);
+  assert.deepEqual([row(edited).dirty, row(edited).canRemove], [true, false]);
+  assert.deepEqual([row(used).sessionIds, row(used).canRemove], [["s"], false]);
+  const plain = path.join(path.dirname(f.repo), "plain-" + counter); fs.mkdirSync(plain);
+  await assert.rejects(resolveGitContext(plain), e => e.reason === "not-git");
+});
+
+test("git overview: upstream ahead/behind and branch counts are reported together", async () => {
+  const f = fixture();
+  run(f.repo, "branch", "base");
+  f.add("local.txt", "local\n");
+  run(f.repo, "switch", "-q", "base");
+  f.add("upstream-1.txt", "1\n"); f.add("upstream-2.txt", "2\n");
+  run(f.repo, "switch", "-q", "main");
+  run(f.repo, "branch", "--set-upstream-to=base");
+  const overview = await gitOverview(f.repo);
+  assert.deepEqual([overview.branch, overview.upstream, overview.ahead, overview.behind], ["main", "base", 1, 2]);
+  assert.deepEqual(overview.branches.map(b => [b.name, b.current, b.ahead]), [["main", true, 0], ["base", false, 2]]);
+  run(f.repo, "branch", "--unset-upstream");
+  const plain = await gitOverview(f.repo);
+  assert.deepEqual([plain.upstream, plain.ahead, plain.behind], [null, null, null]);
+});
+
+function remoteFixture() {
+  const f = fixture();
+  const origin = f.repo + "-origin.git";
+  run(path.dirname(f.repo), "init", "-q", "--bare", origin);
+  run(f.repo, "remote", "add", "origin", origin);
+  run(f.repo, "push", "-q", "-u", "origin", "main");
+  const other = f.repo + "-other";
+  run(path.dirname(f.repo), "clone", "-q", "-b", "main", origin, other);
+  const push = (name, value) => {
+    fs.writeFileSync(path.join(other, name), value);
+    run(other, "add", "--", name); run(other, "commit", "-qm", name); run(other, "push", "-q", "origin", "main");
+    return run(other, "rev-parse", "HEAD").trim();
+  };
+  return { ...f, origin, other, push };
+}
+
+test("git client: pull fast-forwards, asks for a strategy when diverged and restores the folder on conflict", async () => {
+  const f = remoteFixture();
+  const remoteHead = f.push("remote.txt", "remote\n");
+  run(f.repo, "fetch", "-q", "origin");
+  let state = await f.client.pullState(await f.ctx());
+  assert.deepEqual([state.branch, state.upstream, state.ahead, state.behind], ["main", "origin/main", 0, 1]);
+  await f.client.pull(await f.ctx(), { expectedHead: state.head });
+  assert.equal(f.head(), remoteHead);
+
+  f.add("local.txt", "local\n");
+  f.push("remote-2.txt", "remote 2\n");
+  run(f.repo, "fetch", "-q", "origin");
+  await assert.rejects(f.client.pull(await f.ctx()), e => e.reason === "git-diverged" && /앞으로 감기/.test(e.message) && /Merge|Rebase/.test(e.hint));
+  const merged = await f.client.pull(await f.ctx(), { strategy: "merge" });
+  assert.equal(merged.strategy, "merge");
+  assert.ok(fs.existsSync(path.join(f.repo, "remote-2.txt")) && fs.existsSync(path.join(f.repo, "local.txt")));
+
+  f.add("same.txt", "local\n");
+  f.push("same.txt", "remote\n");
+  run(f.repo, "fetch", "-q", "origin");
+  const before = f.head();
+  await assert.rejects(f.client.pull(await f.ctx(), { strategy: "merge" }), e => e.reason === "git-conflict" && /충돌/.test(e.message) && !!e.hint);
+  assert.equal(f.head(), before);
+  assert.equal(f.status(), "");
+  await assert.rejects(f.client.pull(await f.ctx(), { strategy: "rebase" }), e => e.reason === "git-conflict");
+  assert.equal(f.head(), before);
+  assert.ok(!fs.existsSync(path.join(f.repo, ".git", "rebase-merge")));
+});
+
+test("git client: pull needs a tracking branch and a fixed starting commit", async () => {
+  const f = remoteFixture();
+  run(f.repo, "switch", "-q", "-c", "local-only");
+  await assert.rejects(f.client.pullState(await f.ctx()), e => e.reason === "git-no-upstream" && !!e.hint);
+  run(f.repo, "switch", "-q", "main");
+  await assert.rejects(f.client.pull(await f.ctx(), { expectedHead: f.root.replace(/./, (c) => c === "0" ? "1" : "0") }), e => e.reason === "stale-head");
+  await assert.rejects(f.client.pull(await f.ctx(), { strategy: "force" }), e => e.status === 400);
+});
+
+test("git client: branch creation validates names, refuses duplicates and can switch from a chosen start", async () => {
+  const f = fixture();
+  const second = f.add("second.txt", "second\n");
+  await assert.rejects(f.client.createBranch(await f.ctx(), { name: "bad name" }), e => e.status === 400 && e.reason === "git-branch");
+  await assert.rejects(f.client.createBranch(await f.ctx(), { name: "-x" }), e => e.status === 400);
+  const made = await f.client.createBranch(await f.ctx(), { name: "feature/new" });
+  assert.equal(made.checkedOut, false);
+  assert.equal(run(f.repo, "branch", "--show-current").trim(), "main");
+  assert.equal(run(f.repo, "rev-parse", "feature/new").trim(), second);
+  await assert.rejects(f.client.createBranch(await f.ctx(), { name: "feature/new" }), e => e.reason === "git-branch-exists");
+  const switched = await f.client.createBranch(await f.ctx(), { name: "hotfix/old", startPoint: f.root, checkout: true });
+  assert.equal(switched.checkedOut, true);
+  assert.equal(run(f.repo, "branch", "--show-current").trim(), "hotfix/old");
+  assert.equal(f.head(), f.root);
 });

@@ -26,7 +26,11 @@
   color: var(--muted, #9ca3af);
   font-size: 12px;
 }
-.tasks-context strong { color: var(--text, #e5e7eb); font-weight: 500; }
+.tasks-context strong { color: var(--text, #e5e7eb); font-weight: 600; font-family: var(--mono); margin-right: 8px; }
+.tasks-context-label { color: var(--faint, #5d6575); }
+.tasks-context { gap: 6px 8px; }
+.tasks-context-status { margin-left: 4px; }
+.tasks-context-detail { flex-basis: 100%; }
 .tasks-context[data-state="error"], .task-inline-error {
   color: var(--danger, #f87171);
 }
@@ -55,26 +59,64 @@
   gap: 12px;
 }
 .task-title { margin: 0; font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
+.task-number { margin-left: 8px; color: var(--faint, #5d6575); font-size: 12px; font-weight: 400; }
 .task-state {
   flex-shrink: 0;
-  padding: 3px 8px;
+  padding: 2px 9px;
+  border: 1px solid currentColor;
   border-radius: 20px;
-  background: var(--bg, #161b24);
   color: var(--muted, #9ca3af);
   font-size: 11px;
   white-space: nowrap;
 }
-.task-state[data-state="working"] { color: var(--accent, #8fa6ff); }
-.task-state[data-state="review"] { color: var(--warn); }
-.task-state[data-state="merged"] { color: var(--ok); }
+.task-state[data-state="working"] { color: var(--accent, #8fa6ff); background: var(--accent-soft); }
+.task-state[data-state="review"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
+.task-state[data-state="merged"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+/* GitFlow 단계 노선 */
+.task-pipeline-wrap { margin: 12px 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow-x: auto; }
+.task-pipeline { display: flex; align-items: center; margin: 0; padding: 0; list-style: none; min-width: max-content; }
+.task-pipe-step, .task-pipe-ref { display: flex; flex-direction: column; justify-content: center; gap: 2px; flex-shrink: 0; }
+.task-pipe-step { min-width: 96px; max-width: 180px; padding: 6px 10px; border: 1px solid var(--line-strong); border-radius: 6px; }
+.task-pipe-title { display: flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.task-pipe-sub { font-family: var(--mono); font-size: 10.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+.task-pipe-mark::before { content: "\25CB"; color: var(--faint); }
+.task-pipe-step[data-state="done"] { border-color: color-mix(in srgb, var(--ok) 55%, transparent); background: color-mix(in srgb, var(--ok) 8%, transparent); }
+.task-pipe-step[data-state="done"] .task-pipe-mark::before { content: "\2713"; color: var(--ok); }
+.task-pipe-step[data-state="current"] { border: 2px solid var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 18%, transparent); }
+.task-pipe-step[data-state="current"] .task-pipe-mark::before { content: "\25CF"; color: var(--accent); }
+.task-pipe-step[data-state="todo"] { border-style: dashed; color: var(--muted); opacity: .75; }
+.task-pipe-step[data-state="warn"] { border-color: var(--warn); }
+.task-pipe-step[data-state="warn"] .task-pipe-mark::before { content: "!"; color: var(--warn); font-weight: 700; }
+.task-pipe-ref { flex-direction: row; align-items: center; gap: 6px; padding: 5px 12px; border: 1px solid var(--line-strong); border-radius: 999px; font-family: var(--mono); font-size: 11.5px; }
+.task-pipe-ref .task-pipe-sub { font-size: 10px; }
+.task-pipe-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+.task-pipe-ref[data-state="done"] { border-color: var(--text); }
+.task-pipe-ref[data-state="done"] .task-pipe-dot { background: var(--text); }
+.task-pipe-ref[data-state="todo"] { border-style: dashed; color: var(--muted); }
+.task-pipe-ref[data-state="warn"] { border-color: var(--warn); color: var(--warn); }
+.task-pipe-ref[data-state="warn"] .task-pipe-dot { background: var(--warn); }
+.task-pipe-edge { position: relative; flex: 0 0 34px; height: 0; border-top: 1.5px solid var(--ok); margin: 0 2px; }
+.task-pipe-edge::after { content: ""; position: absolute; right: -1px; top: -4.5px; border: 4px solid transparent; border-left: 6px solid var(--ok); border-right: 0; }
+.task-pipe-edge[data-state="todo"] { border-top: 1.5px dashed var(--faint); }
+.task-pipe-edge[data-state="todo"]::after { border-left-color: var(--faint); }
+.task-pipe-edge-label { position: absolute; left: 50%; bottom: 3px; transform: translateX(-50%); font-size: 9.5px; color: var(--faint); white-space: nowrap; }
 .task-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 10px 0; font-size: 12px; color: var(--muted, #9ca3af); }
 .task-branch { overflow-wrap: anywhere; font-family: var(--mono); font-size: 11px; }
 .task-freshness { font-size: 12px; color: var(--muted, #9ca3af); }
 .task-freshness[data-state="current"] { color: var(--ok); }
 .task-freshness[data-state="needs-update"], .task-freshness[data-state="behind"], .task-freshness[data-state="stale"], .task-freshness[data-state="diverged"] { color: var(--warn); }
 .task-freshness[data-state="error"], .task-freshness[data-state="failed"] { color: var(--danger, #f87171); }
-.task-actions { margin-top: 14px; }
+.task-actions { margin-top: 4px; }
 .task-actions button, .task-actions a { font-size: 12px; }
+.task-link-button { display: inline-flex; align-items: center; padding: 4px 10px; border: 1px solid var(--line-strong); border-radius: 6px; color: var(--text); text-decoration: none; }
+.task-link-button:hover { background: var(--hover); }
+.task-more { position: relative; }
+.task-more > summary { list-style: none; cursor: pointer; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; color: var(--muted); font-size: 13px; line-height: 1.2; }
+.task-more > summary::-webkit-details-marker { display: none; }
+.task-more[open] > summary { color: var(--text); background: var(--hover); }
+.task-more-menu { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; display: grid; gap: 2px; min-width: 160px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel-2); box-shadow: 0 8px 24px var(--shadow); }
+.task-more-menu button { justify-content: flex-start; text-align: left; border-color: transparent; }
+.task-action-reason { margin: 8px 0 0; font-size: 12px; color: var(--warn); line-height: 1.6; }
 .task-pull-link { color: var(--accent, #8fa6ff); text-decoration: none; }
 .task-pull-link:hover { text-decoration: underline; }
 .task-issue { margin: 8px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
@@ -82,6 +124,11 @@
 .task-issue-error { color: var(--danger); }
 .task-issue > .task-login { margin-left: 8px; }
 .task-inline-error { margin: 10px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.task-inline-error p { margin: 0; }
+.task-error-hint { display: block; color: var(--text); opacity: .85; }
+.task-error-hint::before { content: "해결 방법: "; color: var(--muted); }
+.task-error-raw summary { cursor: pointer; color: var(--muted); }
+.task-error-raw pre { margin: 6px 0 0; padding: 8px; max-height: 160px; overflow: auto; background: var(--code-bg); color: var(--code-text); border-radius: 6px; font-size: 11px; white-space: pre-wrap; }
 .task-card > .task-login { margin-top: 8px; }
 .error > .task-login { margin-left: 8px; }
 .workbranch-status { overflow-wrap: anywhere; }
@@ -126,6 +173,15 @@
   .tasks-toolbar { align-items: flex-start; }
   .task-card { padding: 12px; }
   .task-card-header { flex-direction: column; gap: 8px; }
+  .task-pipeline-wrap { padding: 10px; }
+  .task-pipeline { flex-direction: column; align-items: stretch; min-width: 0; }
+  .task-pipe-step, .task-pipe-sub { max-width: none; }
+  .task-pipe-ref { align-self: flex-start; }
+  .task-pipe-edge { flex: 0 0 16px; height: 16px; width: 0; border-top: 0; border-left: 1.5px solid var(--ok); margin: 2px 0 2px 18px; }
+  .task-pipe-edge[data-state="todo"] { border-top: 0; border-left: 1.5px dashed var(--faint); }
+  .task-pipe-edge::after { display: none; }
+  .task-pipe-edge-label { left: 10px; bottom: auto; top: 1px; transform: none; }
+  .task-more-menu { left: auto; right: 0; }
   .task-dialog .task-form-grid { grid-template-columns: 1fr; gap: 0; }
   .task-dialog-actions > button { flex: 1 1 auto; }
 }

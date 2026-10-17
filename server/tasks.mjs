@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
-import { gitAuthFailure, githubCredentialArgs, runGitHubCommand } from "./github.mjs";
+import { githubCredentialArgs, runGitHubCommand } from "./github.mjs";
+import { gitErrorDetails } from "./git-errors.mjs";
 import { HttpError } from "./application/errors.mjs";
 import { normalizeGitflowSettings } from "./gitflow-settings.mjs";
 
@@ -22,19 +23,17 @@ export async function taskGit(cwd, args, { write = false, ...options } = {}) {
     return await runGitHubCommand("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-c", "core.longpaths=true", "-C", cwd, ...args],
       { cwd, timeout: write ? 60_000 : 20_000, ...options });
   } catch (error) {
-    const auth = !error.timedOut && gitAuthFailure(error.stderr || error.message);
-    if (auth) throw new HttpError(auth.status, auth.message, auth.reason);
+    const known = !error.timedOut && gitErrorDetails(clean(error.stderr || error.message));
+    if (known) throw new HttpError(known.status, known.message, known.reason, { hint: known.hint, raw: known.raw });
     throw new HttpError(error.timedOut ? 504 : 409, clean(error.message), error.timedOut ? "git-timeout" : "git-error",
       { outcomeUnknown: write && !!(error.timedOut || error.overflow) });
   }
 }
 
-export async function taskRepo(dir) {
+// 두 값을 git 한 번으로 받는다. 출력 줄 순서는 인자 순서와 같다.
+export async function taskRepo(dir, git = taskGit) {
   try {
-    const [top, common] = await Promise.all([
-      taskGit(dir, ["rev-parse", "--show-toplevel"]),
-      taskGit(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-    ]);
+    const [top, common] = (await git(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"])).split(/\r?\n/);
     return { top: top.trim(), common: common.trim() };
   } catch { throw new HttpError(400, "작업은 커밋이 있는 Git 저장소에서 만들 수 있습니다.", "not-git"); }
 }

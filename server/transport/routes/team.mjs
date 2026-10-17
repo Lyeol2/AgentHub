@@ -13,6 +13,7 @@ export function teamRoutes(account, issues) {
     ["POST", "issues", (ctx) => issues.create(where(ctx), ctx.body)],
     ["GET", "issues/:number", (ctx) => issues.detail(where(ctx), ctx.params.number, { remote: ctx.query.get("remote") ?? undefined })],
     ["POST", "issues/:number/comments", (ctx) => issues.comment(where(ctx), ctx.params.number, ctx.body)],
+    ["POST", "issues/:number/claim", (ctx) => issues.claim(where(ctx), ctx.params.number, ctx.body)],
     ["POST", "issues/:number/return", (ctx) => issues.giveBack(where(ctx), ctx.params.number, ctx.body)],
     ["POST", "issues/:number/close", (ctx) => issues.close(where(ctx), ctx.params.number, ctx.body)],
     ["POST", "issues/:number/reopen", (ctx) => issues.reopen(where(ctx), ctx.params.number, ctx.body)],

@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { HttpError } from "./application/errors.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
 import { validateWorktreeName } from "./git.mjs";
+import { gitErrorDetails } from "./git-errors.mjs";
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const COMMIT_INPUT = /^[0-9a-f]{7,64}$/i;
@@ -34,6 +35,10 @@ export function clientGit(cwd, args, { write = false, timeout = 30_000 } = {}) {
         if (!failure) return resolve(stdout);
         const unknown = !!(failure.killed || failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
         const message = String(stderr || failure.message).replace(/(https?:\/\/)[^/\s@]+@/g, "$1[credentials]@").trim().slice(0, 2000);
+        // 병합·리베이스의 CONFLICT 줄은 stdout으로 나오므로 함께 본다.
+        const output = String(stdout || "").replace(/(https?:\/\/)[^/\s@]+@/g, "$1[credentials]@").trim().slice(0, 2000);
+        const known = !unknown && gitErrorDetails([message, output].filter(Boolean).join("\n"));
+        if (known) return reject(error(known.message, known.reason, known.status, { hint: known.hint, raw: known.raw, exitCode: failure.code }));
         reject(error(message, unknown ? "git-outcome-unknown" : "git-error", unknown ? 504 : 409,
           { outcomeUnknown: write && unknown, exitCode: failure.code }));
       });
@@ -60,26 +65,28 @@ async function worktreeRecords(repo) {
   return records;
 }
 
-export async function resolveGitContext(projectPath, selectedCwd) {
+// cache는 한 요청 안에서 같은 폴더의 조회 결과를 나눠 쓸 때만 넘긴다(작업 폴더 목록처럼 여러 번 확인하는 경우).
+export async function resolveGitContext(projectPath, selectedCwd, cache = new Map()) {
   if (typeof projectPath !== "string" || !projectPath || (selectedCwd !== undefined && (typeof selectedCwd !== "string" || !selectedCwd)))
     throw error("프로젝트와 작업 폴더를 선택하세요.", "git-context", 400);
   let project, cwd;
   try { project = canonical(projectPath); cwd = canonical(selectedCwd ?? projectPath); }
   catch { throw error("프로젝트 또는 작업 폴더가 없습니다.", "git-context", 400); }
-  const info = async (directory) => {
+  const once = (name, load) => {
+    if (!cache.has(name)) cache.set(name, load());
+    return cache.get(name);
+  };
+  // 세 값을 git 한 번으로 받는다. 출력 줄 순서는 인자 순서와 같다.
+  const info = (directory) => once("info:" + key(directory), async () => {
     try {
-      const [top, common, gitDir] = await Promise.all([
-        git(directory, ["rev-parse", "--show-toplevel"]),
-        git(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-        git(directory, ["rev-parse", "--absolute-git-dir"]),
-      ]);
+      const [top, common, gitDir] = (await git(directory, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--absolute-git-dir"])).split(/\r?\n/);
       return { top: canonical(top.trim()), common: canonical(common.trim()), gitDir: canonical(gitDir.trim()) };
     } catch { throw error("Git 작업 폴더를 확인할 수 없습니다.", "not-git", 400); }
-  };
+  });
   const [repository, selected] = await Promise.all([info(project), info(cwd)]);
   if (!sameGitPath(repository.common, selected.common) || !sameGitPath(selected.top, cwd))
     throw error("이 저장소에 등록된 작업 폴더 루트만 선택할 수 있습니다.", "git-context", 400);
-  const records = await worktreeRecords(repository.top);
+  const records = await once("records:" + key(repository.top), () => worktreeRecords(repository.top));
   const entry = records.find(item => sameGitPath(item.cwd, cwd));
   if (!entry || entry.bare || entry.prunable) throw error("등록된 Git 작업 폴더가 아닙니다.", "git-context", 400);
   return { project, repo: repository.top, cwd, common: repository.common, gitDir: selected.gitDir, entry,
@@ -169,12 +176,13 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
     });
   }
   async function list(ctx) {
+    const cache = new Map();
     const rows = await Promise.all(ctx.records.map(async record => {
       const original = sameGitPath(record.cwd, ctx.original), missing = !fs.existsSync(record.cwd);
       const value = { ...record, original, missing, dirty: null, sessionIds: [], taskIds: [], canRemove: false };
       if (!missing && !record.bare) {
         try {
-          const target = await resolveGitContext(ctx.project, record.cwd);
+          const target = await resolveGitContext(ctx.project, record.cwd, cache);
           value.dirty = await dirty(target.cwd);
           const refs = references(target);
           value.sessionIds = refs.sessions.map(s => s.id); value.taskIds = refs.tasks.map(t => t.id);
@@ -315,6 +323,64 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
       return { ok: true, result: result.trim() || "브랜치를 게시했습니다.", warning, head: state.head };
     });
   }
+  // Pull 미리보기. 추적 중인 원격 브랜치와 마지막으로 받은 기록 기준의 앞섬·뒤처짐을 돌려준다.
+  async function pullState(ctx) {
+    const name = await branch(ctx.cwd);
+    if (!name) throw error("브랜치가 아닌 커밋을 보고 있어 받을 수 없습니다. 브랜치로 전환하세요.", "git-detached");
+    const upstream = (await git(ctx.cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"]).catch(() => "")).trim();
+    if (!upstream) throw error("이 브랜치가 따라갈 원격 브랜치가 정해지지 않았습니다.", "git-no-upstream", 409, { hint: "먼저 Push로 원격에 브랜치를 게시하면서 추적을 설정하세요." });
+    const remote = (await git(ctx.cwd, ["config", "--get", "branch." + name + ".remote"]).catch(() => "")).trim();
+    const merge = (await git(ctx.cwd, ["config", "--get", "branch." + name + ".merge"]).catch(() => "")).trim();
+    if (!remote || remote === "." || !merge.startsWith("refs/heads/")) throw error("로컬 브랜치를 추적하는 브랜치는 Pull을 지원하지 않습니다.", "git-no-upstream");
+    const tip = await head(ctx.cwd);
+    const upstreamHead = (await git(ctx.cwd, ["rev-parse", "--verify", upstream]).catch(() => "")).trim() || null;
+    let ahead = null, behind = null;
+    if (upstreamHead) [ahead, behind] = (await git(ctx.cwd, ["rev-list", "--left-right", "--count", tip + "..." + upstreamHead])).trim().split(/\s+/).map(Number);
+    return { branch: name, remote, remoteBranch: merge.slice("refs/heads/".length), upstream, head: tip, upstreamHead, ahead, behind, dirty: await dirty(ctx.cwd) };
+  }
+  // 원격 변경을 받는다. 기본은 앞으로 감기만 하고, 갈라졌으면 사용자가 고른 병합·리베이스로 합친다.
+  // 충돌하면 진행 중인 병합·리베이스를 취소해 실행 전 상태로 돌려놓는다.
+  async function pull(ctx, body = {}) {
+    const strategy = body.strategy ?? "ff-only";
+    if (!["ff-only", "merge", "rebase"].includes(strategy)) throw error("받기 방식을 선택하세요.", "git-pull", 400);
+    return write(ctx, "pull", async actual => {
+      const state = await pullState(actual);
+      if (body.expectedHead && body.expectedHead !== state.head) throw error("현재 커밋이 바뀌었습니다. 다시 확인하세요.", "stale-head");
+      const mode = strategy === "ff-only" ? ["--ff-only"] : strategy === "merge" ? ["--no-rebase", "--no-edit"] : ["--rebase"];
+      try {
+        const result = await git(actual.cwd, ["-c", "core.editor=true", "pull", "--no-recurse-submodules", ...mode, "--", state.remote, state.remoteBranch], { write: true, timeout: 120_000 });
+        return { ok: true, result: result.trim() || "원격 변경을 받았습니다.", head: await head(actual.cwd), strategy };
+      } catch (failure) {
+        if (failure.outcomeUnknown) throw failure;
+        let restored = true, aborted = false;
+        for (const [marker, args] of [["MERGE_HEAD", ["merge", "--abort"]], ["rebase-merge", ["rebase", "--abort"]], ["rebase-apply", ["rebase", "--abort"]]]) {
+          if (!fs.existsSync(path.join(actual.gitDir, marker))) continue;
+          aborted = true;
+          try { await git(actual.cwd, args, { write: true }); } catch { restored = false; }
+        }
+        if (!restored) throw error("받는 중 충돌이 나서 취소하려 했지만 작업 폴더를 원래대로 돌리지 못했습니다. 진행 중인 병합·리베이스를 확인하세요.", "git-recovery-required", 409, { raw: failure.raw || failure.message });
+        if (aborted || failure.reason === "git-conflict") throw error("받은 변경과 같은 부분이 바뀌어 충돌이 났습니다. 받기를 취소하고 실행 전 상태로 되돌렸습니다.", "git-conflict", 409, { hint: "충돌할 파일을 먼저 커밋하거나 세션에 충돌 해결을 요청한 뒤 다시 받으세요.", raw: failure.raw });
+        throw failure;
+      }
+    });
+  }
+  // 새 로컬 브랜치를 만든다. checkout이면 만든 뒤 그 브랜치로 전환한다.
+  async function createBranch(ctx, body = {}) {
+    const name = typeof body.name === "string" ? body.name.trim() : "";
+    if (!name || name.length > 200 || name.startsWith("-")) throw error("새 브랜치 이름을 입력하세요.", "git-branch", 400);
+    try {
+      if ((await git(ctx.cwd, ["check-ref-format", "--branch", name])).trim() !== name) throw Error("shorthand");
+    } catch { throw error("브랜치 이름이 올바르지 않습니다: " + name, "git-branch", 400, { hint: "공백, ~ ^ : ? * [ \\ 와 .. 은 쓸 수 없습니다." }); }
+    const checkout = body.checkout === true;
+    return write(ctx, checkout ? "checkout" : "branch", async actual => {
+      if (await git(actual.cwd, ["rev-parse", "--verify", "--quiet", "refs/heads/" + name]).then(() => true, () => false))
+        throw error("같은 이름의 브랜치가 이미 있습니다: " + name, "git-branch-exists");
+      const start = body.startPoint ? (await git(actual.cwd, ["rev-parse", "--verify", "--end-of-options", String(body.startPoint) + "^{commit}"]).catch(() => { throw error("시작할 커밋이나 브랜치를 찾지 못했습니다.", "git-branch", 400); })).trim() : await head(actual.cwd);
+      if (checkout) await git(actual.cwd, ["switch", "--no-guess", "--no-track", "-c", name, start], { write: true });
+      else await git(actual.cwd, ["branch", "--no-track", "--", name, start], { write: true });
+      return { ok: true, branch: name, head: start, checkedOut: checkout, result: (checkout ? "새 브랜치로 전환했습니다: " : "새 브랜치를 만들었습니다: ") + name };
+    });
+  }
   async function publishedReason(ctx, affected) {
     if (!affected.length) return null;
     const tips = new Set((await git(ctx.cwd, ["for-each-ref", "--format=%(objectname)", "refs/remotes/"])).trim().split(/\r?\n/).filter(Boolean));
@@ -449,7 +515,7 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
       await operationIdle(ctx);
       if (await head(ctx.cwd) !== item.head || await dirty(ctx.cwd)) throw error("실행 전 상태와 다릅니다.");
     } catch { throw error("자동 복원을 확인하지 못했습니다. 추가 작업을 멈추고 복구 지점을 확인하세요.", "git-recovery-required", 409, { recoveryId: item.id }); }
-    throw error("작업을 취소하고 실행 전 상태로 복원했습니다.\n" + failure.message, "git-conflict", 409, { recoveryId: item.id });
+    throw error("작업을 취소하고 실행 전 상태로 복원했습니다.\n" + failure.message, "git-conflict", 409, { recoveryId: item.id, hint: failure.hint, raw: failure.raw });
   }
   async function execute(ctx, body) {
     const stored = previews.get(body.previewId);
@@ -523,5 +589,5 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
       return { ok: true, head: item.head, recoveryId: rescue.id, result: "복구 지점으로 돌아왔습니다." };
     });
   }
-  return { context: resolveGitContext, write, guard, list, create, remove, remotes, fetch: fetchRemote, push, preview, execute, recovery: recoveryList, restore };
+  return { context: resolveGitContext, write, guard, list, create, remove, remotes, fetch: fetchRemote, push, pullState, pull, createBranch, preview, execute, recovery: recoveryList, restore };
 }

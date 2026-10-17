@@ -23,7 +23,7 @@ import { CodexMcpProbe } from "./codex-mcp-probe.mjs";
 import { createTaskAssistantService } from "./application/task-assistant.mjs";
 import { HttpError } from "./application/errors.mjs";
 import { locateCli } from "./cli.mjs";
-import { discoverProjects } from "./discover.mjs";
+import { discoverProjects, useDiscoverCache, flushDiscoverCache } from "./discover.mjs";
 import { createLimitsService } from "./limits.mjs";
 import { createSessionService } from "./application/sessions.mjs";
 import { createProjectService } from "./application/projects.mjs";
@@ -46,6 +46,7 @@ import { createEventStream } from "./transport/sse.mjs";
 export function createHub(options = {}) {
   const dataDir = path.resolve(options.dataDir ?? DATA_DIR);
   const config = options.config == null ? loadConfig(dataDir) : structuredClone(options.config);
+  useDiscoverCache(path.join(dataDir, "discover-cache.json"));
   config.cli ??= { claude: "", codex: "" };
   config.cliAutoUpdate ??= true;
   config.projects ??= [];
@@ -158,7 +159,7 @@ export function createHub(options = {}) {
     groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, graphTabs, notify }),
     commands: createCommandService({ commands, chain, links, store, projects, cliPaths, graphTabs, nodeGroups: () => nodeGroupService, ask, notify }),
     skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
-    git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks }),
+    git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks, config }),
     system: createSystemService({
       config, setup, cliPaths, limits, saveConfig: persistConfig, version,
       getUpdater: () => updater,
@@ -298,6 +299,7 @@ export function createHub(options = {}) {
     chain.dispose?.();
     mailbox.dispose?.();
     store.flushAll();
+    flushDiscoverCache();
     // A listen() call may still be binding its socket. Let it settle before
     // closing, so a late listening callback cannot resurrect a stopped hub.
     const started = starting ?? Promise.resolve();

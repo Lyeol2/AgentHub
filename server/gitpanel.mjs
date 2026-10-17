@@ -101,18 +101,20 @@ async function count(dir, range) {
 
 // sessions: 이 프로젝트의 AgentHub 세션(작업 폴더를 분리한 세션의 브랜치를 세션과 잇는다)
 export async function gitOverview(repo, sessions = []) {
-  const [branchOut, files, logOut, refsOut, graphOut] = await Promise.all([
+  // 서로 기다릴 필요가 없는 조회는 함께 실행한다. git 프로세스 하나가 수십 ms라 차례로 부르면 화면이 늦게 뜬다.
+  const [branchOut, files, logOut, refsOut, graphOut, elsewhere, upstreamOut] = await Promise.all([
     git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "HEAD"),
     status(repo),
     git(repo, ["log", `-n${COMMITS_MAX}`, "--date=iso-strict", `--pretty=format:%H${SEP}%h${SEP}%an${SEP}%ad${SEP}%D${SEP}%s${END}`]).catch(() => ""),
     git(repo, ["for-each-ref", "refs/heads", `--format=%(refname:short)${SEP}%(objectname)${SEP}%(committerdate:iso-strict)${SEP}%(subject)`]).catch(() => ""),
     git(repo, ["log", "--branches", "HEAD", "--topo-order", `-n${GRAPH_COMMITS_MAX + 1}`, "--date=iso-strict", `--pretty=format:%H${SEP}%h${SEP}%P${SEP}%an${SEP}%ad${SEP}%s${END}`]).catch(() => ""),
+    otherWorktreeBranches(repo).catch(() => new Map()),
+    git(repo, ["rev-parse", "--abbrev-ref", "@{upstream}"]).catch(() => ""),
   ]);
-  const elsewhere = await otherWorktreeBranches(repo).catch(() => new Map());
   const branch = branchOut.trim();
-  const upstream = (await git(repo, ["rev-parse", "--abbrev-ref", "@{upstream}"]).catch(() => "")).trim() || null;
-  const ahead = upstream ? await count(repo, `${upstream}..HEAD`) : null;
-  const behind = upstream ? await count(repo, `HEAD..${upstream}`) : null;
+  const upstream = upstreamOut.trim() || null;
+  // 앞섬·뒤처짐 수는 아래 브랜치별 수와 함께 센다.
+  const tracking = upstream ? Promise.all([count(repo, `${upstream}..HEAD`), count(repo, `HEAD..${upstream}`)]) : [null, null];
 
   const bySession = new Map(sessions.filter((s) => s.worktree).map((s) => [s.worktree.branch, s]));
   const refs = refsOut.trim().split(/\r?\n/).filter(Boolean).map((line) => {
@@ -128,15 +130,17 @@ export async function gitOverview(repo, sessions = []) {
   const branches = await Promise.all(refs.slice(0, 80).map(async ({ name, tip, date, subject }) => {
     const session = bySession.get(name);
     const current = name === branch;
-    const item = { name, tip, date, subject, current, ahead: current ? 0 : await count(repo, `HEAD..${name}`), checkedOutAt: elsewhere.get(name) ?? null };
-    if (session) {
-      // 세션은 보통 커밋하지 않고 작업 폴더에 변경을 남기므로 그 수도 센다.
-      const dir = session.worktree.dir;
-      const dirty = fs.existsSync(dir) ? (await status(dir).catch(() => [])).length : null;
-      Object.assign(item, { sessionId: session.id, sessionTitle: session.title, sessionState: session.state, worktree: dir, dirty });
-    }
+    // 세션은 보통 커밋하지 않고 작업 폴더에 변경을 남기므로 그 수도 센다.
+    const dir = session?.worktree.dir;
+    const [ahead, dirty] = await Promise.all([
+      current ? 0 : count(repo, `HEAD..${name}`),
+      session && fs.existsSync(dir) ? status(dir).then((files) => files.length, () => 0) : null,
+    ]);
+    const item = { name, tip, date, subject, current, ahead, checkedOutAt: elsewhere.get(name) ?? null };
+    if (session) Object.assign(item, { sessionId: session.id, sessionTitle: session.title, sessionState: session.state, worktree: dir, dirty });
     return item;
   }));
+  const [ahead, behind] = await tracking;
   // 세션 브랜치를 먼저, 그다음 최근에 바뀐 순서
   branches.sort((a, b) => (b.current - a.current) || (!!b.sessionId - !!a.sessionId) || String(b.date).localeCompare(String(a.date)));
 
@@ -230,10 +234,11 @@ async function checkBranch(repo, branch) {
 
 // 이 폴더가 아닌 다른 작업 폴더(worktree)에서 체크아웃한 브랜치 → 그 폴더. git은 같은 브랜치를 두 곳에서 체크아웃하지 못한다.
 async function otherWorktreeBranches(repo) {
-  const here = fs.realpathSync((await git(repo, ["rev-parse", "--show-toplevel"])).trim());
+  const [top, list] = await Promise.all([git(repo, ["rev-parse", "--show-toplevel"]), git(repo, ["worktree", "list", "--porcelain"])]);
+  const here = fs.realpathSync(top.trim());
   const same = (a, b) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
   const used = new Map();
-  for (const block of (await git(repo, ["worktree", "list", "--porcelain"])).split(/\r?\n\r?\n/)) {
+  for (const block of list.split(/\r?\n\r?\n/)) {
     const dir = block.match(/^worktree (.+)$/m)?.[1];
     const branch = block.match(/^branch refs\/heads\/(.+)$/m)?.[1];
     if (!dir || !branch) continue;

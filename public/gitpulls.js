@@ -1,3 +1,4 @@
+import { confirmAction } from "./shared/confirm-dialog.js";
 // GitHub PR 화면. 원격 변경은 사용자가 누른 작업만 보내고, 조회 응답은 프로젝트/요청 순서를 확인한다.
 export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, isProjectCurrent, pullIssues = () => [] }) {
   const $ = (id) => document.getElementById(id);
@@ -77,11 +78,14 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     $("pr-remote").value = c.remote;
     $("pr-remote").hidden = c.remotes.length < 2;
     const previous = $("pr-base").value;
-    $("pr-base").replaceChildren(...c.baseBranches.map((branch) => node("option", { value: branch }, branch)));
-    $("pr-base").value = c.baseBranches.includes(previous) ? previous : c.defaultBranch;
+    // GitFlow 브랜치는 정해진 대상 브랜치만 고를 수 있다.
+    const bases = c.allowedBases ?? c.baseBranches;
+    $("pr-base").replaceChildren(...bases.map((branch) => node("option", { value: branch }, branch)));
+    $("pr-base").value = bases.includes(previous) ? previous : c.suggestedBase ?? c.defaultBranch;
     $("pr-head").value = c.branch ?? "";
     $("pr-push").hidden = !c.needsPush;
-    $("pr-publish-note").textContent = c.createReason || (c.dirtyCount ? "커밋된 내용으로 PR을 만듭니다. 작업 폴더의 변경 " + c.dirtyCount + "개는 포함되지 않습니다." : "현재 브랜치의 원격 커밋으로 PR을 만듭니다.");
+    $("pr-publish-note").textContent = c.createReason || [c.allowedBases ? c.baseReason : "",
+      c.dirtyCount ? "커밋된 내용으로 PR을 만듭니다. 작업 폴더의 변경 " + c.dirtyCount + "개는 포함되지 않습니다." : "현재 브랜치의 원격 커밋으로 PR을 만듭니다."].filter(Boolean).join(" ");
   }
 
   function listView(s) {
@@ -159,8 +163,13 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
       const rulesBlocked = !["CLEAN", "HAS_HOOKS"].includes(p.mergeStateStatus) || !!p.checksError || ["REVIEW_REQUIRED", "CHANGES_REQUESTED"].includes(p.reviewDecision);
       const blocked = p.isDraft || p.mergeable !== true || rulesBlocked || !s.context.mergeMethods.length;
       const merge = node("button", { type: "button", class: "primary sm", "data-pr-mutation": "merge", "data-blocked": String(blocked), title: p.isDraft ? "초안은 GitHub에서 준비 완료로 바꾼 뒤 병합할 수 있습니다." : rulesBlocked ? "대상 브랜치의 병합 조건을 확인한 뒤 새로고침해 주세요." : p.mergeable === false ? "충돌을 해결한 뒤 병합할 수 있습니다." : p.mergeable === null ? "병합 가능 여부를 계산 중입니다. 새로고침해 주세요." : "", onclick: () => {
-        if (s.busy || !confirm(s.context.repo + " #" + p.number + "\n" + p.headRefName + " → " + p.baseRefName + "\n" + method.value + " 방식으로 병합할까요?")) return;
-        mutate("merge", "/api/git/pulls/" + p.number + "/merge", { method: method.value, sha: p.headRefOid });
+        if (s.busy) return;
+        // 대상 브랜치를 바꾸는 동작이라 무엇이 합쳐지는지 요약해 확인한다.
+        void confirmAction({ title: "PR 병합", subject: s.context.repo + " #" + p.number + " · " + p.title,
+          changes: [p.headRefName + " → " + p.baseRefName, "파일 " + (p.changedFiles ?? p.files?.length ?? 0) + "개 (+" + (p.additions ?? 0) + " −" + (p.deletions ?? 0) + ")", "병합 방식: " + (method.selectedOptions[0]?.textContent || method.value)],
+          keeps: ["원격 브랜치 " + p.headRefName + "는 지우지 않습니다."], confirmLabel: "병합" }).then((answer) => {
+          if (answer.ok && !s.busy) mutate("merge", "/api/git/pulls/" + p.number + "/merge", { method: method.value, sha: p.headRefOid });
+        });
       } }, "병합");
       const close = node("button", { type: "button", class: "ghost sm", "data-pr-mutation": "close", onclick: () => {
         if (s.busy || !confirm(s.context.repo + " #" + p.number + " PR을 닫을까요?")) return;

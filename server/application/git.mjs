@@ -1,9 +1,11 @@
 import { gitOverview, fileDiff, showCommit, branchDiff, stage, unstage, commit, checkout } from "../gitpanel.mjs";
 import { githubPulls, GitHubError } from "../github.mjs";
 import { HttpError } from "./errors.mjs";
+import { gitErrorDetails } from "../git-errors.mjs";
 import { createGitClient, sameGitPath } from "../git-client.mjs";
+import { projectGitflowSettings } from "../gitflow-settings.mjs";
 
-export function createGitService({ sessions, projects, runner, notify, tasks }) {
+export function createGitService({ sessions, projects, runner, notify, tasks, config = {} }) {
   const allSessions = () => typeof sessions.list === "function" ? sessions.list().map(s => sessions.getSession(s.id)) : [];
   const client = createGitClient({
     getSessions: allSessions,
@@ -42,17 +44,22 @@ export function createGitService({ sessions, projects, runner, notify, tasks }) 
       if (action === "removeWorktree") return await changed(client.remove(ctx, options));
       if (action === "remotes") return await client.remotes(ctx, remote);
       if (action === "fetch") return await changed(client.fetch(ctx, options));
+      if (action === "pullState") return await client.pullState(ctx);
+      if (action === "pullRemote") return await changed(client.pull(ctx, options));
+      if (action === "createBranch") return await changed(client.createBranch(ctx, options));
       if (action === "preview") return await client.preview(ctx, options);
       if (action === "execute") return await changed(client.execute(ctx, options));
       if (action === "recovery") return await client.recovery(ctx);
       if (action === "restore") return await changed(client.restore(ctx, options));
       if (action === "push" && !Object.hasOwn(body, "repo")) return await changed(client.push(ctx, options));
-      if (action === "pulls") return await githubPulls.list(ctx.cwd, { remote, state: state ?? "open" });
+      // PR 대상 브랜치는 원본 저장소에 저장한 GitFlow 설정을 따른다.
+      const gitflow = () => projectGitflowSettings(config, ctx.original ?? projectPath);
+      if (action === "pulls") return await githubPulls.list(ctx.cwd, { remote, state: state ?? "open", gitflow: gitflow() });
       if (action === "pull") return await githubPulls.detail(ctx.cwd, number, { remote });
       if (["push", "createPull", "mergePull", "closePull"].includes(action)) {
         return await changed(client.write(ctx, action, async actual => {
           if (action === "push") return githubPulls.push(actual.cwd, options);
-          if (action === "createPull") return githubPulls.create(actual.cwd, options);
+          if (action === "createPull") return githubPulls.create(actual.cwd, options, { gitflow: gitflow() });
           if (action === "mergePull") return githubPulls.merge(actual.cwd, number, options);
           return githubPulls.close(actual.cwd, number, options);
         }));
@@ -74,6 +81,12 @@ export function createGitService({ sessions, projects, runner, notify, tasks }) 
     } catch (e) {
       if (e instanceof GitHubError) throw new HttpError(e.status, e.message, e.reason, { outcomeUnknown: e.outcomeUnknown });
       if (e instanceof HttpError) throw e;
+      // gitpanel의 원문 오류도 알려진 경우 한국어 설명과 해결 방법으로 바꾼다. 앞에 붙인 한국어 안내는 유지한다.
+      const known = gitErrorDetails(e.message);
+      if (known && !e.conflict) {
+        const lead = e.message.split("\n")[0];
+        throw new HttpError(known.status, /[가-힣]/.test(lead) ? lead : known.message, known.reason, { hint: known.hint, raw: known.raw });
+      }
       throw new HttpError(e.conflict ? 409 : 400, e.message, e.conflict ? "conflict" : undefined);
     }
   }

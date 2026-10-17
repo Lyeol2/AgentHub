@@ -109,7 +109,7 @@
   $('task-finish-verified').checked = true; $('task-finish-verified').dispatchEvent(new Event('change'));
   $('finish-task-form').requestSubmit($('task-finish-submit'));
   await until(() => !$('finish-task-dialog').open && card('task-1')?.querySelector('a[href="https://github.com/fixture/repo/pull/42"]'));
-  check(card('task-1').textContent.includes('리뷰'), 'finishing opens PR and enters review');
+  check(card('task-1').textContent.includes('검토 대기') && card('task-1').querySelector('[data-step="pr"][aria-current="step"]'), 'finishing opens PR and enters review');
   const finished = (await requests()).find((request) => request.path === '/api/tasks/task-1/finish');
   check(finished?.body.message === 'fix: 로그인 버튼 수정' && finished.body.verification === '테스트 통과', 'finish sends commit and verification details');
   $('tasks-new').click();
@@ -132,7 +132,7 @@
   check((await requests()).filter((request) => request.path === '/api/tasks/task-2/finish').length === 1, 'uncertain write is never retried automatically');
   if ($('finish-task-dialog').open) $('finish-task-dialog').close();
   action('task-2', 'refresh').click();
-  await until(() => card('task-2')?.textContent.includes('리뷰'));
+  await until(() => card('task-2')?.querySelector('.task-state')?.textContent === '검토 대기');
   check(card('task-2').querySelector('a[href="https://github.com/fixture/repo/pull/42"]'), 'refresh reconciles uncertain PR');
   check((await requests()).filter((request) => request.path === '/api/tasks/task-2/finish').length === 1, 'recovery only reads PR state');
   await mode({ contextFailure: true }); $('tasks-refresh').click();
@@ -255,6 +255,24 @@
   check(card('task-4').querySelector('.task-issue').textContent.includes('이슈 #7 · 열림'), 'linked issue state is shown on the task card');
   check(card('task-4').querySelector('.task-issue a')?.href === 'https://github.com/fixture/repo/issues/7', 'linked issue opens on GitHub');
   check(action('task-4', 'unlink-issue') && !action('task-4', 'link-issue'), 'linked issue can be unlinked');
+  // GitFlow 단계 노선: 진행 중인 작업은 작업 단계에 있고, 할 수 없는 마무리는 이유와 함께 꺼진다.
+  await until(() => card('task-4')?.querySelector('[data-step="work"][aria-current="step"]'));
+  check(card('task-4').querySelector('.task-state').textContent === '진행 중' && card('task-4').querySelector('[data-step="base"]')?.textContent.includes('Develop'), 'task card shows stage and base branch');
+  check(card('task-4').querySelector('#task-reason-task-4')?.textContent.includes('아직 변경이 없습니다'), 'disabled next action explains why');
+  const finishPrimary = [...card('task-4').querySelectorAll('[data-task-action="finish"]')].find(button => button.textContent === '마무리');
+  check(finishPrimary?.disabled && finishPrimary.getAttribute('aria-describedby') === 'task-reason-task-4', 'disabled primary action is linked to its reason');
+  check(card('task-2').querySelector('[data-step="back"]')?.textContent.includes('develop'), 'hotfix shows develop back-merge stage');
+  // 되돌리기 어려운 동작은 변경 요약 확인 창을 띄우고, 취소하면 요청을 보내지 않는다.
+  const deletes = async () => (await requests()).filter(request => request.method === 'DELETE' && request.path.startsWith('/api/tasks/task-4')).length;
+  const before = await deletes();
+  action('task-4', 'delete').click();
+  await until(() => document.querySelector('dialog.confirm-dialog[open]'));
+  const confirmBox = document.querySelector('dialog.confirm-dialog[open]');
+  check(confirmBox.textContent.includes('바뀌는 것') && confirmBox.textContent.includes('그대로 남는 것') && confirmBox.querySelector('input[type="checkbox"]'), 'delete confirmation summarizes changes with a branch option');
+  confirmBox.querySelector('button[value="cancel"]').click();
+  await until(() => !document.querySelector('dialog.confirm-dialog'));
+  await new Promise(resolve => setTimeout(resolve, 100));
+  check(await deletes() === before && card('task-4'), 'cancelled delete changes nothing');
   await until(() => !$('tasks-settings').disabled); await openSettings();
   return checks;
 })()

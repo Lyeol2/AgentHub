@@ -72,6 +72,11 @@ test("browser: workspace context, Git previews, protected history, push and reco
     if (process.env.AGENTHUB_GIT_SCREENSHOT) {
       const { data } = await command("Page.captureScreenshot", { format: "png" });
       await fs.writeFile(process.env.AGENTHUB_GIT_SCREENSHOT, Buffer.from(data, "base64"));
+      // 창을 닫은 넓은 화면: 도구 막대와 왼쪽 탐색 배치를 확인한다.
+      await command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false });
+      await command("Runtime.evaluate", { expression: "new Promise(resolve => { document.getElementById('g-operation-dialog').close(); document.body.style.display = 'block'; document.getElementById('g-tab-changes').click(); document.querySelector('#g-unstaged .link')?.click(); requestAnimationFrame(() => requestAnimationFrame(resolve)); })", awaitPromise: true });
+      const wide = await command("Page.captureScreenshot", { format: "png" });
+      await fs.writeFile(process.env.AGENTHUB_GIT_SCREENSHOT.replace(/\.png$/, "-wide.png"), Buffer.from(wide.data, "base64"));
     }
   } finally {
     socket?.close(); child.kill();

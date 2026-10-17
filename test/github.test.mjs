@@ -4,7 +4,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { GitHubPulls, parseGitHubRemote, normalizePull, summarizeChecks, runGitHubCommand, gitAuthFailure, githubCredentialArgs } from "../server/github.mjs";
+import { GitHubPulls, parseGitHubRemote, normalizePull, summarizeChecks, runGitHubCommand, gitAuthFailure, githubCredentialArgs, gitflowPullBases } from "../server/github.mjs";
+import { DEFAULT_GITFLOW_SETTINGS, normalizeGitflowSettings } from "../server/gitflow-settings.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-pulls-"));
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -50,7 +51,7 @@ function fixture() {
     if (endpoint === "repos/acme/widget/branches?per_page=100") return JSON.stringify([{ name: "feature" }]); // default branch outside first page.
     if (endpoint?.startsWith("repos/acme/widget/branches/")) {
       const branch = decodeURIComponent(endpoint.slice("repos/acme/widget/branches/".length));
-      const branchSha = branch === "main" ? "b".repeat(40) : state.remoteSha;
+      const branchSha = state.missingBranches?.includes(branch) ? null : branch === "main" ? "b".repeat(40) : state.remoteSha;
       if (!branchSha) throw new Error("gh: Branch not found (HTTP 404)");
       return JSON.stringify({ commit: { sha: branchSha } });
     }
@@ -232,6 +233,49 @@ test("github: push는 검증한 주소·SHA·전체 ref만 쓰고 force·tag·su
   f.git("remote", "set-url", "--add", "--push", "origin", "https://github.com/other/repo.git");
   await assert.rejects(f.client.push(f.dir, f.body), /여러 개/);
   assert.equal(f.state.calls.filter((call) => call.file === "git" && call.args.includes("push")).length, 1);
+});
+
+test("github: GitFlow 브랜치별 PR 대상 브랜치를 정한다", () => {
+  const flow = DEFAULT_GITFLOW_SETTINGS;
+  assert.deepEqual(gitflowPullBases(flow, "feature/login").allowed, ["develop"]);
+  assert.deepEqual([gitflowPullBases(flow, "hotfix/1.0.1").suggested, gitflowPullBases(flow, "hotfix/1.0.1").allowed], ["main", ["main", "develop"]]);
+  assert.deepEqual(gitflowPullBases(flow, "release/1.1.0").allowed, ["main", "develop"]);
+  assert.deepEqual(gitflowPullBases(flow, "main").allowed, ["develop"]);
+  assert.deepEqual(gitflowPullBases(flow, "develop").allowed, []);
+  assert.deepEqual([gitflowPullBases(flow, "agenthub/review").suggested, gitflowPullBases(flow, "agenthub/review").allowed], ["develop", null]);
+  // 사용자 지정 이름과 접두어를 따른다.
+  const custom = normalizeGitflowSettings({ main: "master", develop: "dev", featurePrefix: "feat" });
+  assert.deepEqual(gitflowPullBases(custom, "feat/x").allowed, ["dev"]);
+  assert.equal(gitflowPullBases(custom, "feature/x").allowed, null);
+  assert.equal(gitflowPullBases(undefined, "feature/x").allowed, null);
+});
+
+test("github: PR 목록은 GitFlow 대상 브랜치만 고르게 하고 기본값을 develop으로 둔다", async () => {
+  const f = fixture(); f.git("branch", "-m", "work"); f.git("checkout", "-qb", "feature/login");
+  const { context } = await f.client.list(f.dir, { gitflow: DEFAULT_GITFLOW_SETTINGS });
+  assert.deepEqual([context.allowedBases, context.suggestedBase, context.canCreate], [["develop"], "develop", true]);
+  assert.ok(context.baseBranches.includes("develop"), "첫 페이지 밖의 develop도 대상 후보에 넣는다");
+  f.state.missingBranches = ["develop"];
+  const missing = (await f.client.list(f.dir, { gitflow: DEFAULT_GITFLOW_SETTINGS })).context;
+  assert.deepEqual([missing.allowedBases, missing.canCreate], [[], false]);
+  assert.match(missing.createReason, /develop 브랜치가 없습니다/);
+  f.state.missingBranches = [];
+  f.git("checkout", "-qb", "develop");
+  const develop = (await f.client.list(f.dir, { gitflow: DEFAULT_GITFLOW_SETTINGS })).context;
+  assert.equal(develop.canCreate, false); assert.match(develop.createReason, /release\//);
+  f.git("checkout", "-qb", "hotfix/1.0.1");
+  const hotfix = (await f.client.list(f.dir, { gitflow: DEFAULT_GITFLOW_SETTINGS })).context;
+  assert.deepEqual([hotfix.allowedBases, hotfix.suggestedBase], [["main", "develop"], "main"]);
+});
+
+test("github: GitFlow를 어기는 대상 브랜치로는 PR을 만들지 않는다", async () => {
+  const f = fixture(); f.git("branch", "-m", "work"); f.git("checkout", "-qb", "feature/login");
+  const body = { ...f.body, branch: "feature/login", head: "feature/login", base: "main" };
+  await assert.rejects(f.client.create(f.dir, body, { gitflow: DEFAULT_GITFLOW_SETTINGS }), (error) => error.reason === "gitflow-base" && error.status === 409);
+  assert.equal(writes(f.state).length, 0);
+  const result = await f.client.create(f.dir, { ...body, base: "develop" }, { gitflow: DEFAULT_GITFLOW_SETTINGS });
+  assert.equal(result.pull.baseRefName, "develop");
+  assert.deepEqual(JSON.parse(writes(f.state)[0].options.input).base, "develop");
 });
 
 test("github: 원격 변경 timeout·5xx는 완료 불명이며 자동 재시도하지 않는다", async () => {

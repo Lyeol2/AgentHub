@@ -153,6 +153,15 @@ export function createIssueService({ config, store, sessions, links, notify, cli
     });
   }
 
+  async function claim(projectPath, number, body = {}) {
+    const dir = await gitRepo(projectPath);
+    return guard(async () => {
+      const result = await client.claim(dir, number, { remote: body.remote });
+      notify("issues", { projectPath: dir, number: Number(number) });
+      return result;
+    });
+  }
+
   async function close(projectPath, number, body = {}) {
     const dir = await gitRepo(projectPath);
     return guard(async () => {
@@ -256,5 +265,5 @@ export function createIssueService({ config, store, sessions, links, notify, cli
     notify("issues", { projectPath: link.projectPath, number: link.number, done });
   }
 
-  return { inbox, context, members, list, detail, create, comment, giveBack, close, reopen, start, setProgress, draft, onTurnEnd };
+  return { inbox, context, members, list, detail, create, comment, claim, giveBack, close, reopen, start, setProgress, draft, onTurnEnd };
 }

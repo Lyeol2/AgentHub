@@ -2,10 +2,12 @@ import { permissionLabel } from '../../shared/permissions.js';
 import { createWorkbranchPicker, workBranchType } from '../../shared/workbranches.js';
 import { createTaskAssistant } from './assistant.js';
 import { createTaskFinisher } from './finish.js';
+import { DEFAULT_GITFLOW, gitflowBranches } from '../../shared/gitflow.js';
+import { buildTaskPipeline } from '../../shared/task-stage.js';
+import { renderTaskPipeline, relativeTime } from './pipeline.js';
+import { confirmAction } from '../../shared/confirm-dialog.js';
 
-const TASK_STATES = { working: '작업 중', review: '리뷰 대기', merged: '반영 완료', cleaned: '정리 완료' };
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
-const DEFAULT_GITFLOW = { main: 'main', develop: 'develop', featurePrefix: 'feature/', hotfixPrefix: 'hotfix/', releasePrefix: 'release/' };
 const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
 const TASK_AGENTS = [['codex', 'Codex'], ['claude', 'Claude Code']];
 // 새 작업을 만들 때 고른 설정을 기억해 다음 새 작업의 기본값으로 쓴다. 제목·이름·지침처럼 작업마다 다른 값은 두지 않는다.
@@ -33,10 +35,7 @@ export function describeTaskFreshness(freshness) {
 }
 
 export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW, name = '') {
-  const flow = gitflowSettings(settings);
-  const base = type === 'hotfix' ? flow.main : flow.develop;
-  const target = type === 'feature' ? flow.develop : flow.main;
-  const prefix = flow[`${type}Prefix`] ?? `${type}/`;
+  const { base, target, prefix } = gitflowBranches(type, gitflowSettings(settings));
   const rest = name.startsWith(prefix) ? name.slice(prefix.length) : name;
   const branch = `${prefix}${rest || (type === 'release' ? version || '<버전>' : '<작업ID>-<이름>')}`;
   return `${base}에서 ${branch} 생성 → ${target}으로 PR`;
@@ -62,6 +61,9 @@ export function createTasksController({
   const uncertainTasks = new Map();
   const uncertainCreates = new Set();
   const pendingTasks = new Set();
+  // 카드 단계 표시용 로컬 Git 상태. 작업 ID → GET /api/tasks/:id/status 결과
+  const statuses = new Map();
+  let statusGeneration = 0;
   let tasks = [];
   let projectPath = null;
   let context = null;
@@ -96,7 +98,7 @@ export function createTasksController({
   const finisher = createTaskFinisher({ api, isCurrent: path => sameProject(path),
     onTask: task => { replaceTask(task); renderTasks(); },
     onBusy: (value, id) => { finishBusy = value; if (value) pendingTasks.add(id); else pendingTasks.delete(id); renderTasks(); },
-    onError: (id, message, reason) => { if (message) taskErrors.set(id, { message, reason }); else taskErrors.delete(id); },
+    onError: (id, message, reason, extra = {}) => { if (message) taskErrors.set(id, { message, reason, ...extra }); else taskErrors.delete(id); },
     decorateError: (el, reason) => appendLogin(el, reason),
     onUnknown: (id, action) => uncertainTasks.set(id, action),
   });
@@ -108,7 +110,7 @@ export function createTasksController({
 
   // GitHub 로그인으로 풀 수 있는 오류에는 설정의 GitHub CLI 설치·로그인을 바로 연다.
   function appendLogin(parent, reason) {
-    if (!['git-auth', 'gh-auth', 'gh-missing', 'gh-permission'].includes(reason)) return;
+    if (!['git-auth', 'git-auth-ssh', 'gh-auth', 'gh-missing', 'gh-permission'].includes(reason)) return;
     const button = node('button', 'ghost sm task-login', reason === 'gh-missing' ? 'GitHub CLI 설치' : 'GitHub 로그인');
     button.type = 'button';
     button.addEventListener('click', () => openSetup('gh', reason === 'gh-missing' ? 'install' : 'login'));
@@ -163,46 +165,90 @@ export function createTasksController({
     updateCreateSubmit();
   }
 
+  // 기준 정보 줄: 기준 브랜치 develop · 배포 브랜치 main · origin과 같음 · 방금 확인
   function renderContext() {
     const el = $('tasks-context');
     if (!el) return;
     el.replaceChildren();
     el.dataset.state = 'unknown';
+    const branches = () => {
+      el.append(node('span', 'tasks-context-label', '기준 브랜치'), node('strong', 'tasks-context-branch', settings.develop),
+        node('span', 'tasks-context-label', '배포 브랜치'), node('strong', 'tasks-context-branch', settings.main));
+    };
     if (!context) {
-      el.append(node('span', '', loading ? `${settings.main}과 ${settings.develop} 기준을 확인하고 있습니다…` : `${settings.main}과 ${settings.develop} 기준 확인 전`));
+      branches();
+      el.append(node('span', 'tasks-context-status', loading ? '원격 상태를 확인하고 있습니다…' : '원격 상태 확인 전'));
       return;
     }
     const freshness = context.freshness || {};
     const failed = context.error || context.state === 'error' || ['error', 'failed'].includes(freshness.state);
-    const mainMissing = context.mainInDevelop === false;
+    const mainMissing = context.mainInDevelop === false || context.mainMissing === true;
     el.dataset.state = failed ? 'error' : mainMissing ? 'stale' : freshness.state || 'current';
-    el.append(node('strong', '', failed ? `${settings.main} 최신 확인 실패` : mainMissing ? `${settings.main} 변경을 ${settings.develop}에 반영해야 합니다` : `${settings.main} 최신 확인 완료`));
+    branches();
+    const remote = context.remote || freshness.remote || 'origin';
+    const checked = relativeTime(context.checkedAt || freshness.checkedAt);
+    const status = failed ? '원격 확인 실패'
+      : mainMissing ? `${settings.main} 변경을 ${settings.develop}에 반영해야 합니다`
+      : context.needsSetup || context.needsDevelop || context.developExists === false ? `${settings.develop} 없음 · 첫 기능 작업 때 ${settings.main}에서 준비합니다`
+      : `${remote}과 같음`;
+    el.append(node('span', 'tasks-context-status', `${status}${checked ? ` · ${checked === '방금 전' ? '방금' : checked} 확인` : ''}`));
     const failure = typeof context.error === 'string' ? context.error : context.error?.message || freshness.error || '원격 저장소 연결을 확인해 주세요.';
-    if (failed) el.append(node('span', '', failure));
-    else if (context.needsSetup || context.needsDevelop || context.developExists === false) {
-      el.append(node('span', '', `첫 기능 작업을 만들 때 최신 ${settings.main}을 기준으로 ${settings.develop}을 준비합니다.`));
-    } else if (!mainMissing) {
-      el.append(node('span', '', 'GitFlow 기준으로 작업을 시작할 수 있습니다.'));
-    }
-    const checked = timestamp(context.checkedAt || freshness.checkedAt);
-    if (checked) el.append(node('span', '', `${checked} 확인`));
+    if (failed) el.append(node('span', 'tasks-context-detail', failure));
     if (Array.isArray(context.warnings)) for (const warning of context.warnings) {
-      if (typeof warning === 'string' && warning && !(failed && warning === failure)) el.append(node('span', '', warning));
+      if (typeof warning === 'string' && warning && !(failed && warning === failure) && !mainMissing) el.append(node('span', 'tasks-context-detail', warning));
     }
     if (failed) appendLogin(el, context.reason);
   }
 
-  function actionButton(label, action, task, { primary = false, disabled = false } = {}) {
+  function actionButton(label, action, task, { primary = false, disabled = false, reason = '' } = {}) {
     const button = node('button', primary ? 'primary sm' : 'ghost sm', label);
     button.type = 'button';
     button.dataset.taskAction = action;
     button.dataset.taskId = task.id;
     button.disabled = disabled || pendingTasks.has(task.id);
+    if (disabled && reason) { button.title = reason; button.dataset.reason = reason; }
     return button;
+  }
+
+  // 오류 설명과 해결 방법, 펼쳐 볼 수 있는 git 원문을 함께 보여 준다.
+  function errorBlock(message, { reason, hint, raw } = {}) {
+    const box = node('div', 'task-inline-error');
+    box.setAttribute('role', 'alert');
+    box.append(node('p', 'task-error-message', message));
+    if (hint) box.append(node('p', 'task-error-hint', hint));
+    if (raw && raw !== message) {
+      const details = node('details', 'task-error-raw');
+      details.append(node('summary', '', 'Git 원문 보기'), node('pre', '', raw));
+      box.append(details);
+    }
+    appendLogin(box, reason);
+    return box;
+  }
+
+  // 화면에 보이는 작업의 로컬 Git 상태를 세 개씩 나눠 읽고 받은 대로 다시 그린다.
+  async function loadStatuses(ids = tasks.map(task => task.id)) {
+    const path = projectPath, epoch = projectEpoch, request = ++statusGeneration;
+    const queue = [...ids];
+    const worker = async () => {
+      while (queue.length) {
+        const id = queue.shift();
+        try {
+          const result = await api('GET', `/api/tasks/${encodeURIComponent(id)}/status`);
+          if (!sameProject(path, epoch)) return;
+          if (result && typeof result === 'object') statuses.set(id, result);
+        } catch { if (!sameProject(path, epoch)) return; statuses.delete(id); }
+        if (request === statusGeneration || ids.length === 1) renderTasks();
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]);
   }
 
   function renderTasks() {
     if (!list) return;
+    // 상태를 받아 다시 그려도 보고 있던 카드나 버튼의 초점과 열린 메뉴를 잃지 않게 한다.
+    const active = list.contains(document.activeElement) ? document.activeElement : null;
+    const keep = active && { id: active.closest('[data-task-id]')?.dataset.taskId, card: active.classList.contains('task-card'), action: active.dataset.taskAction, label: active.textContent };
+    const openMenu = list.querySelector('.task-more[open]')?.closest('.task-card')?.dataset.taskId;
     list.replaceChildren();
     list.setAttribute('aria-busy', String(loading));
     if (!tasks.length) {
@@ -214,72 +260,81 @@ export function createTasksController({
     }
     for (const task of tasks) {
       const flow = gitflowSettings({ ...task.gitflow, main: task.gitflow?.main ?? task.freshness?.main?.branch ?? DEFAULT_GITFLOW.main, develop: task.gitflow?.develop ?? task.freshness?.develop?.branch ?? DEFAULT_GITFLOW.develop });
+      const ids = Array.isArray(task.sessionIds) ? task.sessionIds : [];
+      const known = Array.isArray(data?.sessions);
+      const connected = known ? data.sessions.filter(session => ids.includes(session.id) || session.taskId === task.id) : [];
+      const sessionId = (connected.find(session => session.id === ids.at(-1)) || connected[0])?.id || (!known ? ids.at(-1) : null);
+      const status = statuses.get(task.id) || null;
+      const sessionCount = known ? connected.length : status?.sessions ?? ids.length;
+      const pipeline = buildTaskPipeline({ ...task, gitflow: flow }, status, {
+        sessionId, sessions: sessionCount,
+        running: known ? connected.filter(session => session.state === 'running').length : status?.running ?? 0,
+        uncertain: uncertainTasks.has(task.id), pending: pendingTasks.has(task.id),
+      });
       const card = node('article', 'task-card');
       card.dataset.taskId = task.id;
+      card.dataset.stage = pipeline.current;
       card.setAttribute('aria-label', task.title || '작업');
       card.setAttribute('aria-busy', String(pendingTasks.has(task.id)));
       const header = node('div', 'task-card-header');
-      const state = node('span', 'task-state', TASK_STATES[task.state] || '상태 확인 필요');
+      const heading = node('h3', 'task-title', task.title);
+      if (task.issue?.number) heading.append(node('span', 'task-number', `#${task.issue.number}`));
+      const state = node('span', 'task-state', pipeline.stateLabel);
       state.dataset.state = task.state;
-      header.append(node('h3', 'task-title', task.title), state);
+      header.append(heading, state);
       card.append(header);
       const meta = node('div', 'task-meta');
-      meta.append(node('span', '', TASK_TYPES[task.type] || task.type || '작업'));
-      meta.append(node('span', 'task-branch', `${task.branch || '브랜치 준비 중'} → ${task.targetBranch || (task.type === 'feature' ? flow.develop : flow.main)}`));
+      meta.append(node('span', 'task-branch', `${task.branch || '브랜치 준비 중'} → ${pipeline.target}`));
+      if (task.type && task.type !== 'feature') meta.append(node('span', '', TASK_TYPES[task.type] || task.type));
       if (task.version) meta.append(node('span', '', `버전 ${task.version}`));
+      meta.append(node('span', '', `세션 ${sessionCount}개`));
+      const updated = relativeTime(task.updatedAt || task.createdAt);
+      if (updated) meta.append(node('span', 'task-updated', updated));
       card.append(meta);
       if (task.issue) card.append(issueLine(task.issue));
-      if (task.state !== 'cleaned') {
+      card.append(renderTaskPipeline(pipeline));
+      if (task.state !== 'cleaned' && task.freshness?.state && !['current', 'up-to-date'].includes(task.freshness.state)) {
         const freshness = node('div', 'task-freshness', describeTaskFreshness(task.freshness));
-        freshness.dataset.state = task.freshness?.state || 'unknown';
+        freshness.dataset.state = task.freshness.state;
         const checked = timestamp(task.freshness?.checkedAt);
         if (checked) freshness.append(node('span', '', ` · ${checked} 확인`));
         card.append(freshness);
       }
+      // 단계별 다음 동작. 할 수 없는 동작은 꺼 두고 이유를 바로 아래에 보여 준다.
       const actions = node('div', 'task-actions');
-      const more = node('details', 'task-more');
-      more.append(node('summary', '', '더 보기'));
-      const secondary = node('div', 'task-actions');
-      more.append(secondary);
-      const ids = Array.isArray(task.sessionIds) ? task.sessionIds : [];
-      const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
-      const connected = sessions.filter(session => ids.includes(session.id) || session.taskId === task.id);
-      const sessionId = (connected.find(session => session.id === ids.at(-1)) || connected[0])?.id || (!Array.isArray(data?.sessions) ? ids.at(-1) : null);
-      if (sessionId) {
-        const open = actionButton(task.state === 'cleaned' || task.state === 'merged' ? '대화 기록' : '세션 열기', 'open-session', task);
-        open.dataset.sessionId = sessionId;
-        actions.append(open);
-      }
-      if (task.state === 'working' || task.state === 'review') {
-        secondary.append(actionButton(connected.length ? '세션 추가' : '새 세션', 'new-session', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
-        (task.state === 'review' ? secondary : actions).append(actionButton(task.state === 'review' ? 'PR 업데이트' : '변경 검토', 'finish', task, { primary: task.state === 'working', disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
-        if (task.state === 'review') actions.append(actionButton('병합 검토', 'merge', task, { primary: true, disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
-      }
-      if (task.pull?.url) {
-        try {
-          const url = new URL(task.pull.url);
-          if (url.protocol === 'https:' || url.protocol === 'http:') {
-            const link = node('a', 'task-pull-link', `PR #${task.pull.number || ''}${task.pull.state === 'CLOSED' || task.pull.state === 'closed' ? ' · 닫힘' : ''}`);
+      const reasons = [];
+      for (const item of pipeline.actions) {
+        if (item.id === 'pull-link') {
+          try {
+            const url = new URL(item.url);
+            if (url.protocol !== 'https:' && url.protocol !== 'http:') continue;
+            const link = node('a', 'task-link-button', item.label);
             link.href = url.href;
             link.target = '_blank';
             link.rel = 'noopener noreferrer';
             actions.append(link);
-          }
-        } catch { /* Invalid server-provided links are not rendered. */ }
+          } catch { /* Invalid server-provided links are not rendered. */ }
+          continue;
+        }
+        const button = actionButton(item.label, item.id, task, { primary: item.primary, disabled: item.disabled, reason: item.reason });
+        if (item.id === 'open-session') button.dataset.sessionId = sessionId;
+        actions.append(button);
+        if (item.disabled && item.reason && !reasons.includes(item.reason)) reasons.push(item.reason);
       }
-      if (task.state !== 'cleaned') secondary.append(actionButton('최신 확인', 'refresh', task));
-      if ((task.state === 'working' || task.state === 'review') && ['needs-update', 'behind', 'stale', 'diverged'].includes(task.freshness?.state)) {
-        secondary.append(actionButton('기준 변경 반영', 'sync', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
-      }
+      const more = node('details', 'task-more');
+      const moreSummary = node('summary', '', '⋯');
+      moreSummary.setAttribute('aria-label', '다른 동작');
+      moreSummary.title = '다른 동작';
+      more.append(moreSummary);
+      const secondary = node('div', 'task-more-menu');
+      more.append(secondary);
       const blocked = uncertainTasks.has(task.id) || Boolean(task.pendingAction);
-      const developPending = task.state === 'merged' && task.type !== 'feature' && task.developPending !== false;
-      if (developPending) {
-        // 배포 준비·긴급 수정은 main 반영 뒤 develop에도 반영해야 정리할 수 있다.
-        if (task.completion?.kind !== 'local' && task.developPull?.state === 'OPEN') actions.append(pullLink(task.developPull, `${flow.develop} 반영 PR`));
-        else actions.append(actionButton(task.completion?.kind === 'local' ? `${flow.develop}에 반영` : `${flow.develop} 반영 PR 만들기`, 'develop', task, { primary: true, disabled: blocked }));
+      if (task.state === 'working' || task.state === 'review') {
+        secondary.append(actionButton(connected.length ? '세션 추가' : '새 세션', 'new-session', task, { disabled: blocked }));
+        if (task.state === 'review') secondary.append(actionButton('PR 업데이트', 'finish', task, { disabled: blocked }));
       }
+      if (task.state !== 'cleaned') secondary.append(actionButton('최신 상태 확인', 'refresh', task));
       if (task.state === 'merged') {
-        actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { primary: !developPending, disabled: blocked }));
         const unpushed = task.completion?.kind === 'local' && (task.completion.publishState !== 'done' || (task.completion.developHead && task.completion.developPublishState !== 'done'));
         if (unpushed) secondary.append(actionButton('대상 브랜치 푸시', 'push-target', task, { disabled: blocked }));
       }
@@ -287,10 +342,14 @@ export function createTasksController({
       const remove = actionButton('작업 삭제', 'delete', task);
       remove.classList.add('danger');
       secondary.append(remove);
-      card.append(actions, more);
-      const stage = task.state === 'working' ? 'AI 작업 → 변경 검토 → 반영' : task.state === 'review' ? 'PR 생성 완료 · 리뷰와 병합을 기다립니다' : task.state === 'merged' ? '반영 완료 · 폴더 정리는 선택 사항입니다' : '작업 기록 보관 중';
-      card.append(node('p', 'task-progress', stage));
-      if (developPending) card.append(node('p', 'task-note', `${flow.develop}에도 반영되어야 작업 폴더를 정리할 수 있습니다.`));
+      actions.append(more);
+      card.append(actions);
+      if (reasons.length) {
+        const reasonEl = node('p', 'task-action-reason', reasons.join(' '));
+        reasonEl.id = `task-reason-${task.id}`;
+        for (const button of actions.querySelectorAll('button[data-reason]')) button.setAttribute('aria-describedby', reasonEl.id);
+        card.append(reasonEl);
+      }
       if (task.state === 'cleaned') card.append(node('p', 'task-note', task.inPlace
         ? `원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌렸습니다. 작업과 PR 기록은 보관됩니다.`
         : task.worktreePreserved
@@ -299,19 +358,22 @@ export function createTasksController({
           ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
           : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
       if (task.cleanupWarning) card.append(node('p', 'task-note', typeof task.cleanupWarning === 'string' ? task.cleanupWarning : task.cleanupWarning.message || '정리 결과를 확인해 주세요.'));
-      // 화면 오류는 문자열이거나 { message, reason }이다. 문자열이면 서버에 남은 같은 오류의 사유를 쓴다.
+      // 화면 오류는 문자열이거나 { message, reason, hint, raw }이다. 문자열이면 서버에 남은 같은 오류의 사유를 쓴다.
       const local = taskErrors.get(task.id);
       const localMessage = typeof local === 'string' ? local : local?.message;
-      const reason = local && typeof local === 'object' ? local.reason : !local || local === task.error ? task.errorReason : undefined;
+      const fromServer = !local || local === task.error;
+      const detail = local && typeof local === 'object' ? local : fromServer ? { reason: task.errorReason, hint: task.errorHint } : {};
       const error = localMessage || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
-      if (error) {
-        const errorEl = node('p', 'task-inline-error', error);
-        errorEl.setAttribute('role', 'alert');
-        card.append(errorEl);
-        appendLogin(card, reason);
-      }
+      if (error) card.append(errorBlock(error, detail));
       list.append(card);
     }
+    const restored = keep?.id && [...list.querySelectorAll('.task-card')].find(item => item.dataset.taskId === keep.id);
+    if (restored) {
+      if (keep.card) { restored.tabIndex = -1; restored.focus({ preventScroll: true }); }
+      else ([...restored.querySelectorAll('[data-task-action]')].find(item => item.dataset.taskAction === keep.action && item.textContent === keep.label)
+        || restored.querySelector('summary'))?.focus({ preventScroll: true });
+    }
+    if (openMenu) [...list.querySelectorAll('.task-card')].find(item => item.dataset.taskId === openMenu)?.querySelector('.task-more')?.setAttribute('open', '');
   }
 
   function pullLink(pull, label) {
@@ -414,6 +476,7 @@ export function createTasksController({
     projectEpoch++;
     projectPath = null;
     tasks = [];
+    statuses.clear();
     context = null;
     resetSettings();
     loading = false;
@@ -438,6 +501,7 @@ export function createTasksController({
     if (changed) {
       projectEpoch++;
       tasks = [];
+      statuses.clear();
       context = null;
       resetSettings();
       if (createDialog?.open) createDialog.close();
@@ -485,6 +549,7 @@ export function createTasksController({
     renderTasks();
     renderContext();
     updateCreatePreview();
+    if (taskResult.status === 'fulfilled') void loadStatuses();
   }
 
   function resetSettings() {
@@ -789,23 +854,41 @@ export function createTasksController({
 
   const finishTask = event => finisher.submit(event);
 
+  // 되돌리기 어려운 작업 동작 전에 바뀌는 것과 남는 것을 보여 주고 확인을 받는다.
+  async function confirmTaskAction(action, task) {
+    const develop = task.gitflow?.develop || DEFAULT_GITFLOW.develop, main = task.gitflow?.main || DEFAULT_GITFLOW.main;
+    if (action === 'cleanup') {
+      const changes = [], keeps = ['작업·대화 기록', `원격 브랜치 ${task.remote || 'origin'}/${task.branch}`, task.pull?.number ? `PR #${task.pull.number}` : ''];
+      if (task.inPlace) changes.push(`원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌립니다.`);
+      else if (task.ownsWorktree === false) keeps.push(`기존 작업 폴더 ${task.cwd}`);
+      else changes.push(`작업 폴더를 삭제합니다: ${task.cwd}`);
+      if (task.ownsBranch === false) keeps.push(`기존 로컬 브랜치 ${task.branch}`);
+      else changes.push(`로컬 브랜치 ${task.branch}를 삭제합니다.`);
+      return (await confirmAction({ title: '작업 폴더 정리', subject: task.title, changes, keeps,
+        warnings: ['커밋하지 않은 변경이나 게시하지 않은 커밋이 있으면 정리를 멈춥니다.'], confirmLabel: '정리', danger: true })).ok;
+    }
+    if (action === 'push-target') {
+      const completion = task.completion || {};
+      const changes = [completion.publishState !== 'done' ? `${task.targetBranch} → ${task.remote}/${task.targetBranch}${completion.targetHead ? ` (${completion.targetHead.slice(0, 7)})` : ''}` : '',
+        completion.developHead && completion.developPublishState !== 'done' ? `${develop} → ${task.remote}/${develop} (${completion.developHead.slice(0, 7)})` : ''];
+      return (await confirmAction({ title: '대상 브랜치 푸시', subject: task.title, changes, keeps: ['강제 푸시는 하지 않습니다. 원격이 앞서 있으면 거절됩니다.'], confirmLabel: '푸시' })).ok;
+    }
+    if (action === 'develop') {
+      const local = task.completion?.kind === 'local';
+      return (await confirmAction({ title: `${develop}에 역반영`, subject: task.title,
+        changes: [local ? `${task.branch}를 로컬 ${develop}에 병합합니다.` : `GitHub에 ${main} → ${develop} 반영 PR을 만듭니다.`],
+        keeps: [local ? '충돌하면 병합을 취소하고 실행 전 상태로 되돌립니다.' : '이미 열린 반영 PR이 있으면 그 PR을 연결합니다.'],
+        confirmLabel: local ? '병합' : 'PR 만들기' })).ok;
+    }
+    return true;
+  }
+
   async function runTaskAction(action, task) {
     if (!task || pendingTasks.has(task.id)) return;
     if (action !== 'refresh' && (uncertainTasks.has(task.id) || task.pendingAction)) return;
-    if (action === 'cleanup' && !confirm(`${task.title}\n\n${task.inPlace ? '원본 폴더를 작업 전 브랜치로 되돌립니다.' : task.ownsWorktree === false ? '기존 작업 폴더는 보존합니다.' : `작업 폴더를 삭제합니다:\n${task.cwd}`}\n${task.ownsBranch === false ? '기존 로컬 브랜치는 보존합니다.' : `로컬 브랜치 ${task.branch}를 삭제합니다.`}\n작업·대화 기록과 원격 브랜치는 보존합니다.`)) return;
-    if (action === 'push-target') {
-      const completion = task.completion || {};
-      const develop = task.gitflow?.develop || DEFAULT_GITFLOW.develop;
-      const lines = [completion.publishState !== 'done' ? `${task.targetBranch} ${completion.targetHead || ''}` : '',
-        completion.developHead && completion.developPublishState !== 'done' ? `${develop} ${completion.developHead}` : ''].filter(Boolean);
-      if (!confirm(`반영한 커밋을 ${task.remote}에 푸시할까요?\n${lines.join('\n')}`)) return;
-    }
-    if (action === 'develop') {
-      const develop = task.gitflow?.develop || DEFAULT_GITFLOW.develop, main = task.gitflow?.main || DEFAULT_GITFLOW.main;
-      if (!confirm(task.completion?.kind === 'local'
-        ? `${task.branch}를 로컬 ${develop}에 병합할까요?\n충돌하면 병합을 취소하고 실행 전 상태로 되돌립니다.`
-        : `GitHub에 ${main} → ${develop} 반영 PR을 만들까요?\n이미 열린 반영 PR이 있으면 그 PR을 연결합니다.`)) return;
-    }
+    const confirmed = await confirmTaskAction(action, task);
+    if (!confirmed) return;
+    if (!sameProject(projectPath) || pendingTasks.has(task.id)) return;
     const path = projectPath;
     const epoch = projectEpoch;
     const id = task.id;
@@ -823,26 +906,27 @@ export function createTasksController({
         }
       }
       if (action === 'cleanup' || action === 'refresh') await reloadSessions();
+      if (sameProject(path, epoch)) void loadStatuses([id]);
     } catch (error) {
       if (error.outcomeUnknown && action !== 'refresh') uncertainTasks.set(id, action);
       const label = action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : '최신 확인';
-      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason });
+      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();
     }
   }
 
-  // 작업 삭제 확인 문구. 지우는 것과 남는 것을 함께 알린다.
+  // 작업 삭제 확인 내용. 지우는 것과 남는 것을 함께 알린다.
   function deleteSummary(task, sessionCount) {
-    const lines = [`"${task.title}" 작업을 삭제할까요?`, ''];
-    if (sessionCount) lines.push(`연결된 세션 ${sessionCount}개를 멈추고 삭제합니다. 열려 있는 세션 화면도 닫힙니다.`);
-    if (task.state === 'cleaned') lines.push('이미 정리한 작업이라 작업 기록만 지웁니다.');
-    else if (task.inPlace) lines.push('원본 폴더에서 한 작업이라 폴더는 그대로 둡니다.');
-    else if (task.ownsWorktree === false) lines.push(`선택했던 기존 작업 폴더는 보존합니다.\n${task.cwd}`);
-    else lines.push(`작업 폴더를 지웁니다.\n${task.cwd}`);
-    lines.push('원격 브랜치와 PR은 남습니다.');
-    return lines.join('\n');
+    const changes = [], keeps = ['원격 브랜치와 PR'];
+    if (sessionCount) changes.push(`연결된 세션 ${sessionCount}개를 멈추고 삭제합니다. 열려 있는 세션 화면도 닫힙니다.`);
+    changes.push('작업 카드와 작업 기록을 지웁니다.');
+    if (task.state === 'cleaned') keeps.push('이미 정리한 작업이라 폴더는 없습니다.');
+    else if (task.inPlace) keeps.push('원본 폴더 (원본 폴더에서 한 작업)');
+    else if (task.ownsWorktree === false) keeps.push(`선택했던 기존 작업 폴더 ${task.cwd}`);
+    else changes.push(`작업 폴더를 지웁니다: ${task.cwd}`);
+    return { changes, keeps };
   }
 
   // 작업을 지운다. 실행 중인 세션이나 커밋하지 않은 변경이 있으면 그 자리에서 계속할지 묻는다.
@@ -851,10 +935,13 @@ export function createTasksController({
     const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
     const ids = Array.isArray(task.sessionIds) ? task.sessionIds : [];
     const sessionCount = sessions.filter(session => ids.includes(session.id) || session.taskId === task.id).length;
-    if (!confirm(deleteSummary(task, sessionCount))) return;
+    const branchChoice = task.state !== 'cleaned' && task.ownsBranch !== false && task.branch;
+    const answer = await confirmAction({ title: '작업 삭제', subject: task.title, ...deleteSummary(task, sessionCount),
+      checkbox: branchChoice ? { label: `로컬 브랜치 ${task.branch}도 지우기 · 게시하지 않은 커밋은 되돌릴 수 없습니다`, checked: false } : null,
+      confirmLabel: '삭제', danger: true });
+    if (!answer.ok || pendingTasks.has(task.id)) return;
     const query = new URLSearchParams();
-    if (task.state !== 'cleaned' && task.ownsBranch !== false && task.branch
-      && confirm(`로컬 브랜치 ${task.branch}도 지울까요?\n\n확인: 브랜치를 지웁니다. 게시하지 않은 커밋은 되돌릴 수 없습니다.\n취소: 브랜치는 남겨 둡니다.`)) query.set('branch', 'delete');
+    if (branchChoice && answer.checked) query.set('branch', 'delete');
     const path = projectPath;
     const epoch = projectEpoch;
     const id = task.id;
@@ -867,8 +954,11 @@ export function createTasksController({
         try { result = await api('DELETE', `/api/tasks/${encodeURIComponent(id)}?${query}`); break; }
         catch (error) {
           if (query.has('force')) throw error;
-          const again = error.reason === 'running' ? confirm('실행 중인 세션이 있습니다. 실행을 멈추고 삭제할까요?')
-            : error.reason === 'task-dirty' ? confirm(`${error.message}\n\n변경 사항을 버리고 작업 폴더를 지울까요? 되돌릴 수 없습니다.`)
+          const again = error.reason === 'running' ? (await confirmAction({ title: '실행 중인 세션 멈추고 삭제', subject: task.title,
+              changes: ['실행 중인 세션을 멈춥니다. 진행 중이던 응답은 끝까지 받지 못합니다.', '작업을 삭제합니다.'], confirmLabel: '멈추고 삭제', danger: true })).ok
+            : error.reason === 'task-dirty' ? (await confirmAction({ title: '커밋하지 않은 변경 버리기', subject: task.title,
+              changes: ['작업 폴더의 커밋하지 않은 변경을 버리고 폴더를 지웁니다.'], warnings: [error.message, '버린 변경은 되돌릴 수 없습니다.'],
+              confirmLabel: '변경 버리고 삭제', danger: true })).ok
             : null;
           if (again === null) throw error;
           if (!again) return;
