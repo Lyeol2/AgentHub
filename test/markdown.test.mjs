@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { renderMarkdown } from "../public/markdown.js";
+import { collectReportReferences } from "../public/report-references.js";
 
 test("markdown: 제목·굵게·기울임·코드", () => {
   assert.equal(renderMarkdown("## 요약"), "<h2>요약</h2>");
@@ -81,4 +82,103 @@ test("markdown reports: inline code spanning paragraph lines stays literal", () 
   assert.ok(!html.includes('data-report-path="C:/hidden.md"'));
   assert.match(html, /data-report-path="out\/report.md"/);
   assert.equal(renderMarkdown("one\ntwo"), "<p>one<br>two</p>");
+});
+
+test("markdown math: inline, display, TeX delimiters and math fences render accessible formulas", () => {
+  const source = [String.raw`에너지 $E=mc^2$와 \(x_i^2\).`, String.raw`$$
+\frac{1}{2} + \sqrt{x}
+$$`, String.raw`\[
+\begin{bmatrix}1 & 2 \\ 3 & 4\end{bmatrix}
+\]`, "```math\nx^2 + y^2 = z^2\n```"].join("\n\n");
+  const html = renderMarkdown(source);
+  assert.equal((html.match(/class="katex"/g) ?? []).length, 5);
+  assert.equal((html.match(/class="md-math md-math-display"/g) ?? []).length, 3);
+  assert.equal((html.match(/<math /g) ?? []).length, 5);
+  assert.match(html, /<mfrac>/);
+  assert.match(html, /<msqrt>/);
+  assert.match(html, /<mtable/);
+  assert.doesNotMatch(html, /md-math-error|<em>/);
+});
+
+test("markdown math: code, links, currency, escapes and unfinished streaming input stay literal", () => {
+  for (const source of ["$5 and $10", "unfinished $x", "unfinished $$x", String.raw`\$5 and \$10`]) {
+    assert.doesNotMatch(renderMarkdown(source), /class="(?:katex|md-math)/);
+  }
+  assert.equal(renderMarkdown(String.raw`가격은 \$5입니다.`), "<p>가격은 $5입니다.</p>");
+  const mixed = renderMarkdown("Cost $5 and $10. Formula $x$.");
+  assert.match(mixed, /Cost \$5 and \$10\. Formula <span class="md-math">/);
+  assert.equal((mixed.match(/class="katex"/g) ?? []).length, 1);
+  const html = renderMarkdown('`$x_i$`\n\n```latex\n$$x^2$$\n```\n\n[가격 $5](https://example.com/$x$)');
+  assert.match(html, /<code>\$x_i\$<\/code>/);
+  assert.match(html, /<code class="lang-latex">\$\$x\^2\$\$<\/code>/);
+  assert.match(html, /href="https:\/\/example.com\/\$x\$"/);
+  assert.doesNotMatch(html, /class="katex"/);
+});
+
+test("markdown math: table pipes, quoted displays and indented list displays keep their structure", () => {
+  const html = renderMarkdown(String.raw`| 이름 | 수식 |
+|---|---|
+| 절댓값 | $|x|$ |
+| 조건 | $P(A\mid B)$ |
+
+> $$
+> \sum_{i=1}^{n} i
+> $$
+
+- 계산
+  $$
+  \frac{1}{2}
+  $$
+- 다음`);
+  assert.equal((html.match(/<td>/g) ?? []).length, 4);
+  assert.equal((html.match(/class="katex"/g) ?? []).length, 4);
+  assert.match(html, /<blockquote><span class="md-math md-math-display">/);
+  assert.match(html, /<li>계산<span class="md-math md-math-display">/);
+  assert.match(html, /<li>다음<\/li>/);
+});
+
+test("markdown math: formula contents are never parsed as file references or Markdown", () => {
+  const source = String.raw`$\text{docs/hidden.md *literal*}$
+
+$$
+\text{docs/other.md}
+$$
+
+[문서](docs/visible.md)`;
+  assert.deepEqual(collectReportReferences(source).map((ref) => ref.path), ["docs/visible.md"]);
+  const html = renderMarkdown(source, { sessionId: "s" });
+  assert.doesNotMatch(html, /data-report-path="docs\/(?:hidden|other)\.md"|<em>/);
+  assert.match(html, /data-report-path="docs\/visible.md"/);
+});
+
+test("markdown math: unsafe commands, invalid syntax and recursive macros cannot inject HTML or break later formulas", () => {
+  for (const source of [
+    String.raw`$\href{javascript:alert(1)}{x}$`,
+    String.raw`$\includegraphics{https://example.com/tracker.png}$`,
+    String.raw`$\htmlStyle{position:fixed}{x}$`,
+    String.raw`$\badcommand{<img src=x onerror=alert(1)>}$`,
+    String.raw`$\def\loop{\loop}\loop$`,
+  ]) {
+    const html = renderMarkdown(source + "\n\n$x^2$");
+    assert.doesNotMatch(html, /<img|<script|href="javascript:|src="https:|style="position:fixed/);
+    assert.match(html, /class="katex"/);
+  }
+  const failed = renderMarkdown(String.raw`$\badcommand{<img>}$`);
+  assert.match(failed, /md-math-error/);
+  assert.match(failed, /<code>\$\\badcommand\{&lt;img&gt;\}\$<\/code>/);
+  const isolated = renderMarkdown(String.raw`$\gdef\custom{123}\custom$ $\custom$`);
+  assert.equal((isolated.match(/md-math-error/g) ?? []).length, 1, "Macros do not leak between formulas");
+});
+
+test("markdown math: escaped braces, comments and long backslash runs preserve delimiter boundaries", { timeout: 2000 }, () => {
+  const html = renderMarkdown(String.raw`$\{x\}$
+
+$$
+x % $$ is a comment, not the end
++ y
+$$`);
+  assert.equal((html.match(/class="katex"/g) ?? []).length, 2);
+  assert.doesNotMatch(html, /md-math-error/);
+  const slashes = "\\".repeat(100000);
+  assert.equal(renderMarkdown(slashes), "<p>" + slashes + "</p>");
 });

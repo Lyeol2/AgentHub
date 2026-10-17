@@ -176,10 +176,17 @@ export function checkCommand(body, current = {}) {
       if (value.length > max) throw new Error(`${label}은 ${max.toLocaleString("en-US")}자까지 입력할 수 있습니다.`);
       return value;
     };
-    if (taskAction === "finish") return { kind, title: title || "작업 마무리", taskAction,
-      commitMessage: template("commitMessage", "커밋 메시지", 2000).trim(),
-      description: template("description", "PR 설명", 40_000, "{{input}}"),
-      verification: template("verification", "검증 결과", 10_000) };
+    if (taskAction === "finish") {
+      // project: 작업 설정의 기본 반영 방식을 실행 시점에 따른다.
+      const finishMode = body.finishMode ?? current.finishMode ?? "project";
+      if (!["project", "pr", "local"].includes(finishMode)) throw new Error("작업 반영 방식이 올바르지 않습니다.");
+      const pushTarget = body.pushTarget ?? current.pushTarget ?? false;
+      if (typeof pushTarget !== "boolean") throw new Error("대상 브랜치 푸시 설정이 올바르지 않습니다.");
+      return { kind, title: title || "작업 마무리", taskAction, finishMode, pushTarget: finishMode !== "pr" && pushTarget,
+        commitMessage: template("commitMessage", "커밋 메시지", 2000).trim(),
+        description: template("description", "PR 설명", 40_000, "{{input}}"),
+        verification: template("verification", "검증 결과", 10_000) };
+    }
     const taskType = body.taskType ?? current.taskType ?? "feature";
     if (!["feature", "hotfix", "release"].includes(taskType)) throw new Error("작업 유형이 올바르지 않습니다.");
     const inPlace = body.inPlace ?? current.inPlace ?? false;

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { listWorkbranches, resolveWorkbranch } from "./workbranches.mjs";
-import { taskGit, taskRepo } from "./tasks.mjs";
+import { taskGit, taskRepo, insideTaskPath } from "./tasks.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
 
 const OUTPUT_MAX = 200_000;
@@ -34,7 +34,7 @@ function sessionCommonDir(session) {
 function sessionBusy(session, branch, cwd, repoCommonDir, isSessionBusy) {
   if (!(isSessionBusy ? isSessionBusy(session) : session.state === "running")) return false;
   const sessionDir = session.cwd || session.worktree?.dir || session.task?.cwd;
-  if (samePath(sessionDir, cwd) || samePath(session.worktree?.dir, cwd) || samePath(session.task?.cwd, cwd)) return true;
+  if (insideTaskPath(sessionDir, cwd) || samePath(session.worktree?.dir, cwd) || samePath(session.task?.cwd, cwd)) return true;
   return samePath(sessionCommonDir(session), repoCommonDir) &&
     (session.worktree?.branch === branch || session.task?.branch === branch || session.branch === branch);
 }
@@ -180,6 +180,7 @@ export async function runGitNode({ command, sessions = [], signal, isSessionBusy
     await withGitRepoLock(repo.common, async () => {
       check();
       const sourceHead = await branchHead(projectPath, command.branch);
+      if (command.expectedSourceHead && command.expectedSourceHead !== sourceHead) throw failure("git-branch-changed", "검토 후 소스 브랜치가 변경됐습니다.");
       const listed = await listWorkbranches(projectPath, { ...worktreeOptions, forTarget: true });
       check();
       const source = listed.branches.find((item) => item.name === command.branch);
@@ -213,6 +214,7 @@ export async function runGitNode({ command, sessions = [], signal, isSessionBusy
       const actualBranch = (await git(result.cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"])).trim();
       if (actualBranch !== command.targetBranch) throw failure("git-branch-changed", "대상 작업 폴더의 브랜치가 바뀌었습니다.");
       result.beforeHead = await head(result.cwd);
+      if (command.expectedTargetHead && command.expectedTargetHead !== result.beforeHead) throw failure("git-branch-changed", "검토 후 대상 브랜치가 변경됐습니다.");
       if (result.beforeHead !== await branchHead(projectPath, command.targetBranch) || sourceHead !== await branchHead(projectPath, command.branch))
         throw failure("git-branch-changed", "브랜치가 준비 중 변경됐습니다. 상태를 확인한 뒤 다시 실행하세요.");
       if (source?.cwd && await git(source.cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"]))

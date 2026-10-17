@@ -1,91 +1,81 @@
-import fs from "node:fs";
-import path from "node:path";
-import { isGitRepo } from "../git.mjs";
-import { gitOverview, fileDiff, showCommit, branchDiff, stage, unstage, commit, merge, checkout } from "../gitpanel.mjs";
+import { gitOverview, fileDiff, showCommit, branchDiff, stage, unstage, commit, checkout } from "../gitpanel.mjs";
 import { githubPulls, GitHubError } from "../github.mjs";
-import { samePath } from "./projects.mjs";
 import { HttpError } from "./errors.mjs";
-import { insideTaskPath } from "../tasks.mjs";
+import { createGitClient, sameGitPath } from "../git-client.mjs";
 
 export function createGitService({ sessions, projects, runner, notify, tasks }) {
-  const { getSession } = sessions;
+  const allSessions = () => typeof sessions.list === "function" ? sessions.list().map(s => sessions.getSession(s.id)) : [];
+  const client = createGitClient({
+    getSessions: allSessions,
+    getTasks: () => tasks?.()?.list?.()?.tasks ?? [],
+    isRunning: id => runner.isRunning(id),
+    assertSession: session => tasks?.()?.assertSession?.(session),
+    assertTaskOperation: (cwd, action) => tasks?.()?.assertGitOperation?.(cwd, action),
+  });
 
-  async function gitRepo(projectPath) {
-    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
-    const directory = path.resolve(String(projectPath));
-    if (!fs.existsSync(directory)) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
-    if (!(await isGitRepo(directory))) throw new HttpError(400, "git 저장소가 아닙니다.", "not-git");
-    return directory;
-  }
-
-  // 세션의 분리한 작업 폴더. 이 프로젝트의 세션이어야 한다.
-  function sessionWorktree(sessionId, repo) {
-    const session = getSession(sessionId);
-    if (!samePath(session.projectPath, repo)) throw new HttpError(400, "이 프로젝트의 세션이 아닙니다.");
-    if (!session.worktree || !fs.existsSync(session.worktree.dir)) throw new HttpError(400, "작업 폴더를 분리한 세션이 아닙니다.");
-    return session.worktree.dir;
-  }
-
-  async function execute(action, { projectPath, sessionId, file, area, hash, branch, remote, state, number, ...body } = {}) {
-    const repo = await gitRepo(projectPath);
-    const directory = sessionId ? sessionWorktree(sessionId, repo) : repo;
+  async function execute(action, { projectPath, sessionId, cwd, file, area, hash, branch, remote, state, number, ...body } = {}) {
     try {
-      if (sessionId && ["stage", "unstage", "commit", "push", "createPull", "closePull"].includes(action)) {
-        tasks?.()?.assertSession?.(getSession(sessionId));
+      if (sessionId) {
+        const session = sessions.getSession(sessionId);
+        if (!sameGitPath(session.projectPath, projectPath) || !session.worktree)
+          throw new HttpError(400, "이 프로젝트에 연결된 워크트리 세션이 아닙니다.", "git-context");
+        if (cwd !== undefined && !sameGitPath(cwd, session.worktree.dir))
+          throw new HttpError(400, "세션과 선택한 작업 폴더가 다릅니다.", "git-context");
+        cwd = session.worktree.dir;
       }
-      if (action === "overview") return await gitOverview(repo, projects.projectSessions(repo));
-      if (action === "diff") return { diff: await fileDiff(directory, file ?? "", area) };
-      if (action === "show") return { diff: await showCommit(repo, hash) };
-      if (action === "branch") return { diff: await branchDiff(repo, branch) };
-      if (action === "pulls") return await githubPulls.list(directory, { remote, state: state ?? "open" });
-      if (action === "pull") return await githubPulls.detail(directory, number, { remote });
-      if (["push", "createPull", "mergePull", "closePull"].includes(action)) {
-        if (sessionId && runner.isRunning(sessionId)) throw new HttpError(409, "세션이 실행 중입니다. 끝나거나 일시중지한 뒤 GitHub를 변경하세요.");
-        const options = { ...body };
-        if (remote !== undefined) options.remote = remote;
-        if (branch !== undefined) options.branch = branch;
-        if (state !== undefined) options.state = state;
-        let result;
-        if (action === "push") result = await githubPulls.push(directory, options);
-        else if (action === "createPull") result = await githubPulls.create(directory, options);
-        else if (action === "mergePull") result = await githubPulls.merge(directory, number, options);
-        else result = await githubPulls.close(directory, number, options);
-        notify("git", { projectPath: repo });
+      const ctx = await client.context(projectPath, cwd);
+      const options = { ...body, ...(hash === undefined ? {} : { hash }), ...(branch === undefined ? {} : { branch }), ...(remote === undefined ? {} : { remote }), ...(state === undefined ? {} : { state }) };
+      const changed = async (promise) => {
+        const result = await promise;
+        notify("git", { projectPath, cwd: ctx.cwd });
         return result;
+      };
+      if (action === "overview") {
+        const overview = await gitOverview(ctx.cwd, projects.projectSessions(projectPath));
+        return { ...overview, cwd: ctx.cwd, originalCwd: ctx.original };
       }
-      if (action === "stage" || action === "unstage") {
-        if (sessionId && runner.isRunning(sessionId)) throw new HttpError(409, "세션이 실행 중입니다. 끝나거나 일시중지한 뒤 변경하세요.");
-        const count = await (action === "stage" ? stage : unstage)(directory, body.files);
-        notify("git", { projectPath: repo });
-        return { ok: true, count };
+      if (action === "diff") return { diff: await fileDiff(ctx.cwd, file ?? "", area) };
+      if (action === "show") return { diff: await showCommit(ctx.cwd, hash) };
+      if (action === "branch") return { diff: await branchDiff(ctx.cwd, branch) };
+      if (action === "worktrees") return await client.list(ctx);
+      if (action === "createWorktree") return await changed(client.create(ctx, options));
+      if (action === "removeWorktree") return await changed(client.remove(ctx, options));
+      if (action === "remotes") return await client.remotes(ctx, remote);
+      if (action === "fetch") return await changed(client.fetch(ctx, options));
+      if (action === "preview") return await client.preview(ctx, options);
+      if (action === "execute") return await changed(client.execute(ctx, options));
+      if (action === "recovery") return await client.recovery(ctx);
+      if (action === "restore") return await changed(client.restore(ctx, options));
+      if (action === "push" && !Object.hasOwn(body, "repo")) return await changed(client.push(ctx, options));
+      if (action === "pulls") return await githubPulls.list(ctx.cwd, { remote, state: state ?? "open" });
+      if (action === "pull") return await githubPulls.detail(ctx.cwd, number, { remote });
+      if (["push", "createPull", "mergePull", "closePull"].includes(action)) {
+        return await changed(client.write(ctx, action, async actual => {
+          if (action === "push") return githubPulls.push(actual.cwd, options);
+          if (action === "createPull") return githubPulls.create(actual.cwd, options);
+          if (action === "mergePull") return githubPulls.merge(actual.cwd, number, options);
+          return githubPulls.close(actual.cwd, number, options);
+        }));
       }
-      if (action === "commit") {
-        if (sessionId && runner.isRunning(sessionId)) throw new HttpError(409, "세션이 실행 중입니다. 끝나거나 일시중지한 뒤 커밋하세요.");
-        const files = Array.isArray(body.files) ? body.files : null;
-        const result = await commit(directory, body.message, files, { staged: body.staged === true });
-        notify("git", { projectPath: repo });
+      if (action === "stage" || action === "unstage") return await changed(client.write(ctx, action, async actual => ({ ok: true, count: await (action === "stage" ? stage : unstage)(actual.cwd, body.files) })));
+      if (action === "commit") return await changed(client.write(ctx, action, async actual => ({ ok: true, result: await commit(actual.cwd, body.message, Array.isArray(body.files) ? body.files : null, { staged: body.staged === true }) })));
+      if (action === "checkout") return await changed(client.write(ctx, action, async actual => {
+        const result = await checkout(actual.cwd, String(branch ?? ""));
         return { ok: true, result };
-      }
-      if (action === "checkout") {
-        // 원본 폴더에서 일하는 세션이 실행 중이면 그 아래의 파일을 바꾸지 않는다.
-        const busy = projects.projectSessions(repo).find((s) => insideTaskPath(s.cwd ?? s.projectPath, repo) && runner.isRunning(s.id));
-        if (busy) throw new HttpError(409, `"${busy.title}" 세션이 원본 폴더에서 실행 중입니다. 끝나거나 일시중지한 뒤 체크아웃하세요.`);
-        const result = await checkout(repo, String(branch ?? ""));
-        notify("git", { projectPath: repo });
-        return { ok: true, result };
-      }
+      }));
+      // Preserve the former endpoint while routing it through the same validation and rollback.
       if (action === "merge") {
-        const result = await merge(repo, String(branch ?? ""));
-        notify("git", { projectPath: repo });
-        return { ok: true, result };
+        const preview = await client.preview(ctx, { action: "merge", branch });
+        if (body.expectedHead && body.expectedHead !== preview.head) throw new HttpError(409, "현재 커밋이 바뀌었습니다.", "stale-head");
+        if (body.expectedSourceHead && body.expectedSourceHead !== preview.sourceHead) throw new HttpError(409, "병합할 커밋이 바뀌었습니다.", "stale-head");
+        return await changed(client.execute(ctx, { previewId: preview.previewId }));
       }
       throw new HttpError(404, "없는 API입니다.");
-    } catch (error) {
-      if (error instanceof GitHubError) throw new HttpError(error.status, error.message, error.reason, { outcomeUnknown: error.outcomeUnknown });
-      if (error instanceof HttpError) throw error;
-      throw new HttpError(error.conflict ? 409 : 400, error.message, error.conflict ? "conflict" : undefined);
+    } catch (e) {
+      if (e instanceof GitHubError) throw new HttpError(e.status, e.message, e.reason, { outcomeUnknown: e.outcomeUnknown });
+      if (e instanceof HttpError) throw e;
+      throw new HttpError(e.conflict ? 409 : 400, e.message, e.conflict ? "conflict" : undefined);
     }
   }
-
   return { execute };
 }

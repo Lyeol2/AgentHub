@@ -1,5 +1,6 @@
 // Parse report references without HTML or a DOM. Rendering and artifact cards share
 // this parser so that a path shown in a card is the path its inline link opens.
+import { mathAt } from "./math-syntax.js";
 const IMAGE_EXT = /\.(?:png|jpe?g|gif|webp|avif|bmp|ico)$/i;
 const MARKDOWN_EXT = /\.(?:md|markdown|mdown)$/i;
 const HTML_EXT = /\.(?:html?|xhtml)$/i;
@@ -153,6 +154,8 @@ export function tokenizeReportInline(source, { references = [] } = {}) {
   for (let i = 0; i < text.length;) {
     const code = codeAt(text, i);
     if (code) { tokens.push(code); i = code.end; continue; }
+    const math = mathAt(text, i);
+    if (math) { tokens.push(math); i = math.end; continue; }
     const markdown = markdownAt(text, i);
     if (markdown) { tokens.push(markdown); i = markdown.end; continue; }
     const previous = i ? text[i - 1] : "";

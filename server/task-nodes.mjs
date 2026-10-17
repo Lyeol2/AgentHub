@@ -15,11 +15,15 @@ export async function runTaskNode({ command, tasks, origin = null, input = "", f
     const taskId = origin?.taskId ?? flow.taskId;
     if (!taskId) throw failure("task-missing", "마무리할 작업을 찾지 못했습니다. 작업에 연결된 세션이나 새 작업 노드 뒤에 연결하세요.");
     const message = renderTemplate(command.commitMessage ?? "", variables).trim();
-    const { task, pull } = await tasks.finish(taskId, { ...(message ? { message } : {}),
+    // finishMode가 project면 작업에 저장된 반영 방식(작업 설정의 기본값)을 따른다.
+    const mode = ["pr", "local"].includes(command.finishMode) ? command.finishMode : undefined;
+    const { task, pull } = await tasks.finish(taskId, { ...(message ? { message } : {}), ...(mode ? { mode } : {}),
+      push: command.pushTarget === true,
       description: renderTemplate(command.description ?? "{{input}}", variables).slice(0, 40_000),
       verification: renderTemplate(command.verification ?? "", variables).slice(0, 10_000) });
+    const local = task.completion?.kind === "local" ? { targetHead: task.completion.targetHead, publishState: task.completion.publishState } : null;
     return { ok: true, action: "finish", taskId: task.id, title: task.title, branch: task.branch, targetBranch: task.targetBranch, cwd: task.cwd,
-      pull: pull ? { number: pull.number, url: pull.url, state: pull.state } : null };
+      pull: pull ? { number: pull.number, url: pull.url, state: pull.state } : null, local };
   }
   flow.tasks ??= {};
   let task = flow.tasks[command.id] ? tasks.get(flow.tasks[command.id]) : null;
@@ -45,6 +49,7 @@ export function taskResultText(result, input = "") {
     result.outcomeUnknown ? "원격 요청의 완료 여부를 알 수 없습니다. 작업 탭에서 상태 확인을 먼저 하세요." : null].filter(Boolean).join("\n") + request;
   if (result.action === "finish") return ["[작업 마무리]", "작업: " + result.title,
     result.pull ? `PR #${result.pull.number}${result.pull.state === "MERGED" ? " (이미 병합됨)" : ""}: ${result.pull.url}` : null,
+    result.local ? `로컬 반영: ${result.targetBranch} ${String(result.local.targetHead ?? "").slice(0, 8)}${result.local.publishState === "done" ? " (원격에 푸시함)" : ""}` : null,
     `브랜치: ${result.branch} → ${result.targetBranch}`].filter(Boolean).join("\n") + request;
   return [result.reused ? "[새 작업 · 이번 실행에서 만든 작업 사용]" : "[새 작업]", "작업: " + result.title,
     "유형: " + (TYPE_LABEL[result.type] ?? result.type), `브랜치: ${result.branch} (기준 ${result.baseBranch}, PR 대상 ${result.targetBranch})`,

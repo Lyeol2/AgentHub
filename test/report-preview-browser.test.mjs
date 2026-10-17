@@ -62,16 +62,49 @@ async function withBrowser(temp, url, run) {
 
 const until = (condition) => `new Promise((resolve,reject)=>{const end=Date.now()+8000;const check=()=>{if(${condition})resolve(true);else if(Date.now()>end)reject(Error('Timed out: '+${JSON.stringify(condition)}));else setTimeout(check,25);};check();})`;
 
-test("browser: report cards, image gallery, Markdown, isolated HTML, localhost, mentions and missing files", { timeout: 60000 }, async (t) => {
+test("browser: report cards, image gallery, Markdown math, isolated HTML, localhost, mentions and missing files", { timeout: 60000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(chrome).then(() => true, () => false)) return t.skip("Windows Chromium required");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-report-"));
   const project = path.join(temp, "project");
   await fs.mkdir(path.join(project, "docs"), { recursive: true });
+  const literalMath = String.raw`$literal = \frac{1}{2}$
+$$\int_0^1 x\,dx$$`;
+  const invalidMath = String.raw`$\notARealMathCommand{x}$`;
+  const reportMarkdown = [String.raw`# 검증 결과
+
+**통과**: 링크와 미리보기를 확인했습니다.
+
+[연결 문서](nested.txt:1)
+
+문장 안 수식 $E=mc^2$도 읽을 수 있습니다.
+
+$$
+\frac{a+b}{c+d}
+$$
+
+$$
+\int_0^1 x^2\,dx=\frac{1}{3}
+$$
+
+$$
+\begin{bmatrix}
+1 & 2 \\
+3 & 4
+\end{bmatrix}
+$$
+
+$$
+${Array.from({ length: 30 }, (_, index) => `a_{${index + 1}}`).join(" + ")} = S
+$$
+
+| 항목 | 수식 |
+|---|---|
+| 절댓값 | $|x|$ |`, "```latex", literalMath, "```", `잘못된 수식도 원문으로 남습니다: ${invalidMath}`].join("\n\n");
   const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
   await Promise.all([
     fs.writeFile(path.join(project, "docs", "화면 (완료).png"), png),
     fs.writeFile(path.join(project, "docs", "두번째.png"), png),
-    fs.writeFile(path.join(project, "docs", "result.md"), "# 검증 결과\n\n**통과**: 링크와 미리보기를 확인했습니다.\n\n[연결 문서](nested.txt:1)"),
+    fs.writeFile(path.join(project, "docs", "result.md"), reportMarkdown),
     fs.writeFile(path.join(project, "docs", "nested.txt"), "연결 문서의 본문"),
     fs.writeFile(path.join(project, "docs", "preview.css"), "#local-result{color:rgb(20, 90, 180)}"),
     fs.writeFile(path.join(project, "docs", "preview.js"), "document.getElementById('local-result').textContent='HTML 스크립트 동작'; document.body.dataset.ran='yes';"),
@@ -115,9 +148,18 @@ test("browser: report cards, image gallery, Markdown, isolated HTML, localhost, 
     await evaluate("document.querySelector('.report-preview').close(); document.querySelector('.mention-chip').click()");
     await evaluate(until("document.querySelector('.report-document h1')?.textContent==='검증 결과'"));
     assert.equal(await evaluate("document.querySelector('.report-document strong').textContent"), "통과");
+    assert.equal(await evaluate("document.querySelectorAll('.report-document .katex').length"), 6);
+    assert.equal(await evaluate("document.querySelectorAll('.report-document .md-math-display .katex').length"), 4);
+    assert.equal(await evaluate("document.querySelectorAll('.report-document tbody tr:first-child td').length"), 2);
+    assert.equal(await evaluate("document.querySelectorAll('.report-document tbody td:last-child .katex').length"), 1);
+    assert.equal((await evaluate("document.querySelector('.report-document pre code').textContent")).trim(), literalMath);
+    assert.equal(await evaluate("document.querySelectorAll('.report-document pre .katex').length"), 0);
+    assert.ok((await evaluate("document.querySelector('.report-document .md-math-error').textContent")).includes(invalidMath.slice(1, -1)));
+    assert.ok(await evaluate("Promise.all([document.fonts.load('16px KaTeX_Main'),document.fonts.load('italic 16px KaTeX_Math')]).then(groups=>groups.every(fonts=>fonts.length>0 && fonts.every(font=>font.status==='loaded')))"), "KaTeX fonts load from the local bundle");
     await fs.writeFile(path.join(output, "desktop.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
     await evaluate("[...document.querySelectorAll('.report-toolbar button')].find(x=>x.textContent==='원문').click()");
     assert.ok(await evaluate("!document.querySelector('.report-source').hidden && document.querySelector('.report-source').textContent.startsWith('# 검증 결과')"));
+    assert.equal(await evaluate("document.querySelector('.report-source').textContent"), reportMarkdown);
     await evaluate("[...document.querySelectorAll('.report-toolbar button')].find(x=>x.textContent==='미리보기').click(); document.querySelector('.report-document a').click()");
     await evaluate(until("document.querySelector('.report-source')?.textContent==='연결 문서의 본문'"));
     assert.equal(await evaluate("document.querySelector('.report-target-line').getAttribute('aria-label')"), "1행");
@@ -163,6 +205,7 @@ test("browser: report cards, image gallery, Markdown, isolated HTML, localhost, 
     await fs.writeFile(path.join(output, "light.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
     await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     assert.ok(await evaluate("new Promise(resolve=>requestAnimationFrame(()=>{const d=document.querySelector('.report-preview');resolve(d.getBoundingClientRect().right<=innerWidth && d.scrollWidth<=d.clientWidth)}))"));
+    assert.ok(await evaluate("(()=>{const body=document.querySelector('.report-body');const blocks=[...document.querySelectorAll('.report-document .md-math-display')];return body.scrollWidth<=body.clientWidth+1 && blocks.every(block=>block.getBoundingClientRect().width<=body.clientWidth) && blocks.some(block=>block.scrollWidth>block.clientWidth && ['auto','scroll'].includes(getComputedStyle(block).overflowX))})()"), "Long formulas scroll inside their own block without widening the mobile document");
     await fs.writeFile(path.join(output, "mobile.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
     await evaluate("document.querySelector('.report-preview').close(); document.querySelector('[data-report-session]').click()");
     await evaluate(until("document.querySelector('#s-title').textContent==='참조 세션'"));

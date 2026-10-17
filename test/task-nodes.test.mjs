@@ -91,6 +91,11 @@ test("task nodes: validate start and finish settings", () => {
   const finish = checkCommand({ kind: "task", taskAction: "finish" });
   assert.equal(finish.title, "작업 마무리");
   assert.equal(finish.description, "{{input}}");
+  assert.equal(finish.finishMode, "project");
+  assert.equal(finish.pushTarget, false);
+  assert.equal(checkCommand({ kind: "task", taskAction: "finish", finishMode: "pr", pushTarget: true }).pushTarget, false, "PR 방식에는 대상 브랜치 푸시가 없다");
+  assert.equal(checkCommand({ kind: "task", taskAction: "finish", finishMode: "local", pushTarget: true }).pushTarget, true);
+  assert.throws(() => checkCommand({ kind: "task", taskAction: "finish", finishMode: "squash" }), /반영 방식/);
   assert.throws(() => checkCommand({ kind: "task", taskAction: "merge" }), /새 작업 또는 작업 마무리/);
   assert.throws(() => checkCommand({ kind: "task", taskType: "release" }), /배포 버전/);
   assert.throws(() => checkCommand({ kind: "task", titleTemplate: "  " }), /작업 제목/);
@@ -141,6 +146,32 @@ test("task nodes: start creates a task for the connected session and finish open
   assert.match(f.pulls[0].body, /npm test 통과/);
   assert.equal(git(task.cwd, "log", "-1", "--format=%s"), "feat: 흐름 기능 작업");
   assert.equal(f.runner.calls.some((call) => call.id === "failed"), false);
+});
+
+test("task nodes: local finish merges into the target branch without opening a PR", async (t) => {
+  const f = await fixture(t);
+  const button = await f.ok("POST", "/commands", { kind: "button", title: "시작", prompt: "로컬 반영 작업", projectPath: f.repo });
+  const start = await f.ok("POST", "/commands", { kind: "task", taskAction: "start", projectPath: f.repo });
+  const finish = await f.ok("POST", "/commands", { kind: "task", taskAction: "finish", finishMode: "local", projectPath: f.repo });
+  assert.equal(finish.finishMode, "local");
+  await f.ok("POST", "/links", { from: button.id, to: start.id });
+  await f.ok("POST", "/links", { from: start.id, to: "worker", when: "success" });
+  await f.ok("POST", "/links", { from: "worker", to: finish.id });
+  await f.ok("POST", "/links", { from: finish.id, to: "reporter", when: "success" });
+  await f.ok("POST", "/links", { from: finish.id, to: "failed", when: "error" });
+  await f.ok("POST", `/commands/${button.id}/run`);
+  await f.until(() => f.runner.calls.find((call) => call.id === "worker"), "작업 세션 전달");
+  const [task] = (await f.ok("GET", `/tasks?path=${encodeURIComponent(f.repo)}`)).tasks;
+  fs.writeFileSync(path.join(task.cwd, "local.txt"), "local change\n");
+
+  await f.ok("POST", `/commands/${finish.id}/run`);
+  const done = await f.until(() => f.runner.calls.find((call) => ["reporter", "failed"].includes(call.id)), "로컬 반영 결과 전달");
+  assert.equal(done.id, "reporter", done.prompt);
+  assert.match(done.prompt, new RegExp(`로컬 반영: ${task.targetBranch} [0-9a-f]{8}`));
+  assert.equal(f.pulls.length, 0);
+  const merged = (await f.ok("GET", `/tasks?path=${encodeURIComponent(f.repo)}`)).tasks[0];
+  assert.equal(merged.state, "merged");
+  assert.equal(git(f.repo, "show", `${task.targetBranch}:local.txt`), "local change");
 });
 
 test("task nodes: finish without a task goes to the failure output", async (t) => {
