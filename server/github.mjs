@@ -172,6 +172,8 @@ export class GitHubPulls {
 
   failure(error, write = false) {
     if (error instanceof GitHubError) return error;
+    // 찾아 둔 gh 파일이 지워졌거나 실행할 수 없으면 설치부터 다시 하게 안내한다.
+    if (["ENOENT", "EACCES", "EPERM"].includes(error.code)) return new GitHubError("GitHub CLI를 실행하지 못했습니다. 설정에서 GitHub CLI를 다시 설치하고 로그인하세요.", "gh-missing");
     if (error.timedOut) return new GitHubError(write
       ? "요청 시간이 초과되어 완료 여부를 알 수 없습니다. GitHub에서 완료 여부를 확인한 뒤 다시 시도하세요."
       : "GitHub 응답 시간이 초과되었습니다. 연결을 확인하고 다시 조회하세요.", "github-timeout", 504, write);
@@ -180,7 +182,13 @@ export class GitHubPulls {
     if (auth) return auth;
     const message = cleanError(error.stderr || error.stdout || error.message);
     const http = Number(message.match(/HTTP\s+(\d{3})/i)?.[1]);
-    if (http === 401) return new GitHubError("GitHub 인증이 만료되었습니다. 설정에서 GitHub CLI에 다시 로그인하세요.", "gh-auth", 401);
+    // 로그인하지 않은 gh는 HTTP 응답 없이 로그인 방법만 알린다.
+    if (http === 401 || (!http && /gh auth login|not logged in/i.test(message))) return new GitHubError("GitHub 인증이 만료되었습니다. 설정에서 GitHub CLI에 다시 로그인하세요.", "gh-auth", 401);
+    // 권한 오류는 쓰기 전에 거절되므로 완료 여부가 불확실하지 않다. 원래 응답은 뒤에 붙여 원인을 볼 수 있게 한다.
+    if (http === 403) return /rate limit/i.test(message)
+      ? new GitHubError("GitHub API 사용 한도를 넘었습니다. 잠시 후 다시 시도하세요.\n" + message, "github-rate-limit", 429)
+      : new GitHubError("GitHub 권한이 부족합니다. 로그인한 계정에 이 저장소의 쓰기 권한이 있는지, 조직이 GitHub CLI 접근을 허용했는지 확인하세요.\n" + message, "gh-permission", 403);
+    if (http === 410) return new GitHubError("이 저장소는 GitHub Issues를 꺼 두었습니다. 저장소 설정에서 Issues를 켜세요.\n" + message, "github-issues-disabled", 409);
     const unknown = write && (!http || http >= 500);
     return new GitHubError((unknown ? "완료 여부를 확인한 뒤 다시 시도하세요.\n" : "") + (message || "GitHub 요청에 실패했습니다."),
       "github-error", http === 409 ? 409 : http >= 500 || unknown ? 502 : 400, unknown);
@@ -214,7 +222,7 @@ export class GitHubPulls {
     if (!file) throw new GitHubError("GitHub CLI가 없습니다. 설정에서 GitHub CLI를 설치하고 로그인하세요.", "gh-missing");
     try { await this.run(file, ["auth", "status", "--active", "--hostname", "github.com"], { cwd: dir, timeout: 15_000 }); }
     catch (error) {
-      if (error.timedOut) throw this.failure(error);
+      if (error.timedOut || error.code) throw this.failure(error);
       throw new GitHubError("GitHub CLI 인증이 필요합니다. 설정에서 GitHub CLI에 로그인하세요.", "gh-auth", 401);
     }
     const pushes = (await this.git(dir, ["remote", "get-url", "--push", "--all", remote.name])).trim().split(/\r?\n/).filter(Boolean);

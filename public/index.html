@@ -972,6 +972,19 @@
     </form>
   </dialog>
 
+  <dialog id="task-issue-dialog" class="task-dialog" aria-labelledby="task-issue-heading">
+    <form id="task-issue-form" class="dialog-form">
+      <h3 id="task-issue-heading">GitHub 이슈 연결</h3>
+      <p class="hint" id="task-issue-summary"></p>
+      <label>연결 방식 <select id="task-issue-mode"><option value="existing">기존 이슈 번호로 연결</option><option value="create">이 작업 내용으로 새 이슈 만들기</option></select></label>
+      <label id="task-issue-number-row">이슈 번호 <input id="task-issue-number" inputmode="numeric" maxlength="10" placeholder="예: 42" autocomplete="off"></label>
+      <label id="task-issue-title-row" hidden>이슈 제목 <input id="task-issue-title" maxlength="256" autocomplete="off"></label>
+      <p class="hint">새 이슈는 내 GitHub 계정에 지정하고 agenthub 라벨을 붙입니다. 이 작업으로 만든 PR 설명에 <code>Closes #번호</code>를 넣어, PR이 기본 브랜치에 병합되면 GitHub가 이슈를 닫습니다.</p>
+      <p class="error" id="task-issue-error" role="alert" hidden></p>
+      <menu><button type="button" class="ghost" data-task-dialog-close>취소</button><button type="submit" class="primary" id="task-issue-submit">연결</button></menu>
+    </form>
+  </dialog>
+
   <dialog id="finish-task-dialog" class="task-dialog" aria-labelledby="task-finish-heading">
     <form id="finish-task-form" class="dialog-form">
       <h3 id="task-finish-heading">변경 검토 및 반영</h3>
