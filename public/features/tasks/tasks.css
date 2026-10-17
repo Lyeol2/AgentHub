@@ -77,6 +77,10 @@
 .task-actions button, .task-actions a { font-size: 12px; }
 .task-pull-link { color: var(--accent, #8fa6ff); text-decoration: none; }
 .task-pull-link:hover { text-decoration: underline; }
+.task-issue { margin: 8px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.task-issue[data-state="closed"] .task-pull-link { color: var(--muted, #9ca3af); }
+.task-issue-error { color: var(--danger); }
+.task-issue > .task-login { margin-left: 8px; }
 .task-inline-error { margin: 10px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .task-card > .task-login { margin-top: 8px; }
 .error > .task-login { margin-left: 8px; }

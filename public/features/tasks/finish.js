@@ -1,5 +1,5 @@
 // One review dialog owns the next step: commit → integrate → verify → publish/merge.
-export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, onUnknown }) {
+export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, onUnknown, decorateError = () => {} }) {
   const $ = id => document.getElementById(id);
   const dialog = $('finish-task-dialog');
   const drafts = new Map();
@@ -10,7 +10,11 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
   const selected = () => [...($('task-finish-files')?.querySelectorAll('input:checked') || [])].map(input => input.value);
   const behind = () => review?.task?.freshness?.behind || (mode() === 'local' && review?.localBehind);
   const blockedBase = () => task?.type !== 'hotfix' && review?.task?.freshness?.mainMissing;
-  function message(text = '') { $('task-finish-error').textContent = text; $('task-finish-error').hidden = !text; }
+  function message(text = '', reason) {
+    const el = $('task-finish-error');
+    el.textContent = text; el.hidden = !text;
+    if (text) decorateError(el, reason);
+  }
   function saveDraft() {
     if (!task) return;
     drafts.set(task.id, { message: $('task-finish-message').value, description: $('task-finish-description').value,
@@ -71,7 +75,7 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
       const commits = $('task-finish-commits'); commits.replaceChildren();
       for (const commit of value.commits || []) commits.append(el('li', `${commit.hash.slice(0, 8)} ${commit.subject}`));
       $('task-finish-commit-count').textContent = `기준 브랜치에 없는 커밋 ${(value.commits || []).length}개`;
-    } catch (error) { if (active(serial)) message(error.message); }
+    } catch (error) { if (active(serial)) message(error.message, error.reason); }
     finally { if (active(serial)) { loading = false; render(); } }
   }
   async function showDiff(file) {
@@ -107,9 +111,10 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
       } else { dialog.close(); drafts.delete(id); }
     } catch (error) {
       const text = error.outcomeUnknown ? '완료 여부를 확인하지 못했습니다. 중복 실행을 막기 위해 작업 카드의 최신 확인으로 결과를 먼저 확인하세요.' : error.message;
-      onError(id, text);
+      const reason = error.outcomeUnknown ? undefined : error.reason;
+      onError(id, text, reason);
       if (error.outcomeUnknown) { uncertain = true; onUnknown(id, action); }
-      if (active(serial)) message(text);
+      if (active(serial)) message(text, reason);
       // A local merge may have finished before publishing failed. Reflect that state.
       try {
         const value = await api('GET', `/api/tasks?path=${encodeURIComponent(project)}`);

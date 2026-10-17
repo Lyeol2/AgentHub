@@ -26,7 +26,8 @@ export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW
   const base = type === 'hotfix' ? flow.main : flow.develop;
   const target = type === 'feature' ? flow.develop : flow.main;
   const prefix = flow[`${type}Prefix`] ?? `${type}/`;
-  const branch = `${prefix}${name || (type === 'release' ? version || '<버전>' : '<작업ID>-<이름>')}`;
+  const rest = name.startsWith(prefix) ? name.slice(prefix.length) : name;
+  const branch = `${prefix}${rest || (type === 'release' ? version || '<버전>' : '<작업ID>-<이름>')}`;
   return `${base}에서 ${branch} 생성 → ${target}으로 PR`;
 }
 
@@ -42,6 +43,8 @@ export function createTasksController({
   const finishDialog = $('finish-task-dialog');
   const finishForm = $('finish-task-form');
   const settingsDialog = $('task-settings-dialog');
+  const issueDialog = $('task-issue-dialog');
+  const issueForm = $('task-issue-form');
   const settingsForm = $('task-settings-form');
   // 화면에서만 보여 줄 요청 오류. { message, reason }
   const taskErrors = new Map();
@@ -67,6 +70,8 @@ export function createTasksController({
   let settingsBusy = false;
   let settingsLoading = false;
   let settingsReadFailed = false;
+  let issueTaskId = null;
+  let issueBusy = false;
   const workbranchPicker = createWorkbranchPicker({
     api, owner: 'task', select: $('task-workbranch'), status: $('task-workbranch-status'), refresh: $('task-workbranch-refresh'),
     getPath: () => createProject,
@@ -80,7 +85,8 @@ export function createTasksController({
   const finisher = createTaskFinisher({ api, isCurrent: path => sameProject(path),
     onTask: task => { replaceTask(task); renderTasks(); },
     onBusy: (value, id) => { finishBusy = value; if (value) pendingTasks.add(id); else pendingTasks.delete(id); renderTasks(); },
-    onError: (id, message) => { if (message) taskErrors.set(id, message); else taskErrors.delete(id); },
+    onError: (id, message, reason) => { if (message) taskErrors.set(id, { message, reason }); else taskErrors.delete(id); },
+    decorateError: (el, reason) => appendLogin(el, reason),
     onUnknown: (id, action) => uncertainTasks.set(id, action),
   });
   const taskAssistant = createTaskAssistant({ api, getStatus: () => data?.status, fillModels,
@@ -91,7 +97,7 @@ export function createTasksController({
 
   // GitHub 로그인으로 풀 수 있는 오류에는 설정의 GitHub CLI 설치·로그인을 바로 연다.
   function appendLogin(parent, reason) {
-    if (!['git-auth', 'gh-auth', 'gh-missing'].includes(reason)) return;
+    if (!['git-auth', 'gh-auth', 'gh-missing', 'gh-permission'].includes(reason)) return;
     const button = node('button', 'ghost sm task-login', reason === 'gh-missing' ? 'GitHub CLI 설치' : 'GitHub 로그인');
     button.type = 'button';
     button.addEventListener('click', () => openSetup('gh', reason === 'gh-missing' ? 'install' : 'login'));
@@ -209,7 +215,9 @@ export function createTasksController({
       const meta = node('div', 'task-meta');
       meta.append(node('span', '', TASK_TYPES[task.type] || task.type || '작업'));
       meta.append(node('span', 'task-branch', `${task.branch || '브랜치 준비 중'} → ${task.targetBranch || (task.type === 'feature' ? flow.develop : flow.main)}`));
+      if (task.version) meta.append(node('span', '', `버전 ${task.version}`));
       card.append(meta);
+      if (task.issue) card.append(issueLine(task.issue));
       if (task.state !== 'cleaned') {
         const freshness = node('div', 'task-freshness', describeTaskFreshness(task.freshness));
         freshness.dataset.state = task.freshness?.state || 'unknown';
@@ -252,17 +260,26 @@ export function createTasksController({
       if ((task.state === 'working' || task.state === 'review') && ['needs-update', 'behind', 'stale', 'diverged'].includes(task.freshness?.state)) {
         secondary.append(actionButton('기준 변경 반영', 'sync', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
       }
-      if (task.state === 'merged') {
-        actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { primary: true, disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
-        if (task.completion?.kind === 'local' && task.completion.publishState !== 'done') secondary.append(actionButton('대상 브랜치 푸시', 'push-target', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+      const blocked = uncertainTasks.has(task.id) || Boolean(task.pendingAction);
+      const developPending = task.state === 'merged' && task.type !== 'feature' && task.developPending !== false;
+      if (developPending) {
+        // 배포 준비·긴급 수정은 main 반영 뒤 develop에도 반영해야 정리할 수 있다.
+        if (task.completion?.kind !== 'local' && task.developPull?.state === 'OPEN') actions.append(pullLink(task.developPull, `${flow.develop} 반영 PR`));
+        else actions.append(actionButton(task.completion?.kind === 'local' ? `${flow.develop}에 반영` : `${flow.develop} 반영 PR 만들기`, 'develop', task, { primary: true, disabled: blocked }));
       }
+      if (task.state === 'merged') {
+        actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { primary: !developPending, disabled: blocked }));
+        const unpushed = task.completion?.kind === 'local' && (task.completion.publishState !== 'done' || (task.completion.developHead && task.completion.developPublishState !== 'done'));
+        if (unpushed) secondary.append(actionButton('대상 브랜치 푸시', 'push-target', task, { disabled: blocked }));
+      }
+      if (task.state !== 'cleaned') secondary.append(task.issue ? actionButton('이슈 연결 해제', 'unlink-issue', task) : actionButton('이슈 연결', 'link-issue', task));
       const remove = actionButton('작업 삭제', 'delete', task);
       remove.classList.add('danger');
       secondary.append(remove);
       card.append(actions, more);
       const stage = task.state === 'working' ? 'AI 작업 → 변경 검토 → 반영' : task.state === 'review' ? 'PR 생성 완료 · 리뷰와 병합을 기다립니다' : task.state === 'merged' ? '반영 완료 · 폴더 정리는 선택 사항입니다' : '작업 기록 보관 중';
       card.append(node('p', 'task-progress', stage));
-      if (task.state === 'merged' && task.type !== 'feature') card.append(node('p', 'task-note', `${flow.develop}에도 반영되어야 작업 폴더를 정리할 수 있습니다.`));
+      if (developPending) card.append(node('p', 'task-note', `${flow.develop}에도 반영되어야 작업 폴더를 정리할 수 있습니다.`));
       if (task.state === 'cleaned') card.append(node('p', 'task-note', task.inPlace
         ? `원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌렸습니다. 작업과 PR 기록은 보관됩니다.`
         : task.worktreePreserved
@@ -283,6 +300,101 @@ export function createTasksController({
     }
   }
 
+  function pullLink(pull, label) {
+    const link = node('a', 'task-pull-link', `${label} #${pull.number}`);
+    try {
+      const url = new URL(pull.url);
+      if (url.protocol === 'https:') link.href = url.href;
+    } catch { /* Invalid server-provided links are not rendered as links. */ }
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    return link;
+  }
+
+  function issueLine(issue) {
+    const line = node('p', 'task-issue');
+    line.dataset.state = issue.state || 'unknown';
+    const label = `이슈 #${issue.number} · ${issue.state === 'closed' ? '닫힘' : '열림'}`;
+    let link = node('span', '', label);
+    try {
+      const url = new URL(issue.url);
+      if (url.protocol === 'https:') { link = node('a', 'task-pull-link', label); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; }
+    } catch { /* Invalid server-provided links are not rendered as links. */ }
+    line.append(link);
+    if (issue.title) line.append(node('span', '', ` ${issue.title}`));
+    if (issue.error) {
+      line.append(node('span', 'task-issue-error', ` · 상태 확인 실패: ${issue.error}`));
+      appendLogin(line, issue.errorReason);
+    }
+    return line;
+  }
+
+  function openIssue(task) {
+    if (!task || pendingTasks.has(task.id) || issueBusy) return;
+    issueTaskId = task.id;
+    issueForm?.reset();
+    $('task-issue-summary').textContent = `${task.title}\n${task.branch} → ${task.targetBranch}`;
+    $('task-issue-title').value = task.title || '';
+    updateIssueForm();
+    showError('task-issue-error');
+    issueDialog?.showModal();
+    $('task-issue-number')?.focus();
+  }
+
+  function updateIssueForm() {
+    const create = $('task-issue-mode')?.value === 'create';
+    $('task-issue-number-row').hidden = create;
+    $('task-issue-number').required = !create;
+    $('task-issue-title-row').hidden = !create;
+    $('task-issue-title').required = create;
+    $('task-issue-submit').textContent = issueBusy ? '처리 중…' : create ? '만들고 연결' : '연결';
+    $('task-issue-submit').disabled = issueBusy;
+  }
+
+  async function submitIssue(event) {
+    event.preventDefault();
+    const task = getTask(issueTaskId);
+    if (!task || issueBusy || !sameProject(projectPath)) return;
+    if (issueForm && !issueForm.reportValidity()) return;
+    const create = $('task-issue-mode').value === 'create';
+    const body = create ? { create: true, title: $('task-issue-title').value.trim() } : { number: $('task-issue-number').value.trim() };
+    const path = projectPath, epoch = projectEpoch, id = task.id;
+    issueBusy = true;
+    pendingTasks.add(id);
+    showError('task-issue-error');
+    updateIssueForm();
+    renderTasks();
+    try {
+      const result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/issue`, body);
+      if (sameProject(path, epoch)) { replaceTask(result.task); issueDialog?.close(); }
+    } catch (error) {
+      if (sameProject(path, epoch)) showError('task-issue-error', requestError(error), error.reason);
+    } finally {
+      issueBusy = false;
+      pendingTasks.delete(id);
+      updateIssueForm();
+      if (sameProject(path, epoch)) renderTasks();
+    }
+  }
+
+  async function unlinkIssue(task) {
+    if (!task?.issue || pendingTasks.has(task.id)) return;
+    if (!confirm(`이슈 #${task.issue.number} 연결을 해제할까요?\nGitHub 이슈와 이미 만든 PR은 그대로 둡니다.`)) return;
+    const path = projectPath, epoch = projectEpoch, id = task.id;
+    pendingTasks.add(id);
+    taskErrors.delete(id);
+    renderTasks();
+    try {
+      const result = await api('DELETE', `/api/tasks/${encodeURIComponent(id)}/issue`);
+      if (sameProject(path, epoch)) replaceTask(result.task);
+    } catch (error) {
+      taskErrors.set(id, { message: requestError(error), reason: error.reason });
+    } finally {
+      pendingTasks.delete(id);
+      if (sameProject(path, epoch)) renderTasks();
+    }
+  }
+
   function invalidateProject() {
     generation++;
     projectEpoch++;
@@ -293,6 +405,7 @@ export function createTasksController({
     loading = false;
     if (createDialog?.open) createDialog.close();
     if (finishDialog?.open) finishDialog.close();
+    if (issueDialog?.open) issueDialog.close();
     updateToolbar();
   }
 
@@ -315,6 +428,7 @@ export function createTasksController({
       resetSettings();
       if (createDialog?.open) createDialog.close();
       if (finishDialog?.open) finishDialog.close();
+      if (issueDialog?.open) issueDialog.close();
     }
     loading = true;
     showError('tasks-error');
@@ -338,7 +452,7 @@ export function createTasksController({
             replaceTask(result.value.task);
             if (!result.value.task?.pendingAction) uncertainTasks.delete(id);
             taskErrors.delete(id);
-          } else taskErrors.set(id, requestError(result.reason));
+          } else taskErrors.set(id, { message: requestError(result.reason), reason: result.reason?.reason });
         }
       }
       if (options.manual && uncertainCreates.has(path)) {
@@ -351,7 +465,7 @@ export function createTasksController({
       settings = gitflowSettings(contextResult.value?.settings || context?.settings);
       finishDefault = contextResult.value?.finishMode || 'pr';
     }
-    else if (contextResult) context = { error: requestError(contextResult.reason), freshness: { state: 'error' } };
+    else if (contextResult) context = { error: requestError(contextResult.reason), reason: contextResult.reason?.reason, freshness: { state: 'error' } };
     loading = false;
     updateToolbar();
     renderTasks();
@@ -591,7 +705,7 @@ export function createTasksController({
       await reloadSessions();
       if (sameProject(path, epoch)) {
         replaceTask(result.task);
-        if (result.startError) taskErrors.set(result.task.id, typeof result.startError === 'string' ? result.startError : result.startError.message || '작업은 만들어졌지만 시작하지 못했습니다. 세션에서 확인해 주세요.');
+        if (result.startError) taskErrors.set(result.task.id, { message: typeof result.startError === 'string' ? result.startError : result.startError.message || '작업은 만들어졌지만 시작하지 못했습니다. 세션에서 확인해 주세요.' });
         renderTasks();
         createDialog?.close();
         const sessionId = result.session?.id || result.task?.sessionIds?.at(-1);
@@ -615,54 +729,25 @@ export function createTasksController({
     finisher.open(task, options);
   }
 
-  async function finishTask(event) {
-    event.preventDefault();
-    if (finishBusy || !sameProject(finishProject) || !finishTaskId || uncertainTasks.has(finishTaskId)) return;
-    if (finishForm && !finishForm.reportValidity()) return;
-    const task = getTask(finishTaskId);
-    if (!task) return;
-    if (task.pendingAction || !['working', 'review'].includes(task.state)) {
-      showError('task-finish-error', '작업 상태가 변경되었습니다. 대화상자를 닫고 최신 상태를 확인해 주세요.');
-      return;
-    }
-    const message = $('task-finish-message')?.value.trim();
-    if (!message) { showError('task-finish-error', '커밋 메시지를 입력해 주세요.'); return; }
-    const id = task.id;
-    const path = finishProject;
-    const epoch = projectEpoch;
-    finishBusy = true;
-    pendingTasks.add(id);
-    const submit = $('task-finish-submit');
-    if (submit) { submit.disabled = true; submit.textContent = '커밋·게시·PR 처리 중…'; }
-    showError('task-finish-error');
-    renderTasks();
-    try {
-      const result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/finish`, {
-        message, description: $('task-finish-description')?.value.trim() || '', verification: $('task-finish-verification')?.value.trim() || '',
-      });
-      if (sameProject(path, epoch)) {
-        replaceTask(result.task);
-        taskErrors.delete(id);
-        finishDialog?.close();
-      }
-    } catch (error) {
-      if (error.outcomeUnknown) uncertainTasks.set(id, 'finish');
-      const message = error.outcomeUnknown ? unknownMessage('커밋·게시·PR 생성') : requestError(error);
-      taskErrors.set(id, { message, reason: error.outcomeUnknown ? undefined : error.reason });
-      if (sameProject(path, epoch)) showError('task-finish-error', message, error.outcomeUnknown ? undefined : error.reason);
-    } finally {
-      finishBusy = false;
-      pendingTasks.delete(id);
-      if (submit) { submit.disabled = uncertainTasks.has(id); submit.textContent = '커밋·게시·PR 만들기'; }
-      if (sameProject(path, epoch)) renderTasks();
-    }
-  }
+  const finishTask = event => finisher.submit(event);
 
   async function runTaskAction(action, task) {
     if (!task || pendingTasks.has(task.id)) return;
     if (action !== 'refresh' && (uncertainTasks.has(task.id) || task.pendingAction)) return;
     if (action === 'cleanup' && !confirm(`${task.title}\n\n${task.inPlace ? '원본 폴더를 작업 전 브랜치로 되돌립니다.' : task.ownsWorktree === false ? '기존 작업 폴더는 보존합니다.' : `작업 폴더를 삭제합니다:\n${task.cwd}`}\n${task.ownsBranch === false ? '기존 로컬 브랜치는 보존합니다.' : `로컬 브랜치 ${task.branch}를 삭제합니다.`}\n작업·대화 기록과 원격 브랜치는 보존합니다.`)) return;
-    if (action === 'push-target' && !confirm(`${task.targetBranch}의 반영한 커밋을 ${task.remote}에 푸시할까요?\n${task.completion?.targetHead || ''}`)) return;
+    if (action === 'push-target') {
+      const completion = task.completion || {};
+      const develop = task.gitflow?.develop || DEFAULT_GITFLOW.develop;
+      const lines = [completion.publishState !== 'done' ? `${task.targetBranch} ${completion.targetHead || ''}` : '',
+        completion.developHead && completion.developPublishState !== 'done' ? `${develop} ${completion.developHead}` : ''].filter(Boolean);
+      if (!confirm(`반영한 커밋을 ${task.remote}에 푸시할까요?\n${lines.join('\n')}`)) return;
+    }
+    if (action === 'develop') {
+      const develop = task.gitflow?.develop || DEFAULT_GITFLOW.develop, main = task.gitflow?.main || DEFAULT_GITFLOW.main;
+      if (!confirm(task.completion?.kind === 'local'
+        ? `${task.branch}를 로컬 ${develop}에 병합할까요?\n충돌하면 병합을 취소하고 실행 전 상태로 되돌립니다.`
+        : `GitHub에 ${main} → ${develop} 반영 PR을 만들까요?\n이미 열린 반영 PR이 있으면 그 PR을 연결합니다.`)) return;
+    }
     const path = projectPath;
     const epoch = projectEpoch;
     const id = task.id;
@@ -682,7 +767,7 @@ export function createTasksController({
       if (action === 'cleanup' || action === 'refresh') await reloadSessions();
     } catch (error) {
       if (error.outcomeUnknown && action !== 'refresh') uncertainTasks.set(id, action);
-      const label = action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : '최신 확인';
+      const label = action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : '최신 확인';
       taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason });
     } finally {
       pendingTasks.delete(id);
@@ -809,7 +894,7 @@ export function createTasksController({
   $('task-finish-cancel')?.addEventListener('click', () => { if (!finishBusy) finishDialog?.close(); });
   document.querySelectorAll('[data-task-dialog-close]').forEach(button => button.addEventListener('click', () => {
     const dialog = button.closest('dialog');
-    if ((dialog === createDialog && createBusy) || (dialog === finishDialog && finishBusy)) return;
+    if ((dialog === createDialog && createBusy) || (dialog === finishDialog && finishBusy) || (dialog === issueDialog && issueBusy)) return;
     dialog?.close();
   }));
   list?.addEventListener('click', event => {
@@ -823,8 +908,12 @@ export function createTasksController({
     if (action === 'finish') { openFinish(task); return; }
     if (action === 'merge') { openFinish(task, { merge: true }); return; }
     if (action === 'delete') { void deleteTask(task); return; }
-    if (['refresh', 'sync', 'cleanup', 'push-target'].includes(action)) void runTaskAction(action, task);
+    if (action === 'link-issue') { openIssue(task); return; }
+    if (action === 'unlink-issue') { void unlinkIssue(task); return; }
+    if (['refresh', 'sync', 'cleanup', 'push-target', 'develop'].includes(action)) void runTaskAction(action, task);
   });
+  issueForm?.addEventListener('submit', submitIssue);
+  $('task-issue-mode')?.addEventListener('change', updateIssueForm);
   updateToolbar();
 
   return {

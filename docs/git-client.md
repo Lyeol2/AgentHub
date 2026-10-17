@@ -17,6 +17,20 @@
 - `GET /api/git?path=`의 파일에는 `staged`, `unstaged`, `stageLabel`, `workLabel`이 있고 전체 개수 `stagedCount`, `unstagedCount`도 보낸다. 파일 diff는 `GET /api/git/diff?path=&file=&area=staged|unstaged`, 파일 이동은 `POST /api/git/stage`·`/api/git/unstage`의 `{ path, files }`, 인덱스 커밋은 `POST /api/git/commit`의 `{ path, message, staged: true }`로 한다. 목록은 500개까지 표시하며 전체 스테이징/해제는 표시된 파일, 커밋은 전체 인덱스에 적용한다.
 - 기존 `GET /api/git?path=` 응답에 `graph: { commits, truncated }`와 `branches[].tip`을 추가했다. 그래프 커밋은 `hash`·`short`·`parents`·`author`·`date`·`subject`·`refs`(로컬 브랜치 이름)를 담고, 화면의 순수 함수 `public/gitgraph.js`에서 노선 배치를 계산한다.
 - **Pull Requests** 탭에서 GitHub.com의 PR 최근 50개를 상태별로 조회하고, 설명·검사 상태·변경 파일·diff를 확인한다. 현재 브랜치 PR/초안 생성, 명시적인 현재 브랜치 게시, SHA를 확인한 병합(Merge/Squash/Rebase), PR 닫기를 지원한다. 기존 GitHub CLI 설치·로그인 설정을 재사용한다. 원격 후보가 여러 개면 화면에서 선택한다. 포크 간 PR 생성·리뷰 작성은 다음 단계다.
+- GitHub 원격은 `https://github.com/<소유자>/<저장소>(.git)`, `git@github.com:<소유자>/<저장소>.git`, `ssh://git@github.com/...`을 받는다. git이 그대로 쓰는 `http://`·`www.github.com` 주소도 같은 저장소로 보고, Enterprise Managed User 계정의 `이름_회사코드` 소유자도 받는다. 주소에 사용자 정보(토큰)가 들어 있으면 받지 않는다. 지원하지 않는 원격만 있으면 원격 이름과 주소를 함께 보여 준다.
+- GitHub 요청 실패는 해결 방법이 담긴 `reason`으로 바꾼다. 화면은 로그인으로 풀 수 있는 오류에 설정의 GitHub CLI 설치·로그인 버튼을 함께 보여 주고, 앱은 멈추지 않는다.
+
+  | reason | 언제 | 안내 |
+  | --- | --- | --- |
+  | `gh-missing` | GitHub CLI가 없거나 찾아 둔 실행 파일을 실행할 수 없다 | GitHub CLI 설치 |
+  | `gh-auth` | `gh auth status` 실패, HTTP 401, 로그인하지 않은 gh | GitHub 로그인 |
+  | `gh-permission` | HTTP 403(저장소 쓰기 권한·조직의 CLI 접근 허용 없음). GitHub 응답을 뒤에 붙인다 | 권한 확인, GitHub 로그인 |
+  | `github-rate-limit` | API 사용 한도 초과(403) | 잠시 뒤 다시 시도 |
+  | `github-issues-disabled` | 저장소의 Issues가 꺼져 있다(410) | 저장소 설정에서 Issues 켜기 |
+  | `git-auth` · `git-auth-ssh` | 화면 뒤에서 도는 fetch·push의 HTTPS·SSH 인증 실패 | GitHub 로그인 또는 SSH 키 등록 |
+  | `github-timeout` | 응답 시간 초과. 쓰기면 완료 여부를 알 수 없다고 표시한다 | 상태를 다시 조회한 뒤 재시도 |
+
+  권한·인증 거절은 GitHub가 쓰기 전에 거절하므로 "완료 여부를 알 수 없음"으로 표시하지 않는다. HTTP 404는 이슈·라벨·브랜치가 없다는 판정에 쓰므로 원래 응답 문구를 유지한다.
 - 아래의 페이지별 로그 API·pull·stash·덩어리/줄 스테이징·충돌 편집은 다음 단계의 설계다.
 
 ## 1. 왜 만드는가
@@ -194,7 +208,7 @@ Fork의 3단 배치를 따른다.
 
 - 바로 `{ jobId }`를 돌려주고, 진행 출력은 SSE `git` `{ cwd, jobId, line }` 또는 끝났을 때 `{ cwd, jobId, done, error }`로 보낸다. 화면은 저장소 화면 아래 작은 진행 칸에 보여 준다.
 - 터미널 입력을 기다리며 멈추지 않도록 `GIT_TERMINAL_PROMPT=0`을 주고 stdin을 닫는다. credential manager의 로그인 창은 막지 않는다(처음 push할 때 그 창이 떠야 한다). 120초가 넘으면 끊는다.
-- 작업 탭의 최신 확인(fetch)과 PR 푸시는 화면 뒤에서 자동으로도 돌기 때문에 credential manager 창도 띄우지 않는다(`GCM_INTERACTIVE=never`). 대신 이 명령에만 `credential.https://github.com.helper=!"<gh 경로>" auth git-credential`을 덧붙여, 저장된 자격 증명이 없거나 만료되면 GitHub CLI 로그인 계정으로 이어 받는다. 사용자의 전역 Git 설정은 바꾸지 않는다.
+- 작업 탭의 최신 확인(fetch), PR 푸시, 로컬 반영 뒤의 대상 브랜치 푸시는 화면 뒤에서 자동으로도 돌기 때문에 credential manager 창도 띄우지 않는다(`GCM_INTERACTIVE=never`). 대신 이 명령에만 `credential.https://github.com.helper=!"<gh 경로>" auth git-credential`을 덧붙여, 저장된 자격 증명이 없거나 만료되면 GitHub CLI 로그인 계정으로 이어 받는다. 사용자의 전역 Git 설정은 바꾸지 않는다.
 - 인증 실패는 `git-auth`(HTTPS)·`git-auth-ssh`(SSH 키)로 바꿔 "GitHub 로그인이 필요합니다…"처럼 알리고, 작업 화면에 GitHub 로그인 버튼(설정의 GitHub CLI 로그인)을 함께 보여 준다.
 
 ### 5.6 보안

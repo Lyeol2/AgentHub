@@ -255,6 +255,26 @@ test("issues service: 지운 세션은 작업 연결에서 빠진다", async (t)
   assert.deepEqual(again.find("acme/widget", 1).sessionIds, ["a"], "파일에 저장된다");
 });
 
+test("issue links: 다시 만든 세션이 연결을 이어 받고 손상된 항목은 건너뛰고 되살린다", () => {
+  const dataDir = fs.mkdtempSync(path.join(tmp, "links-"));
+  fs.writeFileSync(path.join(dataDir, "issue-links.json"), JSON.stringify([
+    { repo: "acme/widget", number: 3, sessionIds: ["old", "other"], progress: true },
+    { repo: "acme/widget", number: "x", sessionIds: ["bad"] }, null, { repo: "acme/widget", number: 4 },
+  ]));
+  const links = new FileIssueLinkStore({ dataDir });
+  assert.deepEqual(links.list().map((item) => item.number), [3]);
+  links.replaceSession("old", "new");
+  assert.deepEqual(new FileIssueLinkStore({ dataDir }).find("ACME/widget", 3).sessionIds, ["new", "other"], "재시작 후에도 새 세션으로 이어진다");
+  assert.equal(links.bySession("new").number, 3);
+});
+
+test("issues: Enterprise Managed User 팀원에게도 작업을 보낸다", async () => {
+  const { client, state } = fakeGitHub();
+  state.assignable.add("kim_acme");
+  const result = await client.create(tmp, { title: "EMU 작업", body: "", assignee: "kim_acme" });
+  assert.deepEqual(result.issue.assignees, ["kim_acme"]);
+});
+
 test("issuePrompt: 최근 댓글 10개만 붙인다", () => {
   const comments = Array.from({ length: 12 }, (_, i) => ({ author: "u" + i, association: "COLLABORATOR", body: "댓글" + i }));
   const text = issuePrompt({ issue: { repo: "acme/widget", number: 1, title: "t", body: "b", author: "a", meta: null }, comments });

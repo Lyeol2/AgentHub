@@ -135,8 +135,10 @@ export function createHub(options = {}) {
     nodeGroups: () => nodeGroupService,
   });
   nodeGroupService = createNodeGroupService({ groups: nodeGroups, store, commands, links, projects, graphTabs, notify });
+  // 받은 작업(이슈)과 세션의 연결. 세션을 다시 만들거나 지울 때도 함께 고친다.
+  const issueLinks = deps.issueLinks ?? new FileIssueLinkStore({ dataDir });
   sessions = createSessionService({
-    config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects, commands, graphTabs,
+    config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects, commands, graphTabs, issueLinks,
     saveConfig: persistConfig,
     workflows: () => workflows,
     tasks: () => tasks,
@@ -168,7 +170,7 @@ export function createHub(options = {}) {
   services.taskAssistant = createTaskAssistantService({ projects, graphTabs, cliPaths, config, ask });
   services.issues = deps.issues ?? createIssueService({
     config, store, sessions, notify,
-    links: deps.issueLinks ?? new FileIssueLinkStore({ dataDir }),
+    links: issueLinks,
     logger: deps.logger ?? console,
   });
 
