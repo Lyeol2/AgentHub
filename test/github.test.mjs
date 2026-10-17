@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { GitHubPulls, parseGitHubRemote, normalizePull, summarizeChecks, runGitHubCommand } from "../server/github.mjs";
+import { GitHubPulls, parseGitHubRemote, normalizePull, summarizeChecks, runGitHubCommand, gitAuthFailure, githubCredentialArgs } from "../server/github.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-pulls-"));
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
@@ -97,12 +97,29 @@ test("github: GitHub.com 원격만 허용하고 외부 응답 URL은 쓰지 않�
   for (const value of ["https://github.com/acme/widget.git", "git@github.com:acme/widget.git", "ssh://git@github.com/acme/widget.git"])
     assert.deepEqual(parseGitHubRemote(value), { repo: "acme/widget", url: "https://github.com/acme/widget" });
   for (const value of ["https://github.com.evil/acme/widget", "https://token@github.com/acme/widget", "file:///acme/widget", "https://gitlab.com/acme/widget",
-    "https://github.com/acme/widget?token=x", "ssh://evil@github.com/acme/widget", "https://github.com/acme/widget/extra", "git@github.com:acme/.."])
+    "https://github.com/acme/widget?token=x", "ssh://evil@github.com/acme/widget", "https://github.com/acme/widget/extra", "git@github.com:acme/..",
+    "https://ghp_abc123@github.com/acme/widget", "https://user:secret@github.com/acme/widget", "https://www.github.com.evil/acme/widget"])
     assert.equal(parseGitHubRemote(value), null);
+  // git이 그대로 fetch하는 주소는 같은 저장소로 본다.
+  for (const value of ["http://github.com/acme/widget.git", "https://www.github.com/acme/widget"])
+    assert.deepEqual(parseGitHubRemote(value), { repo: "acme/widget", url: "https://github.com/acme/widget" });
+  assert.equal(parseGitHubRemote("https://github.com/sinji_corp/widget.git")?.repo, "sinji_corp/widget");
   assert.equal(normalizePull({ number: 7, html_url: "javascript:alert(1)" }, "acme/widget").url, "https://github.com/acme/widget/pull/7");
   assert.throws(() => normalizePull({ number: "../evil" }, "acme/widget"), /PR 번호/);
   assert.deepEqual(summarizeChecks([{ state: "SUCCESS" }, { conclusion: "SKIPPED" }, { state: "PENDING" }, { conclusion: "TIMED_OUT" }, { state: "ERROR" }]),
     { total: 5, passed: 2, pending: 1, failed: 2 });
+});
+
+test("github: Git 인증 실패를 로그인 안내로 바꾸고 GitHub CLI 자격 증명을 이어 붙인다", () => {
+  for (const text of ["fatal: Cannot prompt because user interactivity has been disabled.\nfatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    "remote: Invalid username or token.\nfatal: Authentication failed for 'https://github.com/acme/widget.git/'", "remote: Repository not found."])
+    assert.equal(gitAuthFailure(text)?.reason, "git-auth");
+  assert.equal(gitAuthFailure("git@github.com: Permission denied (publickey).")?.reason, "git-auth-ssh");
+  assert.equal(gitAuthFailure("fatal: couldn't find remote ref main"), null);
+  assert.deepEqual(githubCredentialArgs("C:\\Program Files\\GitHub CLI\\gh.exe"),
+    ["-c", 'credential.https://github.com.helper=!"C:/Program Files/GitHub CLI/gh.exe" auth git-credential']);
+  assert.deepEqual(githubCredentialArgs(null), []);
+  assert.deepEqual(githubCredentialArgs('/tmp/$(evil)/gh'), []);
 });
 
 test("github: shell 없이 stdin을 보내고 명령 시간을 제한한다", async () => {
@@ -119,7 +136,7 @@ test("github: CLI·로그인·GitHub 원격이 없으면 해결 가능한 사유
   f.client.locate = () => "fake-gh"; f.state.auth = false;
   await assert.rejects(f.client.list(f.dir), (error) => error.reason === "gh-auth");
   f.git("remote", "set-url", "origin", "https://gitlab.com/acme/widget");
-  await assert.rejects(f.client.list(f.dir), (error) => error.reason === "github-unsupported");
+  await assert.rejects(f.client.list(f.dir), (error) => error.reason === "github-unsupported" && error.message.includes("origin: https://gitlab.com/acme/widget"));
   f.git("remote", "remove", "origin");
   await assert.rejects(f.client.list(f.dir), (error) => error.reason === "github-remote");
 });

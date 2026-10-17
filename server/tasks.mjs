@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { runGitHubCommand } from "./github.mjs";
+import { gitAuthFailure, githubCredentialArgs, runGitHubCommand } from "./github.mjs";
 import { HttpError } from "./application/errors.mjs";
 import { normalizeGitflowSettings } from "./gitflow-settings.mjs";
 
@@ -22,6 +22,8 @@ export async function taskGit(cwd, args, { write = false, ...options } = {}) {
     return await runGitHubCommand("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-c", "core.longpaths=true", "-C", cwd, ...args],
       { cwd, timeout: write ? 60_000 : 20_000, ...options });
   } catch (error) {
+    const auth = !error.timedOut && gitAuthFailure(error.stderr || error.message);
+    if (auth) throw new HttpError(auth.status, auth.message, auth.reason);
     throw new HttpError(error.timedOut ? 504 : 409, clean(error.message), error.timedOut ? "git-timeout" : "git-error",
       { outcomeUnknown: write && !!(error.timedOut || error.overflow) });
   }
@@ -74,7 +76,7 @@ export async function gitflowContext(dir, selected, value) {
   const { main, develop } = settings;
   const remote = await taskRemote(dir, selected, main);
   // Explicit refspec ignores narrow fetch configuration; prune removes deleted remote branches.
-  await taskGit(dir, ["fetch", "--prune", "--no-tags", "--", remote, `+refs/heads/*:refs/remotes/${remote}/*`]);
+  await taskGit(dir, [...githubCredentialArgs(), "fetch", "--prune", "--no-tags", "--", remote, `+refs/heads/*:refs/remotes/${remote}/*`]);
   // rev-parse can resolve the wrong case on Windows filesystems. Enumerate refs
   // and compare their literal names so Main/Develop settings stay exact.
   const refs = new Map((await taskGit(dir, ["for-each-ref", "--format=%(refname) %(objectname)", `refs/remotes/${remote}/`]))
