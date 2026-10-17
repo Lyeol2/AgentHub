@@ -74,8 +74,9 @@ async function fixture(t) {
     assert.equal(response.status, 200, JSON.stringify(response.body));
     return response.body;
   }
+  // 전체 테스트를 함께 돌리면 혼자 6초 걸리는 Git 처리도 15초를 넘길 수 있어 30초까지 기다린다.
   async function until(check, label) {
-    for (let i = 0; i < 200; i++) {
+    for (let i = 0; i < 600; i++) {
       const value = check();
       if (value) return value;
       await new Promise((resolve) => setTimeout(resolve, 50));
