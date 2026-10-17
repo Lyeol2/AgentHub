@@ -282,13 +282,16 @@ export function createTasksController({
           ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
           : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
       if (task.cleanupWarning) card.append(node('p', 'task-note', typeof task.cleanupWarning === 'string' ? task.cleanupWarning : task.cleanupWarning.message || '정리 결과를 확인해 주세요.'));
+      // 화면 오류는 문자열이거나 { message, reason }이다. 문자열이면 서버에 남은 같은 오류의 사유를 쓴다.
       const local = taskErrors.get(task.id);
-      const error = local?.message || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
+      const localMessage = typeof local === 'string' ? local : local?.message;
+      const reason = local && typeof local === 'object' ? local.reason : !local || local === task.error ? task.errorReason : undefined;
+      const error = localMessage || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
       if (error) {
         const errorEl = node('p', 'task-inline-error', error);
         errorEl.setAttribute('role', 'alert');
         card.append(errorEl);
-        appendLogin(card, local ? local.reason : task.errorReason);
+        appendLogin(card, reason);
       }
       list.append(card);
     }
