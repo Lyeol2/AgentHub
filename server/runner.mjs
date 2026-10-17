@@ -24,6 +24,9 @@ export class Runner extends EventEmitter {
     this.prompts = new Map(); // CLI가 실행 중에 물은 요청 ID → { session, child, agent, control, event }
     // 세션에 붙일 AgentHub MCP 서버 정보를 돌려주는 함수(session → { url, configFile } | null). 서버가 정한다.
     this.mcp = () => null;
+    // 지금 연결할 수 없는 사용자 Codex MCP 서버 이름(() → string[]). 서버가 정한다.
+    this.unreachableMcp = () => [];
+    this.mcpNotes = new Map(); // 세션 ID → 마지막으로 알린 꺼진 MCP 목록
   }
 
   // ── 실행 중 질문·권한 요청 ──────────────────────────────────────
@@ -141,7 +144,8 @@ export class Runner extends EventEmitter {
     if (!cliPath) throw new Error(`${session.agent} CLI를 찾지 못했습니다. 설정에서 경로를 지정하세요.`);
 
     const agent = AGENTS[session.agent];
-    const args = agent.buildArgs(session, { mcp: session.chat ? null : this.mcp(session) });
+    const disabledMcp = agent.transport === "app-server" ? this.unreachableMcp() : [];
+    const args = agent.buildArgs(session, { mcp: session.chat ? null : this.mcp(session), disabledMcp });
     const userInput = agent.interactive ? agent.userLine(input, meta.attachments) : null;
     if (!retry) {
       // 답하지 않은 질문은 새 요청이 들어오면 지나간 것으로 본다.
@@ -151,6 +155,14 @@ export class Runner extends EventEmitter {
       // 설정의 기본 모델을 쓸 수 없어 다른 모델로 실행하면 새 대화를 시작할 때 한 번 알린다.
       const note = !session.agentSessionId && agent.modelNote?.(session);
       if (note) this.append(session, { kind: "status", text: note });
+      // 꺼진 MCP 목록이 바뀔 때만 알린다. 서버를 켜면 다음 요청부터 다시 쓴다.
+      const mcpKey = disabledMcp.join(",");
+      if (mcpKey !== (this.mcpNotes.get(session.id) ?? "")) {
+        this.append(session, { kind: "status", text: mcpKey
+          ? `Codex MCP 서버(${disabledMcp.join(", ")})에 연결할 수 없어 이번 요청에서는 끄고 실행합니다. 서버를 켜면 다음 요청부터 다시 씁니다.`
+          : "Codex MCP 서버에 다시 연결할 수 있어 함께 실행합니다." });
+        if (mcpKey) this.mcpNotes.set(session.id, mcpKey); else this.mcpNotes.delete(session.id);
+      }
     }
     this.setState(session, "running");
 
