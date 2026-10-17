@@ -5,6 +5,7 @@ import { execFile } from "node:child_process";
 import { HttpError } from "./application/errors.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
 import { validateWorktreeName } from "./git.mjs";
+import { gitErrorDetails } from "./git-errors.mjs";
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const COMMIT_INPUT = /^[0-9a-f]{7,64}$/i;
@@ -34,6 +35,8 @@ export function clientGit(cwd, args, { write = false, timeout = 30_000 } = {}) {
         if (!failure) return resolve(stdout);
         const unknown = !!(failure.killed || failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
         const message = String(stderr || failure.message).replace(/(https?:\/\/)[^/\s@]+@/g, "$1[credentials]@").trim().slice(0, 2000);
+        const known = !unknown && gitErrorDetails(message);
+        if (known) return reject(error(known.message, known.reason, known.status, { hint: known.hint, raw: known.raw, exitCode: failure.code }));
         reject(error(message, unknown ? "git-outcome-unknown" : "git-error", unknown ? 504 : 409,
           { outcomeUnknown: write && unknown, exitCode: failure.code }));
       });
@@ -449,7 +452,7 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
       await operationIdle(ctx);
       if (await head(ctx.cwd) !== item.head || await dirty(ctx.cwd)) throw error("실행 전 상태와 다릅니다.");
     } catch { throw error("자동 복원을 확인하지 못했습니다. 추가 작업을 멈추고 복구 지점을 확인하세요.", "git-recovery-required", 409, { recoveryId: item.id }); }
-    throw error("작업을 취소하고 실행 전 상태로 복원했습니다.\n" + failure.message, "git-conflict", 409, { recoveryId: item.id });
+    throw error("작업을 취소하고 실행 전 상태로 복원했습니다.\n" + failure.message, "git-conflict", 409, { recoveryId: item.id, hint: failure.hint, raw: failure.raw });
   }
   async function execute(ctx, body) {
     const stored = previews.get(body.previewId);
