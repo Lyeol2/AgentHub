@@ -177,6 +177,12 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
         } else if (action === "refresh") { delete task.pendingAction; if (task.pull) task.state = "review"; value = { task }; }
         else if (action === "sync") { review.behind = false; review.head = 'd'.repeat(40); review.token += '-sync'; value = { task }; }
         else if (action === "cleanup") { task.state = "cleaned"; value = { task }; }
+        else if (action === "issue") {
+          if (req.method === "DELETE") delete task.issue;
+          else if (body.number === "13") throw Object.assign(Error("GitHub CLI 인증이 필요합니다."), { status: 401, reason: "gh-auth" });
+          else task.issue = { repo: "fixture/repo", number: Number(body.number), title: "로그인 이슈", url: "https://github.com/fixture/repo/issues/" + body.number, state: "open" };
+          value = { task };
+        }
         else value = { task };
       } else if (url.pathname === "/api/sessions") {
         if (req.method === 'POST') {

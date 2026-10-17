@@ -6,6 +6,7 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createTaskService } from "../server/application/tasks.mjs";
 import { GitHubError, normalizePull } from "../server/github.mjs";
+import { normalizeIssue } from "../server/issues.mjs";
 import { DEFAULT_GITFLOW_SETTINGS, gitflowSettingsKey } from "../server/gitflow-settings.mjs";
 
 function fixture(t, { develop = true, main = "main", developBranch = "develop", settings } = {}) {
@@ -22,7 +23,7 @@ function fixture(t, { develop = true, main = "main", developBranch = "develop", 
   git(repo, "add", "."); git(repo, "commit", "-qm", "base");
   git(repo, "remote", "add", "origin", remote); git(repo, "push", "-q", "origin", main);
   if (develop) { git(repo, "branch", developBranch); git(repo, "push", "-q", "origin", developBranch); }
-  const state = { pulls: [], writes: [], refs: [], sends: [], running: new Set(), timeout: null, saves: 0, saveError: null, sendError: null };
+  const state = { pulls: [], issues: [], writes: [], refs: [], sends: [], running: new Set(), timeout: null, saves: 0, saveError: null, sendError: null, issueError: null };
   const config = settings ? { gitflow: { [gitflowSettingsKey(repo)]: settings } } : {};
   const stored = new Map(); let serial = 0;
   const store = { list: () => [...stored.values()], get: (id) => stored.get(id) };
@@ -44,6 +45,18 @@ function fixture(t, { develop = true, main = "main", developBranch = "develop", 
         state.refs.push(body.ref);
         if (remoteSha(body.ref.replace(/^refs\/heads\//, ""))) throw new GitHubError("HTTP 422 exists");
         git(repo, "push", "-q", remote, `${body.sha}:${body.ref}`); return { ref: body.ref };
+      }
+      if (method === "GET" && /\/issues\/\d+$/.test(endpoint)) {
+        if (state.issueError) throw state.issueError;
+        const issue = state.issues.find((item) => item.number === Number(endpoint.split("/").at(-1)));
+        if (!issue) throw new GitHubError("gh: Not Found (HTTP 404)");
+        return issue;
+      }
+      if (method === "GET" && /\/pulls\/\d+$/.test(endpoint)) return state.pulls.find((item) => item.number === Number(endpoint.split("/").at(-1)));
+      if (method === "POST" && endpoint.endsWith("/pulls")) {
+        state.writes.push("develop-pull");
+        const raw = { number: state.pulls.length + 1, title: body.title, body: body.body, state: "open", head: { ref: body.head, sha: remoteSha(body.head) }, base: { ref: body.base } };
+        state.pulls.push(raw); return raw;
       }
       if (method === "PATCH" && /\/pulls\/\d+$/.test(endpoint)) {
         state.writes.push("pull-update");
@@ -78,8 +91,16 @@ function fixture(t, { develop = true, main = "main", developBranch = "develop", 
     },
     async remoteHead(target, branch) { return remoteSha(branch); },
   };
+  const issues = {
+    async viewer() { return "me"; },
+    async create(dir, body) {
+      state.writes.push("issue");
+      const raw = { number: 100 + state.issues.length, title: body.title, body: body.body, state: "open", user: { login: "me" }, assignees: [{ login: body.assignee }] };
+      state.issues.push(raw); return { ok: true, issue: normalizeIssue(raw, "acme/widget") };
+    },
+  };
   const options = { dataDir, store, config, saveConfig: (value) => { assert.equal(value, config); state.saves++; if (state.saveError) throw state.saveError; }, runner: { isRunning: (id) => state.running.has(id) }, sessions,
-    projects: { ensureProject: (projectPath) => ({ name: "repo", path: projectPath }) }, github };
+    projects: { ensureProject: (projectPath) => ({ name: "repo", path: projectPath }) }, github, issues };
   let service = createTaskService(options);
   const create = (type = "feature", extra = {}) => service.create({ projectPath: repo, title: "새 작업", type, agent: "codex", ...extra });
   function change(dir, filename = "change.txt", text = "change\n") { fs.writeFileSync(path.join(dir, filename), text); }
@@ -750,4 +771,102 @@ test("task review: uncertain local commit can be confirmed without GitHub access
   assert.equal(recovered.task.lastRecovery.result, "confirmed");
   assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), after);
   assert.equal(f.restart().get(task.id).pendingAction, undefined);
+});
+
+test("tasks: a branch name typed with its own prefix is not prefixed twice, other prefixes are rejected", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.create("feature", { branchName: "feature/login" })).task.branch, "feature/login");
+  assert.equal((await f.create("release", { version: "1.4.0", branchName: "release/1.4.0" })).task.branch, "release/1.4.0");
+  for (const branchName of ["hotfix/login", "feature/"])
+    await assert.rejects(f.create("feature", { branchName }), (error) => error.status === 400 && error.reason === "task-branch-name");
+  assert.equal(f.service.list(f.repo).tasks.length, 2);
+});
+
+test("tasks: local hotfix finish merges into main and develop, pushes both and then cleans up", async (t) => {
+  const f = fixture(t);
+  await f.service.updateSettings(f.repo, { settings: DEFAULT_GITFLOW_SETTINGS, finishMode: "local" });
+  const { task } = await f.create("hotfix");
+  f.commit(task.cwd, "fix.txt");
+  const reviewed = await f.service.review(task.id);
+  const result = await f.service.finish(task.id, { mode: "local", expectedHead: reviewed.head, reviewToken: reviewed.token, expectedTargetHead: reviewed.localTargetHead });
+  const done = result.task;
+  assert.equal(done.state, "merged"); assert.equal(done.developPending, false);
+  assert.equal(f.git(f.repo, "merge-base", "--is-ancestor", done.mergedHead, "develop"), "");
+  assert.equal(done.completion.publishState, "not-requested"); assert.equal(done.completion.developPublishState, "not-requested");
+  const pushed = await f.service.pushTarget(task.id);
+  assert.equal(pushed.task.completion.publishState, "done"); assert.equal(pushed.task.completion.developPublishState, "done");
+  assert.equal(f.git(f.repo, "ls-remote", "origin", "refs/heads/main").split(/\s+/)[0], done.completion.targetHead);
+  assert.equal(f.git(f.repo, "ls-remote", "origin", "refs/heads/develop").split(/\s+/)[0], done.completion.developHead);
+  assert.equal((await f.service.refresh(task.id)).task.developPending, false);
+  assert.equal((await f.service.cleanup(task.id)).task.state, "cleaned");
+  assert.equal(f.state.writes.length, 0, "local flow never needs GitHub APIs");
+});
+
+test("tasks: a local develop conflict keeps the main merge and can be retried from the card", async (t) => {
+  const f = fixture(t);
+  await f.service.updateSettings(f.repo, { settings: DEFAULT_GITFLOW_SETTINGS, finishMode: "local" });
+  f.git(f.repo, "switch", "-q", "develop"); f.change(f.repo, "base.txt", "develop side\n"); f.git(f.repo, "commit", "-qam", "develop side");
+  f.git(f.repo, "switch", "-q", "main");
+  const { task } = await f.create("hotfix");
+  f.change(task.cwd, "base.txt", "hotfix side\n"); f.git(task.cwd, "commit", "-qam", "hotfix side");
+  const reviewed = await f.service.review(task.id);
+  const developBefore = f.git(f.repo, "rev-parse", "develop");
+  const { task: merged } = await f.service.finish(task.id, { mode: "local", expectedHead: reviewed.head, reviewToken: reviewed.token, expectedTargetHead: reviewed.localTargetHead });
+  assert.equal(merged.state, "merged"); assert.equal(merged.developPending, true); assert.match(merged.error, /충돌/);
+  assert.equal(f.git(f.repo, "rev-parse", "develop"), developBefore, "a conflicting develop merge is rolled back");
+  await assert.rejects(f.service.cleanup(task.id), (error) => error.reason === "gitflow-develop-pending");
+  // 사용자가 develop에서 충돌을 해결하면 최신 확인이 반영을 인정한다.
+  const worktree = f.git(f.repo, "worktree", "list", "--porcelain").split(/\r?\n/).filter((line) => line.startsWith("worktree ")).map((line) => line.slice(9))
+    .find((dir) => { try { return f.git(dir, "branch", "--show-current") === "develop"; } catch { return false; } }) ?? f.repo;
+  if (worktree === f.repo) f.git(f.repo, "switch", "-q", "develop");
+  try { f.git(worktree, "merge", "--no-edit", task.branch); } catch {}
+  f.change(worktree, "base.txt", "resolved\n"); f.git(worktree, "commit", "-qam", "resolve");
+  if (worktree === f.repo) f.git(f.repo, "switch", "-q", "main");
+  const refreshed = await f.service.refresh(task.id);
+  assert.equal(refreshed.task.developPending, false);
+});
+
+test("tasks: a merged hotfix PR opens one main to develop back-merge PR and cleans up after it lands", async (t) => {
+  const f = fixture(t);
+  const { task } = await f.create("hotfix"); f.change(task.cwd); await f.service.finish(task.id);
+  const reviewed = await f.service.review(task.id);
+  const merged = await f.service.mergePull(task.id, { expectedHead: reviewed.head, reviewToken: reviewed.token, expectedPullHead: reviewed.head, method: "merge" });
+  assert.equal(merged.task.developPending, true);
+  await assert.rejects(f.service.cleanup(task.id), (error) => error.reason === "gitflow-develop-pending");
+  const opened = await f.service.mergeDevelop(task.id);
+  assert.equal(opened.task.developPull.baseRefName, "develop"); assert.equal(opened.task.developPull.headRefName, "main");
+  assert.equal((await f.service.mergeDevelop(task.id)).task.developPull.number, opened.task.developPull.number, "an open back-merge PR is reused");
+  assert.equal(f.state.writes.filter((write) => write === "develop-pull").length, 1);
+  f.git(f.repo, "switch", "-q", "develop"); f.git(f.repo, "merge", "--no-edit", "main"); f.git(f.repo, "push", "-q", "origin", "develop");
+  const back = f.state.pulls.find((pull) => pull.number === opened.task.developPull.number); back.merged = true; back.state = "closed";
+  const refreshed = await f.service.refresh(task.id);
+  assert.equal(refreshed.task.developPending, false); assert.equal(refreshed.task.developPull.state, "MERGED");
+  assert.equal((await f.service.cleanup(task.id)).task.state, "cleaned");
+});
+
+test("tasks: issues link by number or creation, survive restart, close through the PR and sync state", async (t) => {
+  const f = fixture(t);
+  const { task, session } = await f.create();
+  f.state.issues.push({ number: 7, title: "로그인 버튼", body: "", state: "open", user: { login: "lead" } });
+  await assert.rejects(f.service.linkIssue(task.id, { number: "abc" }), (error) => error.status === 400);
+  await assert.rejects(f.service.linkIssue(task.id, { number: 8 }), (error) => error.status === 404 && /#8/.test(error.message));
+  f.state.running.add(session.id);
+  const linked = await f.service.linkIssue(task.id, { number: "#7" });
+  f.state.running.clear();
+  assert.deepEqual([linked.task.issue.number, linked.task.issue.state, linked.task.issue.url], [7, "open", "https://github.com/acme/widget/issues/7"]);
+  const other = await f.create();
+  await assert.rejects(f.service.linkIssue(other.task.id, { number: 7 }), (error) => error.reason === "task-issue-linked");
+  const created = await f.service.linkIssue(other.task.id, { create: true });
+  assert.equal(created.task.issue.number, 101); assert.equal(f.state.issues.at(-1).title, "새 작업");
+  assert.equal(f.restart().get(task.id).issue.number, 7, "the link is stored with the task");
+  f.change(task.cwd);
+  const finished = await f.service.finish(task.id, { verification: "확인" });
+  assert.match(finished.pull.body, /Closes #7/);
+  f.state.issues[0].state = "closed";
+  assert.equal((await f.service.refresh(task.id)).task.issue.state, "closed");
+  f.state.issueError = new GitHubError("GitHub CLI 인증이 필요합니다.", "gh-auth", 401);
+  const failed = await f.service.refresh(task.id);
+  assert.equal(failed.task.state, "review", "an unreadable issue never fails the task refresh");
+  assert.equal(failed.task.issue.errorReason, "gh-auth"); assert.equal(failed.task.issue.state, "closed");
+  assert.equal((await f.service.unlinkIssue(task.id)).task.issue, undefined);
 });

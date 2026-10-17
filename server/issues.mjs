@@ -5,7 +5,8 @@ import { GitHubError, githubPulls, parseGitHubRemote } from "./github.mjs";
 export const ISSUE_LABEL = "agenthub";
 const LABEL_COLOR = "6f42c1";
 const META = /\n*<!--\s*agenthub:\s*(\{[\s\S]*?\})\s*-->\s*$/;
-const LOGIN = /^[a-z0-9](?:[a-z0-9-]{0,38})$/i;
+// Enterprise Managed User 계정은 이름 뒤에 _회사코드가 붙는다.
+const LOGIN = /^[a-z0-9][a-z0-9-]{0,38}(?:_[a-z0-9]{1,20})?$/i;
 const TITLE_MAX = 256;
 const BODY_MAX = 60_000;
 const COMMENT_MAX = 60_000;

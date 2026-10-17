@@ -244,6 +244,17 @@
   check(selectedSession?.body.workBranch === 'feature/selected' && selectedSession.body.isolate === false && !('worktreeName' in selectedSession.body), 'session picker shares the selected branch');
   check((await requests()).filter(request => request.path === '/api/workbranches').length >= 2, 'tasks and sessions use the same branch list API');
   // 아래 화면 크기 검사는 설정 창이 열린 상태를 본다.
-  await returnToTasks(); await until(() => !$('tasks-settings').disabled); await openSettings();
+  await returnToTasks(); await until(() => action('task-4', 'link-issue'));
+  // 작업에 GitHub 이슈를 연결한다. 로그인 오류에는 GitHub 로그인 버튼을 함께 보여 준다.
+  action('task-4', 'link-issue').click(); await until(() => $('task-issue-dialog').open);
+  $('task-issue-number').value = '13'; $('task-issue-form').requestSubmit($('task-issue-submit'));
+  await until(() => !$('task-issue-error').hidden);
+  check($('task-issue-error').querySelector('.task-login')?.textContent === 'GitHub 로그인', 'issue login failure offers GitHub login');
+  $('task-issue-number').value = '7'; $('task-issue-form').requestSubmit($('task-issue-submit'));
+  await until(() => !$('task-issue-dialog').open && card('task-4')?.querySelector('.task-issue'));
+  check(card('task-4').querySelector('.task-issue').textContent.includes('이슈 #7 · 열림'), 'linked issue state is shown on the task card');
+  check(card('task-4').querySelector('.task-issue a')?.href === 'https://github.com/fixture/repo/issues/7', 'linked issue opens on GitHub');
+  check(action('task-4', 'unlink-issue') && !action('task-4', 'link-issue'), 'linked issue can be unlinked');
+  await until(() => !$('tasks-settings').disabled); await openSettings();
   return checks;
 })()
