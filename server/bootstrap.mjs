@@ -158,7 +158,7 @@ export function createHub(options = {}) {
     groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, graphTabs, notify }),
     commands: createCommandService({ commands, chain, links, store, projects, cliPaths, graphTabs, nodeGroups: () => nodeGroupService, ask, notify }),
     skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
-    git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks }),
+    git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks, config }),
     system: createSystemService({
       config, setup, cliPaths, limits, saveConfig: persistConfig, version,
       getUpdater: () => updater,
