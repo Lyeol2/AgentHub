@@ -7,6 +7,17 @@ const TASK_STATES = { working: '작업 중', review: '리뷰 대기', merged: '�
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
 const DEFAULT_GITFLOW = { main: 'main', develop: 'develop', featurePrefix: 'feature/', hotfixPrefix: 'hotfix/', releasePrefix: 'release/' };
 const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
+const TASK_AGENTS = [['codex', 'Codex'], ['claude', 'Claude Code']];
+// 새 작업을 만들 때 고른 설정을 기억해 다음 새 작업의 기본값으로 쓴다. 제목·이름·지침처럼 작업마다 다른 값은 두지 않는다.
+const CREATE_PREFS_KEY = 'agenthub.newTask';
+
+function loadCreatePrefs() {
+  try { return JSON.parse(localStorage.getItem(CREATE_PREFS_KEY) ?? '{}') || {}; } catch { return {}; }
+}
+
+function saveCreatePrefs(prefs) {
+  try { localStorage.setItem(CREATE_PREFS_KEY, JSON.stringify(prefs)); } catch { /* 저장하지 못해도 작업 생성에는 지장 없다. */ }
+}
 
 function gitflowSettings(value) {
   return Object.fromEntries(GITFLOW_FIELDS.map(key => [key, typeof value?.[key] === 'string' ? value[key] : DEFAULT_GITFLOW[key]]));
@@ -504,7 +515,7 @@ export function createTasksController({
 
   function updateCreateSubmit() {
     const existing = $('task-workbranch-mode')?.value === 'existing';
-    if ($('task-create-submit')) $('task-create-submit').disabled = createBusy || settingsBusy || taskAssistant.busy() || !taskAssistant.ready() || uncertainCreates.has(createProject) || (existing && !workbranchPicker.ready());
+    if ($('task-create-submit')) $('task-create-submit').disabled = createBusy || settingsBusy || taskAssistant.busy() || !taskAssistant.ready() || uncertainCreates.has(createProject) || (existing && !workbranchPicker.ready()) || !hasAgent();
   }
 
   function updateAgentControls() {
@@ -530,6 +541,43 @@ export function createTasksController({
     if ($('task-effort')) fillEfforts('task-effort', agent, $('task-model')?.value);
   }
 
+  // 저장된 값이 지금 목록에 있을 때만 고른다. 없어진 선택지는 기본값으로 둔다.
+  function selectIfPresent(id, value) {
+    const select = $(id);
+    if (select && typeof value === 'string' && [...select.options].some(option => option.value === value)) select.value = value;
+  }
+
+  // CLI 실행 파일과 버전을 확인한 AI만 담당 AI로 고를 수 있다.
+  function fillAgentOptions() {
+    const select = $('task-agent');
+    if (!select) return;
+    const agents = data?.status?.agents ?? {};
+    const available = TASK_AGENTS.filter(([agent]) => agents[agent]?.path && agents[agent]?.version);
+    select.replaceChildren(...(available.length ? available : [['', '사용할 수 있는 AI CLI가 없습니다']]).map(([value, label]) => {
+      const option = node('option', '', label); option.value = value; return option;
+    }));
+    select.disabled = !available.length;
+  }
+
+  function hasAgent() {
+    return Boolean($('task-agent')?.value);
+  }
+
+  function applyCreatePrefs() {
+    const prefs = loadCreatePrefs();
+    fillAgentOptions();
+    selectIfPresent('task-worktree', prefs.worktree);
+    if (prefs.type !== 'release') selectIfPresent('task-type', prefs.type);
+    selectIfPresent('task-agent', prefs.agent);
+    updateAgentControls();
+    selectIfPresent('task-permission', prefs.permission);
+    if ($('task-model') && typeof prefs.model === 'string') $('task-model').value = prefs.model;
+    if ($('task-effort')) {
+      fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model')?.value);
+      selectIfPresent('task-effort', prefs.effort);
+    }
+  }
+
   function openNewTask() {
     const path = getProjectPath();
     if (!path || path !== projectPath || createBusy || settingsBusy || uncertainCreates.has(path)) return;
@@ -538,10 +586,11 @@ export function createTasksController({
     createForm?.reset();
     workbranchPicker.reset();
     showError('task-create-error');
+    applyCreatePrefs();
     updateCreatePreview();
-    updateAgentControls();
     taskAssistant.open();
     updateCreateSubmit();
+    if (!hasAgent()) showError('task-create-error', '확인된 AI CLI가 없습니다. 설정에서 Codex나 Claude Code CLI를 설치하거나 경로를 지정해 주세요.');
     createDialog?.showModal();
     ($('task-assistant-prompt') || $('task-title'))?.focus();
   }
@@ -554,6 +603,7 @@ export function createTasksController({
       showError('task-create-error', workbranchPicker.validationError());
       return;
     }
+    if (!hasAgent()) return;
     if (createForm && !createForm.checkValidity()) {
       if ($('task-create-advanced')) $('task-create-advanced').open = true;
       createForm.reportValidity();
@@ -588,6 +638,11 @@ export function createTasksController({
     updateToolbar();
     try {
       const result = await api('POST', '/api/tasks', payload);
+      saveCreatePrefs({
+        ...loadCreatePrefs(),
+        ...(existing ? {} : { worktree: payload.worktree === false ? 'none' : 'create', type: payload.type }),
+        agent: payload.agent, permission: payload.permission, model: payload.model || '', effort: payload.effort || '',
+      });
       await reloadSessions();
       if (sameProject(path, epoch)) {
         replaceTask(result.task);
@@ -615,48 +670,7 @@ export function createTasksController({
     finisher.open(task, options);
   }
 
-  async function finishTask(event) {
-    event.preventDefault();
-    if (finishBusy || !sameProject(finishProject) || !finishTaskId || uncertainTasks.has(finishTaskId)) return;
-    if (finishForm && !finishForm.reportValidity()) return;
-    const task = getTask(finishTaskId);
-    if (!task) return;
-    if (task.pendingAction || !['working', 'review'].includes(task.state)) {
-      showError('task-finish-error', '작업 상태가 변경되었습니다. 대화상자를 닫고 최신 상태를 확인해 주세요.');
-      return;
-    }
-    const message = $('task-finish-message')?.value.trim();
-    if (!message) { showError('task-finish-error', '커밋 메시지를 입력해 주세요.'); return; }
-    const id = task.id;
-    const path = finishProject;
-    const epoch = projectEpoch;
-    finishBusy = true;
-    pendingTasks.add(id);
-    const submit = $('task-finish-submit');
-    if (submit) { submit.disabled = true; submit.textContent = '커밋·게시·PR 처리 중…'; }
-    showError('task-finish-error');
-    renderTasks();
-    try {
-      const result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/finish`, {
-        message, description: $('task-finish-description')?.value.trim() || '', verification: $('task-finish-verification')?.value.trim() || '',
-      });
-      if (sameProject(path, epoch)) {
-        replaceTask(result.task);
-        taskErrors.delete(id);
-        finishDialog?.close();
-      }
-    } catch (error) {
-      if (error.outcomeUnknown) uncertainTasks.set(id, 'finish');
-      const message = error.outcomeUnknown ? unknownMessage('커밋·게시·PR 생성') : requestError(error);
-      taskErrors.set(id, { message, reason: error.outcomeUnknown ? undefined : error.reason });
-      if (sameProject(path, epoch)) showError('task-finish-error', message, error.outcomeUnknown ? undefined : error.reason);
-    } finally {
-      finishBusy = false;
-      pendingTasks.delete(id);
-      if (submit) { submit.disabled = uncertainTasks.has(id); submit.textContent = '커밋·게시·PR 만들기'; }
-      if (sameProject(path, epoch)) renderTasks();
-    }
-  }
+  const finishTask = event => finisher.submit(event);
 
   async function runTaskAction(action, task) {
     if (!task || pendingTasks.has(task.id)) return;
