@@ -149,6 +149,19 @@ export function normalizePull(raw, repo) {
   };
 }
 
+// GitFlow에서 브랜치가 PR로 들어갈 수 있는 대상. allowed가 null이면 GitFlow 브랜치가 아니어서 제한하지 않는다.
+export function gitflowPullBases(flow, head) {
+  const branch = String(head ?? "");
+  if (!flow || !branch) return { suggested: null, allowed: null, reason: null };
+  if (branch.startsWith(flow.featurePrefix))
+    return { suggested: flow.develop, allowed: [flow.develop], reason: `${flow.featurePrefix} 브랜치는 ${flow.develop}으로만 PR을 만듭니다.` };
+  if (branch.startsWith(flow.hotfixPrefix) || branch.startsWith(flow.releasePrefix))
+    return { suggested: flow.main, allowed: [flow.main, flow.develop], reason: `${branch.startsWith(flow.hotfixPrefix) ? flow.hotfixPrefix : flow.releasePrefix} 브랜치는 ${flow.main} 또는 ${flow.develop}으로만 PR을 만듭니다.` };
+  if (branch === flow.main) return { suggested: flow.develop, allowed: [flow.develop], reason: `${flow.main}은 ${flow.develop}에 반영하는 PR만 만듭니다.` };
+  if (branch === flow.develop) return { suggested: null, allowed: [], reason: `${flow.develop}은 ${flow.main}으로 바로 PR을 만들지 않습니다. ${flow.releasePrefix} 브랜치를 만들어 배포를 준비하세요.` };
+  return { suggested: flow.develop, allowed: null, reason: null };
+}
+
 const queue = new Map();
 async function exclusive(dir, git, action) {
   const gitDir = (await git(dir, ["rev-parse", "--absolute-git-dir"])).trim();
@@ -247,32 +260,44 @@ export class GitHubPulls {
     catch (error) { if (/\bHTTP 404\b/.test(error.message)) return null; throw error; }
   }
 
-  async context(target) {
+  async context(target, gitflow) {
     const [local, info, branches] = await Promise.all([
       this.local(target.dir),
       this.api(target, "GET", "repos/" + target.repo),
       this.api(target, "GET", "repos/" + target.repo + "/branches?per_page=100"),
     ]);
-    const remoteHeadSha = await this.remoteHead(target, local.branch);
+    const flowBases = gitflowPullBases(gitflow, local.branch);
+    const names = new Set([info.default_branch, ...branches.map((item) => item.name)].filter(Boolean));
+    // GitFlow 대상 브랜치가 첫 페이지 밖에 있을 수 있어 따로 확인한다.
+    const wanted = [...new Set([flowBases.suggested, ...(flowBases.allowed ?? [])].filter((name) => name && !names.has(name)))];
+    const [remoteHeadSha, ...found] = await Promise.all([this.remoteHead(target, local.branch), ...wanted.map((name) => this.remoteHead(target, name))]);
+    const extra = wanted.filter((_, index) => found[index]);
+    const baseBranches = [...new Set([info.default_branch, ...extra, ...names].filter(Boolean))];
+    const allowedBases = flowBases.allowed ? flowBases.allowed.filter((name) => baseBranches.includes(name) && name !== local.branch) : null;
+    const suggestedBase = (allowedBases ?? baseBranches).includes(flowBases.suggested) ? flowBases.suggested
+      : allowedBases ? allowedBases[0] ?? null : info.default_branch;
     const published = !!local.headSha && remoteHeadSha === local.headSha;
-    const canCreate = !!local.branch && published;
+    const flowBlocked = !!allowedBases && !allowedBases.length;
+    const canCreate = !!local.branch && published && !flowBlocked;
     const mergeMethods = ["merge", "squash", "rebase"].filter((method) => info["allow_" + (method === "merge" ? "merge_commit" : method + "_merge")] !== false);
     return {
       repo: target.repo, repositoryUrl: target.url, remote: target.name, remotes: target.remotes,
-      ...local, remoteHeadSha, defaultBranch: info.default_branch, baseBranches: [...new Set([info.default_branch, ...branches.map((item) => item.name)].filter(Boolean))],
+      ...local, remoteHeadSha, defaultBranch: info.default_branch, baseBranches, suggestedBase, allowedBases,
+      baseReason: flowBases.reason,
       needsPush: !!local.branch && !!local.headSha && !published,
       canPush: !!local.branch && !!local.headSha && target.pushMatches && info.permissions?.push === true,
       canCreate, createReason: !local.branch ? "브랜치를 체크아웃한 뒤 PR을 만드세요." : !local.headSha ? "먼저 변경을 커밋하세요."
-        : !published ? "현재 브랜치의 커밋을 GitHub에 푸시한 뒤 PR을 만드세요." : null,
+        : !published ? "현재 브랜치의 커밋을 GitHub에 푸시한 뒤 PR을 만드세요."
+        : flowBlocked ? (flowBases.allowed.length ? `GitHub에 ${flowBases.allowed.join(", ")} 브랜치가 없습니다. GitFlow 설정의 브랜치 이름을 확인하세요.` : flowBases.reason) : null,
       mergeMethods,
     };
   }
 
-  async list(dir, { remote, state = "open" } = {}) {
+  async list(dir, { remote, state = "open", gitflow } = {}) {
     if (!["open", "closed", "all"].includes(state)) throw new GitHubError("PR 상태 필터가 올바르지 않습니다.");
     const target = await this.target(dir, remote);
     const [context, pulls] = await Promise.all([
-      this.context(target),
+      this.context(target, gitflow),
       this.api(target, "GET", "repos/" + target.repo + "/pulls?state=" + state + "&sort=updated&direction=desc&per_page=50"),
     ]);
     return { context, pulls: pulls.map((pull) => normalizePull(pull, target.repo)), limited: pulls.length >= 50 };
@@ -314,7 +339,7 @@ export class GitHubPulls {
     return local;
   }
 
-  async create(dir, body) {
+  async create(dir, body, { gitflow } = {}) {
     return exclusive(dir, this.git, async () => {
       const title = typeof body.title === "string" ? body.title.trim() : "";
       const text = typeof body.body === "string" ? body.body : "";
@@ -324,6 +349,8 @@ export class GitHubPulls {
       await this.git(dir, ["check-ref-format", "--branch", body.base]).catch(() => { throw new GitHubError("대상 브랜치 이름이 올바르지 않습니다."); });
       const target = await this.target(dir, body.remote);
       const local = await this.assertHead(target, body);
+      const flowBases = gitflowPullBases(gitflow, local.branch);
+      if (flowBases.allowed && !flowBases.allowed.includes(body.base)) throw new GitHubError(flowBases.reason, "gitflow-base", 409);
       const remoteHead = await this.remoteHead(target, local.branch);
       if (remoteHead !== local.headSha) throw new GitHubError("현재 브랜치의 커밋이 GitHub에 없습니다. 먼저 브랜치를 푸시한 뒤 PR을 만드세요.", "branch-unpublished", 409);
       const baseHead = await this.remoteHead(target, body.base);

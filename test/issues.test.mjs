@@ -45,10 +45,20 @@ function fakeGitHub() {
         { ...issue(3), repository_url: "https://api.github.com/repos/acme/widget" },
         { ...issue(4), repository_url: "https://api.github.com/repos/other/thing" },
       ] };
-      const match = endpoint.match(/^repos\/acme\/widget\/issues\/(\d+)(\/comments.*)?$/);
+      const match = endpoint.match(/^repos\/acme\/widget\/issues\/(\d+)(\/comments.*|\/assignees)?$/);
       if (match) {
         const number = Number(match[1]);
         const found = state.issues.get(number) ?? fail(404);
+        if (match[2] === "/assignees") {
+          // GitHub처럼 지정할 수 없는 사람은 조용히 빼고, 추가는 기존 담당자를 남긴다.
+          if (method === "POST") state.racer?.(found);
+          const current = (state.issues.get(number).assignees ?? []).map((user) => user.login);
+          const next = method === "POST" ? [...new Set([...current, ...data.assignees.filter((login) => state.assignable.has(login))])]
+            : current.filter((login) => !data.assignees.includes(login));
+          const updated = { ...state.issues.get(number), assignees: next.map((login) => ({ login })) };
+          state.issues.set(number, updated);
+          return updated;
+        }
         if (match[2]?.startsWith("/comments") && method === "POST") {
           const comment = { id: Date.now(), user: { login: state.viewer }, body: data.body, created_at: "2026-10-16T01:00:00Z" };
           state.comments.set(number, [...(state.comments.get(number) ?? []), comment]);
@@ -150,6 +160,58 @@ test("issues: 되돌려 보내기는 사유를 댓글로 남기고 보낸 사람
   const closed = await client.close(tmp, 1, { reason: "completed" });
   assert.equal(closed.issue.state, "closed");
   await assert.rejects(client.close(tmp, 1, { reason: "deleted" }), /닫는 이유/);
+});
+
+test("issues: 받는 사람을 여러 명 지정하거나 비워 두어 팀 공용 작업으로 보낸다", async () => {
+  const { state, client } = fakeGitHub();
+  const many = await client.create(tmp, { title: "함께 볼 작업", assignees: ["alice", "bob", "Alice"] });
+  assert.deepEqual(many.issue.assignees, ["alice", "bob"]);
+  assert.equal(many.issue.meta.shared, undefined);
+  const shared = await client.create(tmp, { title: "누구든 맡을 작업", assignees: [] });
+  assert.deepEqual(shared.issue.assignees, []);
+  assert.equal(shared.issue.meta.shared, true);
+  assert.equal((await client.create(tmp, { title: "필드 없음" })).issue.meta.shared, true);
+  const before = state.calls.filter((c) => c.method === "POST" && c.endpoint === "repos/acme/widget/issues").length;
+  // 한 명이라도 지정할 수 없으면 이슈를 만들지 않는다.
+  await assert.rejects(client.create(tmp, { title: "x", assignees: ["alice", "mallory"] }), /mallory.*협업자/);
+  await assert.rejects(client.create(tmp, { title: "x", assignees: ["alice", "--evil"] }), /팀원/);
+  await assert.rejects(client.create(tmp, { title: "x", assignees: Array.from({ length: 11 }, (_, i) => "user" + i) }), /10명/);
+  assert.equal(state.calls.filter((c) => c.method === "POST" && c.endpoint === "repos/acme/widget/issues").length, before);
+  await client.list(tmp, { box: "shared" });
+  assert.match(state.calls.at(-1).endpoint, /assignee=none/);
+});
+
+test("issues: 공용 작업은 먼저 맡은 사람이 담당하고 이미 맡은 작업은 가져가지 않는다", async () => {
+  const { state, client, issue } = fakeGitHub();
+  state.issues.set(1, issue(1, { assignees: [], body: formatIssueBody("x", { from: "alice", shared: true }) }));
+  const { issue: claimed } = await client.claim(tmp, 1);
+  assert.deepEqual(claimed.assignees, ["bob"]);
+  assert.match(state.comments.get(1).at(-1).body, /@bob님이 이 작업을 맡았습니다/);
+  state.viewer = "alice"; client.viewers.clear();
+  await assert.rejects(client.claim(tmp, 1), (error) => error.reason === "issue-claimed" && /@bob/.test(error.message));
+  // 동시에 맡으면 늦은 쪽의 지정만 되돌린다.
+  state.issues.set(2, issue(2, { assignees: [] }));
+  state.racer = (found) => { state.issues.set(2, { ...found, assignees: [{ login: "bob" }] }); state.racer = null; };
+  await assert.rejects(client.claim(tmp, 2), (error) => error.reason === "issue-claimed");
+  assert.deepEqual(state.issues.get(2).assignees.map((user) => user.login), ["bob"]);
+  // 지정할 수 없는 계정은 맡지 못한다.
+  state.viewer = "mallory"; client.viewers.clear();
+  state.issues.set(3, issue(3, { assignees: [] }));
+  await assert.rejects(client.claim(tmp, 3), (error) => error.reason === "gh-permission");
+  state.issues.set(4, issue(4, { assignees: [], state: "closed" }));
+  await assert.rejects(client.claim(tmp, 4), /열린 작업만/);
+});
+
+test("issues: 되돌려 보내기는 함께 맡은 사람이 있으면 나만 빠지고 공용 작업은 공용으로 돌린다", async () => {
+  const { state, client, issue } = fakeGitHub();
+  state.issues.set(1, issue(1, { assignees: [{ login: "alice" }, { login: "bob" }], body: formatIssueBody("x", { from: "carol" }) }));
+  const { issue: left } = await client.giveBack(tmp, 1, { reason: "바빠요" });
+  assert.deepEqual(left.assignees, ["alice"]);
+  assert.match(state.comments.get(1)[0].body, /작업에서 빠졌습니다/);
+  state.issues.set(2, issue(2, { body: formatIssueBody("x", { from: "carol", shared: true }) }));
+  const { issue: pooled } = await client.giveBack(tmp, 2, {});
+  assert.deepEqual(pooled.assignees, []);
+  assert.match(state.comments.get(2)[0].body, /팀 공용으로 되돌렸습니다/);
 });
 
 function serviceWorld(t) {

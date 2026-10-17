@@ -116,14 +116,18 @@ export function createIssuesController({ api, account, connectAccount, goProject
     }
   }
 
+  // 담당자가 없으면 누구나 맡을 수 있는 팀 공용 작업이다.
+  const assigneeText = (issue) => issue.assignees.map(who).join(", ") || "팀 공용";
+
   function listView(s, limited = false) {
-    const empty = s.box === "inbox" ? "받은 작업이 없습니다." : "보낸 작업이 없습니다.";
+    const empty = { inbox: "받은 작업이 없습니다.", shared: "아무도 맡지 않은 공용 작업이 없습니다.", sent: "보낸 작업이 없습니다." }[s.box];
+    const peer = (issue) => s.box === "inbox" ? who(sender(issue)) + "에게서" : s.box === "shared" ? who(sender(issue)) + "이 올림" : assigneeText(issue) + "에게";
     $("i-list-note").textContent = s.issues.length ? `${s.issues.length}개${limited ? " · 최근 50개까지" : ""}` : empty;
     $("i-list").replaceChildren(...s.issues.map((issue) => el("li", {},
       el("button", { type: "button", class: "pr-list-item" + (s.number === issue.number ? " active" : ""), "aria-pressed": String(s.number === issue.number), onclick: () => detail(issue.number) },
         el("span", { class: "pr-list-title" }, issue.title),
         el("span", { class: "pr-list-meta" }, statusBadge(issue),
-          el("span", {}, `#${issue.number} · ${s.box === "inbox" ? who(sender(issue)) + "에게서" : (issue.assignees.map(who).join(", ") || "@?") + "에게"}`),
+          el("span", {}, `#${issue.number} · ${peer(issue)}`),
           issue.link ? el("span", { class: "pill running issue-pill" }, issue.link.done ? "해결 완료" : "진행 중") : null,
           issue.comments ? el("span", { class: "muted" }, `댓글 ${issue.comments}`) : null),
         el("span", { class: "pr-list-branch" }, issue.updatedAt ? timeAgo(issue.updatedAt) + " 갱신" : "")))));
@@ -219,6 +223,11 @@ export function createIssuesController({ api, account, connectAccount, goProject
       el("a", { class: "ghost sm pr-link", href: issue.url, target: "_blank", rel: "noopener noreferrer" }, "GitHub에서 보기"));
     const button = (label, action, cls = "ghost sm", title = "") => el("button", { type: "button", class: cls, "data-issue-action": "1", title, onclick: action }, label);
 
+    if (open && !issue.assignees.length) {
+      actions.append(button("내가 맡기", () => {
+        if (confirm(`#${issue.number} "${issue.title}"\n\n이 작업을 맡을까요? 팀원들에게 담당자로 표시됩니다.`)) mutate("claim", `/api/issues/${issue.number}/claim`, {});
+      }, "primary sm", "아무도 맡지 않은 팀 공용 작업을 내 받은 작업으로 가져옵니다"));
+    }
     if (open && mine) {
       const agent = el("select", { "aria-label": "세션 AI", "data-issue-action": "1" }, ...AGENTS.map(([value, label]) => el("option", { value }, label)));
       actions.append(agent,
@@ -241,7 +250,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
     $("i-detail").replaceChildren(
       el("header", { class: "pr-detail-head" },
         el("div", { class: "pr-detail-meta" }, statusBadge(issue),
-          el("span", { class: "muted" }, `#${issue.number} · ${who(sender(issue))} → ${issue.assignees.map(who).join(", ") || "@?"} · ${timeAgo(issue.updatedAt)}`)),
+          el("span", { class: "muted" }, `#${issue.number} · ${who(sender(issue))} → ${assigneeText(issue)} · ${timeAgo(issue.updatedAt)}`)),
         el("h4", {}, issue.title),
         meta.branch || meta.commit
           ? el("p", { class: "mono muted pr-refs" }, [meta.branch && `기준 ${meta.branch}`, meta.commit && String(meta.commit).slice(0, 8)].filter(Boolean).join(" · "))
@@ -255,7 +264,8 @@ export function createIssuesController({ api, account, connectAccount, goProject
     controls();
   }
 
-  const DONE_NOTE = { close: "작업을 완료로 닫았습니다.", reopen: "작업을 다시 열었습니다.", return: "작업을 되돌려 보냈습니다.", start: "작업을 시작했습니다. 세션 흐름 탭에서 진행을 볼 수 있습니다." };
+  const DONE_NOTE = { close: "작업을 완료로 닫았습니다.", reopen: "작업을 다시 열었습니다.", return: "작업을 되돌려 보냈습니다.", start: "작업을 시작했습니다. 세션 흐름 탭에서 진행을 볼 수 있습니다.",
+    claim: "작업을 맡았습니다. 받은 작업에서 이어서 진행하세요." };
 
   async function mutate(kind, url, fields, method = "POST") {
     const s = state;
@@ -274,6 +284,8 @@ export function createIssuesController({ api, account, connectAccount, goProject
     s.busy = null;
     controls();
     if (kind === "progress") return ok;
+    // 맡은 작업은 공용에서 빠지므로 받은 작업함에서 이어 보여 준다.
+    if (kind === "claim" && ok) s.box = "inbox";
     if (kind === "comment") await detail(s.number, { quiet: true });
     else await refresh();
     if (ok && DONE_NOTE[kind] && current(s)) notice(DONE_NOTE[kind]);
@@ -290,7 +302,10 @@ export function createIssuesController({ api, account, connectAccount, goProject
 
   function giveBack(s) {
     const issue = s.detail.issue;
-    const reason = prompt(`#${issue.number} 작업을 ${who(sender(issue))}에게 되돌려 보냅니다. 사유를 적어 주세요.`, "");
+    const others = issue.assignees.filter((login) => login !== s.context.viewer);
+    const where = others.length ? `에서 빠집니다(${others.map(who).join(", ")}은 계속 맡습니다)`
+      : issue.meta?.shared ? `을 팀 공용으로 되돌립니다` : `을 ${who(sender(issue))}에게 되돌려 보냅니다`;
+    const reason = prompt(`#${issue.number} 작업${where}. 사유를 적어 주세요.`, "");
     if (reason === null) return;
     return mutate("return", `/api/issues/${issue.number}/return`, { reason });
   }
@@ -303,13 +318,14 @@ export function createIssuesController({ api, account, connectAccount, goProject
     }
     send.projectPath = projectPath;
     send.context = null;
-    send.assignee = assignee;
+    send.picked = new Set(assignee ? [assignee] : []);
+    send.focus = assignee || null;
     $("issue-error").textContent = "";
     $("issue-title").value = draft?.title ?? "";
     $("issue-body").value = draft?.body ?? BODY_TEMPLATE;
     $("issue-repo").textContent = "불러오는 중…";
     $("issue-visibility").textContent = "";
-    $("issue-assignee").replaceChildren();
+    $("issue-assignees").replaceChildren();
     renderAssigneeName();
     $("issue-dialog").showModal();
     try {
@@ -329,29 +345,48 @@ export function createIssuesController({ api, account, connectAccount, goProject
     }
   }
 
-  // 받을 팀원 목록. 이름이 있으면 "@아이디 (이름)"으로 보이고, 고른 팀원의 이름은 아래 칸에서 바꾼다.
+  // 받을 팀원 목록. 여러 명 고를 수 있고, 아무도 고르지 않으면 팀 공용 작업이 된다.
+  // 이름이 있으면 "@아이디 (이름)"으로 보이고, 마지막에 고른 팀원의 이름은 아래 칸에서 바꾼다.
   function renderAssignees() {
     const context = send.context;
     if (!context) return;
-    const picked = $("issue-assignee").value || send.assignee;
     const people = [...context.assignees].sort((a, b) => (a.login === context.viewer) - (b.login === context.viewer) || a.login.localeCompare(b.login));
-    $("issue-assignee").replaceChildren(...people.map((p) => el("option", { value: p.login }, who(p.login) + (p.login === context.viewer ? " · 나" : ""))));
-    if (people.some((p) => p.login === picked)) $("issue-assignee").value = picked;
+    for (const login of send.picked) if (!people.some((p) => p.login === login)) send.picked.delete(login);
+    if (send.focus && !send.picked.has(send.focus)) send.focus = [...send.picked].at(-1) ?? null;
+    $("issue-assignees").replaceChildren(...people.map((p) => {
+      const box = el("input", { type: "checkbox", value: p.login });
+      box.checked = send.picked.has(p.login);
+      box.addEventListener("change", () => {
+        if (box.checked) { send.picked.add(p.login); send.focus = p.login; }
+        else send.picked.delete(p.login);
+        if (send.focus && !send.picked.has(send.focus)) send.focus = [...send.picked].at(-1) ?? null;
+        renderAssigneeNote();
+        renderAssigneeName();
+      });
+      return el("label", { class: "check" }, box, who(p.login) + (p.login === context.viewer ? " · 나" : ""));
+    }));
+    renderAssigneeNote();
     renderAssigneeName();
   }
 
+  function renderAssigneeNote() {
+    const count = send.picked?.size ?? 0;
+    $("issue-assignee-note").textContent = !count ? "팀 공용 작업으로 올립니다. 팀원 모두의 공용 작업함에 보이고, 먼저 맡은 사람이 담당합니다."
+      : count === 1 ? "고른 팀원의 받은 작업함에 보입니다." : `고른 ${count}명 모두의 받은 작업함에 보입니다.`;
+  }
+
   function renderAssigneeName() {
-    const login = $("issue-assignee").value;
+    const login = send.focus;
     const input = $("issue-assignee-name");
     const github = login ? githubNames.get(login.toLowerCase()) : "";
+    $("issue-assignee-label").textContent = login ? "@" + login + " 이름" : "고른 팀원 이름";
     input.disabled = !login;
     input.value = login ? String(localNames()[login.toLowerCase()] ?? "") : "";
     input.placeholder = github ? "GitHub 이름: " + github : "예: 홍길동";
   }
 
-  $("issue-assignee").addEventListener("change", renderAssigneeName);
   $("issue-assignee-name").addEventListener("change", () => {
-    const login = $("issue-assignee").value;
+    const login = send.focus;
     if (!login) return;
     setLocalName(login, $("issue-assignee-name").value);
     renderAssignees();
@@ -367,13 +402,15 @@ export function createIssuesController({ api, account, connectAccount, goProject
     if (e.submitter?.value !== "ok") return;
     e.preventDefault();
     if (!send.context) return;
+    const assignees = [...send.picked];
+    if (!assignees.length && !confirm("받을 팀원을 고르지 않았습니다. 팀 공용 작업으로 올릴까요?\n저장소 팀원 누구나 보고 맡을 수 있습니다.")) return;
     const button = e.submitter;
     button.disabled = true;
     try {
       await api("POST", "/api/issues", {
         path: send.projectPath, repo: send.context.repo,
         title: $("issue-title").value, body: $("issue-body").value,
-        assignee: $("issue-assignee").value,
+        assignees,
       });
       $("issue-dialog").close();
       if (samePath(state?.project, send.projectPath)) {

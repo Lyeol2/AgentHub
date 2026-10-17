@@ -14,6 +14,7 @@ const PAGE = 50;
 const PROFILE_TTL = 60 * 60_000;
 const PROFILE_WORKERS = 6;
 const NAME_MAX = 40;
+const ASSIGNEES_MAX = 10; // GitHub 이슈 담당자 최대 수
 
 // 본문 끝의 숨김 주석에 보낸 사람·기준 브랜치·추천 흐름을 남긴다. 주석이 끝나지 않게 <, >는 JSON 이스케이프로 쓴다.
 export function formatIssueBody(text, meta) {
@@ -145,14 +146,15 @@ export class GitHubIssues {
     };
   }
 
-  // box: inbox(나에게 지정된 작업) | sent(내가 보낸 작업)
+  // box: inbox(나에게 지정된 작업) | shared(아직 아무도 맡지 않은 팀 공용 작업) | sent(내가 보낸 작업)
   async list(dir, { box = "inbox", state = "open", remote } = {}) {
-    if (!["inbox", "sent"].includes(box)) throw new GitHubError("작업함 종류가 올바르지 않습니다.");
+    if (!["inbox", "shared", "sent"].includes(box)) throw new GitHubError("작업함 종류가 올바르지 않습니다.");
     if (!["open", "closed", "all"].includes(state)) throw new GitHubError("작업 상태 필터가 올바르지 않습니다.");
     const target = await this.target(dir, remote);
     const viewer = await this.viewer(target);
     const query = new URLSearchParams({ labels: ISSUE_LABEL, state, sort: "updated", direction: "desc", per_page: String(PAGE) });
-    query.set(box === "inbox" ? "assignee" : "creator", viewer);
+    if (box === "shared") query.set("assignee", "none");
+    else query.set(box === "inbox" ? "assignee" : "creator", viewer);
     const raw = await this.api(target, "GET", "repos/" + target.repo + "/issues?" + query);
     const issues = raw.filter((item) => !item.pull_request).map((item) => normalizeIssue(item, target.repo));
     return { repo: target.repo, viewer, box, issues, limited: raw.length >= PAGE };
@@ -216,23 +218,33 @@ export class GitHubIssues {
   async create(dir, body = {}) {
     const title = typeof body.title === "string" ? body.title.trim() : "";
     const text = typeof body.body === "string" ? body.body : "";
-    const assignee = typeof body.assignee === "string" ? body.assignee.trim() : "";
+    // 받는 사람은 여러 명 고를 수 있고, 고르지 않으면 누구나 맡을 수 있는 팀 공용 작업이 된다.
+    const picked = Array.isArray(body.assignees) ? body.assignees : typeof body.assignee === "string" && body.assignee.trim() ? [body.assignee] : [];
+    const assignees = [];
+    for (const value of picked) {
+      const name = typeof value === "string" ? value.trim() : "";
+      if (!LOGIN.test(name)) throw new GitHubError("받을 팀원을 다시 고르세요.");
+      if (!assignees.some((item) => item.toLowerCase() === name.toLowerCase())) assignees.push(name);
+    }
     if (!title || title.length > TITLE_MAX) throw new GitHubError("작업 제목을 1~256자로 입력하세요.");
     if (text.length > BODY_MAX) throw new GitHubError("작업 내용은 60000자까지 입력할 수 있습니다.");
-    if (!LOGIN.test(assignee)) throw new GitHubError("받을 팀원을 고르세요.");
+    if (assignees.length > ASSIGNEES_MAX) throw new GitHubError(`받을 팀원은 ${ASSIGNEES_MAX}명까지 고를 수 있습니다.`);
     const target = await this.target(dir, body.remote);
     if (typeof body.repo === "string" && body.repo.toLowerCase() !== target.repo.toLowerCase()) throw new GitHubError("원격 저장소가 바뀌었습니다. 다시 열어 주세요.", "stale-head", 409);
     const [viewer, local] = await Promise.all([this.viewer(target), this.pulls.local(dir)]);
-    try {
-      await this.api(target, "GET", "repos/" + target.repo + "/assignees/" + assignee, undefined, { raw: true });
-    } catch (error) {
-      if (/\bHTTP 404\b/.test(error.message)) throw new GitHubError(assignee + "에게는 이 저장소의 작업을 지정할 수 없습니다. 저장소 협업자인지 확인하세요.");
-      throw error;
-    }
+    // GitHub는 지정할 수 없는 담당자를 조용히 빼므로 이슈를 만들기 전에 모두 확인한다.
+    await Promise.all(assignees.map(async (assignee) => {
+      try {
+        await this.api(target, "GET", "repos/" + target.repo + "/assignees/" + assignee, undefined, { raw: true });
+      } catch (error) {
+        if (/\bHTTP 404\b/.test(error.message)) throw new GitHubError(assignee + "에게는 이 저장소의 작업을 지정할 수 없습니다. 저장소 협업자인지 확인하세요.");
+        throw error;
+      }
+    }));
     await this.ensureLabel(target);
-    const meta = { from: viewer, branch: local.branch ?? null, commit: local.headSha ?? null };
+    const meta = { from: viewer, branch: local.branch ?? null, commit: local.headSha ?? null, ...(assignees.length ? {} : { shared: true }) };
     const raw = await this.api(target, "POST", "repos/" + target.repo + "/issues",
-      { title, body: formatIssueBody(maskSecrets(text), meta), assignees: [assignee], labels: [ISSUE_LABEL] }, { write: true });
+      { title, body: formatIssueBody(maskSecrets(text), meta), assignees, labels: [ISSUE_LABEL] }, { write: true });
     return { ok: true, issue: normalizeIssue(raw, target.repo) };
   }
 
@@ -246,7 +258,32 @@ export class GitHubIssues {
     return { ok: true, comment: normalizeComment(raw) };
   }
 
-  // 받은 작업을 보낸 사람에게 되돌린다. 사유는 댓글로 남긴다.
+  // 팀 공용 작업을 내가 맡는다. 이미 누가 맡았으면 맡지 않는다.
+  async claim(dir, number, { remote } = {}) {
+    number = this.number(number);
+    const target = await this.target(dir, remote);
+    const endpoint = "repos/" + target.repo + "/issues/" + number;
+    const [raw, viewer] = await Promise.all([this.api(target, "GET", endpoint), this.viewer(target)]);
+    if (raw.pull_request) throw new GitHubError("Pull Request는 작업으로 맡을 수 없습니다.");
+    const issue = normalizeIssue(raw, target.repo);
+    if (issue.state !== "open") throw new GitHubError("열린 작업만 맡을 수 있습니다.", "issue-state", 409);
+    const others = (list) => list.filter((user) => user.toLowerCase() !== viewer.toLowerCase());
+    if (others(issue.assignees).length) throw new GitHubError("이미 @" + others(issue.assignees).join(", @") + "님이 맡은 작업입니다. 목록을 새로고침하세요.", "issue-claimed", 409);
+    if (issue.assignees.length) return { ok: true, issue };
+    // 담당자 추가는 기존 담당자를 지우지 않는다. 동시에 맡은 사람이 있으면 내 지정만 되돌린다.
+    const added = normalizeIssue(await this.api(target, "POST", endpoint + "/assignees", { assignees: [viewer] }, { write: true }), target.repo);
+    if (!added.assignees.some((user) => user.toLowerCase() === viewer.toLowerCase()))
+      throw new GitHubError("이 저장소의 작업을 맡을 권한이 없습니다. 저장소 협업자인지 확인하세요.", "gh-permission", 403);
+    if (others(added.assignees).length) {
+      await this.api(target, "DELETE", endpoint + "/assignees", { assignees: [viewer] }, { write: true });
+      throw new GitHubError("방금 @" + others(added.assignees).join(", @") + "님이 먼저 맡았습니다. 목록을 새로고침하세요.", "issue-claimed", 409);
+    }
+    // 맡았다는 알림 댓글은 실패해도 맡기 결과를 바꾸지 않는다.
+    await this.api(target, "POST", endpoint + "/comments", { body: "🙋 @" + viewer + "님이 이 작업을 맡았습니다." }, { write: true }).catch(() => {});
+    return { ok: true, issue: added };
+  }
+
+  // 받은 작업을 되돌린다. 함께 맡은 사람이 있으면 나만 빠지고, 팀 공용 작업은 공용으로, 아니면 보낸 사람에게 돌아간다. 사유는 댓글로 남긴다.
   async giveBack(dir, number, { reason, remote } = {}) {
     number = this.number(number);
     const target = await this.target(dir, remote);
@@ -254,11 +291,17 @@ export class GitHubIssues {
     const [raw, viewer] = await Promise.all([this.api(target, "GET", endpoint), this.viewer(target)]);
     const issue = normalizeIssue(raw, target.repo);
     if (issue.state !== "open") throw new GitHubError("열린 작업만 되돌려 보낼 수 있습니다.", "issue-state", 409);
+    const mine = issue.assignees.filter((user) => user.toLowerCase() === viewer.toLowerCase());
+    const others = issue.assignees.length - mine.length;
+    const shared = issue.meta?.shared === true;
     const sender = LOGIN.test(String(issue.meta?.from ?? "")) ? issue.meta.from : issue.author;
-    if (!LOGIN.test(sender)) throw new GitHubError("보낸 사람을 확인하지 못했습니다.");
+    if (!others && !shared && !LOGIN.test(sender)) throw new GitHubError("보낸 사람을 확인하지 못했습니다.");
     const note = typeof reason === "string" && reason.trim() ? reason.trim().slice(0, 4000) : "사유 없음";
-    await this.api(target, "POST", endpoint + "/comments", { body: maskSecrets("↩️ @" + viewer + "님이 작업을 되돌려 보냈습니다.\n\n" + note) }, { write: true });
-    const updated = await this.api(target, "PATCH", endpoint, { assignees: [sender] }, { write: true });
+    const action = others ? "작업에서 빠졌습니다." : shared ? "작업을 팀 공용으로 되돌렸습니다." : "작업을 되돌려 보냈습니다.";
+    await this.api(target, "POST", endpoint + "/comments", { body: maskSecrets("↩️ @" + viewer + "님이 " + action + "\n\n" + note) }, { write: true });
+    const updated = others
+      ? await this.api(target, "DELETE", endpoint + "/assignees", { assignees: mine }, { write: true })
+      : await this.api(target, "PATCH", endpoint, { assignees: shared ? [] : [sender] }, { write: true });
     return { ok: true, issue: normalizeIssue(updated, target.repo) };
   }
 
