@@ -135,6 +135,12 @@
 .workbranch-status[data-state="error"] { color: var(--danger); }
 #new-worktree-branch-row, #task-workbranch-row { margin-bottom: 14px; }
 .task-note { margin: 8px 0 0; color: var(--muted, #9ca3af); font-size: 12px; line-height: 1.6; }
+/* 작업 폴더 줄: 종류 · 전체 경로 · 상태. 긴 경로는 줄여 보이고 전체는 툴팁으로 본다. */
+.task-folder { display: flex; align-items: center; gap: 8px; margin: -4px 0 10px; font-size: 12px; color: var(--muted, #9ca3af); min-width: 0; }
+.task-folder-kind { flex: none; padding: 1px 6px; border: 1px solid var(--line); border-radius: 4px; }
+.task-folder-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono, ui-monospace, monospace); }
+.task-folder-flag { flex: none; }
+.task-folder-flag[data-warn="true"] { color: var(--warn); font-weight: 600; }
 .task-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; }
 #new-task-dialog { width: min(680px, calc(100vw - 32px)); }
 .task-create-modes { display: flex; gap: 8px; margin-bottom: 16px; }
