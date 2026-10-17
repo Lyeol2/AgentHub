@@ -40,7 +40,8 @@ async function withBrowser(temp, url, run) {
     await new Promise((resolve, reject) => { socket.addEventListener("open", resolve, { once: true }); socket.addEventListener("error", reject, { once: true }); });
     const command = (method, params = {}, sessionId) => new Promise((resolve, reject) => {
       const requestId = ++id;
-      const timer = setTimeout(() => { pending.delete(requestId); reject(Error("Browser timeout: " + method + "\n" + errors.join("\n"))); }, 15000);
+      // 전체 테스트가 브라우저 테스트를 동시에 돌리면 혼자 6초 걸리는 확인도 20초 넘게 걸린다.
+      const timer = setTimeout(() => { pending.delete(requestId); reject(Error("Browser timeout: " + method + "\n" + errors.join("\n"))); }, 30000);
       pending.set(requestId, { resolve: (value) => { clearTimeout(timer); resolve(value); }, reject: (error) => { clearTimeout(timer); reject(error); } });
       socket.send(JSON.stringify({ id: requestId, method, params, ...(sessionId ? { sessionId } : {}) }));
     });
@@ -62,7 +63,7 @@ async function withBrowser(temp, url, run) {
 
 const until = (condition) => `new Promise((resolve,reject)=>{const end=Date.now()+8000;const check=()=>{if(${condition})resolve(true);else if(Date.now()>end)reject(Error('Timed out: '+${JSON.stringify(condition)}));else setTimeout(check,25);};check();})`;
 
-test("browser: report cards, image gallery, Markdown math, isolated HTML, localhost, mentions and missing files", { timeout: 60000 }, async (t) => {
+test("browser: report cards, image gallery, Markdown math, isolated HTML, localhost, mentions and missing files", { timeout: 90000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(chrome).then(() => true, () => false)) return t.skip("Windows Chromium required");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-report-"));
   const project = path.join(temp, "project");
