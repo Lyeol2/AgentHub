@@ -111,46 +111,142 @@ function claudeUserText(msg) {
   return "";
 }
 
-// 기록 파일 요약은 파일이 바뀌지 않았으면 다시 읽지 않는다.
-const summaryCache = new Map(); // 파일 경로 → { mtimeMs, size, value }
-function cached(file, summarize) {
+// 기록 파일 요약. 기록은 뒤에 줄을 덧붙이며 자라므로 읽은 위치와 중간 결과를 기억해 늘어난 부분만 읽는다.
+// 앞부분이 바뀌었거나 파일이 줄었으면 처음부터 다시 읽는다. 수십 MB 파일을 바뀔 때마다 통째로 읽지 않는다.
+// summarizer: { kind, init() → 상태, step(상태, 줄), finish(상태, 파일, stat) → 요약 또는 null }
+const summaryCache = new Map(); // 파일 경로 → { kind, mtimeMs, size, offset, head, state, value }
+const HEAD_BYTES = 64;
+const READ_CHUNK = 8 << 20;
+
+function readAt(fd, position, length) {
+  const buffer = Buffer.alloc(length);
+  let filled = 0;
+  while (filled < length) {
+    const n = fs.readSync(fd, buffer, filled, length - filled, position + filled);
+    if (!n) break;
+    filled += n;
+  }
+  return buffer.subarray(0, filled);
+}
+
+function cached(file, summarizer) {
   const stat = fs.statSync(file);
   const hit = summaryCache.get(file);
-  if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.value;
-  const value = summarize(file, stat);
-  summaryCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, value });
-  return value;
-}
-
-function summarizeClaude(file, stat) {
-  let cwd = null;
-  let title = null;
-  let firstPrompt = null;
-  let turns = 0;
-  for (const line of readLines(file)) {
-    const msg = parseJson(line);
-    if (!msg) continue;
-    if (msg.type === "custom-title" && msg.customTitle) title = msg.customTitle;
-    if (msg.type !== "user" || msg.isSidechain || msg.isMeta) continue;
-    cwd ??= msg.cwd;
-    const text = claudeUserText(msg);
-    if (!text || isInjected(text)) continue;
-    turns++;
-    firstPrompt ??= userPrompt(text) || null;
+  const same = hit?.kind === summarizer.kind;
+  if (same && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.value;
+  const fd = fs.openSync(file, "r");
+  try {
+    const head = readAt(fd, 0, Math.min(HEAD_BYTES, stat.size));
+    const previousHead = same ? Buffer.from(hit.head, "base64") : null;
+    const grown = same && stat.size > hit.size && head.subarray(0, previousHead.length).equals(previousHead);
+    const entry = grown ? { ...hit, state: { ...hit.state } } : { kind: summarizer.kind, offset: 0, state: summarizer.init() };
+    // 완성된 줄(줄바꿈까지)만 상태에 넣고, 쓰는 중일 수 있는 마지막 조각은 이번 결과에만 반영한다.
+    let start = entry.offset;
+    let pending = Buffer.alloc(0);
+    for (let position = entry.offset; position < stat.size;) {
+      const chunk = readAt(fd, position, Math.min(READ_CHUNK, stat.size - position));
+      if (!chunk.length) break;
+      position += chunk.length;
+      const data = pending.length ? Buffer.concat([pending, chunk]) : chunk;
+      const end = data.lastIndexOf(10); // "\n"
+      if (end < 0) { pending = data; continue; }
+      for (const line of data.subarray(0, end).toString("utf8").split("\n")) if (line) summarizer.step(entry.state, line);
+      start += end + 1;
+      pending = data.subarray(end + 1);
+    }
+    let state = entry.state;
+    const tail = pending.toString("utf8");
+    if (tail) { state = { ...state }; summarizer.step(state, tail); }
+    Object.assign(entry, { mtimeMs: stat.mtimeMs, size: stat.size, offset: start, head: head.toString("base64"), value: summarizer.finish(state, file, stat) });
+    summaryCache.set(file, entry);
+    cacheChanged();
+    return entry.value;
+  } finally {
+    fs.closeSync(fd);
   }
-  if (!turns) return null;
-  return {
-    agent: "claude",
-    agentSessionId: path.basename(file, ".jsonl"),
-    title: oneLine(title ?? firstPrompt),
-    cwd,
-    turns,
-    updatedAt: stat.mtime.toISOString(),
-    file,
-  };
 }
 
-function allClaude() {
+// 요약은 데이터 폴더에 저장해 서버를 다시 켜도 기록을 처음부터 읽지 않는다. 읽을 수 없으면 버리고 다시 만든다.
+const CACHE_VERSION = 1;
+let cacheFile = null;
+let cacheDirty = false;
+let cacheTimer = null;
+let cacheWrite = Promise.resolve();
+
+export function useDiscoverCache(file) {
+  cacheFile = file;
+  try {
+    const data = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (data?.version !== CACHE_VERSION) return;
+    for (const [name, entry] of Object.entries(data.summaries ?? {})) {
+      if (typeof entry?.kind === "string" && Number.isFinite(entry.size) && Number.isFinite(entry.offset) && typeof entry.head === "string" && entry.state && typeof entry.state === "object")
+        summaryCache.set(name, entry);
+    }
+    for (const [name, meta] of Object.entries(data.codexMeta ?? {})) codexMetaCache.set(name, meta);
+  } catch {}
+}
+
+function cacheChanged() {
+  cacheDirty = true;
+  if (!cacheFile || cacheTimer) return;
+  cacheTimer = setTimeout(() => { cacheTimer = null; flushDiscoverCache(); }, 2000);
+  cacheTimer.unref?.();
+}
+
+export function flushDiscoverCache() {
+  clearTimeout(cacheTimer);
+  cacheTimer = null;
+  if (!cacheFile || !cacheDirty) return cacheWrite;
+  cacheDirty = false;
+  const file = cacheFile;
+  const text = JSON.stringify({ version: CACHE_VERSION, summaries: Object.fromEntries(summaryCache), codexMeta: Object.fromEntries(codexMetaCache) });
+  const temp = `${file}.${process.pid}.tmp`;
+  // 데이터 폴더를 새로 만들지 않는다. 폴더가 없으면(지운 테스트 폴더 등) 저장하지 않는다.
+  cacheWrite = cacheWrite.then(async () => {
+    await fs.promises.writeFile(temp, text);
+    await fs.promises.rename(temp, file);
+  }).catch(() => fs.promises.rm(temp, { force: true }).catch(() => {}));
+  return cacheWrite;
+}
+
+// 지워진 기록 파일의 요약은 저장 파일에 남기지 않는다.
+function forgetMissing(seen) {
+  for (const cache of [summaryCache, codexMetaCache]) {
+    for (const name of cache.keys()) {
+      if (!seen.has(name)) { cache.delete(name); cacheDirty = true; }
+    }
+  }
+}
+
+const claudeSummary = {
+  kind: "claude",
+  init: () => ({ cwd: null, title: null, firstPrompt: null, turns: 0 }),
+  step(state, line) {
+    const msg = parseJson(line);
+    if (!msg) return;
+    if (msg.type === "custom-title" && msg.customTitle) state.title = msg.customTitle;
+    if (msg.type !== "user" || msg.isSidechain || msg.isMeta) return;
+    state.cwd ??= msg.cwd;
+    const text = claudeUserText(msg);
+    if (!text || isInjected(text)) return;
+    state.turns++;
+    state.firstPrompt ??= userPrompt(text) || null;
+  },
+  finish(state, file, stat) {
+    if (!state.turns) return null;
+    return {
+      agent: "claude",
+      agentSessionId: path.basename(file, ".jsonl"),
+      title: oneLine(state.title ?? state.firstPrompt),
+      cwd: state.cwd,
+      turns: state.turns,
+      updatedAt: stat.mtime.toISOString(),
+      file,
+    };
+  },
+};
+
+function allClaude(seen) {
   const base = path.join(CLAUDE_DIR, "projects");
   if (!fs.existsSync(base)) return [];
   const found = [];
@@ -161,8 +257,9 @@ function allClaude() {
     try { files = fs.statSync(dir).isDirectory() ? fs.readdirSync(dir) : []; } catch { continue; }
     for (const file of files) {
       if (!file.endsWith(".jsonl")) continue;
+      seen.add(path.join(dir, file));
       try {
-        const entry = cached(path.join(dir, file), summarizeClaude);
+        const entry = cached(path.join(dir, file), claudeSummary);
         if (entry) found.push(entry);
       } catch {
         // 쓰는 중이거나 읽을 수 없는 파일은 건너뛴다.
@@ -206,18 +303,24 @@ function codexMeta(file) {
   if (!codexMetaCache.has(file)) {
     const meta = parseJson(firstLine(file))?.payload ?? null;
     codexMetaCache.set(file, meta && { id: meta.id ?? meta.session_id, cwd: meta.cwd, source: meta.source });
+    cacheChanged();
   }
   return codexMetaCache.get(file);
 }
 
+// 스레드 이름 목록은 바뀌었을 때만 다시 읽는다.
+let threadNames = null; // { mtimeMs, size, names }
 function codexThreadNames() {
-  const names = new Map();
   const file = path.join(CODEX_DIR, "session_index.jsonl");
-  if (!fs.existsSync(file)) return names;
+  let stat;
+  try { stat = fs.statSync(file); } catch { return new Map(); }
+  if (threadNames?.mtimeMs === stat.mtimeMs && threadNames.size === stat.size) return threadNames.names;
+  const names = new Map();
   for (const line of readLines(file)) {
     const entry = parseJson(line);
     if (entry?.id && entry.thread_name) names.set(entry.id, entry.thread_name);
   }
+  threadNames = { mtimeMs: stat.mtimeMs, size: stat.size, names };
   return names;
 }
 
@@ -255,22 +358,37 @@ function codexHistory(file) {
 }
 
 // 목록에는 사용자 요청만 필요하므로 해당 줄만 파싱한다(기록 파일이 수십 MB일 수 있다).
-function codexPrompts(file) {
-  const prompts = [];
-  for (const line of readLines(file)) {
-    if (!line.includes('"role":"user"') || !line.includes('"response_item"')) continue;
+const codexSummary = (meta) => ({
+  kind: "codex",
+  init: () => ({ turns: 0, first: null }),
+  step(state, line) {
+    if (!line.includes('"role":"user"') || !line.includes('"response_item"')) return;
     const p = parseJson(line)?.payload;
-    if (p?.type !== "message" || p.role !== "user") continue;
+    if (p?.type !== "message" || p.role !== "user") return;
     const text = codexText(p.content);
-    if (text && !isInjected(text)) prompts.push({ text });
-  }
-  return prompts;
-}
+    if (!text || isInjected(text)) return;
+    state.turns++;
+    state.first ??= text;
+  },
+  finish(state, file, stat) {
+    if (!state.turns) return null;
+    return {
+      agent: "codex",
+      agentSessionId: meta.id,
+      firstPrompt: userPrompt(state.first) || state.first,
+      cwd: meta.cwd,
+      turns: state.turns,
+      updatedAt: stat.mtime.toISOString(),
+      file,
+    };
+  },
+});
 
-function allCodex() {
+function allCodex(seen) {
   const names = codexThreadNames();
   const found = [];
   for (const file of walk(path.join(CODEX_DIR, "sessions"))) {
+    seen.add(file);
     let meta;
     try {
       meta = codexMeta(file);
@@ -281,19 +399,7 @@ function allCodex() {
     if (!meta?.id || typeof meta.source !== "string") continue;
     let entry;
     try {
-      entry = cached(file, (f, stat) => {
-        const prompts = codexPrompts(f);
-        if (!prompts.length) return null;
-        return {
-          agent: "codex",
-          agentSessionId: meta.id,
-          firstPrompt: userPrompt(prompts[0].text) || prompts[0].text,
-          cwd: meta.cwd,
-          turns: prompts.length,
-          updatedAt: stat.mtime.toISOString(),
-          file,
-        };
-      });
+      entry = cached(file, codexSummary(meta));
     } catch {
       continue;
     }
@@ -306,13 +412,17 @@ function allCodex() {
 
 function allSessions() {
   const all = [];
+  const seen = new Set();
+  let complete = true;
   for (const scan of [allClaude, allCodex]) {
     try {
-      all.push(...scan());
+      all.push(...scan(seen));
     } catch (err) {
+      complete = false;
       console.error(`세션 검색 실패: ${err.message}`);
     }
   }
+  if (complete) forgetMissing(seen);
   return all.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
 

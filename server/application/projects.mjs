@@ -29,7 +29,8 @@ export function createProjectService({ config, store, runner, links, commands, c
     return project;
   }
 
-  const projectSessions = (projectPath) => store.list().filter((s) => samePath(s.projectPath, projectPath));
+  // 일반 채팅 세션은 프로젝트 경로가 없어 어느 프로젝트에도 속하지 않는다.
+  const projectSessions = (projectPath) => store.list().filter((s) => s.projectPath && samePath(s.projectPath, projectPath));
   async function removeProject(projectPath, { force = false, removeWorktrees = false } = {}) {
     const dir = path.resolve(projectPath);
     const sessions = projectSessions(dir).filter((s) => !s.chat);

@@ -60,26 +60,28 @@ async function worktreeRecords(repo) {
   return records;
 }
 
-export async function resolveGitContext(projectPath, selectedCwd) {
+// cache는 한 요청 안에서 같은 폴더의 조회 결과를 나눠 쓸 때만 넘긴다(작업 폴더 목록처럼 여러 번 확인하는 경우).
+export async function resolveGitContext(projectPath, selectedCwd, cache = new Map()) {
   if (typeof projectPath !== "string" || !projectPath || (selectedCwd !== undefined && (typeof selectedCwd !== "string" || !selectedCwd)))
     throw error("프로젝트와 작업 폴더를 선택하세요.", "git-context", 400);
   let project, cwd;
   try { project = canonical(projectPath); cwd = canonical(selectedCwd ?? projectPath); }
   catch { throw error("프로젝트 또는 작업 폴더가 없습니다.", "git-context", 400); }
-  const info = async (directory) => {
+  const once = (name, load) => {
+    if (!cache.has(name)) cache.set(name, load());
+    return cache.get(name);
+  };
+  // 세 값을 git 한 번으로 받는다. 출력 줄 순서는 인자 순서와 같다.
+  const info = (directory) => once("info:" + key(directory), async () => {
     try {
-      const [top, common, gitDir] = await Promise.all([
-        git(directory, ["rev-parse", "--show-toplevel"]),
-        git(directory, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-        git(directory, ["rev-parse", "--absolute-git-dir"]),
-      ]);
+      const [top, common, gitDir] = (await git(directory, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir", "--absolute-git-dir"])).split(/\r?\n/);
       return { top: canonical(top.trim()), common: canonical(common.trim()), gitDir: canonical(gitDir.trim()) };
     } catch { throw error("Git 작업 폴더를 확인할 수 없습니다.", "not-git", 400); }
-  };
+  });
   const [repository, selected] = await Promise.all([info(project), info(cwd)]);
   if (!sameGitPath(repository.common, selected.common) || !sameGitPath(selected.top, cwd))
     throw error("이 저장소에 등록된 작업 폴더 루트만 선택할 수 있습니다.", "git-context", 400);
-  const records = await worktreeRecords(repository.top);
+  const records = await once("records:" + key(repository.top), () => worktreeRecords(repository.top));
   const entry = records.find(item => sameGitPath(item.cwd, cwd));
   if (!entry || entry.bare || entry.prunable) throw error("등록된 Git 작업 폴더가 아닙니다.", "git-context", 400);
   return { project, repo: repository.top, cwd, common: repository.common, gitDir: selected.gitDir, entry,
@@ -169,12 +171,13 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
     });
   }
   async function list(ctx) {
+    const cache = new Map();
     const rows = await Promise.all(ctx.records.map(async record => {
       const original = sameGitPath(record.cwd, ctx.original), missing = !fs.existsSync(record.cwd);
       const value = { ...record, original, missing, dirty: null, sessionIds: [], taskIds: [], canRemove: false };
       if (!missing && !record.bare) {
         try {
-          const target = await resolveGitContext(ctx.project, record.cwd);
+          const target = await resolveGitContext(ctx.project, record.cwd, cache);
           value.dirty = await dirty(target.cwd);
           const refs = references(target);
           value.sessionIds = refs.sessions.map(s => s.id); value.taskIds = refs.tasks.map(t => t.id);
