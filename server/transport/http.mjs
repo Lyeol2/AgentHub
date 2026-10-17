@@ -117,6 +117,8 @@ export function createHttpServer({ getPort, publicDir, handleApi, handleMcp, rec
         error: err.message,
         reason: err.reason,
         ...(err.outcomeUnknown !== undefined ? { outcomeUnknown: err.outcomeUnknown } : {}),
+        ...(typeof err.hint === "string" && err.hint ? { hint: err.hint } : {}),
+        ...(typeof err.raw === "string" && err.raw ? { raw: err.raw } : {}),
         ...(typeof err.recoveryId === "string" && /^[0-9]{13}-[0-9a-f-]{36}$/.test(err.recoveryId) ? { recoveryId: err.recoveryId } : {}),
       });
     }

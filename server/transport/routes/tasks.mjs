@@ -7,6 +7,7 @@ export function taskRoutes(s) {
     ["PUT", "tasks/settings", ({ query, body }) => s.updateSettings(query.get("path"), body)],
     ["POST", "tasks", ({ body }) => s.create(body)],
     ["GET", "tasks/:id/review", ({ params }) => s.review(params.id)],
+    ["GET", "tasks/:id/status", ({ params }) => s.status(params.id)],
     ["GET", "tasks/:id/diff", ({ params, query }) => s.reviewDiff(params.id, query.get("file"))],
     ["POST", "tasks/:id/commit", ({ params, body }) => s.commitReview(params.id, body)],
     ["POST", "tasks/:id/finish", ({ params, body }) => s.finish(params.id, body)],

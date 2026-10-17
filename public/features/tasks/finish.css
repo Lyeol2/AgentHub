@@ -1,7 +1,8 @@
 #finish-task-dialog { width: min(800px, calc(100vw - 32px)); }
 .task-finish-steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
 .task-finish-steps span { padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
-.task-finish-steps [data-done="true"] { color: var(--green, #33c98c); }
+.task-finish-steps [data-done="true"] { color: var(--ok, #33c98c); border-color: color-mix(in srgb, var(--ok, #33c98c) 55%, transparent); }
+.task-finish-steps [aria-current="step"] { color: var(--accent); border: 2px solid var(--accent); background: var(--accent-soft); font-weight: 600; }
 .task-review-files { max-height: 240px; overflow: auto; }
 .task-review-file { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border); }
 .task-review-file label { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; margin: 0; }
@@ -12,8 +13,4 @@
 .task-review-commits { max-height: 140px; overflow: auto; overflow-wrap: anywhere; font-size: 12px; }
 .task-finish-check { display: flex !important; align-items: flex-start; gap: 8px; }
 .task-finish-check input { flex-shrink: 0; margin-top: 4px; }
-.task-more { margin-top: 8px; }
-.task-more summary { font-size: 12px; color: var(--muted); cursor: pointer; }
-.task-more .task-actions { margin-top: 8px; }
-.task-progress { color: var(--muted); font-size: 12px; margin-top: 8px; }
 @media (max-width: 600px) { .task-review-file { align-items: flex-start; } #finish-task-dialog menu { flex-wrap: wrap; } }

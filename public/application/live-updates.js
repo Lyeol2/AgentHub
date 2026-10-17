@@ -38,6 +38,8 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
   // 다른 창에서 커밋·병합했다.
   git: (e) => {
     if (navigation.view === "project" && projectTab() === "git" && samePath(JSON.parse(e.data).projectPath, navigation.project)) loadGit();
+    // Git 탭에서 커밋·푸시하면 작업 카드의 단계 표시도 바뀐다.
+    if (navigation.view === "project" && projectTab() === "tasks" && samePath(JSON.parse(e.data).projectPath, navigation.project)) loadTasks?.(navigation.project, { localOnly: true });
   },
   tasks: (e) => {
     if (navigation.view === "project" && projectTab() === "tasks" && samePath(JSON.parse(e.data).projectPath, navigation.project)) loadTasks?.(navigation.project, { localOnly: true });

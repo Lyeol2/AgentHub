@@ -13,6 +13,7 @@
   const project = 'C:/fixture';
   const worktree = 'C:/fixture.agenthub/work';
   const head = 'b'.repeat(40), old = 'a'.repeat(40);
+  let behind = 0, upstream = 'origin/feature/test';
   let removed = false, holdPreview, previewDelay = false, executionDelay = false, failExecute = false;
   const requests = [];
   const commits = [{ hash: head, short: 'bbbbbbb', subject: 'Current change', author: 'test', date: '2026-10-01', refs: ['feature/test'], parents: [old] }, { hash: old, short: 'aaaaaaa', subject: 'Previous change', author: 'test', date: '2026-09-30', refs: [], parents: [] }];
@@ -22,7 +23,7 @@
     const req = { method, path: url.pathname, query: Object.fromEntries(url.searchParams), body: body ? structuredClone(body) : undefined };
     requests.push(req);
     const cwd = body?.cwd || url.searchParams.get('cwd') || project;
-    if (url.pathname === '/api/git') return { head, branch: cwd === project ? 'main' : 'feature/test', upstream: 'origin/feature/test', ahead: 1, behind: 0, stagedCount: 0, unstagedCount: 1, files: [{ path: 'a.txt', unstaged: true, staged: false, label: '수정' }], moreFiles: 0, commits, branches: [{ name: cwd === project ? 'main' : 'feature/test', current: true }, { name: 'feature/source', ahead: 1, current: false }] };
+    if (url.pathname === '/api/git') return { head, branch: cwd === project ? 'main' : 'feature/test', upstream, ahead: 1, behind, stagedCount: 0, unstagedCount: 1, files: [{ path: 'a.txt', unstaged: true, staged: false, label: '수정' }], moreFiles: 0, commits, branches: [{ name: cwd === project ? 'main' : 'feature/test', current: true }, { name: 'feature/source', ahead: 1, current: false }] };
     if (url.pathname === '/api/git/worktrees' && method === 'GET') return { currentCwd: cwd, worktrees: [{ cwd: project, branch: 'main', head, original: true, canRemove: false, reason: '원본 폴더' }, ...(removed ? [] : [{ cwd: worktree, branch: 'feature/test', head, canRemove: true, dirty: 0, sessionIds: [], taskIds: [] }])] };
     if (url.pathname === '/api/git/show' || url.pathname === '/api/git/diff' || url.pathname === '/api/git/branch') return { diff: '+safe fixture diff' };
     if (url.pathname === '/api/git/stage') return {};
@@ -38,6 +39,10 @@
     }
     if (url.pathname === '/api/git/fetch' || url.pathname === '/api/git/restore' || (url.pathname === '/api/git/worktrees' && method === 'POST')) return { result: 'Fixture completed' };
     if (url.pathname === '/api/git/worktrees/remove') { removed = true; return { result: 'Removed' }; }
+    if (url.pathname === '/api/git/pull-state') return { branch: 'feature/test', remote: 'origin', remoteBranch: 'feature/test', upstream: 'origin/feature/test', head, upstreamHead: old, ahead: 1, behind: 2, dirty: true };
+    if (url.pathname === '/api/git/pull-remote') return { result: 'Pulled' };
+    if (url.pathname === '/api/git/branches') return { result: 'Created', branch: body.name };
+    if (url.pathname === '/api/tasks/settings') return { settings: { main: 'main', develop: 'develop', featurePrefix: 'feature/', hotfixPrefix: 'hotfix/', releasePrefix: 'release/' } };
     if (url.pathname === '/api/git/recovery') return { recoveries: [{ id: 'recovery-1', ref: 'refs/agenthub/recovery/test', head: old, branch: 'feature/test', action: 'drop', createdAt: '2026-10-01T00:00:00Z' }] };
     if (url.pathname === '/api/git/pulls') return { context: { repo: 'fixture/repo', remote: 'origin', remotes: [{ name: 'origin', repo: 'fixture/repo' }], baseBranches: ['main'], defaultBranch: 'main', branch: 'feature/test', headSha: head, canPush: true, canCreate: true, mergeMethods: ['merge'] }, pulls: [] };
     throw Error('Unexpected API ' + method + ' ' + address);
@@ -106,6 +111,26 @@
   check($('g-operation-content').textContent.includes(worktree) && !$('g-worktree-delete-branch').checked, 'Cleanup previews exact folder and keeps branch unless selected');
   click('g-operation-apply'); await until(() => $('g-branch').textContent === 'main');
   check(calls('/api/git/worktrees/remove')[0].body.expectedHead === head && calls('/api/git/worktrees/remove')[0].body.expectedBranch === 'feature/test' && calls('/api/git/worktrees/remove')[0].body.deleteBranch === false, 'Cleanup pins selected worktree, branch and commit and returns to original after removal');
+  // Fork식 도구 막대: 아이콘과 영어 이름, 받을·보낼 커밋 수, 꺼진 이유
+  check(['g-fetch', 'g-pull', 'g-push', 'g-new-branch'].every(id => $(id).querySelector('svg') && $(id).textContent.trim()), 'Toolbar shows icons with English labels');
+  check($('g-push').querySelector('.git-tool-badge').textContent === '1', 'Push badge shows commits to send');
+  behind = 2; await controller.loadGit(); await until(() => $('g-pull').querySelector('.git-tool-badge').textContent === '2');
+  check($('g-push').disabled && $('g-tool-reason').textContent.includes('먼저 Pull'), 'Push is disabled with a reason when the remote is ahead');
+  click('g-pull'); await until(() => $('g-pull-strategy'));
+  check($('g-pull-strategy').value === 'merge' && $('g-operation-content').textContent.includes('받을 커밋 2개'), 'Pull preview counts commits and asks how to combine diverged history');
+  click('g-operation-apply'); await until(() => $('g-operation-content').textContent.includes('완료했습니다'));
+  check(calls('/api/git/pull-remote')[0].body.strategy === 'merge' && calls('/api/git/pull-remote')[0].body.expectedHead === head, 'Pull sends the chosen strategy pinned to the reviewed commit'); close();
+  behind = 0;
+  click('g-new-branch'); await until(() => $('g-branch-name'));
+  $('g-branch-kind').value = 'hotfix'; $('g-branch-kind').dispatchEvent(new Event('change'));
+  $('g-branch-name').value = 'urgent'; $('g-branch-name').dispatchEvent(new Event('input'));
+  check($('g-branch-preview').textContent.includes('hotfix/urgent'), 'Branch dialog applies the GitFlow prefix');
+  $('g-branch-name').closest('form').requestSubmit(); await until(() => calls('/api/git/branches').length === 1);
+  check(calls('/api/git/branches')[0].body.name === 'hotfix/urgent' && calls('/api/git/branches')[0].body.checkout === true, 'Branch creation sends the full name and switch choice');
+  await until(() => $('g-operation-content').textContent.includes('완료했습니다')); close();
+  upstream = null; await controller.loadGit(); await until(() => $('g-pull').disabled);
+  check($('g-pull').title.includes('Push로 게시'), 'Pull without a tracking branch explains why it is disabled');
+  upstream = 'origin/feature/test'; await controller.loadGit();
   click('g-push'); await until(() => $('g-remote-choice'));
   window.__gitRequests = requests;
   return checks;

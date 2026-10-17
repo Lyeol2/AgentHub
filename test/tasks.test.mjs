@@ -870,3 +870,56 @@ test("tasks: issues link by number or creation, survive restart, close through t
   assert.equal(failed.task.issue.errorReason, "gh-auth"); assert.equal(failed.task.issue.state, "closed");
   assert.equal((await f.service.unlinkIssue(task.id)).task.issue, undefined);
 });
+
+test("tasks: 단계 표시용 상태는 변경·커밋·게시를 차례로 반영하고 작업 기록을 바꾸지 않는다", async (t) => {
+  const f = fixture(t);
+  const { task, session } = await f.create();
+  let status = await f.service.status(task.id);
+  assert.deepEqual({ dirty: status.dirty, commits: status.commits, pushed: status.pushed, sessions: status.sessions, running: status.running, folder: status.folder },
+    { dirty: 0, commits: 0, pushed: false, sessions: 1, running: 0, folder: true });
+  f.change(task.cwd, "a.txt"); f.change(task.cwd, "b.txt");
+  f.state.running.add(session.id);
+  status = await f.service.status(task.id);
+  assert.equal(status.dirty, 2); assert.equal(status.running, 1);
+  f.state.running.clear();
+  f.git(task.cwd, "add", "."); f.git(task.cwd, "commit", "-qm", "work");
+  status = await f.service.status(task.id);
+  assert.equal(status.dirty, 0); assert.equal(status.commits, 1); assert.equal(status.pushed, false);
+  assert.equal(status.shortHead, status.head.slice(0, 7));
+  const before = JSON.stringify(f.service.get(task.id));
+  const review = await f.service.review(task.id);
+  await f.service.finish(task.id, { expectedHead: review.head, reviewToken: review.token, message: "" });
+  status = await f.service.status(task.id);
+  assert.equal(status.state, "review"); assert.equal(status.pushed, true); assert.equal(status.commits, 1);
+  assert.notEqual(before, JSON.stringify(f.service.get(task.id)));
+  const stable = JSON.stringify(f.service.get(task.id));
+  await f.service.status(task.id);
+  assert.equal(JSON.stringify(f.service.get(task.id)), stable);
+});
+
+test("tasks: 유형별 분기 기준과 PR 대상이 GitFlow 설정과 같다", async (t) => {
+  const f = fixture(t);
+  const feature = (await f.create("feature")).task;
+  const hotfix = (await f.create("hotfix", { title: "긴급" })).task;
+  const release = (await f.create("release", { title: "배포", version: "1.2.0" })).task;
+  assert.deepEqual([feature.baseBranch, feature.targetBranch, feature.branch.startsWith("feature/")], ["develop", "develop", true]);
+  assert.deepEqual([hotfix.baseBranch, hotfix.targetBranch, hotfix.branch.startsWith("hotfix/")], ["main", "main", true]);
+  assert.deepEqual([release.baseBranch, release.targetBranch, release.branch], ["develop", "main", "release/1.2.0"]);
+});
+
+test("tasks: 기준 반영 충돌은 원문 대신 한국어 설명과 해결 방법을 남긴다", async (t) => {
+  const f = fixture(t);
+  const { task } = await f.create();
+  f.git(f.repo, "switch", "-q", "develop"); f.change(f.repo, "same.txt", "develop\n"); f.git(f.repo, "add", "."); f.git(f.repo, "commit", "-qm", "develop");
+  f.git(f.repo, "push", "-q", "origin", "develop");
+  f.change(task.cwd, "same.txt", "task\n"); f.git(task.cwd, "add", "."); f.git(task.cwd, "commit", "-qm", "task");
+  await assert.rejects(f.service.sync(task.id), (error) => {
+    assert.equal(error.reason, "task-conflict");
+    assert.doesNotMatch(error.message, /CONFLICT|Automatic merge/);
+    assert.match(error.hint, /충돌/);
+    assert.match(error.raw, /CONFLICT/);
+    return true;
+  });
+  const stored = f.service.get(task.id);
+  assert.equal(stored.errorReason, "task-conflict"); assert.match(stored.errorHint, /충돌/);
+});

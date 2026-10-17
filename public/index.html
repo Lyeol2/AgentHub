@@ -238,12 +238,19 @@
               <div class="actions"><span class="muted" id="g-sync"></span><button class="ghost sm" id="g-refresh">새로고침</button></div>
             </div>
             <p class="hint pad" id="g-note" role="status" hidden></p>
-            <div id="g-body" hidden>
-              <div class="git-tabs" id="g-tabs" role="tablist" aria-label="Git 화면">
-                <button type="button" id="g-tab-changes" data-git-tab="changes" role="tab" aria-controls="g-changes" aria-selected="true">변경사항 <span class="tab-count" id="g-file-count"></span></button>
-                <button type="button" id="g-tab-history" data-git-tab="history" role="tab" aria-controls="g-history" aria-selected="false" tabindex="-1">History</button>
-                <button type="button" id="g-tab-pulls" data-git-tab="pulls" role="tab" aria-controls="g-pulls" aria-selected="false" tabindex="-1">Pull Requests</button>
-              </div>
+            <div id="g-body" class="git-layout" hidden>
+              <nav class="git-nav" aria-label="Git 탐색">
+                <div class="git-tabs" id="g-tabs" role="tablist" aria-label="Git 화면" aria-orientation="vertical">
+                  <button type="button" id="g-tab-changes" data-git-tab="changes" role="tab" aria-controls="g-changes" aria-selected="true"><span data-icon="changes"></span><span class="git-tab-label">Local Changes</span> <span class="tab-count" id="g-file-count"></span></button>
+                  <button type="button" id="g-tab-history" data-git-tab="history" role="tab" aria-controls="g-history" aria-selected="false" tabindex="-1"><span data-icon="history"></span><span class="git-tab-label">History</span></button>
+                  <button type="button" id="g-tab-pulls" data-git-tab="pulls" role="tab" aria-controls="g-pulls" aria-selected="false" tabindex="-1"><span data-icon="pr"></span><span class="git-tab-label">Pull Requests</span></button>
+                </div>
+                <section class="git-nav-branches" aria-labelledby="g-branches-heading">
+                  <h4 id="g-branches-heading">Branches <span class="muted" id="g-branch-count"></span></h4>
+                  <ul class="git-list" id="g-branches"></ul>
+                </section>
+              </nav>
+              <div class="git-stage">
               <div class="git-panel git-changes-grid" id="g-changes" data-git-panel="changes" role="tabpanel" aria-labelledby="g-tab-changes">
                 <div class="git-work" id="g-work">
                   <section class="git-file-section" aria-labelledby="g-unstaged-heading">
@@ -255,6 +262,7 @@
                     </div>
                     <ul class="git-list git-file-list" id="g-unstaged"></ul>
                   </section>
+                  <div id="g-stage-resizer" class="git-stage-resizer" role="separator" tabindex="0" aria-label="스테이징 전·스테이징됨 목록 높이 조절" aria-orientation="horizontal" title="끌어서 높이 조절 · 위아래 방향키로 조절 · 두 번 클릭해 초기화"></div>
                   <section class="git-file-section" aria-labelledby="g-staged-heading">
                     <div class="git-files-head"><h4 id="g-staged-heading">스테이징됨 <span class="tab-count" id="g-staged-count"></span></h4></div>
                     <div class="git-file-tools">
@@ -268,7 +276,7 @@
                   <div class="git-commit-form">
                     <label for="g-message">커밋 메시지</label>
                     <textarea id="g-message" rows="3" placeholder="변경한 내용을 적어 주세요" aria-label="커밋 메시지"></textarea>
-                    <div class="git-row"><span class="muted" id="g-commit-note"></span><button type="button" class="primary sm" id="g-commit">커밋</button></div>
+                    <div class="git-row"><span class="muted" id="g-commit-note"></span><span class="git-commit-buttons"><button type="button" class="ghost sm" id="g-commit-push" title="커밋한 뒤 푸시 미리보기를 엽니다">커밋 후 Push</button><button type="button" class="primary sm" id="g-commit">커밋</button></span></div>
                     <p class="error" id="g-error" role="alert"></p>
                   </div>
                 </div>
@@ -277,13 +285,7 @@
                   <p class="git-diff-empty muted" id="g-diff-empty">파일을 선택하면 변경 내용이 표시됩니다.</p>
                 </div>
               </div>
-              <div class="git-panel git-grid" id="g-history" data-git-panel="history" role="tabpanel" aria-labelledby="g-tab-history" hidden>
-                <aside class="git-side" aria-label="브랜치">
-                  <section>
-                    <h4>브랜치 <span class="muted" id="g-branch-count"></span></h4>
-                    <ul class="git-list" id="g-branches"></ul>
-                  </section>
-                </aside>
+              <div class="git-panel git-history-panel" id="g-history" data-git-panel="history" role="tabpanel" aria-labelledby="g-tab-history" hidden>
                 <div class="git-main">
                   <section class="git-history" aria-label="브랜치와 커밋 흐름">
                     <div class="git-history-head"><h4>커밋 흐름</h4><span class="muted" id="g-summary" role="status"></span></div>
@@ -326,8 +328,9 @@
               </div>
               <section class="git-view" id="g-detail" aria-label="선택한 항목의 상세" hidden>
                 <div class="git-view-head"><div class="git-view-title" id="g-view-title"></div><button class="ghost sm" id="g-detail-close" aria-label="상세 닫기">닫기</button></div>
-                <pre class="diff" id="g-view"></pre>
+                <div class="git-view-body"><ul class="git-view-files" id="g-view-files" aria-label="바뀐 파일" hidden></ul><pre class="diff" id="g-view"></pre></div>
               </section>
+              </div>
             </div>
           </div>
         </div>

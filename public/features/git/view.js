@@ -66,6 +66,7 @@ export function createGitView({ getModel, selectSession, showSessionChanges, sel
     for (const input of $("g-changes").querySelectorAll(".git-file input, [data-index-action]")) input.disabled = busy;
     const staged = current.data.stagedCount ?? gitFiles("staged").length;
     $("g-commit").disabled = !staged || busy || !$("g-message").value.trim();
+    $("g-commit-push").disabled = $("g-commit").disabled || !current.data.branch || current.data.branch === "HEAD";
     $("g-commit").textContent = current.committing ? "커밋 중…" : staged ? "커밋 (" + staged + ")" : "커밋";
     $("g-commit-note").textContent = current.indexBusy ? "목록을 업데이트하는 중…" : "스테이징된 내용만 커밋합니다.";
     $("g-message").disabled = !!current.committing;
@@ -173,13 +174,28 @@ export function createGitView({ getModel, selectSession, showSessionChanges, sel
     }
   }
 
+  // 상세 보기. 여러 파일이 바뀐 커밋은 Fork처럼 왼쪽에 파일 목록을 두고 누르면 그 파일의 diff로 이동한다.
   function showGitView(title, text) {
     if ($("g-commit-actions")) $("g-commit-actions").hidden = true;
     $("g-diff-empty").hidden = true;
     $("g-detail").hidden = false;
     $("g-view-title").textContent = title;
-    $("g-view").replaceChildren(...renderDiff(text));
+    const lines = renderDiff(text);
+    const files = [];
+    lines.forEach((line, index) => {
+      const match = /^diff --git a\/(.+?) b\/(.+)$/.exec(line.textContent.trimEnd());
+      if (match) { line.classList.add("file"); files.push({ path: match[2], line }); }
+    });
+    $("g-view").replaceChildren(...lines);
     $("g-view").scrollTop = 0;
+    const list = $("g-view-files");
+    list.hidden = files.length < 2;
+    $("g-detail").classList.toggle("with-files", files.length >= 2);
+    list.replaceChildren(...(files.length < 2 ? [] : files.map(({ path, line }) => el("li", {},
+      el("button", { type: "button", class: "link mono", title: path, onclick: (event) => {
+        for (const item of list.querySelectorAll("button")) item.classList.toggle("active", item === event.currentTarget);
+        $("g-view").scrollTop = line.offsetTop - $("g-view").offsetTop;
+      } }, path)))));
   }
 
   return { renderGit, renderGitFiles, renderGitControls, setGitActive, showGitView };

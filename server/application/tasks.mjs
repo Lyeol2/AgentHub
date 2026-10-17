@@ -10,9 +10,9 @@ import { HttpError } from "./errors.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
   taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle } from "../tasks.mjs";
-import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey } from "../gitflow-settings.mjs";
+import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey, gitflowBranches } from "../gitflow-settings.mjs";
 import { reviewSnapshot, commitReviewedFiles, assertReviewed } from "../task-review.mjs";
-import { fileDiff } from "../gitpanel.mjs";
+import { fileDiff, parseStatus } from "../gitpanel.mjs";
 import { runGitNode } from "../git-nodes.mjs";
 
 // 설정한 배포·개발 브랜치인지(대소문자를 구분한다)
@@ -35,7 +35,12 @@ export function taskBranchName(flow, type, value = "") {
   if (other) throw new HttpError(400, `브랜치 이름이 다른 작업 유형의 접두어(${other})로 시작합니다. 작업 유형을 바꾸거나 접두어를 빼고 입력하세요.`, "task-branch-name");
   return value;
 }
-const failure = (error) => error instanceof HttpError ? error : new HttpError(error.status ?? 409, error.message, error.reason ?? "task-error", { outcomeUnknown: !!error.outcomeUnknown });
+const failure = (error) => error instanceof HttpError ? error : new HttpError(error.status ?? 409, error.message, error.reason ?? "task-error", { outcomeUnknown: !!error.outcomeUnknown, hint: error.hint, raw: error.raw });
+// 카드에 남기는 오류. 해결 방법(hint)이 있으면 함께 보관한다.
+const recordError = (task, error) => {
+  task.error = error.message; task.errorReason = error.reason;
+  if (typeof error.hint === "string" && error.hint) task.errorHint = error.hint; else delete task.errorHint;
+};
 
 // 배포 준비·긴급 수정은 main에 반영한 뒤 develop에도 반영해야 끝난다.
 const needsDevelop = (task) => ["hotfix", "release"].includes(task.type);
@@ -57,7 +62,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   const sessionService = () => typeof sessions === "function" ? sessions() : sessions;
   const projectService = () => typeof projects === "function" ? projects() : projects;
   function save(task) {
-    if (!task.error) delete task.errorReason;
+    if (!task.error) { delete task.errorReason; delete task.errorHint; }
     task.updatedAt = now();
     const file = path.join(directory, `${task.id}.json`);
     writeJsonAtomic(file, task);
@@ -281,8 +286,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       return value;
     } catch (error) {
       task.freshness = { state: "error", checkedAt: now(), message: error.message };
-      task.error = error.message;
-      task.errorReason = error.reason;
+      recordError(task, error);
       save(task);
       throw error;
     }
@@ -365,7 +369,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, `새 작업을 만들기 전에 ${gitflow.main}의 변경을 ${gitflow.develop}에 반영하세요.`, "gitflow-develop-behind");
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
       const slug = title.normalize("NFKC").replace(/[^A-Za-z0-9가-힣_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "work";
-      const prefix = gitflow[`${type}Prefix`];
+      const flowBranches = gitflowBranches(type, gitflow);
+      const prefix = flowBranches.prefix;
       const name = taskBranchName(gitflow, type, branchName);
       const branch = selectedBranch ?? `${prefix}${name || (type === "release" ? version : `${id}-${slug}`)}`;
       try {
@@ -382,7 +387,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (selectedBranch && branchType !== type) throw new HttpError(400, "선택한 브랜치와 작업 유형이 다릅니다.", "workbranch-type");
       if (!selectedBranch && (await taskRef(project.path, `refs/heads/${branch}`) || await taskRef(project.path, `refs/remotes/${current.remote}/${branch}`)))
         throw new HttpError(409, "해당 작업 브랜치가 이미 있습니다.", "task-branch-exists");
-      const baseBranch = type === "hotfix" ? gitflow.main : gitflow.develop;
+      const baseBranch = flowBranches.base;
       const baseCommit = type === "hotfix" ? current.mainSha : current.developSha ?? current.mainSha;
       const selected = selectedBranch ? await resolveWorkbranch(project.path, branch) : null;
       if (selected) assertIdle({ cwd: selected.dir });
@@ -398,7 +403,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         ...(requestId ? { requestId, requestFingerprint } : {}),
         finishMode: finishModeFor(repo.top),
         agent: body.agent ?? "claude", model: body.model, effort: body.effort, permission: body.permission, role: body.role,
-        branch, baseBranch, targetBranch: type === "feature" ? gitflow.develop : gitflow.main, baseCommit, gitflow: clone(gitflow),
+        branch, baseBranch, targetBranch: flowBranches.target, baseCommit, gitflow: clone(gitflow),
         cwd: location.cwd, worktreeRoot: location.root, gitCommonDir: repo.common, ...(worktreeName ? { worktreeName } : {}),
         ownsWorktree: !inPlace && (!selected || selected.created), ownsBranch: !selected,
         ...(selected ? { selectedWorkBranch: true } : {}),
@@ -474,7 +479,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       assertIdle(task);
       busy.add(id);
       try { return await action(task); }
-      catch (error) { task.error = error.message; task.errorReason = error.reason; save(task); throw failure(error); }
+      catch (error) { recordError(task, error); save(task); throw failure(error); }
       finally { busy.delete(id); }
     });
   }
@@ -543,6 +548,36 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       return { task: clone(task), ...snapshot, localTargetHead, localBehind, commits, finishMode: task.finishMode || "pr" };
     });
   }
+  // 카드의 단계 표시용 가벼운 상태. 네트워크 없이 로컬 Git만 읽고 작업 기록은 바꾸지 않는다.
+  async function status(id) {
+    const task = get(id);
+    const sessions = taskSessions(task);
+    const result = { id: task.id, state: task.state, checkedAt: now(), sessions: sessions.length,
+      running: sessions.filter((session) => runner.isRunning(session.id)).length,
+      behind: !!task.freshness?.behind, head: null, shortHead: null, commits: null, dirty: null, pushed: null, folder: true };
+    const count = async (cwd, range) => Number((await taskGit(cwd, ["rev-list", "--count", "--first-parent", "--no-merges", range])).trim());
+    const finishedHead = task.mergedHead || task.completion?.sourceHead || task.publishedHead || null;
+    const active = task.state === "working" || task.state === "review";
+    if (!active || !fs.existsSync(task.cwd) || readTaskBranch(task.cwd) !== task.branch) {
+      result.folder = active ? false : fs.existsSync(task.cwd);
+      if (finishedHead) {
+        result.head = finishedHead;
+        result.shortHead = finishedHead.slice(0, 7);
+        result.pushed = !!task.publishedHead || task.completion?.publishState === "done";
+        try { if (task.baseCommit) result.commits = await count(task.projectPath, `${task.baseCommit}..${finishedHead}`); } catch { /* 정리 후 지워진 커밋은 개수를 모를 수 있다. */ }
+      }
+      return result;
+    }
+    const head = await taskRef(task.cwd, "HEAD");
+    result.head = head;
+    result.shortHead = head?.slice(0, 7) ?? null;
+    result.dirty = parseStatus(await taskGit(task.cwd, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])).length;
+    const target = task.freshness?.targetSha || task.baseCommit;
+    if (head && target) result.commits = await count(task.cwd, `${target}..${head}`);
+    const tracked = await taskRef(task.cwd, `refs/remotes/${task.remote}/${task.branch}`);
+    result.pushed = !!head && (tracked === head || task.publishedHead === head);
+    return result;
+  }
   async function reviewDiff(id, file) {
     const task = get(id);
     return locked(task.gitCommonDir, async () => {
@@ -591,7 +626,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       try { await mergeLocalDevelop(task); }
       catch (error) {
         if (error.outcomeUnknown) throw error;
-        task.error = error.message; task.errorReason = error.reason;
+        recordError(task, error);
         save(task);
       }
     }
@@ -945,7 +980,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
             await assertTaskGitIdle(task);
             if (await assertTaskWorktree(task) !== before || await taskDirty(task)) throw Error("실행 전 상태로 복원하지 못했습니다.");
           } catch (restore) { throw new HttpError(409, `병합 복원을 확인하지 못했습니다. 작업 폴더를 확인하세요: ${restore.message}`, "task-recovery-required", { outcomeUnknown: true }); }
-          throw new HttpError(409, `충돌로 기준 변경 반영을 취소했습니다. 실행 전 상태로 복원했습니다: ${error.message}`, "task-conflict");
+          throw new HttpError(409, "기준 브랜치와 같은 부분이 바뀌어 충돌이 났습니다. 반영을 취소하고 실행 전 상태로 복원했습니다.", "task-conflict",
+            { hint: `세션에 ${task.targetBranch} 브랜치를 병합해 충돌을 해결하도록 요청한 뒤 다시 확인하세요.`, raw: error.raw || error.message });
         }
       }
       await freshness(task);
@@ -1175,7 +1211,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, get: (id) => clone(get(id)), adoptSession, context, settings, updateSettings, create, finish, review, reviewDiff, commitReview, mergePull, pushTarget, refresh, sync, cleanup, remove, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
+  return { list, get: (id) => clone(get(id)), adoptSession, context, settings, updateSettings, create, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, refresh, sync, cleanup, remove, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
     mergeDevelop, linkIssue, unlinkIssue,
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }

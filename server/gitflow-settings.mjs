@@ -35,3 +35,14 @@ export function gitflowSettingsKey(projectPath) {
 export function projectGitflowSettings(config, projectPath) {
   return normalizeGitflowSettings(config?.gitflow?.[gitflowSettingsKey(projectPath)] ?? {});
 }
+
+// 작업 유형별 분기 기준·PR 대상·역반영 브랜치. 화면의 public/shared/gitflow.js와 같은 규칙이다.
+export function gitflowBranches(type, settings = DEFAULT_GITFLOW_SETTINGS) {
+  const flow = { ...DEFAULT_GITFLOW_SETTINGS, ...settings };
+  return {
+    prefix: flow[`${type}Prefix`] ?? `${type}/`,
+    base: type === "hotfix" ? flow.main : flow.develop,
+    target: type === "feature" ? flow.develop : flow.main,
+    backMerge: type === "feature" ? null : flow.develop,
+  };
+}
