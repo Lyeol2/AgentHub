@@ -75,7 +75,8 @@ test("task worktree: default names create a registered worktree under <project>.
   const { task } = await f.create();
   assertRegistered(f, task);
   assert.match(path.basename(task.cwd), /^task-/);
-  assert.match(task.branch, /^feature\/.+-새-작업$/);
+  // 기본 브랜치 이름은 작업 ID 없이 제목만 쓴다.
+  assert.equal(task.branch, "feature/새-작업");
 });
 
 test("task worktree: chosen Korean folder and branch names create the same registered worktree", async t => {

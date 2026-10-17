@@ -183,6 +183,8 @@ test("browser: team tasks filter shared work, start assigned work as a task, and
       }
       else if (url.pathname === "/api/tasks/t1/issue") { Object.assign(tasks[0], { issue: { repo: "acme/widget", number: Number(body.number), title: "로그인 오류", url: "https://github.com/acme/widget/issues/7", state: "open" } }); value = { task: tasks[0] }; }
       else if (url.pathname === "/api/tasks/t1/status") value = { dirty: 0, ahead: 0 };
+      // 원본 폴더에서 만들기 전에 원본 폴더를 쓰고 있는지 묻는다.
+      else if (url.pathname === "/api/tasks/in-place") value = { available: true };
       else if (url.pathname === "/api/tasks") value = { tasks };
       else if (url.pathname === "/api/tasks/context") value = { state: "current", settings: { main: "main", develop: "develop", featurePrefix: "feature/", hotfixPrefix: "hotfix/", releasePrefix: "release/" }, finishMode: "pr", freshness: { state: "current" } };
       else if (url.pathname === "/api/projects/all") value = [project];
