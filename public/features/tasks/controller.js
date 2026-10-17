@@ -2,10 +2,10 @@ import { permissionLabel } from '../../shared/permissions.js';
 import { createWorkbranchPicker, workBranchType } from '../../shared/workbranches.js';
 import { createTaskAssistant } from './assistant.js';
 import { createTaskFinisher } from './finish.js';
+import { DEFAULT_GITFLOW, gitflowBranches } from '../../shared/gitflow.js';
 
 const TASK_STATES = { working: '작업 중', review: '리뷰 대기', merged: '반영 완료', cleaned: '정리 완료' };
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
-const DEFAULT_GITFLOW = { main: 'main', develop: 'develop', featurePrefix: 'feature/', hotfixPrefix: 'hotfix/', releasePrefix: 'release/' };
 const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
 const TASK_AGENTS = [['codex', 'Codex'], ['claude', 'Claude Code']];
 // 새 작업을 만들 때 고른 설정을 기억해 다음 새 작업의 기본값으로 쓴다. 제목·이름·지침처럼 작업마다 다른 값은 두지 않는다.
@@ -33,10 +33,7 @@ export function describeTaskFreshness(freshness) {
 }
 
 export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW, name = '') {
-  const flow = gitflowSettings(settings);
-  const base = type === 'hotfix' ? flow.main : flow.develop;
-  const target = type === 'feature' ? flow.develop : flow.main;
-  const prefix = flow[`${type}Prefix`] ?? `${type}/`;
+  const { base, target, prefix } = gitflowBranches(type, gitflowSettings(settings));
   const rest = name.startsWith(prefix) ? name.slice(prefix.length) : name;
   const branch = `${prefix}${rest || (type === 'release' ? version || '<버전>' : '<작업ID>-<이름>')}`;
   return `${base}에서 ${branch} 생성 → ${target}으로 PR`;
