@@ -196,7 +196,11 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
         write(m, version, "/api/git/worktrees", values, async () => { content.replaceChildren(el("p", {}, "작업 폴더를 만들었습니다."), button("작업 폴더 목록 보기", () => worktrees())); });
       } }, el("h4", {}, "새 작업 폴더"), el("label", {}, "폴더 이름", name), el("label", {}, "브랜치 방식", mode), el("label", {}, "브랜치 이름", branch), baseLabel,
       el("button", { type: "submit", class: "primary" }, "워크트리 만들기"));
-      content.replaceChildren(el("p", { class: "hint" }, "폴더를 선택하면 변경사항, 커밋 기록, 병합, 푸시와 PR에 같은 폴더가 적용됩니다."), el("ul", { class: "git-worktrees" }, ...rows), form);
+      // 폴더가 사라졌는데 Git 기록만 남은 워크트리는 브랜치를 계속 점유하므로 한 번에 정리할 수 있게 한다.
+      const missing = (data.worktrees ?? []).filter((tree) => tree.missing).length;
+      const prune = missing ? el("p", { class: "hint" }, `폴더가 사라진 워크트리 기록 ${missing}개가 브랜치를 점유하고 있습니다. `,
+        button("사라진 폴더 기록 정리", () => write(m, version, "/api/git/worktrees/prune", {}, async () => { await worktrees(); }))) : null;
+      content.replaceChildren(el("p", { class: "hint" }, "폴더를 선택하면 변경사항, 커밋 기록, 병합, 푸시와 PR에 같은 폴더가 적용됩니다."), ...(prune ? [prune] : []), el("ul", { class: "git-worktrees" }, ...rows), form);
     } catch (err) { fail(err, m, version); }
   }
 
@@ -204,11 +208,13 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
     const request = open("워크트리 정리"); if (!request) return;
     const { m, version } = request;
     const removeBranch = el("input", { id: "g-worktree-delete-branch", type: "checkbox" });
+    const removeIgnored = el("input", { id: "g-worktree-delete-ignored", type: "checkbox" });
     content.replaceChildren(el("p", {}, "다음 작업 폴더를 삭제합니다."), el("p", { class: "mono" }, tree.cwd),
       el("p", { class: "mono" }, "브랜치: " + tree.branch + " · " + tree.head?.slice(0, 8)),
       el("label", { class: "check" }, removeBranch, " 로컬 브랜치도 삭제"),
-      el("p", { class: "hint" }, "연결된 작업·세션, 미커밋 변경, 미반영 커밋이 있으면 삭제할 수 없습니다."),
-      action("이 작업 폴더 삭제", () => write(m, version, "/api/git/worktrees/remove", { cwd: tree.cwd, removeFolder: true, deleteBranch: removeBranch.checked, expectedHead: tree.head, expectedBranch: tree.branch }, async () => {
+      el("label", { class: "check" }, removeIgnored, " Git이 무시하는 파일(node_modules, 빌드 결과 등)도 함께 삭제"),
+      el("p", { class: "hint" }, "연결된 작업·세션, 미커밋 변경, 다른 브랜치에 반영되지 않은 커밋이 있으면 삭제할 수 없습니다."),
+      action("이 작업 폴더 삭제", () => write(m, version, "/api/git/worktrees/remove", { cwd: tree.cwd, removeFolder: true, deleteBranch: removeBranch.checked, removeIgnored: removeIgnored.checked, expectedHead: tree.head, expectedBranch: tree.branch }, async () => {
         if (samePath(tree.cwd, m.cwd ?? m.project)) { dialog.close(); await setWorkspace(m.project); }
         else content.replaceChildren(el("p", {}, "작업 폴더를 정리했습니다."), button("작업 폴더 목록 보기", () => worktrees()));
       })));

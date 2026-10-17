@@ -133,3 +133,35 @@ export function validTaskWorktreeName(name) {
   return /^[A-Za-z0-9가-힣_][A-Za-z0-9가-힣._-]{0,79}$/u.test(name) && !/\.$/.test(name)
     && !/^(con|prn|aux|nul|com\d|lpt\d)(\..*)?$/i.test(name);
 }
+
+const WORKTREE_DIRTY = /contains modified or untracked files|use --force to delete/i;
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+export async function worktreeRegistered(repo, dir, git = taskGit) {
+  const list = await git(repo, ["worktree", "list", "--porcelain", "-z"]).catch(() => null);
+  return list === null || list.split("\0").some((line) => line.startsWith("worktree ") && sameTaskPath(line.slice(9), dir));
+}
+// 워크트리 폴더를 지운다. Windows에서는 막 멈춘 CLI·개발 서버·편집기·백신이 파일을 잡고 있으면 한 번에 지워지지 않아
+// 잠시 기다리며 다시 시도한다. git이 기록만 지우고 폴더를 남겼으면 남은 폴더를 마저 지우고, 끝에 사라진 폴더의 기록을 prune한다.
+// node_modules처럼 큰 폴더도 끝까지 지우도록 시간 제한을 넉넉히 둔다. force가 아니면 커밋하지 않은 변경이 있는 폴더는 바로 멈춘다.
+// .git 파일까지 지워져 git이 더는 작업 폴더로 알아보지 못하면 변경 여부를 확인할 수 없으므로 force일 때만 폴더째 지운다.
+export async function removeWorktreeDir(repo, dir, { force = false, git = taskGit, attempts = 20, delay = 500, wait = pause } = {}) {
+  let error = null;
+  for (let attempt = 0; attempt < attempts && fs.existsSync(dir); attempt++) {
+    if (attempt) await wait(delay);
+    try {
+      const broken = !fs.existsSync(path.join(dir, ".git"));
+      if (broken && !force && await worktreeRegistered(repo, dir, git))
+        throw new HttpError(409, "작업 폴더가 손상되어 커밋하지 않은 변경이 있는지 확인할 수 없습니다. 남은 파일을 확인한 뒤 강제로 지우세요.", "task-dirty");
+      if (!broken && await worktreeRegistered(repo, dir, git)) await git(repo, ["worktree", "remove", ...(force ? ["--force"] : []), "--", dir], { write: true, timeout: 10 * 60_000 });
+      else fs.rmSync(dir, { recursive: true, force: true });
+    } catch (failure) {
+      if (failure.reason === "task-dirty") throw failure;
+      if (!force && WORKTREE_DIRTY.test(failure.message))
+        throw new HttpError(409, "작업 폴더에 커밋하지 않은 변경이나 새 파일이 있어 지우지 않았습니다.", "task-dirty", { raw: failure.message });
+      error = failure;
+    }
+  }
+  await git(repo, ["worktree", "prune"], { write: true }).catch(() => {});
+  const removed = !fs.existsSync(dir);
+  return { removed, registered: !removed && await worktreeRegistered(repo, dir, git), error: removed ? null : error };
+}

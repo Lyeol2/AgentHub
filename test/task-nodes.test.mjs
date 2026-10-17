@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { createHub } from "../server/bootstrap.mjs";
 import { checkCommand } from "../server/commands.mjs";
-import { taskResultText } from "../server/task-nodes.mjs";
+import { runTaskNode, taskResultText } from "../server/task-nodes.mjs";
 import { normalizePull } from "../server/github.mjs";
 
 const gitEnv = { ...process.env, GIT_TERMINAL_PROMPT: "0" };
@@ -202,4 +202,38 @@ test("task nodes: sessions with conversation history are not moved into a new ta
   assert.equal(worker.taskId, undefined);
   assert.equal(path.resolve(worker.cwd), path.resolve(f.repo));
   assert.equal(f.runner.calls.length, 0);
+});
+
+test("task nodes: 새로 실행해도 지난 실행의 열린 작업을 이어 쓰고, 끝났거나 지운 작업이면 새로 만든다", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-task-reuse-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }));
+  const repo = path.join(root, "repo");
+  fs.mkdirSync(repo);
+  const git = (cwd, ...args) => execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  git(repo, "init", "-q", "-b", "main");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-q", "--allow-empty", "-m", "base");
+  const common = git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir");
+  const records = new Map();
+  let serial = 0;
+  const tasks = {
+    get(id) { const task = records.get(id); if (!task) throw Object.assign(Error("작업이 없습니다."), { status: 404 }); return task; },
+    async create(body) {
+      const id = `task-${++serial}`, cwd = path.join(root, "repo.agenthub", id), branch = `feature/${id}`;
+      git(repo, "worktree", "add", "-q", "-b", branch, cwd);
+      const task = { id, projectPath: body.projectPath, title: body.title, type: "feature", state: "working", branch, gitCommonDir: common, cwd };
+      records.set(id, task); return { task };
+    },
+  };
+  const command = { id: "node-start", taskAction: "start", projectPath: repo, titleTemplate: "작업" };
+  const run = (lastRun) => runTaskNode({ command: { ...command, lastRun }, tasks, input: "작업", flow: { variables: {} } });
+  const first = await run(null);
+  assert.equal(first.taskId, "task-1");
+  const lastRun = { taskResult: { ok: true, action: "start", taskId: first.taskId } };
+  const again = await run(lastRun);
+  assert.equal(again.taskId, "task-1"); assert.equal(again.reused, true);
+  assert.equal(serial, 1, "열린 작업이 있으면 브랜치·작업 폴더를 새로 만들지 않는다");
+  records.get("task-1").state = "cleaned";
+  assert.equal((await run(lastRun)).taskId, "task-2");
+  records.delete("task-2");
+  assert.equal((await run({ taskResult: { ok: true, action: "start", taskId: "task-2" } })).taskId, "task-3");
 });

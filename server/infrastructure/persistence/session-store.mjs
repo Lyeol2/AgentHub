@@ -116,8 +116,20 @@ export class SessionStore {
   }
 }
 
+// 폴더의 지금 브랜치. git을 실행하지 않고 HEAD 파일만 읽는다. 브랜치가 아니거나(분리된 HEAD) Git 폴더가 아니면 null.
+function currentBranch(cwd) {
+  try {
+    const dotgit = path.join(cwd, ".git");
+    const gitdir = fs.statSync(dotgit).isDirectory() ? dotgit : path.resolve(cwd, fs.readFileSync(dotgit, "utf8").match(/^gitdir: (.+)\s*$/m)[1].trim());
+    const head = fs.readFileSync(path.join(gitdir, "HEAD"), "utf8").trim();
+    return head.startsWith("ref: refs/heads/") ? head.slice(16) : null;
+  } catch { return null; }
+}
+
 // 목록에 쓰는 요약. 이벤트와 AI를 바꿀 때 넘길 긴 기록(handover)은 빼고, 넘길 것이 있는지만 알린다.
+// 원본 폴더에서 일하는 세션은 원본 폴더의 지금 브랜치를 함께 알려, 다른 작업이 브랜치를 바꿨는지 볼 수 있게 한다.
 export function summary(session) {
   const { events, handover, ...rest } = session;
-  return { ...rest, locked: !!session.locked, eventCount: events.length, handoverPending: !!handover };
+  const branch = !session.chat && !session.worktree && session.cwd ? currentBranch(session.cwd) : null;
+  return { ...rest, locked: !!session.locked, eventCount: events.length, handoverPending: !!handover, ...(branch ? { branch } : {}) };
 }

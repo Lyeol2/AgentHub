@@ -43,6 +43,9 @@ console.log(draft ? "업데이트 내역: 릴리스 준비 세션의 초안을 �
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-release-"));
 fs.rmdirSync(dir); // git worktree add는 없는 경로를 받는다.
 run("git", ["worktree", "add", "--detach", dir, "HEAD"]);
+// Ctrl+C에 Node가 바로 끝나지 않게 한다. 실행 중인 명령이 멈추면 finally에서 임시 작업 트리를 지운다.
+let interrupted = false;
+process.once("SIGINT", () => { interrupted = true; });
 
 try {
   const inTree = { cwd: dir };
@@ -80,5 +83,16 @@ try {
   if (draft) fs.rmSync(DRAFT_FILE, { force: true });
 } finally {
   // 빌드에 실패해도 올린 버전은 임시 작업 트리와 함께 사라진다.
-  run("git", ["worktree", "remove", "--force", dir]);
+  removeReleaseTree(dir);
+  if (interrupted) process.exitCode = 130;
+}
+
+// 빌드 도구가 잠시 파일을 잡고 있으면 git이 폴더를 다 지우지 못한다. 남은 폴더를 마저 지우고 기록을 prune해
+// 임시 작업 트리가 git worktree 목록에 남지 않게 한다. 정리 실패가 원래 오류를 가리지 않도록 알리기만 한다.
+function removeReleaseTree(tree) {
+  try { run("git", ["worktree", "remove", "--force", tree]); }
+  catch (error) { console.error(`임시 작업 트리를 git으로 지우지 못했습니다: ${error.message}`); }
+  try { fs.rmSync(tree, { recursive: true, force: true, maxRetries: 20, retryDelay: 500 }); }
+  catch (error) { console.error(`임시 작업 트리 폴더가 남았습니다. 직접 지우세요: ${tree}`); }
+  try { run("git", ["worktree", "prune"]); } catch {}
 }
