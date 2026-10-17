@@ -502,14 +502,16 @@ test("api: PR 목록·상세·생성·병합·닫기·푸시 경로와 오류를
     };
     const query = "?path=" + encodeURIComponent(repo) + "&remote=upstream";
     assert.equal((await api("GET", "/git/pulls" + query + "&state=all")).body.pulls[0].number, 7);
-    assert.deepEqual(calls.at(-1), { name: "list", args: [repo, { remote: "upstream", state: "all" }] });
+    // PR 목록·생성은 프로젝트의 GitFlow 설정(여기서는 기본값)을 함께 넘긴다.
+    const gitflow = { main: "main", develop: "develop", featurePrefix: "feature/", hotfixPrefix: "hotfix/", releasePrefix: "release/" };
+    assert.deepEqual(calls.at(-1), { name: "list", args: [repo, { remote: "upstream", state: "all", gitflow }] });
     assert.equal((await api("GET", "/git/pulls/7" + query)).body.diff, "+new");
     assert.deepEqual(calls.at(-1), { name: "detail", args: [repo, "7", { remote: "upstream" }] });
     const body = { path: repo, repo: "acme/widget", remote: "upstream", branch: "feature", state: "draft", title: "PR", body: "text", head: "feature", base: "main", expectedHead: "a".repeat(40) };
     for (const [route, name] of [["/git/pulls", "create"], ["/git/pulls/7/merge", "merge"], ["/git/pulls/7/close", "close"], ["/git/push", "push"]]) {
       assert.equal((await api("POST", route, body)).status, 200);
       assert.equal(calls.at(-1).name, name);
-      assert.deepEqual(calls.at(-1).args, ["merge", "close"].includes(name) ? [repo, "7", body] : [repo, body]);
+      assert.deepEqual(calls.at(-1).args, ["merge", "close"].includes(name) ? [repo, "7", body] : name === "create" ? [repo, body, { gitflow }] : [repo, body]);
     }
     const count = calls.length;
     for (const route of ["/git/push/7/merge", "/git/push/7/close", "/git/pulls/7/review"])
