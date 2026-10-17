@@ -4,12 +4,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Updater } from "./updater.mjs";
 import { createClipboardFileAccess, readClipboardFiles } from "./clipboard-files.mjs";
+import { createArtifactAccess } from "./artifacts.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ICON = path.join(HERE, "..", "build", "icon.ico");
 const PRELOAD = path.join(HERE, "preload.cjs");
 const clipboardAccess = createClipboardFileAccess(() => readClipboardFiles(clipboard));
 ipcMain.handle("agenthub:clipboard-files", (event) => clipboardAccess.read(event));
+const artifactAccess = createArtifactAccess({ openPath: (filename) => shell.openPath(filename), showItemInFolder: (filename) => shell.showItemInFolder(filename) });
+ipcMain.handle("agenthub:open-artifact", (event, request) => artifactAccess.open(event, request));
 
 let win = null;
 let server = null;
@@ -86,6 +89,7 @@ function createWindow(url) {
 // 앱 밖으로 나가는 링크는 기본 브라우저에서 연다. 앱 안의 링크(채팅 "새 창으로")는 AgentHub 창으로 연다.
 function guard(contents, base) {
   clipboardAccess.register(contents, base);
+  artifactAccess.register(contents, base);
   const isLocal = (target) => target.startsWith(base);
   contents.setWindowOpenHandler(({ url: target }) => {
     if (isLocal(target)) {

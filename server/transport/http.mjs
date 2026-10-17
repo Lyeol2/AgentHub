@@ -34,7 +34,7 @@ export async function readJson(req, options) {
 // 앱 화면은 자기 출처의 스크립트만 실행하고, 다른 사이트가 iframe으로 덮어씌우지 못하게 한다.
 // GitHub 프로필 사진은 https 이미지로 받는다.
 const PAGE_HEADERS = {
-  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+  "Content-Security-Policy": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data: https:; connect-src 'self'; frame-src 'self' http://localhost:* http://127.0.0.1:* http://[::1]:* https://localhost:* https://127.0.0.1:* https://[::1]:*; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
   "X-Frame-Options": "DENY",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",
@@ -51,7 +51,7 @@ async function handleHookRequest(req, res, token, url, receiveHook) {
   send(res, 202, receiveHook(token, { method: req.method, body, query: Object.fromEntries(url.searchParams), headers: req.headers }));
 }
 
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml", ".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf" };
 
 export function serveStatic(req, res, publicDir) {
   const urlPath = decodeURIComponent(new URL(req.url, "http://x").pathname);
@@ -117,6 +117,7 @@ export function createHttpServer({ getPort, publicDir, handleApi, handleMcp, rec
         error: err.message,
         reason: err.reason,
         ...(err.outcomeUnknown !== undefined ? { outcomeUnknown: err.outcomeUnknown } : {}),
+        ...(typeof err.recoveryId === "string" && /^[0-9]{13}-[0-9a-f-]{36}$/.test(err.recoveryId) ? { recoveryId: err.recoveryId } : {}),
       });
     }
   });

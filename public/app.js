@@ -218,6 +218,17 @@ const knowledge = createKnowledgeController({
   api, currentProject
 });
 const sessions = createSessionsController({
+  onTaskReference: async (id, projectPath) => {
+    if (!projectPath) throw Error("작업이 속한 프로젝트를 찾을 수 없습니다.");
+    const revision = navigation.viewRevision;
+    const result = await api("GET", `/api/tasks?path=${encodeURIComponent(projectPath)}`);
+    if (revision !== navigation.viewRevision) return;
+    if (!result.tasks?.some((task) => task.id === id)) throw Error("작업을 찾을 수 없습니다.");
+    await goProject(projectPath);
+    if (navigation.view !== "project" || navigation.project !== projectPath) return;
+    showProjectTab("tasks");
+    await tasks.openReference(id, projectPath);
+  },
   POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, data, navigation
 });
 const account = createAccountController({

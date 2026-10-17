@@ -15,9 +15,10 @@ import { HttpError } from "./errors.mjs";
 import { assertSessionGitContext } from "../git-context.mjs";
 import { AttachmentStore, isImageAttachment, publicAttachment } from "../attachments.mjs";
 import { unsupportedChatAttachment } from "../attachment-input.mjs";
+import { resolveSessionArtifact, readSessionArtifact, readSessionArtifactContent, validateArtifactReferences } from "../session-artifacts.mjs";
 import { exportSession } from "../session-export.mjs";
 import { exportBundle, isBundleName, BUNDLE_MAX_BYTES, recordReadText } from "../session-bundle.mjs";
-import { expandPrompt, projectFiles, rankFiles } from "../prompt-refs.mjs";
+import { expandPrompt, planRequest, projectFiles, rankFiles } from "../prompt-refs.mjs";
 import { parseRecord, listRecords as listRecords_, readRecord, readRecordImage, recordLimitText, RECORD_MAX_BYTES } from "../session-import.mjs";
 
 // 남이 준 기록 파일에서 그대로 되살리지 않는 권한: 확인 없이 명령을 실행하거나 승인을 자동으로 넘긴다.
@@ -73,8 +74,13 @@ export function createSessionService({
   // AI를 바꾼 뒤 새 대화의 첫 요청에는 이전 AI의 진행 상황을 붙인다. 새 대화가 시작되면(아래 turnEnd) 지운다.
   // expand: 사용자가 쓴 요청이면 /스킬과 @참조를 풀어 쓴다(다른 세션에서 넘어온 글은 그대로 둔다).
   // 읽힌 기록(pendingReads)은 다음 요청 하나에만 붙인다.
-  function composeInput(session, prompt, { expand = false } = {}) {
+  // keepMode: 일시중지 재개·질문의 답은 앞 턴의 계획 모드를 잇는다. 그 밖의 요청은 /plan일 때만 계획 모드다.
+  function composeInput(session, prompt, { expand = false, keepMode = false } = {}) {
     tasks?.()?.assertSession?.(session);
+    if (!keepMode) {
+      if (expand && !session.chat && planRequest(prompt)) session.planTurn = true;
+      else delete session.planTurn;
+    }
     let input = composeBase(session, expand ? expandPrompt(session, prompt) : prompt);
     if (session.pendingReads?.length) {
       input = `${session.pendingReads.map((r) => r.text).join("\n\n")}\n\n${input}`;
@@ -279,7 +285,7 @@ export function createSessionService({
     if (session.pausedMidTurn) {
       // 흐름 단계는 이어서 센다. 재개한 턴이 끝나면 연결·대기열도 평소처럼 이어진다.
       clearPause(session);
-      startTurn(session, RESUME_PROMPT, session.chainDepth ?? 0);
+      startTurn(session, RESUME_PROMPT, session.chainDepth ?? 0, {}, { keepMode: true });
       return;
     }
     clearPause(session);
@@ -289,7 +295,7 @@ export function createSessionService({
   }
 
   // 사용자가 직접 보낸 요청은 새 흐름(0단계)이다. 흐름 중간의 질문에 답한 것처럼 같은 흐름을 잇는 요청은 depth를 넘긴다.
-  function startTurn(session, prompt, depth = 0, meta = {}, { expand = false } = {}) {
+  function startTurn(session, prompt, depth = 0, meta = {}, { expand = false, keepMode = false } = {}) {
     if (runner.isRunning(session.id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
     chain.setFlow?.(session, depth > 0 ? chain.flowFor?.(session) ?? chain.newFlow?.() : chain.newFlow?.());
     session.chainDepth = depth;
@@ -300,7 +306,7 @@ export function createSessionService({
     const input = interrupted ? `${INTERRUPTED_NOTE}\n\n${prompt}` : prompt;
     try {
       chain.beginSession?.(session, prompt, { meta, depth, cwd: session.cwd });
-      runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, input, { expand }), meta);
+      runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, input, { expand, keepMode }), meta);
     } catch (err) {
       chain.controls?.fail(session, chain.flowFor?.(session), err);
       chain.workflow?.settle();
@@ -392,7 +398,8 @@ export function createSessionService({
     if (session.chat && files.some(unsupportedChatAttachment)) throw new HttpError(400, "일반 채팅은 이미지와 64 KiB 이하의 UTF-8 텍스트 파일을 지원합니다. 더 큰 텍스트나 PDF·압축 파일 등 바이너리 파일은 파일 읽기가 가능한 프로젝트 세션에 첨부하세요.");
     const prompt = String(body.prompt ?? "").trim() || (files.length ? (files.every(isImageAttachment) ? "첨부한 이미지를 확인해 주세요." : "첨부한 파일을 확인해 주세요.") : "");
     if (!prompt) throw new HttpError(400, "내용이나 파일을 입력하세요.");
-    const meta = files.length ? { attachments: files } : {};
+    const references = validateArtifactReferences(session, body.references, prompt, artifactOptions(id));
+    const meta = { ...(files.length ? { attachments: files } : {}), ...(references.length ? { references } : {}) };
     if (runner.isRunning(session.id)) {
       if (body.mode === "steer" && runner.canInject(session)) {
         runner.inject(session, prompt, meta, expandPrompt(session, prompt));
@@ -421,6 +428,36 @@ export function createSessionService({
     getSession(id);
     const image = attachments.resolve(id, imageId);
     return { bytes: fs.readFileSync(image.path), mimeType: image.mimeType, name: image.name };
+  }
+
+  function artifactOptions(id) {
+    return {
+      resolveAttachment: (attachment) => attachments.resolve(id, attachment.id),
+      validateEntityReference(kind, targetId) {
+        const session = getSession(id);
+        const target = kind === "session" ? store.get(targetId) : tasks?.()?.get?.(targetId);
+        if (!target) throw new HttpError(404, "참조한 세션이나 작업을 찾지 못했습니다.");
+        if (Boolean(session.projectPath) !== Boolean(target.projectPath) || (session.projectPath && !samePath(session.projectPath, target.projectPath))) throw new HttpError(403, "같은 프로젝트의 세션과 작업만 참조할 수 있습니다.");
+      },
+    };
+  }
+
+  function artifact(id, filePath, { summary = false } = {}) {
+    if (summary) {
+      const { realPath, ...result } = resolveSessionArtifact(getSession(id), filePath, artifactOptions(id));
+      return result;
+    }
+    return readSessionArtifact(getSession(id), filePath, artifactOptions(id));
+  }
+
+  function artifactContent(id, filePath) {
+    return readSessionArtifactContent(getSession(id), filePath, artifactOptions(id));
+  }
+
+  function artifactPreview(id, filePath) {
+    const result = artifact(id, filePath);
+    if (typeof result.previewHtml !== "string") throw new HttpError(415, result.truncated ? "HTML 미리보기는 512 KiB 이하의 파일을 지원합니다." : "HTML 파일만 화면으로 미리 볼 수 있습니다.");
+    return result.previewHtml;
   }
 
   // format: "markdown"(기본, 사람이 읽는 문서) | "agenthub"(다른 세션에서 불러오거나 읽힐 수 있는 .agenthub 파일)
@@ -656,7 +693,7 @@ export function createSessionService({
     event.status = "answered";
     event.answers = answers;
     try {
-      startTurn(session, answerPrompt(event.questions, answers), session.chainDepth ?? 0);
+      startTurn(session, answerPrompt(event.questions, answers), session.chainDepth ?? 0, {}, { keepMode: true });
     } catch (err) {
       event.status = "pending";
       delete event.answers;
@@ -804,7 +841,7 @@ export function createSessionService({
 
   return {
     list: () => store.list().map((s) => summary(settleState(s))), detail,
-    create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
+    create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, artifact, artifactContent, artifactPreview, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
     stop, pause, resume, restart, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,

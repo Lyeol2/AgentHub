@@ -2,6 +2,7 @@ export function gitRoutes(s) {
   const options = ({ query, body, params }, write = false) => ({
     ...body,
     projectPath: query.get("path") ?? body.path,
+    cwd: query.get("cwd") ?? body.cwd,
     sessionId: query.get("session") ?? body.session,
     file: query.get("file") ?? body.file,
     area: query.get("area") ?? body.area,
@@ -13,8 +14,10 @@ export function gitRoutes(s) {
   });
   return [
     ["GET", "git", (ctx) => s.execute("overview", options(ctx))],
-    ...["diff", "show", "branch"].map((action) => ["GET", `git/${action}`, (ctx) => s.execute(action, options(ctx))]),
-    ...["stage", "unstage", "commit", "merge", "checkout", "push"].map((action) => ["POST", `git/${action}`, (ctx) => s.execute(action, options(ctx, true))]),
+    ...["diff", "show", "branch", "worktrees", "remotes", "recovery"].map((action) => ["GET", `git/${action}`, (ctx) => s.execute(action, options(ctx))]),
+    ...["stage", "unstage", "commit", "merge", "checkout", "push", "fetch", "preview", "execute", "restore"].map((action) => ["POST", `git/${action}`, (ctx) => s.execute(action, options(ctx, true))]),
+    ["POST", "git/worktrees", (ctx) => s.execute("createWorktree", options(ctx, true))],
+    ["POST", "git/worktrees/remove", (ctx) => s.execute("removeWorktree", options(ctx, true))],
     ["GET", "git/pulls", (ctx) => s.execute("pulls", options(ctx))],
     ["GET", "git/pulls/:number", (ctx) => s.execute("pull", options(ctx))],
     ["POST", "git/pulls", (ctx) => s.execute("createPull", options(ctx, true))],

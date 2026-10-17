@@ -1,7 +1,9 @@
 import { permissionLabel } from '../../shared/permissions.js';
 import { createWorkbranchPicker, workBranchType } from '../../shared/workbranches.js';
+import { createTaskAssistant } from './assistant.js';
+import { createTaskFinisher } from './finish.js';
 
-const TASK_STATES = { working: '작업 중', review: '리뷰 대기', merged: '병합 완료', cleaned: '정리 완료' };
+const TASK_STATES = { working: '작업 중', review: '리뷰 대기', merged: '반영 완료', cleaned: '정리 완료' };
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
 const DEFAULT_GITFLOW = { main: 'main', develop: 'develop', featurePrefix: 'feature/', hotfixPrefix: 'hotfix/', releasePrefix: 'release/' };
 const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
@@ -58,6 +60,7 @@ export function createTasksController({
   let finishProject = null;
   let finishTaskId = null;
   let settings = gitflowSettings();
+  let finishDefault = 'pr';
   let settingsProject = null;
   let settingsGeneration = 0;
   let settingsBusy = false;
@@ -72,6 +75,17 @@ export function createTasksController({
       updateCreatePreview();
       updateCreateSubmit();
     },
+  });
+  const finisher = createTaskFinisher({ api, isCurrent: path => sameProject(path),
+    onTask: task => { replaceTask(task); renderTasks(); },
+    onBusy: (value, id) => { finishBusy = value; if (value) pendingTasks.add(id); else pendingTasks.delete(id); renderTasks(); },
+    onError: (id, message) => { if (message) taskErrors.set(id, message); else taskErrors.delete(id); },
+    onUnknown: (id, action) => uncertainTasks.set(id, action),
+  });
+  const taskAssistant = createTaskAssistant({ api, getStatus: () => data?.status, fillModels,
+    getContext: () => ({ projectPath: createProject, tabId: createTabId, active: Boolean(createDialog?.open && sameProject(createProject) && createTabId === navigation?.graphTabId) }),
+    onDraft: ({ agentChanged }) => { if (agentChanged) { if ($('task-model')) $('task-model').value = ''; updateAgentControls(); } updateCreatePreview(); },
+    onState: () => updateCreateSubmit(),
   });
 
   function node(tag, className, value) {
@@ -191,6 +205,10 @@ export function createTasksController({
         card.append(freshness);
       }
       const actions = node('div', 'task-actions');
+      const more = node('details', 'task-more');
+      more.append(node('summary', '', '더 보기'));
+      const secondary = node('div', 'task-actions');
+      more.append(secondary);
       const ids = Array.isArray(task.sessionIds) ? task.sessionIds : [];
       const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
       const connected = sessions.filter(session => ids.includes(session.id) || session.taskId === task.id);
@@ -201,8 +219,9 @@ export function createTasksController({
         actions.append(open);
       }
       if (task.state === 'working' || task.state === 'review') {
-        actions.append(actionButton(connected.length ? '세션 추가' : '새 세션', 'new-session', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
-        actions.append(actionButton(task.state === 'review' ? 'PR 업데이트' : '작업 마무리', 'finish', task, { primary: true, disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+        secondary.append(actionButton(connected.length ? '세션 추가' : '새 세션', 'new-session', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+        (task.state === 'review' ? secondary : actions).append(actionButton(task.state === 'review' ? 'PR 업데이트' : '변경 검토', 'finish', task, { primary: task.state === 'working', disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+        if (task.state === 'review') actions.append(actionButton('병합 검토', 'merge', task, { primary: true, disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
       }
       if (task.pull?.url) {
         try {
@@ -216,15 +235,20 @@ export function createTasksController({
           }
         } catch { /* Invalid server-provided links are not rendered. */ }
       }
-      if (task.state !== 'cleaned') actions.append(actionButton('최신 확인', 'refresh', task));
+      if (task.state !== 'cleaned') secondary.append(actionButton('최신 확인', 'refresh', task));
       if ((task.state === 'working' || task.state === 'review') && ['needs-update', 'behind', 'stale', 'diverged'].includes(task.freshness?.state)) {
-        actions.append(actionButton('기준 변경 반영', 'sync', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+        secondary.append(actionButton('기준 변경 반영', 'sync', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
       }
-      if (task.state === 'merged') actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+      if (task.state === 'merged') {
+        actions.append(actionButton('작업 폴더 정리', 'cleanup', task, { primary: true, disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+        if (task.completion?.kind === 'local' && task.completion.publishState !== 'done') secondary.append(actionButton('대상 브랜치 푸시', 'push-target', task, { disabled: uncertainTasks.has(task.id) || Boolean(task.pendingAction) }));
+      }
       const remove = actionButton('작업 삭제', 'delete', task);
       remove.classList.add('danger');
-      actions.append(remove);
-      card.append(actions);
+      secondary.append(remove);
+      card.append(actions, more);
+      const stage = task.state === 'working' ? 'AI 작업 → 변경 검토 → 반영' : task.state === 'review' ? 'PR 생성 완료 · 리뷰와 병합을 기다립니다' : task.state === 'merged' ? '반영 완료 · 폴더 정리는 선택 사항입니다' : '작업 기록 보관 중';
+      card.append(node('p', 'task-progress', stage));
       if (task.state === 'merged' && task.type !== 'feature') card.append(node('p', 'task-note', `${flow.develop}에도 반영되어야 작업 폴더를 정리할 수 있습니다.`));
       if (task.state === 'cleaned') card.append(node('p', 'task-note', task.inPlace
         ? `원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌렸습니다. 작업과 PR 기록은 보관됩니다.`
@@ -289,6 +313,19 @@ export function createTasksController({
     const [taskResult, contextResult] = results;
     if (taskResult.status === 'fulfilled') {
       tasks = Array.isArray(taskResult.value?.tasks) ? taskResult.value.tasks : [];
+      if (options.manual) {
+        const targets = tasks.filter(task => task.state !== 'cleaned');
+        const refreshed = await Promise.allSettled(targets.map(task => api('POST', `/api/tasks/${encodeURIComponent(task.id)}/refresh`, {})));
+        if (request !== generation || !sameProject(path)) return;
+        for (let index = 0; index < refreshed.length; index++) {
+          const result = refreshed[index], id = targets[index].id;
+          if (result.status === 'fulfilled') {
+            replaceTask(result.value.task);
+            if (!result.value.task?.pendingAction) uncertainTasks.delete(id);
+            taskErrors.delete(id);
+          } else taskErrors.set(id, requestError(result.reason));
+        }
+      }
       if (options.manual && uncertainCreates.has(path)) {
         uncertainCreates.delete(path);
         showError('tasks-error', '작업 목록을 확인했습니다. 이미 생성된 작업이 없는지 확인한 뒤 새 작업을 만들어 주세요.');
@@ -297,6 +334,7 @@ export function createTasksController({
     if (contextResult?.status === 'fulfilled') {
       context = contextResult.value?.context || contextResult.value;
       settings = gitflowSettings(contextResult.value?.settings || context?.settings);
+      finishDefault = contextResult.value?.finishMode || 'pr';
     }
     else if (contextResult) context = { error: requestError(contextResult.reason), freshness: { state: 'error' } };
     loading = false;
@@ -309,6 +347,7 @@ export function createTasksController({
   function resetSettings() {
     settingsGeneration++;
     settings = gitflowSettings();
+    finishDefault = 'pr';
     settingsProject = null;
     settingsBusy = false;
     settingsLoading = false;
@@ -318,6 +357,7 @@ export function createTasksController({
 
   function updateSettingsControls() {
     for (const key of GITFLOW_FIELDS) if ($(`task-settings-${key}`)) $(`task-settings-${key}`).disabled = settingsBusy || settingsLoading || settingsReadFailed;
+    if ($('task-settings-finishMode')) $('task-settings-finishMode').disabled = settingsBusy || settingsLoading || settingsReadFailed;
     if ($('task-settings-save')) {
       $('task-settings-save').disabled = settingsBusy || settingsLoading || settingsReadFailed;
       $('task-settings-save').textContent = settingsBusy ? '저장 중…' : '저장';
@@ -329,6 +369,7 @@ export function createTasksController({
 
   function fillSettingsForm() {
     for (const key of GITFLOW_FIELDS) if ($(`task-settings-${key}`)) $(`task-settings-${key}`).value = settings[key];
+    if ($('task-settings-finishMode')) $('task-settings-finishMode').value = finishDefault;
   }
 
   async function openSettings() {
@@ -347,6 +388,7 @@ export function createTasksController({
       const result = await api('GET', `/api/tasks/settings?path=${encodeURIComponent(path)}`);
       if (request !== settingsGeneration || !sameProject(path, epoch) || !settingsDialog?.open) return;
       settings = gitflowSettings(result.settings);
+      finishDefault = result.finishMode || 'pr';
       fillSettingsForm();
       renderContext();
       updateCreatePreview();
@@ -384,7 +426,7 @@ export function createTasksController({
     showError('task-settings-error');
     updateSettingsControls();
     try {
-      const result = await api('PUT', `/api/tasks/settings?path=${encodeURIComponent(path)}`, { settings: value });
+      const result = await api('PUT', `/api/tasks/settings?path=${encodeURIComponent(path)}`, { settings: value, finishMode: $('task-settings-finishMode')?.value || 'pr' });
       if (request !== settingsGeneration || !sameProject(path, epoch)) return;
       settings = gitflowSettings(result.settings);
       settingsDialog?.close();
@@ -447,7 +489,7 @@ export function createTasksController({
 
   function updateCreateSubmit() {
     const existing = $('task-workbranch-mode')?.value === 'existing';
-    if ($('task-create-submit')) $('task-create-submit').disabled = createBusy || settingsBusy || uncertainCreates.has(createProject) || (existing && !workbranchPicker.ready());
+    if ($('task-create-submit')) $('task-create-submit').disabled = createBusy || settingsBusy || taskAssistant.busy() || !taskAssistant.ready() || uncertainCreates.has(createProject) || (existing && !workbranchPicker.ready());
   }
 
   function updateAgentControls() {
@@ -483,20 +525,25 @@ export function createTasksController({
     showError('task-create-error');
     updateCreatePreview();
     updateAgentControls();
+    taskAssistant.open();
     updateCreateSubmit();
     createDialog?.showModal();
-    $('task-title')?.focus();
+    ($('task-assistant-prompt') || $('task-title'))?.focus();
   }
 
   async function createTask(event) {
     event.preventDefault();
-    if (createBusy || settingsBusy || !sameProject(createProject) || uncertainCreates.has(createProject)) return;
+    if (createBusy || settingsBusy || taskAssistant.busy() || !taskAssistant.ready() || !sameProject(createProject) || createTabId !== navigation?.graphTabId || uncertainCreates.has(createProject)) return;
     const existing = $('task-workbranch-mode')?.value === 'existing';
     if (existing && !workbranchPicker.ready()) {
       showError('task-create-error', workbranchPicker.validationError());
       return;
     }
-    if (createForm && !createForm.reportValidity()) return;
+    if (createForm && !createForm.checkValidity()) {
+      if ($('task-create-advanced')) $('task-create-advanced').open = true;
+      createForm.reportValidity();
+      return;
+    }
     const path = createProject;
     const tabId = createTabId;
     const epoch = projectEpoch;
@@ -507,6 +554,8 @@ export function createTasksController({
       ...(tabId ? { tabId } : {}),
       agent: $('task-agent')?.value || 'codex',
       permission: $('task-permission')?.value || 'workspace-write',
+      content: $('task-content')?.value.trim() || '', acceptance: $('task-acceptance')?.value.trim() || '',
+      start: true, requestId: taskAssistant.creationId(),
     };
     if (existing) payload.workBranch = workbranchPicker.selected().name;
     else if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
@@ -517,6 +566,7 @@ export function createTasksController({
     if ($('task-effort')?.value) payload.effort = $('task-effort').value;
     if ($('task-role')?.value.trim()) payload.role = $('task-role').value.trim();
     createBusy = true;
+    taskAssistant.setCreating(true);
     showError('task-create-error');
     const submit = $('task-create-submit');
     if (submit) { submit.disabled = true; submit.textContent = '브랜치와 세션 준비 중…'; }
@@ -526,6 +576,7 @@ export function createTasksController({
       await reloadSessions();
       if (sameProject(path, epoch)) {
         replaceTask(result.task);
+        if (result.startError) taskErrors.set(result.task.id, typeof result.startError === 'string' ? result.startError : result.startError.message || '작업은 만들어졌지만 시작하지 못했습니다. 세션에서 확인해 주세요.');
         renderTasks();
         createDialog?.close();
         const sessionId = result.session?.id || result.task?.sessionIds?.at(-1);
@@ -536,70 +587,26 @@ export function createTasksController({
       if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : requestError(error));
     } finally {
       createBusy = false;
-      if (submit) { submit.disabled = uncertainCreates.has(path); submit.textContent = '작업 만들기'; }
+      taskAssistant.setCreating(false);
+      if (submit) { submit.disabled = uncertainCreates.has(path); submit.textContent = '만들고 시작'; }
       updateToolbar();
     }
   }
 
-  function openFinish(task) {
+  function openFinish(task, options = {}) {
     if (!task || pendingTasks.has(task.id) || uncertainTasks.has(task.id) || task.pendingAction || finishBusy) return;
     finishTaskId = task.id;
     finishProject = projectPath;
-    finishForm?.reset();
-    if ($('task-finish-message')) $('task-finish-message').value = `${task.type === 'hotfix' ? 'fix' : task.type === 'release' ? 'chore' : 'feat'}: ${task.title}`;
-    if ($('task-finish-summary')) $('task-finish-summary').textContent = `${task.title}\n${task.branch} → ${task.targetBranch}\n이 작업 폴더의 변경 사항을 커밋하고 원격에 게시한 뒤 PR을 만듭니다. 작업을 마치고 검증 결과를 확인해 주세요.`;
-    showError('task-finish-error');
-    if ($('task-finish-submit')) $('task-finish-submit').disabled = false;
-    finishDialog?.showModal();
-    $('task-finish-message')?.focus();
+    finisher.open(task, options);
   }
 
-  async function finishTask(event) {
-    event.preventDefault();
-    if (finishBusy || !sameProject(finishProject) || !finishTaskId || uncertainTasks.has(finishTaskId)) return;
-    if (finishForm && !finishForm.reportValidity()) return;
-    const task = getTask(finishTaskId);
-    if (!task) return;
-    if (task.pendingAction || !['working', 'review'].includes(task.state)) {
-      showError('task-finish-error', '작업 상태가 변경되었습니다. 대화상자를 닫고 최신 상태를 확인해 주세요.');
-      return;
-    }
-    const message = $('task-finish-message')?.value.trim();
-    if (!message) { showError('task-finish-error', '커밋 메시지를 입력해 주세요.'); return; }
-    const id = task.id;
-    const path = finishProject;
-    const epoch = projectEpoch;
-    finishBusy = true;
-    pendingTasks.add(id);
-    const submit = $('task-finish-submit');
-    if (submit) { submit.disabled = true; submit.textContent = '커밋·게시·PR 처리 중…'; }
-    showError('task-finish-error');
-    renderTasks();
-    try {
-      const result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/finish`, {
-        message, description: $('task-finish-description')?.value.trim() || '', verification: $('task-finish-verification')?.value.trim() || '',
-      });
-      if (sameProject(path, epoch)) {
-        replaceTask(result.task);
-        taskErrors.delete(id);
-        finishDialog?.close();
-      }
-    } catch (error) {
-      if (error.outcomeUnknown) uncertainTasks.set(id, 'finish');
-      const message = error.outcomeUnknown ? unknownMessage('커밋·게시·PR 생성') : requestError(error);
-      taskErrors.set(id, message);
-      if (sameProject(path, epoch)) showError('task-finish-error', message);
-    } finally {
-      finishBusy = false;
-      pendingTasks.delete(id);
-      if (submit) { submit.disabled = uncertainTasks.has(id); submit.textContent = '커밋·게시·PR 만들기'; }
-      if (sameProject(path, epoch)) renderTasks();
-    }
-  }
+  const finishTask = event => finisher.submit(event);
 
   async function runTaskAction(action, task) {
     if (!task || pendingTasks.has(task.id)) return;
     if (action !== 'refresh' && (uncertainTasks.has(task.id) || task.pendingAction)) return;
+    if (action === 'cleanup' && !confirm(`${task.title}\n\n${task.inPlace ? '원본 폴더를 작업 전 브랜치로 되돌립니다.' : task.ownsWorktree === false ? '기존 작업 폴더는 보존합니다.' : `작업 폴더를 삭제합니다:\n${task.cwd}`}\n${task.ownsBranch === false ? '기존 로컬 브랜치는 보존합니다.' : `로컬 브랜치 ${task.branch}를 삭제합니다.`}\n작업·대화 기록과 원격 브랜치는 보존합니다.`)) return;
+    if (action === 'push-target' && !confirm(`${task.targetBranch}의 반영한 커밋을 ${task.remote}에 푸시할까요?\n${task.completion?.targetHead || ''}`)) return;
     const path = projectPath;
     const epoch = projectEpoch;
     const id = task.id;
@@ -734,9 +741,13 @@ export function createTasksController({
   $('task-agent')?.addEventListener('change', () => { if ($('task-model')) $('task-model').value = ''; updateAgentControls(); });
   $('task-model')?.addEventListener('change', () => { if ($('task-effort')) fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model').value); });
   createForm?.addEventListener('submit', createTask);
+  createForm?.addEventListener('invalid', (event) => {
+    const advanced = $('task-create-advanced');
+    if (advanced?.contains(event.target)) advanced.open = true;
+  }, true);
   finishForm?.addEventListener('submit', finishTask);
   createDialog?.addEventListener('cancel', event => { if (createBusy) event.preventDefault(); });
-  createDialog?.addEventListener('close', () => workbranchPicker.reset());
+  createDialog?.addEventListener('close', () => { workbranchPicker.reset(); taskAssistant.close(); });
   finishDialog?.addEventListener('cancel', event => { if (finishBusy) event.preventDefault(); });
   $('task-create-cancel')?.addEventListener('click', () => { if (!createBusy) createDialog?.close(); });
   $('task-finish-cancel')?.addEventListener('click', () => { if (!finishBusy) finishDialog?.close(); });
@@ -754,13 +765,23 @@ export function createTasksController({
     if (action === 'open-session') { void selectSession(button.dataset.sessionId); return; }
     if (action === 'new-session') { void newSession(task); return; }
     if (action === 'finish') { openFinish(task); return; }
+    if (action === 'merge') { openFinish(task, { merge: true }); return; }
     if (action === 'delete') { void deleteTask(task); return; }
-    if (['refresh', 'sync', 'cleanup'].includes(action)) void runTaskAction(action, task);
+    if (['refresh', 'sync', 'cleanup', 'push-target'].includes(action)) void runTaskAction(action, task);
   });
   updateToolbar();
 
   return {
     loadTasks, invalidateProject, renderTasks, cancelCreation,
+    async openReference(id, path = getProjectPath()) {
+      await loadTasks(path, { localOnly: true });
+      if (!sameProject(path)) return;
+      const card = [...(list?.querySelectorAll('.task-card') || [])].find(item => item.dataset.taskId === id);
+      if (!card) throw Error('작업을 찾을 수 없습니다.');
+      card.tabIndex = -1;
+      card.focus({ preventScroll: true });
+      card.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    },
     refreshIfVisible(path = getProjectPath()) { if (path === getProjectPath() && isTasksVisible()) void loadTasks(path); },
   };
 }

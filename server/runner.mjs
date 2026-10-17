@@ -29,7 +29,7 @@ export class Runner extends EventEmitter {
   // ── 실행 중 질문·권한 요청 ──────────────────────────────────────
   // CLI는 답을 받을 때까지 기다린다. 화면에는 질문 카드나 권한 요청 카드로 보인다.
   ask(session, child, agent, msg) {
-    const control = agent.parseControl(msg);
+    const control = agent.parseControl(msg, session);
     if (!control) {
       // 화면에 물을 필요가 없는 요청에는 빈 성공으로 답해 CLI가 멈추지 않게 한다.
       child.stdin.write(`${agent.controlResponse(msg.request_id, {})}\n`);
@@ -38,7 +38,7 @@ export class Runner extends EventEmitter {
     const id = msg.request_id;
     const event = control.kind === "question"
       ? { kind: "question", questionId: id, status: "pending", text: "질문", questions: control.questions, live: true }
-      : { kind: "permission", requestId: id, status: "pending", tool: control.tool, text: control.text, detail: control.detail, reason: control.reason, canRemember: (control.suggestions?.length ?? 0) > 0, promptId: id, ...(control.rememberLabel ? { rememberLabel: control.rememberLabel, rememberDescription: control.rememberDescription } : {}) };
+      : { kind: "permission", requestId: id, status: "pending", tool: control.tool, text: control.text, detail: control.detail, reason: control.reason, canRemember: (control.suggestions?.length ?? 0) > 0, promptId: id, ...(control.planApproval ? { planApproval: true } : {}), ...(control.rememberLabel ? { rememberLabel: control.rememberLabel, rememberDescription: control.rememberDescription } : {}) };
     session.waiting = true;
     const full = this.append(session, event);
     this.prompts.set(id, { session, child, agent, control, event: full });

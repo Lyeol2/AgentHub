@@ -1,5 +1,6 @@
 import { ATTACHMENT_BODY_LIMIT, isImageAttachment, safeAttachmentName } from "../../attachments.mjs";
 import { BUNDLE_MAX_BYTES } from "../../session-bundle.mjs";
+import { ARTIFACT_PREVIEW_CSP } from "../../session-artifacts.mjs";
 
 const RECORD_BODY_LIMIT = BUNDLE_MAX_BYTES * 2 + 100_000; // JSON 이스케이프 여유(.md 문서보다 큰 .agenthub 파일 기준)
 
@@ -18,6 +19,32 @@ export function sessionRoutes(s) {
       deleteRecords: query.get("records") === "delete"
     })],
     ["POST", "sessions/:id/attachments", ({ params, body }) => s.uploadAttachment(params.id, body), { maxBodyBytes: ATTACHMENT_BODY_LIMIT }],
+    ["GET", "sessions/:id/artifact", ({ params, query }) => s.artifact(params.id, query.get("path"), { summary: query.get("summary") === "1" })],
+    ["GET", "sessions/:id/artifact/preview", ({ params, query, res }) => {
+      const html = s.artifactPreview(params.id, query.get("path"));
+      res.writeHead(200, {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": ARTIFACT_PREVIEW_CSP,
+      });
+      res.end(html);
+    }],
+    ["GET", "sessions/:id/artifact/content", ({ params, query, res }) => {
+      const file = s.artifactContent(params.id, query.get("path"));
+      const inline = file.kind === "image" && query.get("download") !== "1";
+      const filename = encodeURIComponent(safeAttachmentName(file.name)).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
+      const headers = {
+        "Content-Type": inline ? file.mimeType : "application/octet-stream",
+        "Content-Length": file.bytes.length,
+        "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="artifact"; filename*=UTF-8''${filename}`,
+        "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox; default-src 'none'",
+      };
+      res.writeHead(200, headers);
+      res.end(file.bytes);
+    }],
     ["GET", "sessions/:id/attachments/:image", ({ params, res }) => {
       const image = s.attachmentContent(params.id, params.image);
       const headers = { "Content-Type": image.mimeType, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };

@@ -83,7 +83,7 @@ async function browser(temp, url, expression) {
   }
 }
 
-test("browser: GitFlow tasks and per-project branch settings retain state and isolate delayed responses", { timeout: 60000 }, async (t) => {
+test("browser: task references, GitFlow tasks and per-project settings retain state and isolate delayed responses", { timeout: 60000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(chromium).then(() => true, () => false)) return t.skip("Installed Windows Chromium is required");
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-tasks-browser-"));
   const streams = new Set(), requests = [], tasks = [], sessions = [];
@@ -94,8 +94,9 @@ test("browser: GitFlow tasks and per-project branch settings retain state and is
   const settings = new Map(projects.map((item) => [item.path, { ...defaults }]));
   const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
   const context = { mainSha: "a".repeat(40), developSha: "a".repeat(40), mainInDevelop: true, needsSetup: false, checkedAt: "2026-10-15T12:00:00Z", freshness: { state: "current", checkedAt: "2026-10-15T12:00:00Z" } };
-  const mode = { uncertain: false, contextFailure: false, holdCreate: false, holdSettingsRead: false, holdSettingsSave: false, settingsReadFailure: false, settingsSaveFailure: false };
-  let releaseCreate, releaseSettingsRead, releaseSettingsSave;
+  const mode = { uncertain: false, contextFailure: false, holdCreate: false, holdSettingsRead: false, holdSettingsSave: false, settingsReadFailure: false, settingsSaveFailure: false, assistantFailure: false, holdAssistant: false };
+  let releaseCreate, releaseSettingsRead, releaseSettingsSave, releaseAssistant;
+  const reviews = new Map();
   const server = http.createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
@@ -106,10 +107,21 @@ test("browser: GitFlow tasks and per-project branch settings retain state and is
       let value;
       if (url.pathname === "/fixture/mode") { Object.assign(mode, body); value = {}; }
       else if (url.pathname === "/fixture/release") { releaseCreate?.(); value = {}; }
+      else if (url.pathname === "/fixture/release-assistant") { releaseAssistant?.(); value = {}; }
       else if (url.pathname === "/fixture/release-settings") { if (body.read) releaseSettingsRead?.(); if (body.save) releaseSettingsSave?.(); value = {}; }
       else if (url.pathname === "/fixture/requests") value = requests;
-      else if (url.pathname === "/fixture/emit") { for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n"); value = {}; }
+      else if (url.pathname === "/fixture/emit") {
+        if (body.type === "event") sessions.find((session) => session.id === body.payload.sessionId)?.events.push(body.payload.event);
+        for (const stream of streams) stream.write("event: " + body.type + "\ndata: " + JSON.stringify(body.payload ?? {}) + "\n\n");
+        value = {};
+      }
       else if (url.pathname === "/api/status") value = { agents, projects, cliOverrides: { claude: "", codex: "" }, linkConditions: [{ id: "success", label: "성공 시" }] };
+      else if (url.pathname === "/api/task-assistant/plan") {
+        if (mode.holdAssistant) { mode.holdAssistant = false; await new Promise((resolve) => releaseAssistant = resolve); }
+        if (mode.assistantFailure) throw Object.assign(Error("초안 생성 실패. 입력은 유지됩니다."), { status: 422 });
+        value = { summary: body.history?.length ? "접근성 확인도 반영했습니다." : "로그인 문제 수정 초안을 정리했습니다.",
+          draft: { title: "AI 로그인 초안", content: body.draft.content || "모바일 로그인 문제를 수정한다.", acceptance: "모바일·데스크톱 로그인과 접근성을 확인한다.", type: "feature", agent: "codex", branchName: "", worktreeName: "", version: "" } };
+      }
       else if (url.pathname === "/api/tasks/context") { if (mode.contextFailure) throw Object.assign(Error("원격 확인 실패"), { status: 400 }); value = { ...context, settings: settings.get(url.searchParams.get("path")) }; }
       else if (url.pathname === "/api/tasks/settings") {
         const projectPath = url.searchParams.get("path");
@@ -145,12 +157,25 @@ test("browser: GitFlow tasks and per-project branch settings retain state and is
       } else if (url.pathname.startsWith("/api/tasks/")) {
         const [, , , id, action] = url.pathname.split("/"); const task = tasks.find((item) => item.id === id);
         if (!task) throw Error("Task not found");
-        if (action === "finish") {
+        if (!reviews.has(id)) {
+          const files = mode.reviewScenario ? [{ path: 'chosen.txt', label: '수정' }, { path: 'remaining.txt', label: '새 파일' }] : [];
+          reviews.set(id, { files, head: 'b'.repeat(40), token: 'review-' + id, behind: !!mode.reviewScenario });
+          mode.reviewScenario = false;
+        }
+        const review = reviews.get(id);
+        if (action === "review") {
+          task.freshness.behind = review.behind;
+          value = { task, ...review, localTargetHead: 'a'.repeat(40), localBehind: false, clean: !review.files.length, commits: [{ hash: review.head, subject: '검토할 커밋' }] };
+        } else if (action === "diff") value = { diff: '+ selected change', head: review.head, token: review.token };
+        else if (action === "commit") {
+          if (body.reviewToken !== review.token) throw Error('Stale fixture token');
+          review.files = review.files.filter(file => !body.files.includes(file.path)); review.token += '-commit'; review.head = 'c'.repeat(40); value = { task };
+        } else if (action === "finish") {
           task.pull = { number: 42, url: "https://github.com/fixture/repo/pull/42", state: "OPEN", headRefName: task.branch, baseRefName: task.targetBranch, headRefOid: "b".repeat(40) };
           if (mode.uncertain) { mode.uncertain = false; task.pendingAction = { action: "pull", expectedHead: "b".repeat(40), outcomeUnknown: true }; throw Object.assign(Error("완료 여부를 확인한 뒤 다시 시도하세요."), { status: 504, reason: "github-timeout", outcomeUnknown: true }); }
           task.state = "review"; value = { task, pull: task.pull };
         } else if (action === "refresh") { delete task.pendingAction; if (task.pull) task.state = "review"; value = { task }; }
-        else if (action === "sync") value = { task };
+        else if (action === "sync") { review.behind = false; review.head = 'd'.repeat(40); review.token += '-sync'; value = { task }; }
         else if (action === "cleanup") { task.state = "cleaned"; value = { task }; }
         else value = { task };
       } else if (url.pathname === "/api/sessions") {
@@ -189,7 +214,7 @@ test("browser: GitFlow tasks and per-project branch settings retain state and is
     assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"));
     await fs.writeFile(path.join(root, "data/tasks-qa/checks.json"), JSON.stringify(report, null, 2));
   } finally {
-    releaseCreate?.(); releaseSettingsRead?.(); releaseSettingsSave?.(); for (const stream of streams) stream.end();
+    releaseCreate?.(); releaseSettingsRead?.(); releaseSettingsSave?.(); releaseAssistant?.(); for (const stream of streams) stream.end();
     await new Promise((resolve) => server.close(resolve));
     assert.equal(path.dirname(path.resolve(temp)), path.resolve(os.tmpdir()));
     await fs.rm(temp, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });

@@ -1,8 +1,8 @@
 import { $, el, renderDiff, fmtDate } from "../../shared/dom.js";
 import { layoutGitGraph, gitWorkRows } from "../../gitgraph.js";
 
-export function createGitView({ getModel, selectSession, showSessionChanges, openBranchCommit, showGitBranch, mergeGitBranch, checkoutGitBranch, showGitFile, changeGitIndex, showGitTab, showGitCommit, onToggleFile }) {
-  const gitBusy = () => !!(getModel()?.indexBusy || getModel()?.committing || getModel()?.merging || getModel()?.checkingOut);
+export function createGitView({ getModel, selectSession, showSessionChanges, selectWorkspace, showGitBranch, mergeGitBranch, checkoutGitBranch, showGitFile, changeGitIndex, showGitTab, showGitCommit, onToggleFile }) {
+  const gitBusy = () => !!(getModel()?.indexBusy || getModel()?.committing || getModel()?.merging || getModel()?.checkingOut || getModel()?.operationBusy);
   const gitFiles = (area) => (getModel()?.data?.files ?? []).filter((file) => file[area]);
   const gitBranchName = (branch) => branch.sessionTitle || branch.name;
 
@@ -70,6 +70,7 @@ export function createGitView({ getModel, selectSession, showSessionChanges, ope
     $("g-commit-note").textContent = current.indexBusy ? "목록을 업데이트하는 중…" : "스테이징된 내용만 커밋합니다.";
     $("g-message").disabled = !!current.committing;
     $("g-refresh").disabled = busy;
+    for (const button of document.querySelectorAll("#g-operations button, #g-commit-actions button")) button.disabled = busy || button.dataset.blocked === "true";
   }
 
   function renderGitBranch(b) {
@@ -83,12 +84,12 @@ export function createGitView({ getModel, selectSession, showSessionChanges, ope
     };
     if (b.sessionId) run("세션 열기", () => selectSession(b.sessionId));
     if (b.sessionId && b.dirty) run("변경 보기", () => showSessionChanges(b));
-    if (b.sessionId && b.dirty) run("커밋", (e) => openBranchCommit(e.target.closest("li"), b), { disabled: running, title: running ? "세션이 끝난 뒤 커밋할 수 있습니다." : "세션의 변경 전체를 커밋합니다." });
+    if (!b.current && (b.worktree || b.checkedOutAt)) run("작업 폴더 보기", () => selectWorkspace(b.worktree || b.checkedOutAt), { disabled: gitBusy(), title: "이 폴더로 이동해 변경을 검토하고 커밋합니다." });
     if (!b.current && b.ahead) run("비교", () => showGitBranch(b));
     if (!b.current && b.ahead) run("병합", () => mergeGitBranch(b), { title: getModel().data.branch + "에 병합" });
     if (!b.current) run("체크아웃", () => checkoutGitBranch(b), b.checkedOutAt
       ? { disabled: true, title: "다른 작업 폴더에서 쓰는 브랜치입니다: " + b.checkedOutAt }
-      : { disabled: gitBusy(), title: "원본 폴더를 " + b.name + " 브랜치로 바꿉니다." });
+      : { disabled: gitBusy(), title: "선택한 폴더를 " + b.name + " 브랜치로 바꿉니다." });
     const summary = el("summary", { title: b.name },
       el("span", { class: "git-branch-dot" + (running ? " running" : "") }),
       el("span", { class: "name" }, gitBranchName(b)),
@@ -173,6 +174,7 @@ export function createGitView({ getModel, selectSession, showSessionChanges, ope
   }
 
   function showGitView(title, text) {
+    if ($("g-commit-actions")) $("g-commit-actions").hidden = true;
     $("g-diff-empty").hidden = true;
     $("g-detail").hidden = false;
     $("g-view-title").textContent = title;

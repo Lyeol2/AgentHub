@@ -3,9 +3,11 @@ import { firstLine } from "../../shared/store.js";
 import { linkLabel } from "../../shared/flow.js";
 import { renderMarkdown } from "../../markdown.js";
 import { renderAttachmentLinks } from "./image-composer.js";
+import { createReportView } from "./report-view.js";
 
 /** Render conversation history; user decisions are commands supplied by the controller. */
-export function createConversationView({ getSession, sessionById, selectSession, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision }) {
+export function createConversationView({ api, getSession, sessionById, selectSession, onTaskReference, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision }) {
+  const reports = createReportView({ api, getSession, sessionById, selectSession, onTaskReference });
   const PLAN_STATUS = { pending: "승인 대기", applied: "실행함", rejected: "거절함", invalid: "형식 오류" };
 
   // 오케스트레이터가 쓴 계획. 승인하면 세션·연결·요청을 만든다.
@@ -136,13 +138,14 @@ export function createConversationView({ getSession, sessionById, selectSession,
 
   // 실행 중에 CLI가 묻는 권한 요청. 답할 때까지 CLI가 기다린다.
   const PERMISSION_STATUS = { pending: "허용을 기다림", allowed: "허용함", denied: "거절함", skipped: "지나감" };
+  const PLAN_APPROVAL_STATUS = { pending: "승인을 기다림", allowed: "승인함", denied: "수정 요청함", skipped: "지나감" };
 
   function renderPermission(ev) {
     const s = getSession();
     const decide = async (decision, button) => {
       let message;
       if (decision === "deny") {
-        message = prompt("거절 이유나 대신 할 일 (비워 두어도 됩니다)");
+        message = prompt(ev.planApproval ? "계획에서 고칠 점 (비워 두어도 됩니다)" : "거절 이유나 대신 할 일 (비워 두어도 됩니다)");
         if (message === null) return;
       }
       for (const b of button.parentElement.children) b.disabled = true;
@@ -153,6 +156,7 @@ export function createConversationView({ getSession, sessionById, selectSession,
         for (const b of button.parentElement.children) b.disabled = false;
       }
     };
+    if (ev.planApproval) return renderPlanApproval(ev, decide);
     const label = ev.status === "allowed" && ev.decision === "always" ? (ev.rememberLabel ? ev.rememberLabel + "함" : "항상 허용함") : PERMISSION_STATUS[ev.status] ?? ev.status;
     const node = el("li", { class: `ev permission ${ev.status}` },
       el("div", { class: "plan-head" }, el("b", {}, "권한 요청"), el("span", { class: `pill p-${ev.status}` }, label)),
@@ -164,6 +168,21 @@ export function createConversationView({ getSession, sessionById, selectSession,
         el("button", { class: "primary sm", onclick: (e) => decide("allow", e.currentTarget) }, "허용"),
         ev.canRemember ? el("button", { class: "ghost sm", title: ev.rememberDescription ?? "이 프로젝트에서 같은 종류의 요청은 다시 묻지 않습니다", onclick: (e) => decide("always", e.currentTarget) }, ev.rememberLabel ?? "항상 허용") : null,
         el("button", { class: "ghost sm danger", onclick: (e) => decide("deny", e.currentTarget) }, "거절")));
+    }
+    return node;
+  }
+
+  // 계획 모드(/plan)에서 세운 계획. 승인하면 그대로 진행하고, 수정 요청은 계획 모드에서 다시 세우게 한다.
+  function renderPlanApproval(ev, decide) {
+    const node = el("li", { class: `ev permission plan-approval ${ev.status}` },
+      el("div", { class: "plan-head" }, el("b", {}, "계획 승인"), el("span", { class: `pill p-${ev.status}` }, PLAN_APPROVAL_STATUS[ev.status] ?? ev.status)));
+    const body = el("div", { class: "md plan-approval-body" });
+    body.innerHTML = renderMarkdown(ev.detail ?? "", { sessionId: getSession()?.id });
+    node.append(body);
+    if (ev.status === "pending") {
+      node.append(el("div", { class: "plan-actions" },
+        el("button", { class: "primary sm", onclick: (e) => decide("allow", e.currentTarget) }, "승인하고 진행"),
+        el("button", { class: "ghost sm", onclick: (e) => decide("deny", e.currentTarget) }, "수정 요청")));
     }
     return node;
   }
@@ -313,7 +332,9 @@ export function createConversationView({ getSession, sessionById, selectSession,
       const text = answerText(ev);
       if (!text) return el("li", { class: "ev hidden-empty", hidden: true });
       const node = el("li", { class: `${cls} md` });
-      node.innerHTML = renderMarkdown(text);
+      node.innerHTML = renderMarkdown(text, { sessionId: getSession()?.id });
+      reports.enhance(node, text, { references: ev.references });
+      if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
       return node;
     }
     if (ev.kind === "message") {
@@ -336,7 +357,9 @@ export function createConversationView({ getSession, sessionById, selectSession,
             ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
           el("div", { class: "handoff-body" }, ev.text)));
     }
-    const node = el("li", { class: cls }, ev.text ?? "");
+    const node = el("li", { class: cls });
+    if (ev.kind === "user") reports.renderUser(node, ev.text ?? "", ev.references);
+    else node.append(ev.text ?? "");
     if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
     if (ev.detail) node.title = ev.detail;
     return node;

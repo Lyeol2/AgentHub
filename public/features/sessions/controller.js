@@ -2,19 +2,19 @@ import { createConversationView } from "./conversation-view.js";
 import { $, AGENT_LABEL, STATE_LABEL, el, badge, sessionLabel, pill, renderLife, renderDiff } from "../../shared/dom.js";
 import { renderSessionElapsed } from "../../shared/elapsed.js";
 import { linkLabel } from "../../shared/flow.js";
-import { firstLine } from "../../shared/store.js";
+import { firstLine, samePath } from "../../shared/store.js";
 import { closeContextMenu, openContextMenu } from "../../shared/context-menu.js";
 import { composerAction, builtinCommand } from "../../composer.js";
 import { createCompletion } from "./completion.js";
 import { createAttachmentComposer, uploadAttachments, renderAttachmentLinks } from "./image-composer.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 
-export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, data, navigation }) {
+export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
   const ui = {
     "chatDraft": null
   };
   const { renderEvents, appendEvent, settleEvents } = createConversationView({
-    getSession: () => data.current, sessionById, selectSession,
+    api, getSession: () => data.current, sessionById, selectSession, onTaskReference,
     onPlanDecision: (id, plan, body) => api("POST", `/api/sessions/${id}/plans/${plan}`, body),
     onPlanError: (id, error) => api("POST", `/api/sessions/${id}/messages`, { prompt: `[계획 오류] ${error}\n계획 블록을 고쳐 다시 제안하라.` }),
     onQuestionAnswer: (id, question, answers) => api("POST", `/api/sessions/${id}/questions/${question}`, { answers }),
@@ -268,11 +268,13 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       renderComposerAction("s", s);
       return runBuiltin(builtin);
     }
+    const expandedPrompt = completion.expand(prompt);
+    const references = completion.references(prompt);
     composerBusy.add("s");
     renderComposerAction("s", s);
     try {
       const attachments = await uploadAttachments(api, s.id, snapshot.items);
-      const result = await api("POST", "/api/sessions/" + s.id + "/messages", { prompt: completion.expand(prompt), attachments, mode: composerMode(s) });
+      const result = await api("POST", "/api/sessions/" + s.id + "/messages", { prompt: expandedPrompt, references, attachments, mode: composerMode(s) });
       imageComposers.s.commit(snapshot);
       completion.sync();
       if (result.queued) refreshQueue(s.id);
@@ -284,7 +286,21 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     }
   });
   // 자동 완성은 작성창의 Enter 처리보다 먼저 등록해야 목록이 열린 동안 Enter가 보내기로 가지 않는다.
-  completion = createCompletion({ textarea: $("s-prompt"), api, getSession: () => data.current, onBuiltin: runBuiltin });
+  const taskReferenceCache = new Map();
+  async function composerReferences(session) {
+    const sessions = data.sessions.filter((item) => item.id !== session.id && !item.chat && samePath(item.projectPath, session.projectPath));
+    let cached = taskReferenceCache.get(session.projectPath);
+    if (!cached || Date.now() - cached.at > 10_000) {
+      cached = { at: Date.now(), promise: api("GET", `/api/tasks?path=${encodeURIComponent(session.projectPath)}`).then((result) => result?.tasks ?? []).catch(() => []) };
+      taskReferenceCache.set(session.projectPath, cached);
+    }
+    const tasks = await cached.promise;
+    return [
+      ...sessions.map((item) => ({ type: "session", value: item.title || item.id, path: `agenthub://session/${encodeURIComponent(item.id)}`, description: `${STATE_LABEL[item.state] ?? item.state ?? ""} · ${item.id.slice(0, 8)}` })),
+      ...(Array.isArray(tasks) ? tasks : []).map((item) => ({ type: "task", value: item.title || item.id, path: `agenthub://task/${encodeURIComponent(item.id)}`, description: `${item.branch || ""} · ${item.id.slice(0, 8)}` })),
+    ];
+  }
+  completion = createCompletion({ textarea: $("s-prompt"), api, getSession: () => data.current, onBuiltin: runBuiltin, getReferences: composerReferences });
   composerKeys("s");
 
   $("s-crumb-project").addEventListener("click", (e) => {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { findRefs, resolveRef, expandRefs, parseSlash, expandSlash, expandPrompt, rankFiles, projectFiles } from "../server/prompt-refs.mjs";
+import { findRefs, resolveRef, expandRefs, parseSlash, expandSlash, expandPrompt, planRequest, PLAN_NOTE, rankFiles, projectFiles } from "../server/prompt-refs.mjs";
 import { buildBundle } from "../server/session-bundle.mjs";
 
 function folder(t) {
@@ -62,6 +62,18 @@ test("요청 풀어 쓰기: 워크트리 Claude는 프로젝트 스킬 폴더를
   assert.match(out, /스킬 실행[\s\S]*@src\/app\.js 고쳐[\s\S]*console\.log/);
   assert.deepEqual(session.addDirs, [path.dirname(path.dirname(skills[0].file))]);
   assert.equal(expandPrompt({ chat: true, cwd: root }, "/issue-fix @src/app.js", { skills }), "/issue-fix @src/app.js");
+});
+
+test("/plan 요청은 계획 모드 안내로 풀어 쓰고, 일반 채팅에서도 쓴다", (t) => {
+  const root = folder(t);
+  assert.equal(planRequest("/plan 로그인 추가")?.rest, "로그인 추가");
+  assert.equal(planRequest("/planner 로그인"), null);
+  const out = expandPrompt({ agent: "claude", cwd: root, projectPath: root }, "/plan @src/app.js 고쳐", { skills: [] });
+  assert.ok(out.startsWith(PLAN_NOTE));
+  assert.match(out, /\[요청\]\n@src\/app\.js 고쳐[\s\S]*console\.log/);
+  const chat = expandPrompt({ chat: true }, "/plan 여행 일정");
+  assert.ok(chat.startsWith(PLAN_NOTE) && chat.endsWith("여행 일정"));
+  assert.match(expandPrompt({ chat: true }, "/plan"), /추가 요청 없음/);
 });
 
 test("@자동 완성: 이름이 맞는 파일을 앞에 둔다", async (t) => {

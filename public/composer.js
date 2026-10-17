@@ -50,7 +50,9 @@ export function filterCommands(commands, query = "") {
 }
 
 // AgentHub가 직접 처리하는 기본 명령. 스킬과 이름이 겹치면 기본 명령이 먼저다.
+// prompt: 바로 실행하지 않고 "/이름 요청"으로 이어 써서 보내는 명령이다.
 export const BUILTIN_COMMANDS = [
+  { name: "plan", description: "계획 모드: 파일을 고치지 않고 계획만 세운 뒤 승인을 받습니다 (/plan 요청)", builtin: true, prompt: true },
   { name: "clear", description: "다시 시작: CLI 대화를 새로 시작해 컨텍스트를 비웁니다", builtin: true },
   { name: "export", description: "세션을 .agenthub 파일로 내보냅니다", builtin: true },
   { name: "import", description: "내보낸 기록을 새 세션으로 불러오거나 이 세션에 읽힙니다", builtin: true },
@@ -59,7 +61,7 @@ export const BUILTIN_COMMANDS = [
 // 첨부 없이 기본 명령만 입력하고 보내면 그 명령을 실행한다.
 export function builtinCommand(text) {
   const match = String(text ?? "").trim().match(/^\/([a-z]+)$/);
-  return match && BUILTIN_COMMANDS.some((c) => c.name === match[1]) ? match[1] : null;
+  return match && BUILTIN_COMMANDS.some((c) => c.name === match[1] && !c.prompt) ? match[1] : null;
 }
 
 // ── 고른 파일 참조 ───────────────────────────────────────────────
