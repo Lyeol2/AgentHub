@@ -92,7 +92,7 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
   const projects = [project, secondProject];
   const defaults = { main: "main", develop: "develop", featurePrefix: "feature/", hotfixPrefix: "hotfix/", releasePrefix: "release/" };
   const settings = new Map(projects.map((item) => [item.path, { ...defaults }]));
-  const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
+  const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: name === "codex" ? "C:/bin/codex.exe" : null, version: name === "codex" ? "1.0.0" : null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
   const context = { mainSha: "a".repeat(40), developSha: "a".repeat(40), mainInDevelop: true, needsSetup: false, checkedAt: "2026-10-15T12:00:00Z", freshness: { state: "current", checkedAt: "2026-10-15T12:00:00Z" } };
   const mode = { uncertain: false, contextFailure: false, holdCreate: false, holdSettingsRead: false, holdSettingsSave: false, settingsReadFailure: false, settingsSaveFailure: false };
   let releaseCreate, releaseSettingsRead, releaseSettingsSave;
