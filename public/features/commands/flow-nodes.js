@@ -76,10 +76,12 @@ export function createFlowNodeForms() {
   });
   $("tasknode-action").addEventListener("change", syncTask);
   $("tasknode-type").addEventListener("change", syncTask);
+  $("tasknode-finish-mode").addEventListener("change", syncTask);
   function syncTask() {
     const finish = $("tasknode-action").value === "finish";
     $("tasknode-start-fields").hidden = finish;
     $("tasknode-finish-fields").hidden = !finish;
+    $("tasknode-push-row").hidden = $("tasknode-finish-mode").value === "pr";
     $("tasknode-version-row").hidden = finish || $("tasknode-type").value !== "release";
   }
   function syncTransform() {
@@ -135,6 +137,8 @@ export function createFlowNodeForms() {
     $("tasknode-title").value = cmd?.titleTemplate ?? "{{input}}";
     $("tasknode-version").value = cmd?.version ?? "";
     $("tasknode-in-place").checked = cmd?.inPlace === true;
+    $("tasknode-finish-mode").value = cmd?.finishMode ?? "project";
+    $("tasknode-push").checked = cmd?.pushTarget === true;
     $("tasknode-commit").value = cmd?.commitMessage ?? "";
     $("tasknode-description").value = cmd?.description ?? "{{input}}";
     $("tasknode-verification").value = cmd?.verification ?? "";
@@ -148,7 +152,7 @@ export function createFlowNodeForms() {
     if (kind === "webhook") return { url: $("webhook-url").value.trim(), method: $("webhook-method").value, timeoutSec: Number($("webhook-timeout").value), headers: $("webhook-headers").value, bodyType: $("webhook-body-type").value, body: $("webhook-body").value };
     if (kind === "webhook-in") return { enabled: $("webhook-in-enabled").checked, prompt: $("webhook-in-prompt").value, ...($("webhook-in-regenerate").checked ? { regenerateToken: true } : {}) };
     if (kind === "task") return $("tasknode-action").value === "finish"
-      ? { taskAction: "finish", commitMessage: $("tasknode-commit").value, description: $("tasknode-description").value, verification: $("tasknode-verification").value }
+      ? { taskAction: "finish", finishMode: $("tasknode-finish-mode").value, pushTarget: $("tasknode-finish-mode").value !== "pr" && $("tasknode-push").checked, commitMessage: $("tasknode-commit").value, description: $("tasknode-description").value, verification: $("tasknode-verification").value }
       : { taskAction: "start", taskType: $("tasknode-type").value, titleTemplate: $("tasknode-title").value, version: $("tasknode-version").value, inPlace: $("tasknode-in-place").checked };
     if (kind === "watch") return { watchPaths: $("watch-paths").value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean), debounceMs: Number($("watch-debounce").value), prompt: $("watch-prompt").value };
     if (kind === "schedule") {

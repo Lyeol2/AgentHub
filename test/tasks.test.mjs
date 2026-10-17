@@ -22,15 +22,16 @@ function fixture(t, { develop = true, main = "main", developBranch = "develop", 
   git(repo, "add", "."); git(repo, "commit", "-qm", "base");
   git(repo, "remote", "add", "origin", remote); git(repo, "push", "-q", "origin", main);
   if (develop) { git(repo, "branch", developBranch); git(repo, "push", "-q", "origin", developBranch); }
-  const state = { pulls: [], writes: [], refs: [], running: new Set(), timeout: null, saves: 0, saveError: null };
+  const state = { pulls: [], writes: [], refs: [], sends: [], running: new Set(), timeout: null, saves: 0, saveError: null, sendError: null };
   const config = settings ? { gitflow: { [gitflowSettingsKey(repo)]: settings } } : {};
   const stored = new Map(); let serial = 0;
   const store = { list: () => [...stored.values()], get: (id) => stored.get(id) };
   const sessions = { checkSessionOptions() {}, async createSession(body, internal) {
+    if (state.createSessionError) throw state.createSessionError;
     const session = { id: `session-${++serial}`, title: body.title, projectPath: body.project.path, cwd: internal.worktree.dir,
       taskId: internal.taskId, worktree: internal.worktree, state: "idle", events: [] };
     stored.set(session.id, session); return session;
-  } };
+  }, sendMessage(id, body) { state.sends.push({ id, ...body }); if (state.sendError) throw state.sendError; return { ok: true }; } };
   const remoteSha = (branch) => git(repo, "ls-remote", remote, `refs/heads/${branch}`).split(/\s+/)[0] || null;
   const github = {
     async target(dir, selected) { return { dir, repo: "acme/widget", name: selected, pushMatches: true }; },
@@ -43,6 +44,11 @@ function fixture(t, { develop = true, main = "main", developBranch = "develop", 
         state.refs.push(body.ref);
         if (remoteSha(body.ref.replace(/^refs\/heads\//, ""))) throw new GitHubError("HTTP 422 exists");
         git(repo, "push", "-q", remote, `${body.sha}:${body.ref}`); return { ref: body.ref };
+      }
+      if (method === "PATCH" && /\/pulls\/\d+$/.test(endpoint)) {
+        state.writes.push("pull-update");
+        const pull = state.pulls.find((item) => item.number === Number(endpoint.split("/").at(-1)));
+        pull.body = body.body; return pull;
       }
       throw Error(`Unexpected GitHub call: ${method} ${endpoint}`);
     },
@@ -63,6 +69,13 @@ function fixture(t, { develop = true, main = "main", developBranch = "develop", 
       return { pull: normalizePull(raw, "acme/widget") };
     },
     async detail(dir, number) { return { pull: normalizePull(state.pulls.find((pull) => pull.number === number), "acme/widget") }; },
+    async merge(dir, number, body) {
+      const pull = state.pulls.find((item) => item.number === number);
+      assert.equal(body.sha, pull.head.sha);
+      git(repo, "switch", "-q", pull.base.ref); git(repo, "merge", "--no-ff", "--no-edit", body.sha); git(repo, "push", "-q", "origin", pull.base.ref);
+      state.writes.push("merge"); pull.merged = true; pull.state = "closed";
+      return { pull: normalizePull(pull, "acme/widget") };
+    },
     async remoteHead(target, branch) { return remoteSha(branch); },
   };
   const options = { dataDir, store, config, saveConfig: (value) => { assert.equal(value, config); state.saves++; if (state.saveError) throw state.saveError; }, runner: { isRunning: (id) => state.running.has(id) }, sessions,
@@ -73,6 +86,83 @@ function fixture(t, { develop = true, main = "main", developBranch = "develop", 
   function commit(dir, filename = "remote-change.txt") { change(dir, filename); git(dir, "add", "."); git(dir, "commit", "-qm", filename); }
   return { repo, remote, dataDir, config, state, git, create, change, commit, stored, get service() { return service; }, restart() { service = createTaskService(options); return service; } };
 }
+
+test("task review: selected commit preserves other staged files and rejects stale previews", async (t) => {
+  const f = fixture(t); const { task } = await f.create();
+  f.change(task.cwd, "chosen.txt", "chosen\n"); f.change(task.cwd, "staged.txt", "keep staged\n");
+  f.git(task.cwd, "add", "staged.txt");
+  const reviewed = await f.service.review(task.id);
+  f.change(task.cwd, "chosen.txt", "edited after review\n");
+  await assert.rejects(f.service.commitReview(task.id, { expectedHead: reviewed.head, reviewToken: reviewed.token, files: ["chosen.txt"], message: "choose" }), error => error.reason === "task-stale-review");
+  assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), reviewed.head);
+  const current = await f.service.review(task.id);
+  await f.service.commitReview(task.id, { expectedHead: current.head, reviewToken: current.token, files: ["chosen.txt"], message: "choose" });
+  assert.equal(f.git(task.cwd, "show", "HEAD:chosen.txt"), "edited after review");
+  assert.equal(f.git(task.cwd, "diff", "--cached", "--name-only"), "staged.txt");
+  assert.throws(() => f.git(task.cwd, "show", "HEAD:staged.txt"));
+  const remaining = await f.service.review(task.id);
+  await assert.rejects(f.service.finish(task.id, { expectedHead: remaining.head, reviewToken: remaining.token }), error => error.reason === "task-dirty");
+  assert.equal(f.state.writes.length, 0);
+});
+
+test("task review: dirty and behind work can commit, integrate, review and publish in order", async (t) => {
+  const f = fixture(t); const { task } = await f.create();
+  f.git(f.repo, "switch", "-q", "develop"); f.commit(f.repo); f.git(f.repo, "push", "-q", "origin", "develop");
+  f.change(task.cwd, "local.txt");
+  let review = await f.service.review(task.id);
+  assert.equal(review.task.freshness.behind, true);
+  await f.service.commitReview(task.id, { expectedHead: review.head, reviewToken: review.token, files: ["local.txt"], message: "local" });
+  review = await f.service.review(task.id);
+  await f.service.sync(task.id, { expectedHead: review.head, reviewToken: review.token });
+  const stale = review; review = await f.service.review(task.id);
+  assert.equal(review.clean, true); assert.equal(review.task.freshness.behind, false);
+  await assert.rejects(f.service.finish(task.id, { expectedHead: stale.head, reviewToken: stale.token }), error => error.reason === "task-stale-review");
+  const result = await f.service.finish(task.id, { expectedHead: review.head, reviewToken: review.token, message: "", verification: "반영 후 확인" });
+  assert.equal(result.task.state, "review"); assert.match(result.pull.body, /반영 후 확인/);
+});
+
+test("task review: local finish reuses clean target worktree, pushes normally, and cleans only task folder", async (t) => {
+  const f = fixture(t);
+  await f.service.updateSettings(f.repo, { settings: DEFAULT_GITFLOW_SETTINGS, finishMode: "local" });
+  const { task } = await f.create();
+  assert.equal(task.finishMode, "local");
+  f.commit(task.cwd, "completed.txt");
+  const reviewed = await f.service.review(task.id);
+  const result = await f.service.finish(task.id, { mode: "local", expectedHead: reviewed.head, reviewToken: reviewed.token, expectedTargetHead: reviewed.localTargetHead, push: true });
+  assert.equal(result.task.state, "merged"); assert.equal(result.task.completion.publishState, "done");
+  assert.equal(f.git(f.repo, "ls-remote", "origin", "refs/heads/develop").split(/\s+/)[0], result.task.completion.targetHead);
+  assert.equal(f.git(f.repo, "branch", "--show-current"), "main");
+  assert.equal(f.state.writes.length, 0, "local flow never needs GitHub APIs");
+  assert.equal((await f.service.refresh(task.id)).task.state, "merged");
+  const cleaned = await f.service.cleanup(task.id);
+  assert.equal(cleaned.task.state, "cleaned"); assert.equal(fs.existsSync(task.cwd), false);
+  assert.equal(fs.existsSync(result.task.completion.cwd), true);
+  assert.equal((await f.restart().settings(f.repo)).finishMode, "local");
+});
+
+test("task review: local finish rejects moved or dirty targets without changing source", async (t) => {
+  const f = fixture(t); const { task } = await f.create(); f.commit(task.cwd, "completed.txt");
+  const before = await f.service.review(task.id);
+  f.git(f.repo, "switch", "-q", "develop"); f.commit(f.repo, "target.txt");
+  await assert.rejects(f.service.finish(task.id, { mode: "local", expectedHead: before.head, reviewToken: before.token, expectedTargetHead: before.localTargetHead }), error => error.reason === "task-stale-review");
+  await f.service.sync(task.id, { mode: "local" });
+  const reviewed = await f.service.review(task.id); f.change(f.repo, "dirty.txt");
+  await assert.rejects(f.service.finish(task.id, { mode: "local", expectedHead: reviewed.head, reviewToken: reviewed.token, expectedTargetHead: reviewed.localTargetHead }), error => error.reason === "git-target-dirty");
+  assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), reviewed.head);
+  assert.equal(f.service.get(task.id).state, "working");
+});
+
+test("task review: existing PR description updates and merge pins reviewed head", async (t) => {
+  const f = fixture(t); const { task } = await f.create(); f.change(task.cwd);
+  await f.service.finish(task.id, { description: "첫 설명" });
+  const updated = await f.service.finish(task.id, { description: "수정 설명", verification: "검증 완료" });
+  assert.match(updated.pull.body, /수정 설명/); assert.equal(f.state.pulls.length, 1);
+  const reviewed = await f.service.review(task.id);
+  await assert.rejects(f.service.mergePull(task.id, { expectedHead: reviewed.head, reviewToken: reviewed.token, expectedPullHead: "0".repeat(40) }), error => error.reason === "task-stale-head");
+  const merged = await f.service.mergePull(task.id, { expectedHead: reviewed.head, reviewToken: reviewed.token, expectedPullHead: reviewed.head, method: "merge" });
+  assert.equal(merged.task.state, "merged");
+  assert.equal((await f.service.cleanup(task.id)).task.state, "cleaned");
+});
 
 test("tasks: missing develop starts from latest main without modifying the source worktree", async (t) => {
   const f = fixture(t, { develop: false });
@@ -323,7 +413,7 @@ test("tasks: project settings preserve case and normalize prefixes without chang
   const saved = await f.service.updateSettings(f.repo, { settings: {
     main: " Main ", develop: " Develop ", featurePrefix: " Feature ", hotfixPrefix: " Fix/ ", releasePrefix: "Release",
   } });
-  assert.deepEqual(saved, { projectPath: f.git(f.repo, "rev-parse", "--show-toplevel"), settings: customGitflow });
+  assert.deepEqual(saved, { projectPath: f.git(f.repo, "rev-parse", "--show-toplevel"), settings: customGitflow, finishMode: "pr" });
   assert.deepEqual(f.config.gitflow[gitflowSettingsKey(f.repo)], customGitflow);
   assert.equal(f.state.saves, 1);
   assert.equal(f.git(f.repo, "show-ref"), branches);
@@ -456,4 +546,208 @@ test("tasks: without a worktree the source folder switches to the task branch an
   assert.equal(cleaned.task.state, "cleaned"); assert.equal(cleaned.task.localBranchRemoved, true);
   assert.equal(f.git(f.repo, "branch", "--show-current"), "main"); // 작업 전 브랜치로 돌아온다.
   assert.ok(fs.existsSync(f.repo));
+});
+
+test("tasks: concurrent create and start requests reuse one task, session and initial dispatch after restart", async (t) => {
+  const f = fixture(t);
+  const body = { title: "Start once", content: "Implement the requested change", start: true, requestId: "start-concurrent-001" };
+  const results = await Promise.all([f.create("feature", body), f.create("feature", body)]);
+  assert.equal(results[0].task.id, results[1].task.id);
+  assert.equal(results[0].session.id, results[1].session.id);
+  assert.equal(results.filter((result) => result.reused).length, 1);
+  assert.equal(f.service.list(f.repo).tasks.length, 1);
+  assert.equal(f.stored.size, 1);
+  assert.equal(f.state.sends.length, 1);
+  assert.equal(results[0].task.initialStart.state, "sent");
+  assert.equal(results[0].task.initialStart.sessionId, results[0].session.id);
+
+  f.restart();
+  f.state.running.add(results[0].session.id);
+  f.git(f.repo, "remote", "set-url", "origin", path.join(f.repo, "missing-origin.git"));
+  const replay = await f.create("feature", body);
+  assert.equal(replay.reused, true);
+  assert.equal(replay.task.id, results[0].task.id);
+  assert.equal(replay.session.id, results[0].session.id);
+  assert.equal(replay.startError, undefined);
+  assert.equal(f.state.sends.length, 1);
+  assert.equal(f.stored.size, 1);
+});
+
+test("tasks: a create request id cannot silently apply a changed draft", async (t) => {
+  const f = fixture(t);
+  const body = { title: "Original draft", content: "Original request", start: true, requestId: "start-draft-change-001" };
+  const first = await f.create("feature", body);
+  await assert.rejects(f.create("feature", { ...body, content: "A different request" }),
+    (error) => error.status === 409 && error.reason === "task-request-changed");
+  assert.equal(f.service.list(f.repo).tasks.length, 1);
+  assert.equal(f.service.list(f.repo).tasks[0].content, body.content);
+  assert.equal(f.stored.size, 1);
+  assert.equal(f.state.sends.length, 1);
+  assert.equal((await f.create("feature", body)).task.id, first.task.id);
+});
+
+test("tasks: create and start dispatches the persisted title, content and acceptance criteria", async (t) => {
+  const f = fixture(t);
+  const body = { title: "  Task title  ", content: "  Implement this\nwith these details  ", acceptance: "  Check A\nCheck B  ",
+    start: true, requestId: "start-prompt-content-001", initialPrompt: "Untrusted replacement prompt" };
+  const { task, session } = await f.create("feature", body);
+  assert.equal(task.title, "Task title");
+  assert.equal(task.content, "Implement this\nwith these details");
+  assert.equal(task.acceptance, "Check A\nCheck B");
+  assert.deepEqual(f.state.sends, [{ id: session.id, prompt: "Task title\n\nImplement this\nwith these details\n\n완료 기준:\nCheck A\nCheck B" }]);
+  const persisted = f.restart().list(f.repo).tasks[0];
+  assert.equal(persisted.content, task.content);
+  assert.equal(persisted.acceptance, task.acceptance);
+  assert.equal(persisted.initialStart.state, "sent");
+});
+
+test("tasks: a failed initial dispatch preserves the task and never automatically sends again", async (t) => {
+  const f = fixture(t);
+  const body = { title: "Retain partial result", start: true, requestId: "start-send-failure-001" };
+  f.state.sendError = Error("connection lost after dispatch");
+  const first = await f.create("feature", body);
+  assert.equal(first.task.initialStart.state, "failed");
+  assert.equal(first.task.initialStart.sessionId, first.session.id);
+  assert.match(first.startError, /connection lost after dispatch/);
+  assert.ok(fs.existsSync(first.task.cwd));
+  assert.equal(f.git(first.task.cwd, "branch", "--show-current"), first.task.branch);
+  assert.equal(f.state.sends[0].prompt, body.title);
+  f.state.sendError = null;
+  for (const restart of [false, true]) {
+    if (restart) f.restart();
+    const replay = await f.create("feature", body);
+    assert.equal(replay.reused, true);
+    assert.equal(replay.task.id, first.task.id);
+    assert.equal(replay.session.id, first.session.id);
+    assert.equal(replay.startError, first.startError);
+  }
+  assert.equal(f.state.sends.length, 1);
+  assert.equal(f.stored.size, 1);
+  assert.equal(f.service.list(f.repo).tasks.length, 1);
+});
+
+test("tasks: interrupted initial dispatch records remain reviewable without replaying on restart", async (t) => {
+  const f = fixture(t);
+  const body = { title: "Interrupted start", start: true, requestId: "start-interrupted-001" };
+  const first = await f.create("feature", body);
+  const file = path.join(f.dataDir, "tasks", `${first.task.id}.json`);
+  for (const state of [undefined, "sending"]) {
+    const persisted = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (state) persisted.initialStart = { state, sessionId: first.session.id, startedAt: new Date().toISOString() };
+    else delete persisted.initialStart;
+    fs.writeFileSync(file, JSON.stringify(persisted));
+    f.restart();
+    const replay = await f.create("feature", body);
+    assert.equal(replay.reused, true);
+    assert.equal(replay.task.id, first.task.id);
+    assert.equal(replay.session.id, first.session.id);
+    assert.equal(typeof replay.startError, "string");
+    assert.ok(replay.startError.length > 0);
+    assert.equal(f.state.sends.length, 1);
+    assert.equal(f.stored.size, 1);
+  }
+});
+
+test("tasks: initial session creation failure returns a reusable task without retrying creation", async (t) => {
+  const f = fixture(t);
+  const body = { title: "Session failure", start: true, requestId: "start-session-failure-001" };
+  f.state.createSessionError = Error("provider unavailable");
+  const first = await f.create("feature", body);
+  assert.equal(first.session, undefined);
+  assert.equal(first.task.initialStart.state, "failed");
+  assert.deepEqual(first.task.sessionIds, []);
+  assert.match(first.startError, /provider unavailable/);
+  assert.ok(fs.existsSync(first.task.cwd));
+  f.state.createSessionError = null;
+  f.restart();
+  const replay = await f.create("feature", body);
+  assert.equal(replay.reused, true);
+  assert.equal(replay.task.id, first.task.id);
+  assert.equal(replay.session, undefined);
+  assert.equal(replay.startError, first.startError);
+  assert.equal(f.state.sends.length, 0);
+  assert.equal(f.stored.size, 0);
+  assert.equal(f.service.list(f.repo).tasks.length, 1);
+});
+
+test("tasks: start requires an explicit boolean, request id and session before any task is created", async (t) => {
+  const f = fixture(t);
+  for (const start of ["true", "false", 1, 0, null, {}]) {
+    await assert.rejects(f.create("feature", { start }), (error) => error.status === 400);
+  }
+  await assert.rejects(f.create("feature", { start: true }), (error) => error.status === 400);
+  await assert.rejects(f.create("feature", { start: true, requestId: "start-invalid-session-001", session: false }),
+    (error) => error.status === 400);
+  assert.equal(f.service.list(f.repo).tasks.length, 0);
+  assert.equal(f.stored.size, 0);
+  assert.equal(f.state.sends.length, 0);
+  assert.equal(fs.existsSync(path.join(path.dirname(f.repo), "repo.agenthub")), false);
+  const created = await f.create("feature", { start: false });
+  assert.ok(created.session);
+  assert.equal(created.task.initialStart, undefined);
+  assert.equal(f.state.sends.length, 0);
+});
+
+test("task review: local integration blocks running ordinary sessions in source or target subfolders", async (t) => {
+  const f = fixture(t);
+  f.git(f.repo, "switch", "-q", "develop");
+  fs.mkdirSync(path.join(f.repo, "nested"));
+  f.commit(f.repo, "nested/keep.txt");
+  f.git(f.repo, "push", "-q", "origin", "develop");
+  const { task } = await f.create();
+  f.commit(task.cwd, "completed.txt");
+  const reviewed = await f.service.review(task.id);
+  const body = { mode: "local", expectedHead: reviewed.head, reviewToken: reviewed.token, expectedTargetHead: reviewed.localTargetHead };
+  for (const cwd of [path.join(f.repo, "nested"), path.join(task.cwd, "nested")]) {
+    f.stored.set("nested-worker", { id: "nested-worker", projectPath: cwd, cwd, state: "running", events: [] });
+    f.state.running.add("nested-worker");
+    await assert.rejects(f.service.finish(task.id, body), error => error.reason === "git-session-running" || error.reason === "running");
+    assert.equal(f.git(f.repo, "rev-parse", "develop"), reviewed.localTargetHead);
+    assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), reviewed.head);
+    assert.equal(f.service.get(task.id).state, "working");
+  }
+  assert.equal(f.state.writes.length, 0);
+});
+
+test("task review: commit and sync persist a newly selected local integration mode", async (t) => {
+  const f = fixture(t); const { task } = await f.create();
+  assert.equal(task.finishMode, "pr");
+  f.change(task.cwd, "chosen.txt");
+  let reviewed = await f.service.review(task.id);
+  const committed = await f.service.commitReview(task.id, { mode: "local", expectedHead: reviewed.head, reviewToken: reviewed.token, files: ["chosen.txt"], message: "chosen" });
+  assert.equal(committed.task.finishMode, "local");
+  assert.equal(f.restart().get(task.id).finishMode, "local");
+
+  const file = path.join(f.dataDir, "tasks", `${task.id}.json`);
+  const persisted = JSON.parse(fs.readFileSync(file, "utf8"));
+  persisted.finishMode = "pr";
+  fs.writeFileSync(file, JSON.stringify(persisted));
+  f.restart();
+  reviewed = await f.service.review(task.id);
+  const synced = await f.service.sync(task.id, { mode: "local", expectedHead: reviewed.head, reviewToken: reviewed.token });
+  assert.equal(synced.task.finishMode, "local");
+  assert.equal(f.restart().get(task.id).finishMode, "local");
+});
+
+test("task review: uncertain local commit can be confirmed without GitHub access", async (t) => {
+  const f = fixture(t); const { task } = await f.create();
+  const before = f.git(task.cwd, "rev-parse", "HEAD");
+  f.commit(task.cwd, "committed-before-disconnect.txt");
+  const after = f.git(task.cwd, "rev-parse", "HEAD");
+  const file = path.join(f.dataDir, "tasks", `${task.id}.json`);
+  const persisted = JSON.parse(fs.readFileSync(file, "utf8"));
+  persisted.pendingAction = { action: "commit", expectedHead: before, outcomeUnknown: true, startedAt: new Date().toISOString() };
+  fs.writeFileSync(file, JSON.stringify(persisted));
+  let githubCalls = 0;
+  const recovering = createTaskService({ dataDir: f.dataDir,
+    store: { list: () => [...f.stored.values()], get: id => f.stored.get(id) },
+    runner: { isRunning: id => f.state.running.has(id) },
+    github: { async target() { githubCalls++; throw Error("GitHub is unavailable"); } },
+  });
+  const recovered = await recovering.refresh(task.id);
+  assert.equal(githubCalls, 0);
+  assert.equal(recovered.task.pendingAction, undefined);
+  assert.equal(recovered.task.lastRecovery.result, "confirmed");
+  assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), after);
+  assert.equal(f.restart().get(task.id).pendingAction, undefined);
 });

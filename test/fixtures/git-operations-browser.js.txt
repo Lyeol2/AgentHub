@@ -1,0 +1,112 @@
+(async () => {
+  const { createGitController } = await import('/features/git/controller.js');
+  const card = document.querySelector('.git-card');
+  const badge = document.createElement('span'); badge.id = 'p-tab-git';
+  document.body.replaceChildren(card, badge);
+  const $ = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+  const until = async (fn, message = 'condition') => { const end = Date.now() + 5000; while (!fn()) { if (Date.now() > end) throw Error('Timeout: ' + message); await sleep(10); } };
+  const checks = [];
+  const check = (condition, name) => { if (!condition) throw Error(name); checks.push(name); };
+  const click = (id) => { const node = $(id); if (!node || node.disabled || node.closest('[hidden]')) throw Error('Unavailable control: ' + id); node.click(); };
+  const close = () => click('g-operation-close');
+  const project = 'C:/fixture';
+  const worktree = 'C:/fixture.agenthub/work';
+  const head = 'b'.repeat(40), old = 'a'.repeat(40);
+  let removed = false, holdPreview, previewDelay = false, executionDelay = false, failExecute = false;
+  const requests = [];
+  const commits = [{ hash: head, short: 'bbbbbbb', subject: 'Current change', author: 'test', date: '2026-10-01', refs: ['feature/test'], parents: [old] }, { hash: old, short: 'aaaaaaa', subject: 'Previous change', author: 'test', date: '2026-09-30', refs: [], parents: [] }];
+  const calls = (path) => requests.filter(r => r.path === path);
+  const api = async (method, address, body) => {
+    const url = new URL(address, location.origin);
+    const req = { method, path: url.pathname, query: Object.fromEntries(url.searchParams), body: body ? structuredClone(body) : undefined };
+    requests.push(req);
+    const cwd = body?.cwd || url.searchParams.get('cwd') || project;
+    if (url.pathname === '/api/git') return { head, branch: cwd === project ? 'main' : 'feature/test', upstream: 'origin/feature/test', ahead: 1, behind: 0, stagedCount: 0, unstagedCount: 1, files: [{ path: 'a.txt', unstaged: true, staged: false, label: '수정' }], moreFiles: 0, commits, branches: [{ name: cwd === project ? 'main' : 'feature/test', current: true }, { name: 'feature/source', ahead: 1, current: false }] };
+    if (url.pathname === '/api/git/worktrees' && method === 'GET') return { currentCwd: cwd, worktrees: [{ cwd: project, branch: 'main', head, original: true, canRemove: false, reason: '원본 폴더' }, ...(removed ? [] : [{ cwd: worktree, branch: 'feature/test', head, canRemove: true, dirty: 0, sessionIds: [], taskIds: [] }])] };
+    if (url.pathname === '/api/git/show' || url.pathname === '/api/git/diff' || url.pathname === '/api/git/branch') return { diff: '+safe fixture diff' };
+    if (url.pathname === '/api/git/stage') return {};
+    if (url.pathname === '/api/git/remotes') return { currentBranch: 'feature/test', head, upstream: 'origin/feature/test', remote: req.query.remote || 'origin', ahead: 1, behind: 0, newBranch: false, remotes: [{ name: 'origin', fetchUrl: 'https://example.com/repo.git', pushUrl: 'https://example.com/repo.git' }, { name: 'backup', fetchUrl: 'https://example.com/backup.git', pushUrl: 'https://example.com/backup.git' }] };
+    if (url.pathname === '/api/git/preview') {
+      if (previewDelay) { previewDelay = false; await new Promise(resolve => { holdPreview = resolve; }); }
+      return { previewId: 'preview-' + calls('/api/git/preview').length, action: body.action, cwd, branch: 'feature/test', head, remote: body.remote, pushUrl: body.action === 'push' ? 'https://example.com/pinned-target.git' : undefined, summary: body.action + ' preview', affectedCommits: [commits[0]], files: ['a.txt'], diff: '+preview fixture diff', published: body.action === 'reset', blockedReason: body.action === 'reset' ? '이미 원격에 게시한 커밋입니다.' : '' };
+    }
+    if (url.pathname === '/api/git/execute') {
+      if (executionDelay) { executionDelay = false; await sleep(80); }
+      if (failExecute) { failExecute = false; throw Object.assign(Error('Fixture conflict: recovery required'), { reason: 'git-recovery-required', outcomeUnknown: true, recoveryId: '1234567890123-11111111-2222-3333-4444-555555555555' }); }
+      return { result: 'Fixture completed' };
+    }
+    if (url.pathname === '/api/git/fetch' || url.pathname === '/api/git/restore' || (url.pathname === '/api/git/worktrees' && method === 'POST')) return { result: 'Fixture completed' };
+    if (url.pathname === '/api/git/worktrees/remove') { removed = true; return { result: 'Removed' }; }
+    if (url.pathname === '/api/git/recovery') return { recoveries: [{ id: 'recovery-1', ref: 'refs/agenthub/recovery/test', head: old, branch: 'feature/test', action: 'drop', createdAt: '2026-10-01T00:00:00Z' }] };
+    if (url.pathname === '/api/git/pulls') return { context: { repo: 'fixture/repo', remote: 'origin', remotes: [{ name: 'origin', repo: 'fixture/repo' }], baseBranches: ['main'], defaultBranch: 'main', branch: 'feature/test', headSha: head, canPush: true, canCreate: true, mergeMethods: ['merge'] }, pulls: [] };
+    throw Error('Unexpected API ' + method + ' ' + address);
+  };
+  window.confirm = () => true;
+  const navigation = { project, view: 'project' };
+  const controller = createGitController({ api, currentProject: () => ({ path: project }), projectTab: () => 'git', navigation, selectSession: () => {}, openSetup: () => {} });
+  await controller.loadGit();
+  click('g-workspaces'); await until(() => document.querySelector('[data-workspace="' + worktree + '"]'));
+  document.querySelector('[data-workspace="' + worktree + '"]').click();
+  await until(() => $('g-branch').textContent === 'feature/test');
+  check($('g-location').textContent === worktree, 'Workspace selector changes visible folder and branch');
+  document.querySelector('#g-unstaged [data-index-action]').click();
+  await until(() => calls('/api/git/stage').length === 1 && !$('g-refresh').disabled);
+  check(calls('/api/git/stage')[0].body.cwd === worktree, 'Staging uses selected workspace');
+  click('g-tab-pulls'); await until(() => calls('/api/git/pulls').length === 1);
+  check(calls('/api/git/pulls')[0].query.cwd === worktree, 'PR context uses selected workspace');
+  click('g-tab-history');
+  document.querySelector('[data-hash="' + head + '"]').click(); await until(() => !$('g-commit-actions').hidden);
+  check(calls('/api/git/show').at(-1).query.cwd === worktree, 'Commit detail uses selected workspace');
+  click('g-history-revert'); await until(() => $('g-operation-apply'));
+  check(calls('/api/git/execute').length === 0 && $('g-operation-content').textContent.includes('preview fixture diff'), 'Revert displays affected commits and diff before any write');
+  executionDelay = true;
+  click('g-operation-apply'); $('g-operation-apply').click();
+  check($('g-operation-close').disabled, 'In-flight write prevents closing and duplicate clicks');
+  await until(() => $('g-operation-content').textContent.includes('완료했습니다'));
+  check(calls('/api/git/execute').length === 1 && calls('/api/git/execute')[0].body.cwd === worktree, 'Reviewed operation executes once in selected workspace'); close();
+  document.querySelector('[data-hash="' + head + '"]').click(); await until(() => !$('g-commit-actions').hidden);
+  click('g-history-uncommit'); await until(() => $('g-operation-apply'));
+  check($('g-operation-content').textContent.includes('스테이징 전 상태'), 'Uncommit explicitly preserves file changes'); close();
+  document.querySelector('.git-history-advanced').open = true;
+  click('g-history-reset'); await until(() => $('g-operation-apply'));
+  check($('g-operation-apply').disabled && $('g-operation-content').textContent.includes('변경 되돌리기'), 'Published history rewrite is blocked and offers revert guidance'); close();
+  click('g-history-drop'); await until(() => $('g-operation-apply'));
+  check($('g-operation-content').textContent.includes('복구 기록'), 'Advanced commit deletion shows recovery promise before execution'); close();
+  click('g-merge'); $('g-merge-source').value = 'feature/source'; click('g-operation-apply'); await until(() => $('g-operation-content').textContent.includes('merge preview'));
+  check($('g-operation-content').textContent.includes('feature/source → feature/test'), 'Merge preview names both source and target');
+  failExecute = true; click('g-operation-apply'); await until(() => $('g-operation-error').textContent.includes('Fixture conflict'));
+  check(!$('g-operation-close').disabled && $('g-operation-apply').disabled && $('g-operation-error').textContent.includes('1234567890123-11111111-2222-3333-4444-555555555555'), 'Uncertain failure exposes exact recovery record, prevents retry, and allows closing'); close();
+  click('g-fetch'); await until(() => $('g-remote-choice')); click('g-operation-apply'); await until(() => $('g-operation-content').textContent.includes('완료했습니다'));
+  check(calls('/api/git/fetch')[0].body.remote === 'origin' && calls('/api/git/fetch')[0].body.cwd === worktree, 'Fetch is explicit and scoped to selected worktree and remote'); close();
+  click('g-push'); await until(() => $('g-remote-choice'));
+  $('g-remote-choice').value = 'backup'; $('g-remote-choice').dispatchEvent(new Event('change'));
+  await until(() => $('g-remote-choice')?.value === 'backup');
+  check($('g-operation-content').textContent.includes('보낼 커밋 1개'), 'Push shows commit counts and remote destination');
+  click('g-operation-apply'); await until(() => $('g-operation-content').textContent.includes('push preview'));
+  check(calls('/api/git/preview').at(-1).body.remote === 'backup' && !calls('/api/git/push').length, 'Push obtains server preview before any remote write');
+  check($('g-operation-content').textContent.includes('https://example.com/pinned-target.git') && $('g-operation-content').textContent.includes(head), 'Final push confirmation shows server-pinned URL and exact commit');
+  click('g-operation-apply'); await until(() => $('g-operation-content').textContent.includes('완료했습니다')); close();
+  click('g-recovery'); await until(() => $('g-operation-content').textContent.includes('이 기록으로 복구…'));
+  [...$('g-operation-content').querySelectorAll('button')].find(b => b.textContent === '이 기록으로 복구…').click();
+  check(calls('/api/git/restore').length === 0 && $('g-operation-content').textContent.includes(old), 'Recovery shows exact commit before confirmation');
+  click('g-operation-apply'); await until(() => $('g-operation-content').textContent.includes('완료했습니다'));
+  check(calls('/api/git/restore')[0].body.expectedHead === head, 'Recovery pins reviewed current head'); close();
+  click('g-workspaces'); await until(() => $('g-worktree-name'));
+  $('g-worktree-name').value = 'new-tree'; $('g-worktree-branch').value = 'feature/new-tree';
+  $('g-worktree-name').closest('form').requestSubmit(); await until(() => $('g-operation-content').textContent.includes('작업 폴더를 만들었습니다'));
+  check(calls('/api/git/worktrees').filter(r => r.method === 'POST')[0].body.branch === 'feature/new-tree', 'Worktree creation uses reviewed branch and folder'); close();
+  document.querySelector('[data-hash="' + head + '"]').click(); await until(() => !$('g-commit-actions').hidden);
+  previewDelay = true; click('g-history-revert'); await until(() => holdPreview);
+  close(); holdPreview(); await sleep(40);
+  check(!$('g-operation-dialog').open, 'Closing a loading preview prevents late response reopening it');
+  click('g-workspaces'); await until(() => document.querySelector('[data-workspace="' + worktree + '"]'));
+  const row = document.querySelector('[data-workspace="' + worktree + '"]').closest('li');
+  [...row.querySelectorAll('button')].find(b => b.textContent === '폴더 정리').click();
+  check($('g-operation-content').textContent.includes(worktree) && !$('g-worktree-delete-branch').checked, 'Cleanup previews exact folder and keeps branch unless selected');
+  click('g-operation-apply'); await until(() => $('g-branch').textContent === 'main');
+  check(calls('/api/git/worktrees/remove')[0].body.expectedHead === head && calls('/api/git/worktrees/remove')[0].body.expectedBranch === 'feature/test' && calls('/api/git/worktrees/remove')[0].body.deleteBranch === false, 'Cleanup pins selected worktree, branch and commit and returns to original after removal');
+  click('g-push'); await until(() => $('g-remote-choice'));
+  window.__gitRequests = requests;
+  return checks;
+})()

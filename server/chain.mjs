@@ -518,7 +518,7 @@ export class Chain {
     const startedAt = new Date(started).toISOString();
     const input = prompt ?? "";
     this.controls.begin(cmd, flow, prompt ?? cmd.title, { origin, depth, prompt, cwd: cmd.projectPath });
-    this.commands.update(cmd, { state: "running", queued: null, live: { startedAt, cwd: cmd.projectPath, tail: cmd.taskAction === "finish" ? "커밋·게시·PR 만드는 중" : "작업 브랜치와 폴더 만드는 중" } });
+    this.commands.update(cmd, { state: "running", queued: null, live: { startedAt, cwd: cmd.projectPath, tail: cmd.taskAction === "finish" ? (cmd.finishMode === "local" ? "커밋하고 대상 브랜치에 반영하는 중" : "커밋하고 반영하는 중") : "작업 브랜치와 폴더 만드는 중" } });
     this.notify("commands");
     let stopped = false;
     const run = { kind: "task", projectPath: cmd.projectPath, stop: () => { stopped = true; } };

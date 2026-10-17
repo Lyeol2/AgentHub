@@ -13,8 +13,8 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     return result;
   };
   let state = null;
-  const current = (s) => state === s && isProjectCurrent(s.project);
-  const query = (s, extra = {}) => new URLSearchParams({ path: s.project, ...(s.remote ? { remote: s.remote } : {}), ...extra });
+  const current = (s) => state === s && isProjectCurrent(s.project, s.cwd);
+  const query = (s, extra = {}) => new URLSearchParams({ path: s.project, ...(s.cwd ? { cwd: s.cwd } : {}), ...(s.remote ? { remote: s.remote } : {}), ...extra });
   const prUrl = (repo, number) => /^[a-z0-9_.-]+\/[a-z0-9_.-]+$/i.test(repo ?? "") && Number.isSafeInteger(number) && number > 0 ? "https://github.com/" + repo + "/pull/" + number : null;
   const link = (text, url) => url ? node("a", { class: "ghost sm pr-link", href: url, target: "_blank", rel: "noopener noreferrer" }, text) : null;
   const stateText = (p) => p.state === "MERGED" ? "병합됨" : p.state === "CLOSED" ? "닫힘" : p.isDraft ? "초안" : "열림";
@@ -47,9 +47,9 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     for (const control of $("pr-detail").querySelectorAll("[data-pr-mutation]")) control.disabled = busy || !!s?.unavailable || control.dataset.blocked === "true";
   }
 
-  function setProject(project) {
-    if (state?.project === project) return;
-    state = { project, remote: "", context: null, pulls: [], number: null, detail: null, listVersion: 0, detailVersion: 0, loadedAt: 0, loading: false, busy: null };
+  function setProject(project, cwd = project) {
+    if (state?.project === project && state?.cwd === cwd) return;
+    state = { project, cwd, remote: "", context: null, pulls: [], number: null, detail: null, listVersion: 0, detailVersion: 0, loadedAt: 0, loading: false, busy: null };
     $("pr-create").hidden = true;
     $("pr-grid").hidden = true;
     $("pr-filter").value = "open";
@@ -192,7 +192,7 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     let outcome;
     let failure;
     try {
-      outcome = await api("POST", url, { path: s.project, remote: s.remote, repo: s.context.repo, ...fields });
+      outcome = await api("POST", url, { path: s.project, cwd: s.cwd, remote: s.remote, repo: s.context.repo, ...fields });
       if (!current(s)) return;
       if (kind === "create") {
         s.number = outcome.pull?.number ?? null;
@@ -270,8 +270,8 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
   return {
     setProject,
     refresh,
-    activate(project) {
-      setProject(project);
+    activate(project, cwd = project) {
+      setProject(project, cwd);
       if (!state.loading && !state.busy && (!state.loadedAt || Date.now() - state.loadedAt > 30000)) refresh();
     },
   };

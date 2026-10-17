@@ -18,7 +18,8 @@ import { createMessagingService } from "./application/messaging.mjs";
 import { McpTokens, createMessagingTools } from "./mcp.mjs";
 import { Setup } from "./setup.mjs";
 import { CliAutoUpdater } from "./cli-auto-update.mjs";
-import { askOnce } from "./one-shot.mjs";
+import { askOnce, selectOneShotAgent } from "./one-shot.mjs";
+import { createTaskAssistantService } from "./application/task-assistant.mjs";
 import { HttpError } from "./application/errors.mjs";
 import { locateCli } from "./cli.mjs";
 import { discoverProjects } from "./discover.mjs";
@@ -85,7 +86,7 @@ export function createHub(options = {}) {
   });
   const ask = async (request) => {
     const paths = request.cliPaths();
-    const tool = paths.claude ? "claude" : paths.codex ? "codex" : null;
+    const tool = request.agent !== undefined ? selectOneShotAgent(paths, request.agent) : paths.claude ? "claude" : paths.codex ? "codex" : null;
     if (tool && setup.isUpdating?.(tool)) throw new HttpError(409, `${tool} CLI 업데이트 중입니다. 완료한 뒤 다시 시도하세요.`);
     if (tool) oneShotRuns.set(tool, (oneShotRuns.get(tool) ?? 0) + 1);
     try { return await (deps.ask ?? askOnce)({ ...request, cliPaths: () => paths }); }
@@ -164,6 +165,7 @@ export function createHub(options = {}) {
   };
   services.flowAssistant = createFlowAssistantService({ store, commands, links, projects, sessions, graphTabs, commandService: services.commands,
     workflowService: workflows, cliPaths, ask, notify });
+  services.taskAssistant = createTaskAssistantService({ projects, graphTabs, cliPaths, config, ask });
   services.issues = deps.issues ?? createIssueService({
     config, store, sessions, notify,
     links: deps.issueLinks ?? new FileIssueLinkStore({ dataDir }),

@@ -83,6 +83,23 @@
 #new-worktree-branch-row, #task-workbranch-row { margin-bottom: 14px; }
 .task-note { margin: 8px 0 0; color: var(--muted, #9ca3af); font-size: 12px; line-height: 1.6; }
 .task-dialog { width: min(520px, calc(100vw - 32px)); max-height: calc(100dvh - 40px); overflow-y: auto; }
+#new-task-dialog { width: min(680px, calc(100vw - 32px)); }
+.task-create-modes { display: flex; gap: 8px; margin-bottom: 16px; }
+.task-create-modes [aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); border-color: var(--accent); }
+.task-create-draft { border: 0; padding: 0; margin: 20px 0 0; min-width: 0; }
+.task-create-draft legend { font-weight: 600; margin-bottom: 14px; padding: 0; }
+.task-create-draft[hidden], .task-assistant[hidden] { display: none; }
+.task-assistant-messages { max-height: 240px; overflow-y: auto; padding: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; margin-bottom: 14px; }
+.task-assistant-message { display: grid; gap: 4px; margin: 0 0 12px; font-size: 12px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-assistant-message:last-child { margin-bottom: 0; }
+.task-assistant-message.user strong { color: var(--accent); }
+.task-assistant-message.assistant strong { color: var(--muted); }
+.task-assistant-actions { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
+.task-assistant-actions button { flex-shrink: 0; }
+.task-assistant-provider { margin-top: 10px; }
+.task-assistant-provider summary, .task-create-advanced summary { cursor: pointer; color: var(--muted); font-size: 12px; padding: 8px 0; }
+.task-assistant-provider[open] summary, .task-create-advanced[open] summary { margin-bottom: 8px; }
+.task-create-advanced { border-top: 1px solid var(--line); padding-top: 5px; }
 .task-dialog .task-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .task-dialog .task-name-input { display: flex; align-items: stretch; }
 .task-dialog .task-name-prefix { display: flex; align-items: center; padding: 0 8px; border: 1px solid var(--line); border-right: 0; border-radius: 6px 0 0 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }

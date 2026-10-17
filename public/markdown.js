@@ -1,8 +1,10 @@
 // 에이전트 답변의 마크다운을 HTML로 바꾼다.
-// 원문은 먼저 모두 이스케이프하고, 허용한 문법(제목·굵게·기울임·코드·목록·표·인용·링크·구분선)만 태그로 만든다.
+// 원문은 이스케이프하고 허용한 Markdown 문법과 신뢰하지 않는 입력으로 렌더링한 수식만 태그로 만든다.
 // 기본 링크는 http(s)만 허용한다. 세션 답변은 로컬 파일과 언급을 안전한 참조 링크로 표시한다.
 
 import { tokenizeReportInline, isLocalPreviewUrl } from "./report-references.js";
+import { mathAt, isEscaped } from "./math-syntax.js";
+import { renderMath } from "./math.js";
 
 const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => ESCAPES[c]);
@@ -28,13 +30,17 @@ function inline(value, options = {}) {
   const text = String(value).replace(/\u0000/g, "\ufffd");
   const stored = [];
   const placeholder = (html) => `\u0000${stored.push(html) - 1}\u0000`;
-  const plain = (value) => escapeHtml(value).replace(/\n/g, "<br>");
+  const plain = (value) => escapeHtml(value.replace(/\\\$/g, "$")).replace(/\n/g, "<br>");
   let html = "", last = 0;
   for (const token of tokenizeReportInline(text, options)) {
     html += plain(text.slice(last, token.start));
     last = token.end;
     if ("code" in token) {
       html += placeholder(`<code>${escapeHtml(token.code)}</code>`);
+      continue;
+    }
+    if ("math" in token) {
+      html += placeholder(renderMath(token));
       continue;
     }
     const ref = token.reference;
@@ -53,12 +59,34 @@ function inline(value, options = {}) {
 
 const isTableStart = (lines, i) => lines[i].includes("|") && i + 1 < lines.length && TABLE_SEP.test(lines[i + 1]);
 
-function startsBlock(lines, i) {
-  const line = lines[i];
-  return FENCE.test(line) || HEADING.test(line) || RULE.test(line) || QUOTE.test(line) || LIST.test(line) || isTableStart(lines, i);
+function mathBlock(lines, i) {
+  const opening = lines[i].match(/^\s*(\$\$|\\\[)/);
+  if (!opening) return null;
+  const text = lines.slice(i).join("\n");
+  const token = mathAt(text, opening[0].length - opening[1].length);
+  if (!token || text.slice(token.end).split("\n", 1)[0].trim()) return null;
+  return { ...token, next: i + text.slice(0, token.end).split("\n").length };
 }
 
-const cells = (row) => row.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+function startsBlock(lines, i) {
+  const line = lines[i];
+  return FENCE.test(line) || HEADING.test(line) || RULE.test(line) || QUOTE.test(line) || LIST.test(line) || isTableStart(lines, i) || !!mathBlock(lines, i);
+}
+
+function cells(row) {
+  const text = row.trim();
+  const protectedTokens = new Map(tokenizeReportInline(text).map((token) => [token.start, token]));
+  const result = [];
+  let cell = "";
+  for (let i = text.startsWith("|") ? 1 : 0; i < text.length; i++) {
+    const token = protectedTokens.get(i);
+    if (token) { cell += token.raw; i = token.end - 1; continue; }
+    if (text[i] === "|" && !isEscaped(text, i)) { result.push(cell.trim()); cell = ""; }
+    else cell += text[i];
+  }
+  if (cell || !text.endsWith("|") || isEscaped(text, text.length - 1)) result.push(cell.trim());
+  return result;
+}
 
 function table(lines, start, options) {
   const aligns = cells(lines[start + 1]).map((c) => {
@@ -97,6 +125,8 @@ function list(lines, start, options) {
     if (!m) {
       // 들여 쓴 줄은 앞 항목에 이어 붙인다.
       if (items.length && /^\s{2,}/.test(lines[i])) {
+        const math = mathBlock(lines, i);
+        if (math) { items[items.length - 1] += renderMath(math); i = math.next; continue; }
         items[items.length - 1] += `<br>${inline(lines[i].trim(), options)}`;
         i++;
         continue;
@@ -138,8 +168,18 @@ export function renderMarkdown(src, options = {}) {
       i++;
       while (i < lines.length && !lines[i].trim().startsWith(fence[1])) body.push(lines[i++]);
       i++; // 닫는 줄
+      if (fence[2].toLowerCase() === "math") {
+        out.push(renderMath({ math: body.join("\n"), display: true }));
+        continue;
+      }
       const lang = fence[2] ? ` class="lang-${escapeHtml(fence[2])}"` : "";
       out.push(`<pre><code${lang}>${escapeHtml(body.join("\n"))}</code></pre>`);
+      continue;
+    }
+    const math = mathBlock(lines, i);
+    if (math) {
+      out.push(renderMath(math));
+      i = math.next;
       continue;
     }
     const heading = line.match(HEADING);
