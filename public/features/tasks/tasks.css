@@ -1,3 +1,5 @@
+/* 카드의 overflow: hidden이 ⋯ 메뉴를 자르지 않게 한다. */
+.tasks-card { overflow: visible; }
 .tasks-card > .card-head { align-items: flex-start; flex-wrap: wrap; gap: 12px; }
 .tasks-card > .card-head > div:first-child { min-width: 0; flex: 1 1 230px; }
 .tasks-toolbar {
@@ -115,6 +117,7 @@
 .task-more > summary::-webkit-details-marker { display: none; }
 .task-more[open] > summary { color: var(--text); background: var(--hover); }
 .task-more-menu { position: absolute; z-index: 5; top: calc(100% + 4px); left: 0; display: grid; gap: 2px; min-width: 160px; padding: 6px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel-2); box-shadow: 0 8px 24px var(--shadow); }
+.task-more.up .task-more-menu { top: auto; bottom: calc(100% + 4px); }
 .task-more-menu button { justify-content: flex-start; text-align: left; border-color: transparent; }
 .task-action-reason { margin: 8px 0 0; font-size: 12px; color: var(--warn); line-height: 1.6; }
 .task-pull-link { color: var(--accent, #8fa6ff); text-decoration: none; }

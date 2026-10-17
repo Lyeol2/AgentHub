@@ -94,7 +94,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   }
   async function locked(key, action) {
     const previous = queue.get(key) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(() => key === "gitflow-settings" ? action() : withGitRepoLock(key, action));
+    // 저장소 폴더가 사라진 작업도 삭제할 수 있도록, 잠글 Git 폴더가 없으면 이 서비스의 대기열만 쓴다.
+    const current = previous.catch(() => {}).then(() => key === "gitflow-settings" || !fs.existsSync(key) ? action() : withGitRepoLock(key, action));
     queue.set(key, current);
     try { return await current; }
     finally { if (queue.get(key) === current) queue.delete(key); }

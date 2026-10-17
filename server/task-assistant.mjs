@@ -45,5 +45,5 @@ export function parseTaskDraft(answer) {
   const clean = answer.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   let parsed;
   try { parsed = JSON.parse(clean); } catch { throw Error("AI가 올바른 초안을 보내지 않았습니다. 다시 요청하거나 직접 작성하세요."); }
-  return { summary: typeof parsed?.summary === "string" ? parsed.summary.trim().slice(0, 1000) : "초안을 정리했습니다. 내용을 확인한 뒤 만들고 시작을 눌러 주세요.", draft: normalizeTaskDraft(parsed?.draft) };
+  return { summary: typeof parsed?.summary === "string" ? parsed.summary.trim().slice(0, 1000) : "초안을 정리했습니다. 내용을 확인한 뒤 만들기를 눌러 주세요.", draft: normalizeTaskDraft(parsed?.draft) };
 }
