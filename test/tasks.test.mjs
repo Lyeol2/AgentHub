@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createTaskService } from "../server/application/tasks.mjs";
+import { taskBranchSlug } from "../server/tasks.mjs";
 import { GitHubError, normalizePull } from "../server/github.mjs";
 import { normalizeIssue } from "../server/issues.mjs";
 import { DEFAULT_GITFLOW_SETTINGS, gitflowSettingsKey } from "../server/gitflow-settings.mjs";
@@ -922,6 +923,15 @@ test("tasks: 기준 반영 충돌은 원문 대신 한국어 설명과 해결 �
   });
   const stored = f.service.get(task.id);
   assert.equal(stored.errorReason, "task-conflict"); assert.match(stored.errorHint, /충돌/);
+});
+
+test("task branch slug: 제목을 소문자 단어로 이어 40자 안의 단어 경계에서 자른다", () => {
+  assert.equal(taskBranchSlug("Fix: Login 버튼이 모바일에서 안 눌림!!"), "fix-login-버튼이-모바일에서-안-눌림");
+  assert.equal(taskBranchSlug("  ..  "), "work");
+  assert.equal(taskBranchSlug("ＡＢＣ　테스트"), "abc-테스트", "전각 문자는 NFKC로 바꾼다");
+  const long = taskBranchSlug("alpha bravo charlie delta echo foxtrot golf hotel");
+  assert.ok(long.length <= 40 && !long.endsWith("-") && "alpha-bravo-charlie-delta-echo-foxtrot-golf-hotel".startsWith(long), long);
+  assert.equal(taskBranchSlug("a".repeat(60)).length, 40, "한 단어가 길면 그 단어를 자른다");
 });
 
 // 병합한 PR을 GitHub에서 확인한 것처럼 develop에 실제로 병합하고 원격에 올린다.

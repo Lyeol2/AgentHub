@@ -38,7 +38,8 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     $("pr-remote").disabled = busy || !!s?.loading;
     $("pr-new").disabled = busy || !c || !!s?.unavailable;
     $("pr-cancel").disabled = busy;
-    for (const id of ["pr-base", "pr-title", "pr-description", "pr-draft"]) $(id).disabled = busy;
+    for (const id of ["pr-base", "pr-title", "pr-description", "pr-draft", "pr-labels"]) $(id).disabled = busy;
+    $("pr-author").disabled = busy;
     $("pr-push").disabled = busy || !c?.canPush || !!s?.unavailable;
     $("pr-push").textContent = s?.busy === "push" ? "게시 중…" : "현재 브랜치 게시";
     const base = $("pr-base").value;
@@ -50,7 +51,9 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
 
   function setProject(project, cwd = project) {
     if (state?.project === project && state?.cwd === cwd) return;
-    state = { project, cwd, remote: "", context: null, pulls: [], number: null, detail: null, listVersion: 0, detailVersion: 0, loadedAt: 0, loading: false, busy: null };
+    state = { project, cwd, remote: "", context: null, pulls: [], repoLabels: [], author: "", number: null, detail: null, listVersion: 0, detailVersion: 0, loadedAt: 0, loading: false, busy: null };
+    $("pr-author").replaceChildren(node("option", { value: "" }, "모든 작성자"));
+    $("pr-labels").value = "";
     $("pr-create").hidden = true;
     $("pr-grid").hidden = true;
     $("pr-filter").value = "open";
@@ -88,13 +91,40 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
       c.dirtyCount ? "커밋된 내용으로 PR을 만듭니다. 작업 폴더의 변경 " + c.dirtyCount + "개는 포함되지 않습니다." : "현재 브랜치의 원격 커밋으로 PR을 만듭니다."].filter(Boolean).join(" ");
   }
 
+  // 라벨 칩. GitHub 라벨 색이 있으면 테두리와 점에 쓴다.
+  const labelChip = (label, ...extra) => {
+    const chip = node("span", { class: "pr-label", title: label.name }, node("span", { class: "pr-label-dot" }), label.name, ...extra);
+    if (label.color) chip.style.setProperty("--label-color", "#" + label.color);
+    return chip;
+  };
+
+  // 작성자 목록은 불러온 PR에서 만든다. 고른 작성자가 목록에서 빠져도 선택은 유지한다.
+  function authorOptions(s) {
+    const select = $("pr-author");
+    const picked = s.author ?? "";
+    const authors = [...new Set(s.pulls.map((p) => p.author?.login).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+    if (picked && !authors.includes(picked)) authors.unshift(picked);
+    select.replaceChildren(node("option", { value: "" }, "모든 작성자"), ...authors.map((login) => node("option", { value: login }, "@" + login)));
+    select.value = picked;
+  }
+
   function listView(s) {
-    $("pr-list-note").textContent = s.pulls.length ? String(s.pulls.length) + "개 · 최근 50개까지" : "Pull Request가 없습니다.";
-    $("pr-list").replaceChildren(...s.pulls.map((p) => node("li", {},
+    const shown = s.author ? s.pulls.filter((p) => p.author?.login === s.author) : s.pulls;
+    $("pr-list-note").textContent = !s.pulls.length ? "Pull Request가 없습니다."
+      : s.author ? "@" + s.author + " · " + shown.length + "개 / 불러온 " + s.pulls.length + "개 중"
+      : String(s.pulls.length) + "개 · 최근 50개까지";
+    $("pr-list").replaceChildren(...shown.map((p) => node("li", {},
       node("button", { type: "button", class: "pr-list-item" + (s.number === p.number ? " active" : ""), "aria-pressed": String(s.number === p.number), "data-pr-number": p.number, onclick: () => detail(p.number) },
         node("span", { class: "pr-list-title" }, p.title),
         node("span", { class: "pr-list-meta" }, badge(p), node("span", {}, "#" + p.number + " · " + (p.author?.login ?? ""))),
+        p.labels?.length ? node("span", { class: "pr-labels" }, ...p.labels.slice(0, 4).map((label) => labelChip(label)), p.labels.length > 4 ? node("span", { class: "muted" }, "+" + (p.labels.length - 4)) : null) : null,
         node("span", { class: "pr-list-branch mono", title: p.headRefName + " → " + p.baseRefName }, p.headRefName + " → " + p.baseRefName)))));
+  }
+
+  // 라벨 추천 목록: 저장소 라벨(상세에서 읽음)과 목록의 PR 라벨
+  function labelOptions(s) {
+    const names = new Set([...(s.repoLabels ?? []), ...s.pulls.flatMap((p) => p.labels ?? [])].map((label) => label.name));
+    $("pr-label-options").replaceChildren(...[...names].sort((a, b) => a.localeCompare(b)).map((name) => node("option", { value: name })));
   }
 
   async function refresh() {
@@ -113,6 +143,8 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
       s.unavailable = false;
       s.loadedAt = Date.now();
       contextView(s);
+      authorOptions(s);
+      labelOptions(s);
       listView(s);
       notice();
       $("pr-grid").hidden = false;
@@ -140,6 +172,7 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
       const data = await api("GET", "/api/git/pulls/" + number + "?" + query(s));
       if (!current(s) || version !== s.detailVersion) return;
       s.detail = data;
+      if (data.pull?.repoLabels?.length) { s.repoLabels = data.pull.repoLabels; labelOptions(s); }
       detailView(s);
     } catch (err) {
       if (!current(s) || version !== s.detailVersion) return;
@@ -177,11 +210,24 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
       } }, "PR 닫기");
       actions.append(method, merge, close);
     }
+    // 라벨: ×로 떼고, 이름을 적어 붙인다. 쉼표로 여러 개를 한 번에 붙일 수 있다.
+    const labelInput = node("input", { class: "pr-label-input", list: "pr-label-options", maxlength: "500", autocomplete: "off", placeholder: "라벨 이름", "aria-label": "붙일 라벨", "data-pr-mutation": "label-input" });
+    const addLabel = () => {
+      const names = labelInput.value.split(",").map((name) => name.trim()).filter(Boolean);
+      if (!names.length || s.busy) return;
+      mutate("labels", "/api/git/pulls/" + p.number + "/labels", { add: names });
+    };
+    labelInput.addEventListener("keydown", (event) => { if (event.key === "Enter" && !event.isComposing) { event.preventDefault(); addLabel(); } });
+    const labelsRow = node("div", { class: "pr-labels pr-label-editor", "aria-label": "라벨" },
+      node("span", { class: "muted" }, "라벨"),
+      ...(p.labels?.length ? p.labels.map((label) => labelChip(label, node("button", { type: "button", class: "pr-label-remove", "data-pr-mutation": "label-remove", "aria-label": label.name + " 라벨 떼기", title: "라벨 떼기",
+        onclick: () => { if (!s.busy) mutate("labels", "/api/git/pulls/" + p.number + "/labels", { remove: [label.name] }); } }, "×"))) : [node("span", { class: "muted" }, "없음")]),
+      labelInput, node("button", { type: "button", class: "ghost sm", "data-pr-mutation": "label-add", onclick: addLabel }, "붙이기"));
     const statusNote = p.isDraft ? "초안 · 병합하려면 GitHub에서 준비 완료로 바꿔 주세요." : !["CLEAN", "HAS_HOOKS"].includes(p.mergeStateStatus) && open && p.mergeable === true ? "검사·리뷰·최신 브랜치 반영 등 병합 조건을 GitHub에서 확인해 주세요." : p.mergeable === false ? "브랜치 사이에 충돌이 있습니다." : open && p.mergeable === null ? "병합 가능 여부를 계산 중입니다. 새로고침해 주세요." : "";
     const preview = node("pre", { class: "diff pr-diff" }, ...renderDiff(diff || (diffError ? "변경 내용을 불러오지 못했습니다." : "변경 내용이 없습니다.")));
     $("pr-detail").replaceChildren(...[
       node("header", { class: "pr-detail-head" }, node("div", { class: "pr-detail-meta" }, badge(p), node("span", { class: "muted" }, "#" + p.number + " · " + (p.author?.login ?? "") + " · " + time(p.updatedAt))), node("h4", {}, p.title), node("p", { class: "mono muted pr-refs" }, p.headRefName + " → " + p.baseRefName)),
-      actions, checksRow,
+      actions, labelsRow, checksRow,
       p.checksError ? node("p", { class: "error pr-review", role: "alert" }, p.checksError) : null,
       p.reviewDecision ? node("p", { class: "hint pr-review" }, "리뷰 · " + ({ APPROVED: "승인됨", CHANGES_REQUESTED: "변경 요청", REVIEW_REQUIRED: "리뷰 필요" }[p.reviewDecision] ?? p.reviewDecision)) : null,
       statusNote ? node("p", { class: "hint pr-review" }, statusNote) : null,
@@ -209,6 +255,7 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
         $("pr-title").value = "";
         $("pr-description").value = "";
         $("pr-issue").value = "";
+        $("pr-labels").value = "";
         $("pr-filter").value = "open";
       }
     } catch (err) {
@@ -220,7 +267,8 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
         s.busy = null;
         controls();
         if (failure) $("pr-error").textContent = failure.message;
-        else if (outcome && !s.unavailable) notice(kind === "create" ? "PR을 만들었습니다." : kind === "push" ? "현재 브랜치를 게시했습니다." : kind === "close" ? "PR을 닫았습니다." : outcome.pull?.state === "MERGED" ? "PR을 병합했습니다." : "병합 요청을 처리했습니다. GitHub에서 현재 상태를 확인하세요.");
+        else if (outcome?.warning) $("pr-error").textContent = outcome.warning;
+        else if (outcome && !s.unavailable) notice(kind === "create" ? "PR을 만들었습니다." : kind === "labels" ? "라벨을 바꿨습니다." : kind === "push" ? "현재 브랜치를 게시했습니다." : kind === "close" ? "PR을 닫았습니다." : outcome.pull?.state === "MERGED" ? "PR을 병합했습니다." : "병합 요청을 처리했습니다. GitHub에서 현재 상태를 확인하세요.");
       }
     }
   }
@@ -232,6 +280,11 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     ++state.detailVersion;
     placeholder();
     refresh();
+  });
+  $("pr-author").addEventListener("change", () => {
+    if (!state) return;
+    state.author = $("pr-author").value;
+    listView(state);
   });
   $("pr-remote").addEventListener("change", () => {
     if (!state) return;
@@ -268,7 +321,8 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     const description = $("pr-description").value;
     const linked = new RegExp("\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #" + issue + "\\b", "i").test(description);
     const body = issue && !linked ? (description.trimEnd() + "\n\nCloses #" + issue).trimStart() : description;
-    mutate("create", "/api/git/pulls", { title: $("pr-title").value.trim(), body, base: $("pr-base").value, head: $("pr-head").value, draft: $("pr-draft").checked, expectedHead: state.context.headSha });
+    const labels = $("pr-labels").value.split(",").map((name) => name.trim()).filter(Boolean);
+    mutate("create", "/api/git/pulls", { title: $("pr-title").value.trim(), body, base: $("pr-base").value, head: $("pr-head").value, draft: $("pr-draft").checked, expectedHead: state.context.headSha, ...(labels.length ? { labels } : {}) });
   });
   $("pr-push").addEventListener("click", () => {
     const c = state?.context;

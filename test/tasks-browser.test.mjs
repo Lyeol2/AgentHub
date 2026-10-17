@@ -101,7 +101,7 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
   const settings = new Map(projects.map((item) => [item.path, { ...defaults }]));
   const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: name === "codex" ? "C:/bin/codex.exe" : null, version: name === "codex" ? "1.0.0" : null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
   const context = { mainSha: "a".repeat(40), developSha: "a".repeat(40), mainInDevelop: true, needsSetup: false, checkedAt: "2026-10-15T12:00:00Z", freshness: { state: "current", checkedAt: "2026-10-15T12:00:00Z" } };
-  const mode = { uncertain: false, contextFailure: false, holdCreate: false, holdSettingsRead: false, holdSettingsSave: false, settingsReadFailure: false, settingsSaveFailure: false, assistantFailure: false, holdAssistant: false };
+  const mode = { uncertain: false, contextFailure: false, holdCreate: false, holdSettingsRead: false, holdSettingsSave: false, settingsReadFailure: false, settingsSaveFailure: false, assistantFailure: false, holdAssistant: false, inPlaceBusy: false };
   let releaseCreate, releaseSettingsRead, releaseSettingsSave, releaseAssistant;
   const reviews = new Map();
   const server = http.createServer(async (req, res) => {
@@ -129,6 +129,7 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
         value = { summary: body.history?.length ? "접근성 확인도 반영했습니다." : "로그인 문제 수정 초안을 정리했습니다.",
           draft: { title: "AI 로그인 초안", content: body.draft.content || "모바일 로그인 문제를 수정한다.", acceptance: "모바일·데스크톱 로그인과 접근성을 확인한다.", type: "feature", agent: "codex", branchName: "", worktreeName: "", version: "" } };
       }
+      else if (url.pathname === "/api/tasks/in-place") value = mode.inPlaceBusy ? { available: false, reason: "task-in-place", message: '원본 폴더는 이미 "다른 작업" 작업에서 쓰고 있습니다.' } : { available: true };
       else if (url.pathname === "/api/tasks/context") { if (mode.contextFailure) throw Object.assign(Error("원격 확인 실패"), { status: 400 }); value = { ...context, settings: settings.get(url.searchParams.get("path")) }; }
       else if (url.pathname === "/api/tasks/settings") {
         const projectPath = url.searchParams.get("path");
@@ -189,6 +190,7 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
         } else if (action === "refresh") { delete task.pendingAction; if (task.pull) task.state = "review"; value = { task }; }
         else if (action === "sync") { review.behind = false; review.head = 'd'.repeat(40); review.token += '-sync'; value = { task }; }
         else if (action === "cleanup") { task.state = "cleaned"; value = { task }; }
+        else if (action === "abandon") { tasks.splice(tasks.indexOf(task), 1); value = { ok: true, sessionIds: task.sessionIds, worktreeRemoved: true, branchRemoved: true, remoteBranchRemoved: true }; }
         else if (action === "issue") {
           if (req.method === "DELETE") delete task.issue;
           else if (body.number === "13") throw Object.assign(Error("GitHub CLI 인증이 필요합니다."), { status: 401, reason: "gh-auth" });

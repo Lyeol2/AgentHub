@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { GitHubError } from "../server/github.mjs";
-import { GitHubIssues, formatIssueBody, parseIssueMeta, maskSecrets, relativizePaths, normalizeIssue, ISSUE_LABEL } from "../server/issues.mjs";
+import { GitHubIssues, formatIssueBody, parseIssueMeta, maskSecrets, relativizePaths, normalizeIssue, ISSUE_LABEL, ATTACHMENT_BRANCH, attachmentFileName } from "../server/issues.mjs";
 import { createIssueService, issuePrompt } from "../server/application/issues.mjs";
 import { createAccountService } from "../server/application/account.mjs";
 import { FileIssueLinkStore } from "../server/infrastructure/persistence/issue-links.mjs";
@@ -177,8 +177,10 @@ test("issues: 받는 사람을 여러 명 지정하거나 비워 두어 팀 공�
   await assert.rejects(client.create(tmp, { title: "x", assignees: ["alice", "--evil"] }), /팀원/);
   await assert.rejects(client.create(tmp, { title: "x", assignees: Array.from({ length: 11 }, (_, i) => "user" + i) }), /10명/);
   assert.equal(state.calls.filter((c) => c.method === "POST" && c.endpoint === "repos/acme/widget/issues").length, before);
+  // 공용 작업함은 담당자와 관계없이 팀 작업 전체를 읽는다.
   await client.list(tmp, { box: "shared" });
-  assert.match(state.calls.at(-1).endpoint, /assignee=none/);
+  assert.doesNotMatch(state.calls.at(-1).endpoint, /assignee=|creator=/);
+  assert.match(state.calls.at(-1).endpoint, /labels=agenthub/);
 });
 
 test("issues: 공용 작업은 먼저 맡은 사람이 담당하고 이미 맡은 작업은 가져가지 않는다", async () => {
@@ -401,4 +403,51 @@ test("account: gh 사용자로 연결 상태를 읽고 숨김·로그아웃을 �
 test("team routes: 고정 경로가 이슈 번호 경로보다 먼저 맞는다", () => {
   const routes = teamRoutes({}, {}).map(([method, pattern]) => method + " " + pattern);
   for (const fixed of ["inbox", "context", "draft"]) assert.ok(routes.indexOf("GET issues/" + fixed) < routes.indexOf("GET issues/:number"));
+});
+
+test("issues: 첨부 파일은 부모 없는 첨부 브랜치를 한 번 만들고 커밋한 뒤 본문용 Markdown을 돌려준다", async () => {
+  const calls = [];
+  let branch = false;
+  const pulls = {
+    target: async (dir) => ({ repo: "acme/widget", name: "origin", dir, file: "gh" }),
+    api: async (target, method, endpoint, data, options = {}) => {
+      calls.push({ method, endpoint, data, options });
+      if (endpoint === "repos/acme/widget/branches/" + ATTACHMENT_BRANCH) { if (branch) return { name: ATTACHMENT_BRANCH }; throw new GitHubError("gh: Not Found (HTTP 404)"); }
+      if (endpoint === "repos/acme/widget/git/trees") return { sha: "tree1" };
+      if (endpoint === "repos/acme/widget/git/commits") return { sha: "commit1" };
+      if (endpoint === "repos/acme/widget/git/refs") { branch = true; return { ref: data.ref }; }
+      if (method === "PUT" && endpoint.startsWith("repos/acme/widget/contents/")) return { content: { path: endpoint } };
+      throw new Error("Unexpected endpoint " + method + " " + endpoint);
+    },
+  };
+  const client = new GitHubIssues({ pulls });
+  const png = Buffer.from("89504e470d0a1a0a", "hex").toString("base64");
+  const image = await client.attach(tmp, { name: "화면 캡처 (1).png", mimeType: "image/png", data: png, repo: "acme/widget" });
+  assert.match(image.path, /^issues\/\d{4}-\d{2}\/[0-9a-f]{8}-화면-캡처-1\.png$/);
+  assert.equal(image.markdown, `![화면-캡처-1.png](https://github.com/acme/widget/raw/${ATTACHMENT_BRANCH}/${image.path.split("/").map(encodeURIComponent).join("/")})`);
+  const commit = calls.find((c) => c.endpoint === "repos/acme/widget/git/commits");
+  assert.deepEqual(commit.data.parents, [], "첨부 브랜치는 코드 기록과 섞이지 않는다");
+  const put = calls.find((c) => c.method === "PUT");
+  assert.equal(put.data.branch, ATTACHMENT_BRANCH);
+  assert.equal(put.data.content, png);
+  assert.equal(put.options.write, true);
+
+  const doc = await client.attach(tmp, { name: "../보고서.pdf", mimeType: "application/pdf", data: png, repo: "acme/widget" });
+  assert.match(doc.markdown, /^\[보고서\.pdf\]\(https:\/\/github\.com\/acme\/widget\/raw\//, "이미지가 아니면 링크로 넣는다");
+  assert.equal(calls.filter((c) => c.endpoint === "repos/acme/widget/git/refs").length, 1, "브랜치는 한 번만 만든다");
+
+  await assert.rejects(client.attach(tmp, { name: "a.txt", data: "" }), /내용/);
+  await assert.rejects(client.attach(tmp, { name: "a.txt", data: "not base64!" }), /내용/);
+  await assert.rejects(client.attach(tmp, { name: "a.txt", data: Buffer.alloc(10 * 1024 * 1024 + 1).toString("base64") }), /10MB/);
+  await assert.rejects(client.attach(tmp, { name: "a.txt", data: png, repo: "other/repo" }), /원격 저장소/);
+  assert.equal(attachmentFileName("con"), "_con");
+  assert.equal(attachmentFileName("a#b?c&d.txt"), "a-b_c-d.txt");
+  assert.equal(attachmentFileName("..."), "file");
+});
+
+test("issues: 첨부 업로드 API는 큰 본문을 받고 팀 작업 서비스로 넘긴다", async () => {
+  const route = teamRoutes({}, { attach: async (dir, body) => ({ dir, name: body.name }) }).find(([method, url]) => method === "POST" && url === "issues/attachments");
+  assert.ok(route, "첨부 경로가 있다");
+  assert.ok(route[3].maxBodyBytes > 13_000_000, "10MB 파일의 base64 본문을 받는다");
+  assert.deepEqual(await route[2]({ query: new URLSearchParams(), body: { path: "P", name: "x.png" } }), { dir: "P", name: "x.png" });
 });

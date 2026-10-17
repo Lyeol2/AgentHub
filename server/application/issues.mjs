@@ -135,6 +135,12 @@ export function createIssueService({ config, store, sessions, links, notify, cli
     });
   }
 
+  // 작업 보내기·댓글에 붙일 파일을 저장소 첨부 브랜치에 올린다. 사용자가 고른 파일만 올린다.
+  async function attach(projectPath, body = {}) {
+    const dir = await gitRepo(projectPath);
+    return guard(() => client.attach(dir, body));
+  }
+
   async function comment(projectPath, number, body = {}) {
     const dir = await gitRepo(projectPath);
     return guard(async () => {
@@ -265,5 +271,5 @@ export function createIssueService({ config, store, sessions, links, notify, cli
     notify("issues", { projectPath: link.projectPath, number: link.number, done });
   }
 
-  return { inbox, context, members, list, detail, create, comment, claim, giveBack, close, reopen, start, setProgress, draft, onTurnEnd };
+  return { inbox, context, members, list, detail, create, attach, comment, claim, giveBack, close, reopen, start, setProgress, draft, onTurnEnd };
 }

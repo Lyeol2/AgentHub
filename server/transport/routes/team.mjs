@@ -1,3 +1,4 @@
+import { ATTACHMENT_BODY_LIMIT } from "../../attachments.mjs";
 // 계정 연결과 팀 작업(GitHub 이슈). 고정 경로를 :number보다 먼저 둔다.
 export function teamRoutes(account, issues) {
   const where = ({ query, body }) => query.get("path") ?? body.path;
@@ -11,6 +12,7 @@ export function teamRoutes(account, issues) {
     ["GET", "issues/draft", ({ query }) => issues.draft(query.get("session"))],
     ["GET", "issues", (ctx) => issues.list(where(ctx), { box: ctx.query.get("box") ?? "inbox", state: ctx.query.get("state") ?? "open", remote: ctx.query.get("remote") ?? undefined })],
     ["POST", "issues", (ctx) => issues.create(where(ctx), ctx.body)],
+    ["POST", "issues/attachments", (ctx) => issues.attach(where(ctx), ctx.body), { maxBodyBytes: ATTACHMENT_BODY_LIMIT }],
     ["GET", "issues/:number", (ctx) => issues.detail(where(ctx), ctx.params.number, { remote: ctx.query.get("remote") ?? undefined })],
     ["POST", "issues/:number/comments", (ctx) => issues.comment(where(ctx), ctx.params.number, ctx.body)],
     ["POST", "issues/:number/claim", (ctx) => issues.claim(where(ctx), ctx.params.number, ctx.body)],

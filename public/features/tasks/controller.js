@@ -12,6 +12,10 @@ const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
 const TASK_AGENTS = [['codex', 'Codex'], ['claude', 'Claude Code']];
 // 새 작업을 만들 때 고른 설정을 기억해 다음 새 작업의 기본값으로 쓴다. 제목·이름·지침처럼 작업마다 다른 값은 두지 않는다.
 const CREATE_PREFS_KEY = 'agenthub.newTask';
+// 작업 목록 상태 필터. 진행 중은 작업·검토 대기, 완료는 반영·정리를 마친 작업이다.
+const FILTER_KEY = 'agenthub.taskFilter';
+const TASK_FILTERS = { all: () => true, active: task => !['merged', 'cleaned'].includes(task.state), done: task => ['merged', 'cleaned'].includes(task.state) };
+const FILTER_EMPTY = { active: '진행 중인 작업이 없습니다', done: '완료한 작업이 없습니다' };
 
 function loadCreatePrefs() {
   try { return JSON.parse(localStorage.getItem(CREATE_PREFS_KEY) ?? '{}') || {}; } catch { return {}; }
@@ -34,17 +38,33 @@ export function describeTaskFreshness(freshness) {
   return '최신 상태 확인 필요';
 }
 
-export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW, name = '') {
-  const { base, target, prefix } = gitflowBranches(type, gitflowSettings(settings));
+// 서버(taskBranchSlug)와 같은 규칙으로 제목에서 브랜치 이름을 만든다. 같은 이름이 있으면 서버가 -2, -3을 붙인다.
+export function taskBranchSlug(title, max = 40) {
+  const words = String(title ?? '').normalize('NFKC').toLowerCase().replace(/[^a-z0-9가-힣]+/gu, ' ').trim().split(/\s+/).filter(Boolean);
+  let slug = '';
+  for (const word of words) {
+    const next = slug ? `${slug}-${word}` : word;
+    if (next.length > max) { if (!slug) slug = word.slice(0, max); break; }
+    slug = next;
+  }
+  return slug || 'work';
+}
+
+export function taskBranchFullName(type, version = '', settings = DEFAULT_GITFLOW, name = '', title = '') {
+  const { prefix } = gitflowBranches(type, gitflowSettings(settings));
   const rest = name.startsWith(prefix) ? name.slice(prefix.length) : name;
-  const branch = `${prefix}${rest || (type === 'release' ? version || '<버전>' : '<작업ID>-<이름>')}`;
-  return `${base}에서 ${branch} 생성 → ${target}으로 PR`;
+  return `${prefix}${rest || (type === 'release' ? version || '<버전>' : title.trim() ? taskBranchSlug(title) : '<제목>')}`;
+}
+
+export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW, name = '', title = '') {
+  const { base, target } = gitflowBranches(type, gitflowSettings(settings));
+  return `${base}에서 ${taskBranchFullName(type, version, settings, name, title)} 생성 → ${target}으로 PR`;
 }
 
 export function createTasksController({
   api, data, navigation, getProjectPath = () => navigation?.project,
   fillModels = () => {}, fillEfforts = () => {}, selectSession = () => {},
-  reloadData = async () => {}, openSetup = () => {},
+  reloadData = async () => {}, openSetup = () => {}, showTasksTab = () => {},
 }) {
   const $ = id => document.getElementById(id);
   const list = $('tasks-list');
@@ -88,6 +108,9 @@ export function createTasksController({
   let settingsReadFailed = false;
   let issueTaskId = null;
   let issueBusy = false;
+  // 팀 작업에서 시작한 새 작업이면 만든 뒤 연결할 이슈. { number, repo }
+  let createIssue = null;
+  let filter = (() => { try { const value = localStorage.getItem(FILTER_KEY); return TASK_FILTERS[value] ? value : 'all'; } catch { return 'all'; } })();
   const workbranchPicker = createWorkbranchPicker({
     api, owner: 'task', select: $('task-workbranch'), status: $('task-workbranch-status'), refresh: $('task-workbranch-refresh'),
     getPath: () => createProject,
@@ -273,14 +296,16 @@ export function createTasksController({
     const openMenu = list.querySelector('.task-more[open]')?.closest('.task-card')?.dataset.taskId;
     list.replaceChildren();
     list.setAttribute('aria-busy', String(loading));
-    if (!tasks.length) {
+    renderFilter();
+    const shown = tasks.filter(TASK_FILTERS[filter]);
+    if (!shown.length) {
       const empty = node('div', 'tasks-empty');
-      empty.append(node('strong', '', loading ? '작업을 불러오고 있습니다…' : '아직 작업이 없습니다'));
-      if (!loading) empty.append(node('span', '', '새 작업을 만들면 브랜치와 작업 폴더가 자동으로 준비됩니다.'));
+      empty.append(node('strong', '', loading ? '작업을 불러오고 있습니다…' : tasks.length ? FILTER_EMPTY[filter] : '아직 작업이 없습니다'));
+      if (!loading && !tasks.length) empty.append(node('span', '', '새 작업을 만들면 브랜치와 작업 폴더가 자동으로 준비됩니다.'));
       list.append(empty);
       return;
     }
-    for (const task of tasks) {
+    for (const task of shown) {
       const flow = gitflowSettings({ ...task.gitflow, main: task.gitflow?.main ?? task.freshness?.main?.branch ?? DEFAULT_GITFLOW.main, develop: task.gitflow?.develop ?? task.freshness?.develop?.branch ?? DEFAULT_GITFLOW.develop });
       const ids = Array.isArray(task.sessionIds) ? task.sessionIds : [];
       const known = Array.isArray(data?.sessions);
@@ -366,6 +391,13 @@ export function createTasksController({
       remove.classList.add('danger');
       secondary.append(remove);
       actions.append(more);
+      // 진행 중인 작업은 바로 그만둘 수 있다. 세션·폴더·브랜치(원격 포함)와 열린 PR까지 모두 정리한다.
+      if (task.state === 'working' || task.state === 'review') {
+        const abandon = actionButton('작업 그만두기', 'abandon', task, { disabled: blocked });
+        abandon.classList.add('danger', 'task-abandon');
+        abandon.title = '세션, 작업 폴더, 로컬·원격 브랜치를 지우고 열린 PR을 닫습니다.';
+        actions.append(abandon);
+      }
       card.append(actions);
       if (reasons.length) {
         const reasonEl = node('p', 'task-action-reason', reasons.join(' '));
@@ -409,6 +441,22 @@ export function createTasksController({
         || restored.querySelector('summary'))?.focus({ preventScroll: true });
     }
     if (openMenu) [...list.querySelectorAll('.task-card')].find(item => item.dataset.taskId === openMenu)?.querySelector('.task-more')?.setAttribute('open', '');
+  }
+
+  function renderFilter() {
+    for (const button of document.querySelectorAll('#tasks-filter [data-task-filter]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.taskFilter === filter));
+      const count = button.querySelector('[data-task-count]');
+      const n = tasks.filter(TASK_FILTERS[button.dataset.taskFilter]).length;
+      if (count) count.textContent = n ? String(n) : '';
+    }
+  }
+
+  function setFilter(value) {
+    if (!TASK_FILTERS[value] || value === filter) return;
+    filter = value;
+    try { localStorage.setItem(FILTER_KEY, value); } catch { /* 필터를 기억하지 못해도 목록은 보인다. */ }
+    renderTasks();
   }
 
   function pullLink(pull, label) {
@@ -735,7 +783,7 @@ export function createTasksController({
       $('task-worktree-hint').textContent = existing
         ? (selected?.cwd ? `선택한 브랜치의 작업 폴더에서 이어 작업합니다: ${selected.cwd}` : '선택한 브랜치의 작업 폴더를 새로 열어 작업합니다.')
         : inPlace
-          ? `원본 폴더(${project})를 새 작업 브랜치로 바꿔 작업합니다. 이 폴더를 쓰는 다른 세션도 바뀐 브랜치를 보게 됩니다.`
+          ? `원본 폴더(${project})를 새 작업 브랜치로 바꿔 작업합니다. 이 폴더를 쓰는 다른 세션도 바뀐 브랜치를 보게 됩니다. 원본 폴더를 이미 쓰고 있으면 워크트리를 만들지 묻습니다.`
           : `별도 폴더 ${project ? project.replace(/[\\/]+$/, '') + '.agenthub' : '<프로젝트>.agenthub'}${project.includes('\\') ? '\\' : '/'}${folder}에서 작업합니다. 원본 폴더와 브랜치는 그대로입니다.`;
     }
     // 새 브랜치일 때만 브랜치 이름을, 워크트리를 만들 때만 작업 폴더 이름을 정할 수 있다.
@@ -753,7 +801,11 @@ export function createTasksController({
     }
     if ($('task-branch-preview')) $('task-branch-preview').textContent = existing
       ? selected ? `${selected.name}에서 작업 → ${workBranchType(selected.name, settings) === 'feature' ? settings.develop : settings.main}으로 PR` : '기존 작업 브랜치를 선택하면 작업 유형과 PR 대상을 맞춥니다.'
-      : taskBranchPreview(type, $('task-version')?.value.trim(), settings, $('task-branch-name')?.value.trim());
+      : taskBranchPreview(type, $('task-version')?.value.trim(), settings, $('task-branch-name')?.value.trim(), $('task-title')?.value || '');
+    // 세부 설정을 펼치지 않아도 만들어질 브랜치 이름을 보여 준다.
+    if ($('task-branch-summary')) $('task-branch-summary').textContent = existing
+      ? selected ? `브랜치 ${selected.name} 이어서 사용` : '기존 작업 브랜치를 세부 설정에서 고르세요'
+      : `브랜치 ${taskBranchFullName(type, $('task-version')?.value.trim(), settings, $('task-branch-name')?.value.trim(), $('task-title')?.value || '')} · 세부 설정에서 바꿀 수 있습니다`;
     if ($('task-gitflow-summary')) $('task-gitflow-summary').textContent = `기준: ${settings.main} / ${settings.develop}`;
     if ($('task-create-hint')) $('task-create-hint').textContent = inPlace
       ? `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 원본 폴더를 새 작업 브랜치로 바꾸고 세션을 연결합니다. 원본 폴더에 커밋하지 않은 변경이 없어야 하며, 정리하면 원래 브랜치로 돌아갑니다.`
@@ -813,8 +865,8 @@ export function createTasksController({
   function applyCreatePrefs() {
     const prefs = loadCreatePrefs();
     fillAgentOptions();
-    // 원본 폴더에서 작업하면 원본 폴더의 브랜치가 바뀌므로 지난번 선택을 기억하지 않고 매번 워크트리를 기본으로 둔다.
-    if ($('task-worktree')) $('task-worktree').value = 'create';
+    // 지난번 선택을 기억하지 않고 매번 원본 폴더를 기본으로 둔다. 원본 폴더를 쓰는 중이면 만들 때 워크트리로 진행할지 묻는다.
+    if ($('task-worktree')) $('task-worktree').value = 'none';
     if (prefs.type !== 'release') selectIfPresent('task-type', prefs.type);
     selectIfPresent('task-agent', prefs.agent);
     updateAgentControls();
@@ -826,21 +878,43 @@ export function createTasksController({
     }
   }
 
-  function openNewTask() {
+  // prefill: 팀 작업에서 시작할 때 채울 { title, content, issue }. 사용자가 확인한 뒤 만들고 시작한다.
+  function openNewTask(prefill = null) {
     const path = getProjectPath();
-    if (!path || path !== projectPath || createBusy || settingsBusy || uncertainCreates.has(path)) return;
+    if (!path || path !== projectPath || createBusy || settingsBusy || uncertainCreates.has(path)) return false;
     createProject = path;
     createTabId = navigation?.graphTabId;
+    createIssue = prefill?.issue ?? null;
     createForm?.reset();
     workbranchPicker.reset();
     showError('task-create-error');
     applyCreatePrefs();
-    updateCreatePreview();
     taskAssistant.open();
+    if ($('task-create-heading')) $('task-create-heading').textContent = createIssue ? `새 작업 · 이슈 #${createIssue.number}` : '새 작업';
+    if (prefill) {
+      if ($('task-title')) $('task-title').value = prefill.title ?? '';
+      if ($('task-content')) $('task-content').value = prefill.content ?? '';
+      taskAssistant.useManual();
+    }
+    updateCreatePreview();
     updateCreateSubmit();
     if (!hasAgent()) showError('task-create-error', '확인된 AI CLI가 없습니다. 설정에서 Codex나 Claude Code CLI를 설치하거나 경로를 지정해 주세요.');
     createDialog?.showModal();
-    ($('task-assistant-prompt') || $('task-title'))?.focus();
+    (prefill ? $('task-title') : $('task-assistant-prompt') || $('task-title'))?.focus();
+    return true;
+  }
+
+  // 팀 작업 탭에서 맡은 작업을 새 작업으로 시작한다. 작업 탭으로 옮겨 새 작업 창을 채워 연다.
+  async function startFromIssue({ projectPath: path, title, content, issue }) {
+    if (!path || !issue?.number) return;
+    showTasksTab();
+    if (path !== projectPath || !tasks.length) await loadTasks(path, { localOnly: true });
+    if (!sameProject(path)) return;
+    if (tasks.some(task => task.state !== 'cleaned' && task.issue?.number === issue.number && task.issue.repo?.toLowerCase() === issue.repo?.toLowerCase())) {
+      const linked = tasks.find(task => task.issue?.number === issue.number);
+      throw Error(`이슈 #${issue.number}은 이미 "${linked.title}" 작업에 연결되어 있습니다. 작업 탭에서 이어서 진행하세요.`);
+    }
+    if (!openNewTask({ title, content, issue })) throw Error('지금은 새 작업을 만들 수 없습니다. 작업 탭에서 진행 중인 요청이 끝난 뒤 다시 시도하세요.');
   }
 
   async function createTask(event) {
@@ -885,15 +959,37 @@ export function createTasksController({
     if (submit) { submit.disabled = true; submit.textContent = '브랜치와 세션 준비 중…'; }
     updateToolbar();
     try {
+      // 원본 폴더를 이미 쓰고 있으면 워크트리를 만들어 진행할지 묻는다.
+      if (payload.worktree === false) {
+        const inPlace = await api('GET', `/api/tasks/in-place?path=${encodeURIComponent(path)}`);
+        if (!sameProject(path, epoch)) return;
+        if (!inPlace.available) {
+          const answer = await confirmAction({ title: '원본 폴더를 이미 쓰고 있습니다', subject: title, warnings: [inPlace.message],
+            changes: [`워크트리(별도 작업 폴더 ${path.replace(/[\\/]+$/, '')}.agenthub 아래)를 만들어 이 작업을 진행합니다.`],
+            keeps: ['원본 폴더와 지금 브랜치'], confirmLabel: '워크트리로 만들기' });
+          if (!answer.ok || !sameProject(path, epoch)) return;
+          delete payload.worktree;
+          if ($('task-worktree')) $('task-worktree').value = 'create';
+          updateCreatePreview();
+        }
+      }
       const result = await api('POST', '/api/tasks', payload);
       saveCreatePrefs({
         ...loadCreatePrefs(),
         ...(existing ? {} : { worktree: payload.worktree === false ? 'none' : 'create', type: payload.type }),
         agent: payload.agent, permission: payload.permission, model: payload.model || '', effort: payload.effort || '',
       });
+      // 팀 작업에서 시작했으면 그 이슈를 작업에 연결한다. 연결에 실패해도 작업은 남기고 카드에 알린다.
+      const issue = createIssue;
+      let issueError = null;
+      if (issue && !result.task?.issue) {
+        try { result.task = (await api('POST', `/api/tasks/${encodeURIComponent(result.task.id)}/issue`, { number: String(issue.number) })).task; }
+        catch (error) { issueError = { message: `작업은 만들었지만 이슈 #${issue.number}을 연결하지 못했습니다: ${requestError(error)}`, reason: error.reason }; }
+      }
       await reloadSessions();
       if (sameProject(path, epoch)) {
         replaceTask(result.task);
+        if (issueError) taskErrors.set(result.task.id, issueError);
         if (result.startError) taskErrors.set(result.task.id, { message: typeof result.startError === 'string' ? result.startError : result.startError.message || '작업은 만들어졌지만 시작하지 못했습니다. 세션에서 확인해 주세요.' });
         renderTasks();
         createDialog?.close();
@@ -902,7 +998,7 @@ export function createTasksController({
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainCreates.add(path);
-      if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : requestError(error), error.reason);
+      if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : [requestError(error), error.hint].filter(Boolean).join(' '), error.reason);
     } finally {
       createBusy = false;
       taskAssistant.setCreating(false);
@@ -1066,6 +1162,63 @@ export function createTasksController({
     }
   }
 
+  // 작업 그만두기 확인 내용. 원격까지 지우므로 무엇이 사라지는지 모두 보여 준다.
+  function abandonSummary(task, sessionCount) {
+    const changes = [], keeps = [];
+    if (sessionCount) changes.push(`연결된 세션 ${sessionCount}개를 멈추고 삭제합니다.`);
+    if (task.inPlace) changes.push(`원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌립니다.`);
+    else if (task.ownsWorktree === false) keeps.push(`선택했던 기존 작업 폴더 ${task.cwd}`);
+    else changes.push(`작업 폴더를 지웁니다: ${task.cwd}`);
+    if (task.ownsBranch === false) keeps.push(`기존 브랜치 ${task.branch} (로컬·원격)`);
+    else changes.push(`로컬 브랜치 ${task.branch}를 지웁니다.`, `원격 브랜치 ${task.remote || 'origin'}/${task.branch}가 있으면 지웁니다.`);
+    if (task.pull?.number && task.pull.state === 'OPEN') changes.push(`열린 PR #${task.pull.number}을 닫습니다.`);
+    if (task.issue?.number) changes.push(`이슈 #${task.issue.number}에서 내 담당을 해제합니다. 이슈는 닫지 않습니다.`);
+    changes.push('작업 카드와 작업 기록을 지웁니다.');
+    return { changes, keeps };
+  }
+
+  async function abandonTask(task) {
+    if (!task || pendingTasks.has(task.id)) return;
+    const sessions = Array.isArray(data?.sessions) ? data.sessions : [];
+    const ids = Array.isArray(task.sessionIds) ? task.sessionIds : [];
+    const sessionCount = sessions.filter(session => ids.includes(session.id) || session.taskId === task.id).length;
+    const answer = await confirmAction({ title: '작업 그만두기', subject: task.title, ...abandonSummary(task, sessionCount),
+      warnings: ['게시하지 않은 커밋과 원격 브랜치는 되돌릴 수 없습니다.'], confirmLabel: '그만두기', danger: true });
+    if (!answer.ok || pendingTasks.has(task.id)) return;
+    const path = projectPath, epoch = projectEpoch, id = task.id;
+    pendingTasks.add(id);
+    taskErrors.delete(id);
+    renderTasks();
+    try {
+      let result, force = false;
+      for (;;) {
+        try { result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/abandon`, { force }); break; }
+        catch (error) {
+          if (force) throw error;
+          const again = error.reason === 'running' ? (await confirmAction({ title: '실행 중인 세션 멈추고 그만두기', subject: task.title,
+              changes: ['실행 중인 세션을 멈춥니다. 진행 중이던 응답은 끝까지 받지 못합니다.'], confirmLabel: '멈추고 그만두기', danger: true })).ok
+            : error.reason === 'task-dirty' ? (await confirmAction({ title: '커밋하지 않은 변경 버리기', subject: task.title,
+              changes: ['작업 폴더의 커밋하지 않은 변경을 버립니다.'], warnings: [error.message, '버린 변경은 되돌릴 수 없습니다.'],
+              confirmLabel: '변경 버리고 그만두기', danger: true })).ok
+            : null;
+          if (again === null) throw error;
+          if (!again) return;
+          force = true;
+        }
+      }
+      uncertainTasks.delete(id);
+      if (sameProject(path, epoch)) tasks = tasks.filter(item => item.id !== id);
+      await reloadSessions();
+      if (result?.warning) alert(result.warning);
+    } catch (error) {
+      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage('작업 그만두기') } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw });
+      if (sameProject(path, epoch)) void loadTasks(path, { localOnly: true });
+    } finally {
+      pendingTasks.delete(id);
+      if (sameProject(path, epoch)) renderTasks();
+    }
+  }
+
   async function newSession(task) {
     if (!task || pendingTasks.has(task.id) || uncertainTasks.has(task.id) || task.pendingAction) return;
     const path = projectPath;
@@ -1099,7 +1252,7 @@ export function createTasksController({
     }
   }
 
-  $('tasks-new')?.addEventListener('click', openNewTask);
+  $('tasks-new')?.addEventListener('click', () => openNewTask());
   $('tasks-settings')?.addEventListener('click', () => { void openSettings(); });
   $('task-create-settings')?.addEventListener('click', () => { void openSettings(); });
   settingsForm?.addEventListener('submit', saveSettings);
@@ -1117,6 +1270,7 @@ export function createTasksController({
   $('task-worktree')?.addEventListener('change', updateCreatePreview);
   $('task-worktree-name')?.addEventListener('input', updateCreatePreview);
   $('task-branch-name')?.addEventListener('input', updateCreatePreview);
+  $('task-title')?.addEventListener('input', updateCreatePreview);
   $('task-agent')?.addEventListener('change', () => { if ($('task-model')) $('task-model').value = ''; updateAgentControls(); });
   $('task-model')?.addEventListener('change', () => { if ($('task-effort')) fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model').value); });
   createForm?.addEventListener('submit', createTask);
@@ -1126,7 +1280,7 @@ export function createTasksController({
   }, true);
   finishForm?.addEventListener('submit', finishTask);
   createDialog?.addEventListener('cancel', event => { if (createBusy) event.preventDefault(); });
-  createDialog?.addEventListener('close', () => { workbranchPicker.reset(); taskAssistant.close(); });
+  createDialog?.addEventListener('close', () => { workbranchPicker.reset(); taskAssistant.close(); if (!createBusy) createIssue = null; });
   finishDialog?.addEventListener('cancel', event => { if (finishBusy) event.preventDefault(); });
   $('task-create-cancel')?.addEventListener('click', () => { if (!createBusy) createDialog?.close(); });
   $('task-finish-cancel')?.addEventListener('click', () => { if (!finishBusy) finishDialog?.close(); });
@@ -1146,10 +1300,15 @@ export function createTasksController({
     if (action === 'finish') { openFinish(task); return; }
     if (action === 'merge') { openFinish(task, { merge: true }); return; }
     if (action === 'delete') { void deleteTask(task); return; }
+    if (action === 'abandon') { void abandonTask(task); return; }
     if (action === 'link-issue') { openIssue(task); return; }
     if (action === 'unlink-issue') { void unlinkIssue(task); return; }
     if (action === 'resolve-conflict') { void askConflict(task, button.dataset.sessionId); return; }
     if (['refresh', 'sync', 'cleanup', 'push-target', 'develop', 'abort'].includes(action)) void runTaskAction(action, task);
+  });
+  $('tasks-filter')?.addEventListener('click', event => {
+    const button = event.target.closest('[data-task-filter]');
+    if (button) setFilter(button.dataset.taskFilter);
   });
   issueForm?.addEventListener('submit', submitIssue);
   // 작업 탭을 열어 둔 동안에도 검토 대기 작업의 병합을 주기적으로 확인한다.
@@ -1158,11 +1317,14 @@ export function createTasksController({
   updateToolbar();
 
   return {
-    loadTasks, invalidateProject, renderTasks, cancelCreation,
+    loadTasks, invalidateProject, renderTasks, cancelCreation, startFromIssue,
     async openReference(id, path = getProjectPath()) {
       await loadTasks(path, { localOnly: true });
       if (!sameProject(path)) return;
-      const card = [...(list?.querySelectorAll('.task-card') || [])].find(item => item.dataset.taskId === id);
+      // 필터에 가려진 작업을 열 때는 전체로 바꿔 보여 준다.
+      const target = getTask(id);
+      if (target && !TASK_FILTERS[filter](target)) setFilter('all');
+      const card =[...(list?.querySelectorAll('.task-card') || [])].find(item => item.dataset.taskId === id);
       if (!card) throw Error('작업을 찾을 수 없습니다.');
       card.tabIndex = -1;
       card.focus({ preventScroll: true });

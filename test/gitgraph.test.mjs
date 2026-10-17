@@ -166,3 +166,12 @@ test("gitgraph: 현재 작업 폴더 변경과 실행 중인 세션은 각자의
   assert.deepEqual(work.map((r) => r.dirty), [3, 0]);
   assert.equal(work[1].subject, "작업 중");
 });
+
+test("branch short name: 브랜치 목록은 접두어와 AgentHub 작업 ID를 빼고 보여 준다", async () => {
+  const { branchShortName } = await import("../public/features/git/view.js");
+  assert.equal(branchShortName("feature/mvchhmuv-5343251e-기능-추가-및-개선-수정"), "기능-추가-및-개선-수정");
+  assert.equal(branchShortName("Feature/login-button"), "login-button");
+  assert.equal(branchShortName("main"), "main");
+  assert.equal(branchShortName("feature/mvchhmuv-5343251e"), "mvchhmuv-5343251e", "작업 ID만 있으면 그대로 둔다");
+  assert.equal(branchShortName("feature/"), "feature/", "남는 글자가 없으면 전체 이름을 쓴다");
+});

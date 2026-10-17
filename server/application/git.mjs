@@ -57,6 +57,8 @@ export function createGitService({ sessions, projects, runner, notify, tasks, co
       const gitflow = () => projectGitflowSettings(config, ctx.original ?? projectPath);
       if (action === "pulls") return await githubPulls.list(ctx.cwd, { remote, state: state ?? "open", gitflow: gitflow() });
       if (action === "pull") return await githubPulls.detail(ctx.cwd, number, { remote });
+      // 라벨은 작업 폴더를 바꾸지 않으므로 실행 중인 세션이 있어도 바꿀 수 있다.
+      if (action === "pullLabels") return await changed(githubPulls.labels(ctx.cwd, number, options));
       if (["push", "createPull", "mergePull", "closePull"].includes(action)) {
         return await changed(client.write(ctx, action, async actual => {
           if (action === "push") return githubPulls.push(actual.cwd, options);

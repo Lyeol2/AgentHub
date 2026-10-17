@@ -146,7 +146,23 @@ export function normalizePull(raw, repo) {
     mergeable, mergeStateStatus: String(raw.mergeStateStatus ?? raw.mergeable_state ?? "UNKNOWN").toUpperCase(),
     reviewDecision: String(raw.reviewDecision ?? ""), checks: summarizeChecks(raw.statusCheckRollup),
     files: (raw.files ?? []).map((file) => ({ path: file.filename ?? file.path, status: file.status ?? "", additions: file.additions ?? 0, deletions: file.deletions ?? 0 })),
+    labels: normalizeLabels(raw.labels),
   };
+}
+
+// PR·이슈 라벨. 색은 GitHub의 6자리 16진수만 받는다.
+export function normalizeLabels(labels) {
+  return (Array.isArray(labels) ? labels : []).map((label) => typeof label === "string" ? { name: label, color: "" }
+    : { name: String(label?.name ?? ""), color: /^[0-9a-f]{6}$/i.test(String(label?.color ?? "")) ? String(label.color) : "" }).filter((label) => label.name);
+}
+
+const LABEL_MAX = 50;
+// 라벨 이름은 GitHub 제한(50자) 안에서 줄바꿈 없는 글자만 받는다. 쉼표로 여러 개를 적을 수 있다.
+export function labelNames(value) {
+  const list = (Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : []).map((name) => String(name ?? "").trim()).filter(Boolean);
+  for (const name of list) if (name.length > LABEL_MAX || /[\u0000-\u001f]/.test(name)) throw new GitHubError("라벨 이름은 줄바꿈 없이 50자까지 입력하세요.");
+  if (list.length > 20) throw new GitHubError("라벨은 한 번에 20개까지 붙일 수 있습니다.");
+  return [...new Set(list)];
 }
 
 // GitFlow에서 브랜치가 PR로 들어갈 수 있는 대상. allowed가 null이면 GitFlow 브랜치가 아니어서 제한하지 않는다.
@@ -313,15 +329,18 @@ export class GitHubPulls {
     const target = await this.target(dir, remote);
     const endpoint = "repos/" + target.repo + "/pulls/" + number;
     const raw = await this.api(target, "GET", endpoint);
-    const [extra, files, diff] = await Promise.allSettled([
+    const [extra, files, diff, repoLabels] = await Promise.allSettled([
       this.run(target.file, ["pr", "view", number, "--repo", "github.com/" + target.repo, "--json", "statusCheckRollup,mergeStateStatus,reviewDecision"], { cwd: dir }).then(JSON.parse),
       this.api(target, "GET", endpoint + "/files?per_page=100"),
       this.api(target, "GET", endpoint, undefined, { accept: "application/vnd.github.diff", raw: true }),
+      this.api(target, "GET", "repos/" + target.repo + "/labels?per_page=100"),
     ]);
     const pull = normalizePull({ ...raw, ...(extra.status === "fulfilled" ? extra.value : {}), files: files.status === "fulfilled" ? files.value : [] }, target.repo);
     pull.filesTruncated = (pull.changedFiles ?? 0) > pull.files.length;
     pull.checksError = extra.status === "rejected" ? this.failure(extra.reason).message : null;
     pull.filesError = files.status === "rejected" ? files.reason.message : null;
+    // 저장소에 있는 라벨은 라벨 추가 목록에 쓴다. 읽지 못해도 이름을 직접 적어 붙일 수 있다.
+    pull.repoLabels = repoLabels.status === "fulfilled" ? normalizeLabels(repoLabels.value) : [];
     return { pull, diff: diff.status === "fulfilled" ? diff.value.slice(0, DIFF_MAX) + (diff.value.length > DIFF_MAX ? "\n… (긴 diff 일부 생략)" : "") : "",
       diffError: diff.status === "rejected" ? diff.reason.message : null };
   }
@@ -359,8 +378,14 @@ export class GitHubPulls {
       const existing = await this.api(target, "GET", "repos/" + target.repo + "/pulls?state=open&head=" + encodeURIComponent(owner + ":" + local.branch) + "&base=" + encodeURIComponent(body.base) + "&per_page=1");
       if (existing.length) throw new GitHubError("이 브랜치의 열린 PR #" + existing[0].number + "이 이미 있습니다. PR 목록을 새로고침하세요.", "pull-exists", 409);
       await this.assertHead(target, body);
+      const labels = labelNames(body.labels);
       const pull = await this.api(target, "POST", "repos/" + target.repo + "/pulls",
         { title, body: text, base: body.base, head: local.branch, draft: body.draft === true }, { write: true });
+      // PR은 이미 만들어졌으므로 라벨을 붙이지 못해도 실패로 돌려주지 않고 알린다.
+      if (labels.length) {
+        try { pull.labels = await this.api(target, "POST", "repos/" + target.repo + "/issues/" + pull.number + "/labels", { labels }, { write: true }); }
+        catch (error) { return { ok: true, pull: normalizePull(pull, target.repo), warning: "PR은 만들었지만 라벨을 붙이지 못했습니다: " + error.message }; }
+      }
       return { ok: true, pull: normalizePull(pull, target.repo) };
     });
   }
@@ -403,6 +428,24 @@ export class GitHubPulls {
       const updated = raw.state === "closed" ? raw : await this.api(target, "PATCH", endpoint, { state: "closed" }, { write: true });
       return { ok: true, pull: normalizePull(updated, target.repo) };
     });
+  }
+
+  // PR 라벨 추가·제거. GitHub에 없는 이름을 붙이면 GitHub가 새 라벨을 만든다.
+  async labels(dir, number, body = {}) {
+    number = this.number(number);
+    const add = labelNames(body.add), remove = labelNames(body.remove);
+    if (!add.length && !remove.length) throw new GitHubError("붙이거나 뗄 라벨을 고르세요.");
+    const target = await this.target(dir, body.remote);
+    this.assertRepo(target, body.repo);
+    const endpoint = "repos/" + target.repo + "/issues/" + number + "/labels";
+    let labels = null;
+    if (add.length) labels = await this.api(target, "POST", endpoint, { labels: add }, { write: true });
+    for (const name of remove) {
+      try { labels = await this.api(target, "DELETE", endpoint + "/" + encodeURIComponent(name), undefined, { write: true }); }
+      catch (error) { if (!/\bHTTP 404\b/.test(error.message)) throw error; }
+    }
+    labels ??= await this.api(target, "GET", endpoint);
+    return { ok: true, labels: normalizeLabels(labels) };
   }
 
   async push(dir, body) {

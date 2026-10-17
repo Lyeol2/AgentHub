@@ -3,6 +3,7 @@ export function taskRoutes(s) {
     ["GET", "workbranches", ({ query }) => s.workbranches(query.get("path"))],
     ["GET", "tasks", ({ query }) => s.list(query.get("path"))],
     ["GET", "tasks/context", ({ query }) => s.context(query.get("path"))],
+    ["GET", "tasks/in-place", ({ query }) => s.inPlaceStatus(query.get("path"))],
     ["GET", "tasks/settings", ({ query }) => s.settings(query.get("path"))],
     ["PUT", "tasks/settings", ({ query, body }) => s.updateSettings(query.get("path"), body)],
     ["POST", "tasks", ({ body }) => s.create(body)],
@@ -21,6 +22,7 @@ export function taskRoutes(s) {
     ["POST", "tasks/:id/cleanup", ({ params }) => s.cleanup(params.id)],
     ["POST", "tasks/:id/abort", ({ params }) => s.abortOperation(params.id)],
     ["POST", "tasks/:id/session", ({ params, body }) => s.addSession(params.id, body)],
+    ["POST", "tasks/:id/abandon", ({ params, body }) => s.abandon(params.id, { force: body?.force === true })],
     ["DELETE", "tasks/:id", ({ params, query }) => s.remove(params.id, { force: query.get("force") === "1", deleteBranch: query.get("branch") === "delete" })],
   ];
 }

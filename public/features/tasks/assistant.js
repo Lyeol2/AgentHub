@@ -2,7 +2,7 @@
 export function createTaskAssistant({ api, getContext, getStatus, fillModels, onDraft = () => {}, onState = () => {} }) {
   const $ = (id) => document.getElementById(id);
   const prompt = $('task-assistant-prompt');
-  if (!prompt) return { open() {}, close() {}, setCreating() {}, ready: () => true, busy: () => false, creationId: () => undefined };
+  if (!prompt) return { open() {}, close() {}, setCreating() {}, useManual() {}, ready: () => true, busy: () => false, creationId: () => undefined };
   const fields = { title: 'task-title', content: 'task-content', acceptance: 'task-acceptance', agent: 'task-agent', type: 'task-type', version: 'task-version', branchName: 'task-branch-name', worktreeName: 'task-worktree-name' };
   let history = [], generation = 0, planning = false, creating = false, ready = false, mode = 'ai', requestId;
   const current = (context) => {
@@ -80,6 +80,11 @@ export function createTaskAssistant({ api, getContext, getStatus, fillModels, on
       if (mine !== generation || !current(context)) return;
       if (!result.draft || typeof result.draft.title !== 'string' || typeof result.draft.content !== 'string') throw Error('초안을 읽지 못했습니다. 다시 요청하거나 직접 작성하세요.');
       const previousAgent = $('task-agent').value;
+      // 작업 폴더 이름을 정했으면 워크트리를 만들어 진행한다.
+      if (result.draft.worktreeName && $('task-workbranch-mode').value !== 'existing' && $('task-worktree')?.value === 'none') {
+        $('task-worktree').value = 'create';
+        onDraft({ agentChanged: false });
+      }
       for (const [key, id] of Object.entries(fields)) {
         const field = $(id);
         if (!field || (field.disabled && ['type', 'version', 'branchName', 'worktreeName'].includes(key))) continue;
@@ -108,5 +113,6 @@ export function createTaskAssistant({ api, getContext, getStatus, fillModels, on
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
     event.preventDefault(); void ask();
   });
-  return { open, close, ready: () => ready, busy: () => planning, creationId: () => requestId, setCreating(value) { creating = value; sync(); } };
+  // 내용을 미리 채워 연 창은 초안 도우미 대신 직접 작성으로 바로 확인하게 한다.
+  return { open, close, useManual: () => setMode('manual'), ready: () => ready, busy: () => planning, creationId: () => requestId, setCreating(value) { creating = value; sync(); } };
 }
