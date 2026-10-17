@@ -127,7 +127,7 @@ $$
   t.after(async () => {
     await hub.shutdown(); await new Promise((resolve) => app.close(resolve));
     assert.equal(path.dirname(path.resolve(temp)), path.resolve(os.tmpdir()));
-    await fs.rm(temp, { recursive: true, force: true });
+    await fs.rm(temp, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });
   });
   const output = path.join(root, "data", "report-preview-qa");
   await fs.mkdir(output, { recursive: true });
