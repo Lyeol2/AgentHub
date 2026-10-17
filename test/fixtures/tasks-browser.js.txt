@@ -194,9 +194,15 @@
   await releaseSettings({ save: true });
   await until(() => !$('task-settings-dialog').open && !$('tasks-refresh').disabled);
   check($('new-task-dialog').open && $('task-title').value === '보존할 작업 제목', 'saving nested settings preserves the task creation form');
-  check($('task-branch-preview').textContent === 'Develop에서 Feature/<작업ID>-<이름> 생성 → Develop으로 PR', 'feature preview uses custom case-sensitive branch settings');
+  check($('task-branch-preview').textContent === 'Develop에서 Feature/보존할-작업-제목 생성 → Develop으로 PR', 'feature preview uses custom case-sensitive branch settings and a name made from the title');
+  check($('task-branch-summary').textContent.startsWith('브랜치 Feature/보존할-작업-제목'), 'the branch name is visible without opening advanced settings');
+  $('task-title').value = 'Fix: Login 버튼이 모바일에서 안 눌림!!'; $('task-title').dispatchEvent(new Event('input'));
+  check($('task-branch-preview').textContent === 'Develop에서 Feature/fix-login-버튼이-모바일에서-안-눌림 생성 → Develop으로 PR', 'typing a title updates the tidy lowercase branch name');
+  $('task-branch-name').value = 'login-fix'; $('task-branch-name').dispatchEvent(new Event('input'));
+  check($('task-branch-summary').textContent.startsWith('브랜치 Feature/login-fix'), 'a typed branch name replaces the automatic name');
+  $('task-branch-name').value = ''; $('task-title').value = '보존할 작업 제목'; $('task-title').dispatchEvent(new Event('input'));
   $('task-type').value = 'hotfix'; $('task-type').dispatchEvent(new Event('change'));
-  check($('task-branch-preview').textContent === 'Main에서 Hotfix/<작업ID>-<이름> 생성 → Main으로 PR', 'hotfix preview uses the configured main and prefix');
+  check($('task-branch-preview').textContent === 'Main에서 Hotfix/보존할-작업-제목 생성 → Main으로 PR', 'hotfix preview uses the configured main and prefix');
   $('task-type').value = 'release'; $('task-type').dispatchEvent(new Event('change')); $('task-version').value = '1.2.3'; $('task-version').dispatchEvent(new Event('input'));
   check($('task-branch-preview').textContent === 'Develop에서 Release/1.2.3 생성 → Main으로 PR', 'release preview uses the configured branches and prefix');
   $('task-create-cancel').click();
@@ -292,6 +298,27 @@
   await until(() => !document.querySelector('dialog.confirm-dialog'));
   await new Promise(resolve => setTimeout(resolve, 100));
   check(await deletes() === before && card('task-4'), 'cancelled delete changes nothing');
+  // 상태 필터: 진행 중·완료로 나눠 보고, 고른 필터를 기억한다.
+  const states = () => [...document.querySelectorAll('.task-card .task-state')].map(item => item.dataset.state);
+  const total = states().length;
+  document.querySelector('[data-task-filter="done"]').click();
+  check(states().every(state => ['merged', 'cleaned'].includes(state)) && document.querySelector('[data-task-filter="done"]').getAttribute('aria-pressed') === 'true', 'done filter shows only finished tasks');
+  check(localStorage.getItem('agenthub.taskFilter') === 'done', 'the chosen task filter is remembered');
+  document.querySelector('[data-task-filter="active"]').click();
+  check(states().length && states().every(state => ['working', 'review'].includes(state)), 'active filter shows only tasks in progress');
+  const counts = Object.fromEntries([...document.querySelectorAll('#tasks-filter [data-task-filter]')].map(button => [button.dataset.taskFilter, Number(button.querySelector('[data-task-count]').textContent || 0)]));
+  check(counts.all === total && counts.active + counts.done === total, 'filter counts add up to all tasks');
+  document.querySelector('[data-task-filter="all"]').click();
+  check(states().length === total, 'all filter shows every task again');
+  // 작업 그만두기: 원격까지 지운다는 확인을 받고, 확인하면 카드가 사라진다.
+  check(action('task-4', 'abandon') && [...document.querySelectorAll('.task-card')].filter(item => ['merged', 'cleaned'].includes(item.querySelector('.task-state').dataset.state)).every(item => !item.querySelector('[data-task-action="abandon"]')), 'only unfinished tasks offer abandon');
+  action('task-4', 'abandon').click();
+  await until(() => document.querySelector('dialog.confirm-dialog[open]'));
+  const abandonBox = document.querySelector('dialog.confirm-dialog[open]');
+  check(abandonBox.textContent.includes('원격 브랜치') && abandonBox.textContent.includes('작업 폴더를 지웁니다'), 'abandon confirmation lists the folder and the remote branch');
+  [...abandonBox.querySelectorAll('button')].find(button => button.textContent === '그만두기').click();
+  await until(() => !card('task-4'));
+  check((await requests()).some(request => request.method === 'POST' && request.path === '/api/tasks/task-4/abandon' && request.body.force === false), 'abandon is requested once without forcing');
   await until(() => !$('tasks-settings').disabled); await openSettings();
   return checks;
 })()

@@ -1,10 +1,18 @@
 import { $, el, renderDiff, fmtDate } from "../../shared/dom.js";
 import { layoutGitGraph, gitWorkRows } from "../../gitgraph.js";
 
+// 화면에 보일 짧은 브랜치 이름: 마지막 / 앞의 접두어와 AgentHub 작업 ID(mv…-xxxxxxxx-)를 뺀다. 남는 글자가 없으면 전체 이름을 쓴다.
+export function branchShortName(name) {
+  const value = String(name ?? "");
+  const rest = value.slice(value.lastIndexOf("/") + 1).replace(/^[a-z0-9]{6,10}-[0-9a-f]{8}-(?=.)/, "");
+  return rest || value;
+}
+
 export function createGitView({ getModel, selectSession, showSessionChanges, selectWorkspace, showGitBranch, mergeGitBranch, checkoutGitBranch, showGitFile, changeGitIndex, showGitTab, showGitCommit, onToggleFile }) {
   const gitBusy = () => !!(getModel()?.indexBusy || getModel()?.committing || getModel()?.merging || getModel()?.checkingOut || getModel()?.operationBusy);
   const gitFiles = (area) => (getModel()?.data?.files ?? []).filter((file) => file[area]);
-  const gitBranchName = (branch) => branch.sessionTitle || branch.name;
+  const gitBranchName = (branch) => branch.sessionTitle || branchShortName(branch.name);
+  const folderName = (dir) => String(dir ?? "").split(/[\\/]/).filter(Boolean).at(-1) ?? "";
 
   function renderGit() {
     const { data } = getModel();
@@ -91,13 +99,20 @@ export function createGitView({ getModel, selectSession, showSessionChanges, sel
     if (!b.current) run("체크아웃", () => checkoutGitBranch(b), b.checkedOutAt
       ? { disabled: true, title: "다른 작업 폴더에서 쓰는 브랜치입니다: " + b.checkedOutAt }
       : { disabled: gitBusy(), title: "선택한 폴더를 " + b.name + " 브랜치로 바꿉니다." });
-    const summary = el("summary", { title: b.name },
+    // 긴 브랜치 이름은 접두어와 작업 ID를 빼고 두 줄까지 보여 주고, 아래 줄에 접두어와 브랜치를 쓰는 폴더를 적는다.
+    const folder = b.current ? "현재 폴더" : b.worktree || b.checkedOutAt ? "📁 " + folderName(b.worktree || b.checkedOutAt) : "";
+    const prefix = b.name.includes("/") ? b.name.slice(0, b.name.lastIndexOf("/") + 1) : "";
+    const where = [b.sessionTitle ? b.name : prefix, folder].filter(Boolean).join(" · ");
+    const summary = el("summary", { title: b.name + (b.worktree || b.checkedOutAt ? "\n" + (b.worktree || b.checkedOutAt) : "") },
       el("span", { class: "git-branch-dot" + (running ? " running" : "") }),
-      el("span", { class: "name" }, gitBranchName(b)),
+      el("span", { class: "git-branch-text" },
+        el("span", { class: "name" }, gitBranchName(b)),
+        where ? el("span", { class: "git-branch-where mono" }, where) : null),
       el("span", { class: "git-branch-status" }, status));
-    return el("li", { class: "git-branch" + (b.current ? " current" : "") },
+    return el("li", { class: "git-branch" + (b.current ? " current" : "") + (b.worktree || b.checkedOutAt ? " in-worktree" : "") },
       el("details", {}, summary,
         el("div", { class: "git-branch-info muted mono" }, b.name),
+        b.worktree || b.checkedOutAt ? el("div", { class: "git-branch-info muted mono" }, "작업 폴더 " + (b.worktree || b.checkedOutAt)) : null,
         b.dirty === null ? el("div", { class: "muted" }, "작업 폴더 없음") : null,
         actions.length ? el("div", { class: "git-actions" }, ...actions) : null));
   }

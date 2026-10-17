@@ -1,6 +1,16 @@
 // 팀 작업 전달. GitHub Issues를 받은 작업함으로 쓴다. 서버·DB 없이 gh 인증과 저장소 권한만 쓴다.
 // 원격 판별·인증·REST 호출은 Pull Request 기능(GitHubPulls)과 같은 경로를 쓴다.
+import { randomBytes } from "node:crypto";
 import { GitHubError, githubPulls, parseGitHubRemote } from "./github.mjs";
+import { MAX_ATTACHMENT_BYTES, safeAttachmentName } from "./attachments.mjs";
+
+// 작업 첨부 파일을 보관하는 브랜치
+export const ATTACHMENT_BRANCH = "agenthub-attachments";
+// 저장소 경로와 Markdown 주소에 그대로 쓸 수 있게 공백·특수 문자를 -로 바꾼다.
+export function attachmentFileName(value) {
+  const name = safeAttachmentName(value).normalize("NFC").replace(/[\s#%?&+;=@[\]()'`!$,{}^~]+/g, "-").replace(/-{2,}/g, "-").replace(/-*\.-*/g, ".").replace(/^-+|-+$/g, "").slice(0, 120);
+  return name && !/^\.+$/.test(name) ? name : "file";
+}
 
 export const ISSUE_LABEL = "agenthub";
 const LABEL_COLOR = "6f42c1";
@@ -153,8 +163,8 @@ export class GitHubIssues {
     const target = await this.target(dir, remote);
     const viewer = await this.viewer(target);
     const query = new URLSearchParams({ labels: ISSUE_LABEL, state, sort: "updated", direction: "desc", per_page: String(PAGE) });
-    if (box === "shared") query.set("assignee", "none");
-    else query.set(box === "inbox" ? "assignee" : "creator", viewer);
+    // 공용 작업함은 팀 작업 전체다. 맡을 사람이 필요한 작업과 누가 진행 중인 작업을 함께 보이고, 화면에서 담당자·진행 여부로 거른다.
+    if (box !== "shared") query.set(box === "inbox" ? "assignee" : "creator", viewer);
     const raw = await this.api(target, "GET", "repos/" + target.repo + "/issues?" + query);
     const issues = raw.filter((item) => !item.pull_request).map((item) => normalizeIssue(item, target.repo));
     return { repo: target.repo, viewer, box, issues, limited: raw.length >= PAGE };
@@ -212,6 +222,43 @@ export class GitHubIssues {
       } catch (created) {
         if (!/\bHTTP 422\b/.test(created.message)) throw created; // 동시에 만든 경우
       }
+    }
+  }
+
+  // 작업 첨부 파일. GitHub에는 이슈 첨부 업로드 API가 없으므로 저장소의 첨부 전용 브랜치에 커밋하고
+  // 이슈 본문에 넣을 주소를 돌려준다. 코드 브랜치와 섞이지 않게 부모 없는 브랜치를 쓴다.
+  async attach(dir, body = {}) {
+    const name = attachmentFileName(body.name);
+    const data = typeof body.data === "string" ? body.data : "";
+    if (!data || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new GitHubError("첨부 파일 내용을 읽지 못했습니다. 다시 골라 주세요.");
+    const size = Buffer.byteLength(data, "base64");
+    if (!size) throw new GitHubError("빈 파일은 첨부할 수 없습니다.");
+    if (size > MAX_ATTACHMENT_BYTES) throw new GitHubError("첨부 파일은 10MB까지 올릴 수 있습니다.");
+    const target = await this.target(dir, body.remote);
+    if (typeof body.repo === "string" && body.repo.toLowerCase() !== target.repo.toLowerCase()) throw new GitHubError("원격 저장소가 바뀌었습니다. 다시 열어 주세요.", "stale-head", 409);
+    await this.ensureAttachmentBranch(target);
+    const month = new Date().toISOString().slice(0, 7);
+    const file = `issues/${month}/${randomBytes(4).toString("hex")}-${name}`;
+    const encoded = file.split("/").map(encodeURIComponent).join("/");
+    await this.api(target, "PUT", "repos/" + target.repo + "/contents/" + encoded,
+      { message: "AgentHub 작업 첨부: " + name, content: data, branch: ATTACHMENT_BRANCH }, { write: true });
+    const url = "https://github.com/" + target.repo + "/raw/" + ATTACHMENT_BRANCH + "/" + encoded;
+    const image = /^image\/(png|jpeg|gif|webp|svg\+xml)$/.test(String(body.mimeType ?? "")) || /\.(png|jpe?g|gif|webp|svg)$/i.test(name);
+    const label = name.replace(/[[\]]/g, "");
+    return { ok: true, name, size, url, branch: ATTACHMENT_BRANCH, path: file, markdown: image ? `![${label}](${url})` : `[${label}](${url})` };
+  }
+
+  async ensureAttachmentBranch(target) {
+    try { await this.api(target, "GET", "repos/" + target.repo + "/branches/" + ATTACHMENT_BRANCH); return; }
+    catch (error) { if (!/\bHTTP 404\b/.test(error.message)) throw error; }
+    const tree = await this.api(target, "POST", "repos/" + target.repo + "/git/trees",
+      { tree: [{ path: "README.md", mode: "100644", type: "blob", content: "# AgentHub 첨부 파일\n\nAgentHub 팀 작업(GitHub 이슈)에 붙인 파일을 보관하는 브랜치입니다. 코드 브랜치와 병합하지 마세요.\n" }] }, { write: true });
+    const commit = await this.api(target, "POST", "repos/" + target.repo + "/git/commits",
+      { message: "AgentHub 첨부 파일 브랜치", tree: tree.sha, parents: [] }, { write: true });
+    try {
+      await this.api(target, "POST", "repos/" + target.repo + "/git/refs", { ref: "refs/heads/" + ATTACHMENT_BRANCH, sha: commit.sha }, { write: true });
+    } catch (error) {
+      if (!/\bHTTP 422\b/.test(error.message)) throw error; // 동시에 만든 경우
     }
   }
 

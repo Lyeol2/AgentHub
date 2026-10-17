@@ -172,12 +172,19 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
         const choose = button(active ? "선택됨" : "이 폴더 사용", async () => { close(); await setWorkspace(tree.cwd); });
         choose.disabled = active || tree.missing;
         choose.dataset.workspace = tree.cwd;
-        const remove = button("폴더 정리", () => removeTree(tree));
-        remove.disabled = !tree.canRemove; remove.title = tree.reason || "워크트리 폴더를 삭제합니다.";
-        return el("li", { class: "git-worktree" }, el("strong", {}, tree.branch || "브랜치 없음"),
-          tree.original ? el("span", { class: "muted" }, "원본 폴더") : null,
-          el("p", { class: "mono" }, tree.cwd),
-          el("p", { class: "hint" }, [tree.locked ? "잠김" : "", tree.missing ? "폴더 없음" : "", tree.dirty ? typeof tree.dirty === "number" ? "미커밋 변경 " + tree.dirty + "개" : "미커밋 변경 있음" : "", tree.sessionIds?.length ? "연결 세션 " + tree.sessionIds.length + "개" : "", tree.taskIds?.length ? "연결 작업 " + tree.taskIds.length + "개" : ""].filter(Boolean).join(" · ")),
+        // 원본 폴더는 정리할 수 없으므로 정리 버튼을 두지 않는다.
+        const remove = tree.original ? null : button("폴더 정리", () => removeTree(tree));
+        if (remove) { remove.disabled = !tree.canRemove; remove.title = tree.reason || "워크트리 폴더를 삭제합니다."; }
+        // 폴더 이름과 브랜치를 한 줄에 두고, 상태는 작은 표시로 붙인다.
+        const badges = [active ? ["선택됨", "accent"] : null, tree.original ? ["원본 폴더", ""] : null, tree.locked ? ["잠김", "warn"] : null, tree.missing ? ["폴더 없음", "warn"] : null,
+          tree.dirty ? [typeof tree.dirty === "number" ? "미커밋 " + tree.dirty : "미커밋 있음", "warn"] : null,
+          tree.sessionIds?.length ? ["세션 " + tree.sessionIds.length, ""] : null, tree.taskIds?.length ? ["작업 " + tree.taskIds.length, ""] : null].filter(Boolean);
+        return el("li", { class: "git-worktree" + (active ? " active" : "") },
+          el("div", { class: "git-worktree-head" },
+            el("strong", { class: "git-worktree-folder", title: tree.cwd }, tree.cwd.split(/[\\/]/).filter(Boolean).at(-1) || tree.cwd),
+            el("span", { class: "git-worktree-branch mono", title: tree.branch || "" }, tree.branch || "브랜치 없음(분리된 HEAD)"),
+            ...badges.map(([text, tone]) => el("span", { class: "git-worktree-badge" + (tone ? " " + tone : "") }, text))),
+          el("p", { class: "mono muted git-worktree-path" }, tree.cwd),
           el("div", { class: "git-operation-buttons" }, choose, remove));
       });
       const name = el("input", { id: "g-worktree-name", required: "", maxlength: "80", placeholder: "예: login-fix" });
@@ -341,7 +348,10 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
     const m = getModel();
     if (notice.dataset.project && !samePath(notice.dataset.project, m?.project)) notice.hidden = true;
     location.textContent = m?.cwd ?? m?.project ?? ""; location.title = location.textContent;
-    workspace.textContent = m && !samePath(m.cwd ?? m.project, m.project) ? "워크트리 선택 ▾" : "원본 폴더 ▾";
+    // 워크트리를 고르면 어떤 폴더인지 버튼에서 바로 보이게 한다.
+    const tree = m && !samePath(m.cwd ?? m.project, m.project) ? String(m.cwd).split(/[\\/]/).filter(Boolean).at(-1) : "";
+    workspace.textContent = tree ? "📁 " + tree + " ▾" : "원본 폴더 ▾";
+    workspace.title = tree ? "워크트리 " + m.cwd + (m.data?.branch ? " · " + m.data.branch : "") + "\n다른 작업 폴더를 고르려면 누르세요." : "프로젝트 원본 폴더 · 다른 작업 폴더(워크트리)를 고르려면 누르세요.";
     const data = m?.data;
     const reasons = !data ? {} : {
       pull: !data.branch || data.branch === "HEAD" ? "브랜치가 아닌 커밋을 보고 있어 받을 수 없습니다." : !data.upstream ? "따라갈 원격 브랜치가 없습니다. 먼저 Push로 게시하세요." : "",

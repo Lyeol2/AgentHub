@@ -128,6 +128,19 @@ export function taskWorktreeLocation(repo, id, name) {
   return { root, cwd: path.join(root, name || `task-${id}`) };
 }
 
+// 브랜치 이름을 정하지 않은 작업은 제목을 짧은 소문자 이름으로 바꿔 쓴다. 예: "Login 버튼 수정!" → login-버튼-수정
+// 단어 경계에서 40자 안으로 자르고, 쓸 글자가 없으면 work를 쓴다.
+export function taskBranchSlug(title, max = 40) {
+  const words = String(title ?? "").normalize("NFKC").toLowerCase().replace(/[^a-z0-9가-힣]+/gu, " ").trim().split(/\s+/).filter(Boolean);
+  let slug = "";
+  for (const word of words) {
+    const next = slug ? `${slug}-${word}` : word;
+    if (next.length > max) { if (!slug) slug = word.slice(0, max); break; }
+    slug = next;
+  }
+  return slug || "work";
+}
+
 // 작업 폴더 이름은 <프로젝트>.agenthub/ 바로 아래 한 단계 폴더만 허용한다.
 export function validTaskWorktreeName(name) {
   return /^[A-Za-z0-9가-힣_][A-Za-z0-9가-힣._-]{0,79}$/u.test(name) && !/\.$/.test(name)
