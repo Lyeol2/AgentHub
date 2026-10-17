@@ -735,7 +735,7 @@ export function createTasksController({
       $('task-worktree-hint').textContent = existing
         ? (selected?.cwd ? `선택한 브랜치의 작업 폴더에서 이어 작업합니다: ${selected.cwd}` : '선택한 브랜치의 작업 폴더를 새로 열어 작업합니다.')
         : inPlace
-          ? `원본 폴더(${project})를 새 작업 브랜치로 바꿔 작업합니다. 이 폴더를 쓰는 다른 세션도 바뀐 브랜치를 보게 됩니다.`
+          ? `원본 폴더(${project})를 새 작업 브랜치로 바꿔 작업합니다. 이 폴더를 쓰는 다른 세션도 바뀐 브랜치를 보게 됩니다. 원본 폴더를 이미 쓰고 있으면 워크트리를 만들지 묻습니다.`
           : `별도 폴더 ${project ? project.replace(/[\\/]+$/, '') + '.agenthub' : '<프로젝트>.agenthub'}${project.includes('\\') ? '\\' : '/'}${folder}에서 작업합니다. 원본 폴더와 브랜치는 그대로입니다.`;
     }
     // 새 브랜치일 때만 브랜치 이름을, 워크트리를 만들 때만 작업 폴더 이름을 정할 수 있다.
@@ -813,8 +813,8 @@ export function createTasksController({
   function applyCreatePrefs() {
     const prefs = loadCreatePrefs();
     fillAgentOptions();
-    // 원본 폴더에서 작업하면 원본 폴더의 브랜치가 바뀌므로 지난번 선택을 기억하지 않고 매번 워크트리를 기본으로 둔다.
-    if ($('task-worktree')) $('task-worktree').value = 'create';
+    // 지난번 선택을 기억하지 않고 매번 원본 폴더를 기본으로 둔다. 원본 폴더를 쓰는 중이면 만들 때 워크트리로 진행할지 묻는다.
+    if ($('task-worktree')) $('task-worktree').value = 'none';
     if (prefs.type !== 'release') selectIfPresent('task-type', prefs.type);
     selectIfPresent('task-agent', prefs.agent);
     updateAgentControls();
@@ -885,6 +885,20 @@ export function createTasksController({
     if (submit) { submit.disabled = true; submit.textContent = '브랜치와 세션 준비 중…'; }
     updateToolbar();
     try {
+      // 원본 폴더를 이미 쓰고 있으면 워크트리를 만들어 진행할지 묻는다.
+      if (payload.worktree === false) {
+        const inPlace = await api('GET', `/api/tasks/in-place?path=${encodeURIComponent(path)}`);
+        if (!sameProject(path, epoch)) return;
+        if (!inPlace.available) {
+          const answer = await confirmAction({ title: '원본 폴더를 이미 쓰고 있습니다', subject: title, warnings: [inPlace.message],
+            changes: [`워크트리(별도 작업 폴더 ${path.replace(/[\\/]+$/, '')}.agenthub 아래)를 만들어 이 작업을 진행합니다.`],
+            keeps: ['원본 폴더와 지금 브랜치'], confirmLabel: '워크트리로 만들기' });
+          if (!answer.ok || !sameProject(path, epoch)) return;
+          delete payload.worktree;
+          if ($('task-worktree')) $('task-worktree').value = 'create';
+          updateCreatePreview();
+        }
+      }
       const result = await api('POST', '/api/tasks', payload);
       saveCreatePrefs({
         ...loadCreatePrefs(),
@@ -902,7 +916,7 @@ export function createTasksController({
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainCreates.add(path);
-      if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : requestError(error), error.reason);
+      if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : [requestError(error), error.hint].filter(Boolean).join(' '), error.reason);
     } finally {
       createBusy = false;
       taskAssistant.setCreating(false);

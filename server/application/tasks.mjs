@@ -9,7 +9,7 @@ import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
-  taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle, removeWorktreeDir } from "../tasks.mjs";
+  taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle, removeWorktreeDir, worktreeRegistered } from "../tasks.mjs";
 import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey, gitflowBranches } from "../gitflow-settings.mjs";
 import { reviewSnapshot, commitReviewedFiles, assertReviewed } from "../task-review.mjs";
 import { fileDiff, parseStatus } from "../gitpanel.mjs";
@@ -41,6 +41,23 @@ const recordError = (task, error) => {
   task.error = error.message; task.errorReason = error.reason;
   if (typeof error.hint === "string" && error.hint) task.errorHint = error.hint; else delete task.errorHint;
 };
+
+const emptyDir = (dir) => { try { return fs.statSync(dir).isDirectory() && !fs.readdirSync(dir).length; } catch { return false; } };
+// git worktree add가 실패한 원인을 사용자가 알 수 있는 문장으로 바꾼다. 원문은 raw로 남긴다.
+const WORKTREE_FAILURES = [
+  [/invalid path|Filename too long|cannot create directory|unable to create file/i, "저장소에 이 컴퓨터에서 만들 수 없는 파일 이름이나 너무 긴 경로가 있어 작업 폴더를 만들지 못했습니다.",
+    "파일 이름에 : * ? \" < > | 같은 문자가 있는지, 경로가 너무 길지 않은지 확인하세요. 원본 폴더에서 작업하는 방법도 있습니다."],
+  [/already registered worktree|already checked out|is already used by worktree/i, "같은 경로나 브랜치가 다른 워크트리에 등록되어 있어 작업 폴더를 만들지 못했습니다.",
+    "Git 패널의 워크트리 목록에서 남은 항목을 정리한 뒤 다시 시도하세요."],
+  [/Permission denied|Access is denied|EPERM|EACCES/i, "작업 폴더를 만들 권한이 없습니다.", "<프로젝트>.agenthub 폴더의 권한과 다른 프로그램이 폴더를 잡고 있는지 확인하세요."],
+];
+function worktreeFailure(error) {
+  if (error.outcomeUnknown || error.reason !== "git-error") return failure(error);
+  const raw = String(error.raw ?? error.message);
+  const [, message, hint] = WORKTREE_FAILURES.find(([test]) => test.test(raw)) ?? [null, "작업 폴더를 만들지 못했습니다.", ""];
+  const cause = raw.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^(fatal|error):/i.test(line)).at(0);
+  return new HttpError(409, cause ? `${message} (${cause})` : message, "task-worktree-create", { hint, raw: raw.slice(0, 1600) });
+}
 
 // 배포 준비·긴급 수정은 main에 반영한 뒤 develop에도 반영해야 끝난다.
 const needsDevelop = (task) => ["hotfix", "release"].includes(task.type);
@@ -100,6 +117,17 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     await assertTaskGitIdle({ cwd });
     if (await taskDirty({ cwd })) throw new HttpError(409, "원본 폴더에 커밋하지 않은 변경이 있습니다. 커밋하거나 워크트리를 만들어 진행하세요.", "task-dirty");
     return (await taskGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "")).trim() || null;
+  }
+  // 새 작업을 원본 폴더에서 바로 시작할 수 있는지 미리 본다. 쓸 수 없으면 화면이 워크트리로 진행할지 묻는다.
+  const IN_PLACE_BUSY = ["task-in-place", "running", "task-dirty", "task-git-operation"];
+  async function inPlaceStatus(projectPath) {
+    if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
+    const repo = await taskRepo(projectPath);
+    try { await assertInPlaceReady(repo); return { available: true }; }
+    catch (error) {
+      if (!IN_PLACE_BUSY.includes(error.reason)) throw error;
+      return { available: false, reason: error.reason, message: error.reason === "running" ? "원본 폴더에서 실행 중인 세션이 있습니다." : error.message };
+    }
   }
   // 정리할 때 원본 폴더를 작업 전 브랜치(없으면 PR 대상 브랜치)로 되돌려 작업 브랜치를 지울 수 있게 한다.
   async function leaveInPlaceBranch(task) {
@@ -299,15 +327,39 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     }
     if (task.freshness.behind) throw new HttpError(409, "기준 브랜치가 변경됐습니다. 최신화 버튼으로 반영한 뒤 작업을 마무리하세요.", "task-behind");
   }
+  // 작업 폴더를 워크트리로 만든다. 이전 시도가 남긴 빈 폴더나 지워진 폴더의 워크트리 등록이 같은 경로를 막고 있으면 먼저 치운다.
+  async function addWorktree(task, branchExists) {
+    if (emptyDir(task.cwd)) fs.rmdirSync(task.cwd);
+    if (!fs.existsSync(task.cwd) && await worktreeRegistered(task.projectPath, task.cwd))
+      await taskGit(task.projectPath, ["worktree", "prune"], { write: true });
+    await taskGit(task.projectPath, branchExists ? ["worktree", "add", task.cwd, task.branch]
+      : ["worktree", "add", "-b", task.branch, task.cwd, task.baseCommit], { write: true });
+  }
+  // 새 작업 폴더를 만들다 실패하면 이번 시도가 만든 폴더·브랜치·작업 기록을 되돌린다. 다시 시도할 때 남은 브랜치나 폴더에 막히지 않게 한다.
+  // 폴더가 작업 브랜치로 준비됐거나(체크아웃 뒤 훅 실패 등) 브랜치에 새 커밋이 생겼으면 지우지 않고 false를 돌려준다.
+  async function discardFailedWorktree(task, root) {
+    try {
+      if (fs.existsSync(task.cwd)) {
+        if (readTaskBranch(task.cwd) === task.branch && await worktreeRegistered(task.projectPath, task.cwd)) return false;
+        if (!(await removeWorktreeDir(task.projectPath, task.cwd, { force: true, attempts: 5 })).removed) return false;
+      } else await taskGit(task.projectPath, ["worktree", "prune"], { write: true });
+      const head = await taskRef(task.projectPath, `refs/heads/${task.branch}`);
+      if (head && head !== task.baseCommit) return false;
+      if (head) await taskGit(task.projectPath, ["branch", "-D", task.branch], { write: true });
+      if (root && emptyDir(root)) fs.rmdirSync(root);
+      fs.rmSync(path.join(directory, `${task.id}.json`), { force: true }); records.delete(task.id);
+      notify("tasks", { projectPath: task.projectPath, taskId: task.id });
+      return true;
+    } catch { return false; }
+  }
   async function attach(task, body) {
     assertActive(task);
     graphTabs?.resolve(task.projectPath, body.tabId, body.connectFrom ?? body.createdBy);
-    if (task.provisioning && !fs.existsSync(task.cwd)) {
+    if (task.provisioning && (!fs.existsSync(task.cwd) || emptyDir(task.cwd))) {
       const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id, task.worktreeName);
       if (!sameTaskPath(expected.cwd, task.cwd)) throw new HttpError(409, "작업 폴더 경로를 확인할 수 없습니다.", "task-worktree");
-      const branch = await taskRef(task.projectPath, `refs/heads/${task.branch}`);
-      if (branch) await taskGit(task.projectPath, ["worktree", "add", task.cwd, task.branch], { write: true });
-      else await taskGit(task.projectPath, ["worktree", "add", "-b", task.branch, task.cwd, task.baseCommit], { write: true });
+      try { await addWorktree(task, !!await taskRef(task.projectPath, `refs/heads/${task.branch}`)); }
+      catch (error) { throw worktreeFailure(error); }
     }
     await assertTaskWorktree(task);
     if (task.provisioning) { delete task.provisioning; delete task.error; save(task); }
@@ -394,7 +446,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (selected) assertIdle({ cwd: selected.dir });
       const previousBranch = inPlace ? await assertInPlaceReady(repo) : null;
       const location = inPlace ? { cwd: path.resolve(repo.top), root: null } : selected ? { cwd: selected.dir, root: path.dirname(selected.dir) } : taskWorktreeLocation(repo, id, worktreeName);
-      if (worktreeName && (fs.existsSync(location.cwd) || [...records.values()].some((other) => other.state !== "cleaned" && sameTaskPath(other.cwd, location.cwd))))
+      // 이전 시도가 남긴 빈 폴더는 그대로 쓸 수 있으므로 막지 않는다.
+      if (worktreeName && ((fs.existsSync(location.cwd) && !emptyDir(location.cwd)) || [...records.values()].some((other) => other.state !== "cleaned" && sameTaskPath(other.cwd, location.cwd))))
         throw new HttpError(409, `같은 이름의 작업 폴더가 이미 있습니다: ${worktreeName}`, "task-worktree-exists");
       const targetSha = type === "feature" ? current.developSha ?? current.mainSha : current.mainSha;
       const behind = !!selected && !await taskAncestor(project.path, targetSha, await taskRef(selected.dir, "HEAD"));
@@ -432,15 +485,17 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         try { return await attachAndStart(task, body); }
         catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
       }
+      const createdRoot = !fs.existsSync(location.root);
       fs.mkdirSync(location.root, { recursive: true });
-      try { if (!selected) await taskGit(project.path, ["worktree", "add", "-b", branch, task.cwd, baseCommit], { write: true }); }
+      try { if (!selected) await addWorktree(task, false); }
       catch (error) {
-        if (error.outcomeUnknown || fs.existsSync(task.cwd) || await taskRef(project.path, `refs/heads/${branch}`)) {
+        const reported = worktreeFailure(error);
+        if (error.outcomeUnknown || !await discardFailedWorktree(task, createdRoot && location.root)) {
           task.provisioning = true;
-          task.error = `작업 폴더 준비를 완료하지 못했습니다. 상태를 확인한 뒤 새 세션을 연결하면 이어서 준비합니다: ${error.message}`;
+          task.error = `작업 폴더 준비를 완료하지 못했습니다. 상태를 확인한 뒤 새 세션을 연결하면 이어서 준비합니다: ${reported.message}`;
           save(task);
-        } else { fs.rmSync(path.join(directory, `${id}.json`), { force: true }); records.delete(id); }
-        throw failure(error);
+        }
+        throw reported;
       }
       if (selected) shareFolder(selected.dir, task);
       delete task.provisioning;
@@ -1281,7 +1336,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, get: (id) => clone(get(id)), adoptSession, context, settings, updateSettings, create, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, refresh, sync, cleanup, remove, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
+  return { list, get: (id) => clone(get(id)), adoptSession, context, inPlaceStatus, settings, updateSettings, create, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, refresh, sync, cleanup, remove, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
     mergeDevelop, linkIssue, unlinkIssue, abortOperation,
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }
