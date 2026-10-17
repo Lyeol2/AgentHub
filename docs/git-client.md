@@ -194,7 +194,8 @@ Fork의 3단 배치를 따른다.
 
 - 바로 `{ jobId }`를 돌려주고, 진행 출력은 SSE `git` `{ cwd, jobId, line }` 또는 끝났을 때 `{ cwd, jobId, done, error }`로 보낸다. 화면은 저장소 화면 아래 작은 진행 칸에 보여 준다.
 - 터미널 입력을 기다리며 멈추지 않도록 `GIT_TERMINAL_PROMPT=0`을 주고 stdin을 닫는다. credential manager의 로그인 창은 막지 않는다(처음 push할 때 그 창이 떠야 한다). 120초가 넘으면 끊는다.
-- 인증 실패는 "GitHub 로그인이 필요합니다. 설정 → CLI 경로에서 GitHub CLI 로그인을 하거나 git credential manager로 로그인하세요."처럼 알린다.
+- 작업 탭의 최신 확인(fetch)과 PR 푸시는 화면 뒤에서 자동으로도 돌기 때문에 credential manager 창도 띄우지 않는다(`GCM_INTERACTIVE=never`). 대신 이 명령에만 `credential.https://github.com.helper=!"<gh 경로>" auth git-credential`을 덧붙여, 저장된 자격 증명이 없거나 만료되면 GitHub CLI 로그인 계정으로 이어 받는다. 사용자의 전역 Git 설정은 바꾸지 않는다.
+- 인증 실패는 `git-auth`(HTTPS)·`git-auth-ssh`(SSH 키)로 바꿔 "GitHub 로그인이 필요합니다…"처럼 알리고, 작업 화면에 GitHub 로그인 버튼(설정의 GitHub CLI 로그인)을 함께 보여 준다.
 
 ### 5.6 보안
 

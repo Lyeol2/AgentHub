@@ -23,6 +23,24 @@ const cleanError = (text) => String(text ?? "")
   .replace(/https?:\/\/[^/\s@]+@/g, "https://[credentials]@")
   .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").trim().slice(0, 1600);
 
+// 백그라운드 Git 명령은 로그인 창을 띄울 수 없다. 인증 실패를 사용자가 해결할 수 있는 안내로 바꾼다.
+const SSH_AUTH = /Permission denied \(publickey\)|Host key verification failed/i;
+const HTTPS_AUTH = /could not read (?:Username|Password) for|Authentication failed for|Invalid username or (?:password|token)|user interactivity has been disabled|terminal prompts disabled|Repository not found|requested URL returned error: 40[13]/i;
+export function gitAuthFailure(text) {
+  const value = String(text ?? "");
+  if (SSH_AUTH.test(value)) return new GitHubError("SSH 키로 GitHub에 접속하지 못했습니다. 이 PC의 SSH 키를 GitHub 계정에 등록하거나, 원격 주소를 https://github.com/<소유자>/<저장소>.git 형식으로 바꾼 뒤 GitHub에 로그인하세요.", "git-auth-ssh", 401);
+  if (HTTPS_AUTH.test(value)) return new GitHubError("GitHub 로그인이 필요합니다. GitHub CLI로 로그인하면 AgentHub의 최신 확인·푸시도 그 계정을 씁니다. 이미 로그인했다면 그 계정에 이 저장소 접근 권한이 있는지 확인하세요.", "git-auth", 401);
+  return null;
+}
+
+// 저장된 자격 증명이 없거나 만료됐을 때 GitHub CLI 로그인으로 이어 받는다.
+// 기존 자격 증명 도우미가 먼저 시도되고, 사용자의 전역 Git 설정은 바꾸지 않는다.
+export function githubCredentialArgs(gh = locateCli("gh", "")) {
+  const file = String(gh ?? "").replace(/\\/g, "/");
+  if (!file || /["$`\r\n]/.test(file)) return [];
+  return ["-c", `credential.https://github.com.helper=!"${file}" auth git-credential`];
+}
+
 // Structured arguments and stdin only; no shell, prompts, pager, or debug token output.
 export function runGitHubCommand(file, args, { cwd, input, timeout = 30_000, maxBuffer = 5_000_000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -79,9 +97,11 @@ export function parseGitHubRemote(value) {
   else {
     let url;
     try { url = new URL(raw); } catch { return null; }
-    if (url.hostname.toLowerCase() !== "github.com" || url.search || url.hash || url.password) return null;
-    if (url.protocol === "https:") {
-      if (url.username || (url.port && url.port !== "443")) return null;
+    if (!["github.com", "www.github.com"].includes(url.hostname.toLowerCase()) || url.search || url.hash || url.password) return null;
+    if (url.protocol === "https:" || url.protocol === "http:") {
+      // git이 https로 넘겨 주는 http 주소는 받되, 토큰이 섞일 수 있는 사용자 정보는 받지 않는다.
+      if (url.username) return null;
+      if (url.port && url.port !== (url.protocol === "https:" ? "443" : "80")) return null;
     } else if (url.protocol === "ssh:") {
       if (url.username !== "git" || (url.port && url.port !== "22")) return null;
     } else return null;
@@ -90,7 +110,8 @@ export function parseGitHubRemote(value) {
     [, owner, repo] = match;
   }
   repo = repo.replace(/\.git$/i, "");
-  if (!/^[a-z0-9](?:[a-z0-9-]{0,38})$/i.test(owner) || !/^[a-z0-9_.-]{1,100}$/i.test(repo) || repo === "." || repo === "..") return null;
+  // Enterprise Managed User 계정은 이름 뒤에 _회사코드가 붙는다.
+  if (!/^[a-z0-9][a-z0-9-]{0,38}(?:_[a-z0-9]{1,20})?$/i.test(owner) || !/^[a-z0-9_.-]{1,100}$/i.test(repo) || repo === "." || repo === "..") return null;
   return { repo: owner + "/" + repo, url: "https://github.com/" + owner + "/" + repo };
 }
 
@@ -154,6 +175,9 @@ export class GitHubPulls {
     if (error.timedOut) return new GitHubError(write
       ? "요청 시간이 초과되어 완료 여부를 알 수 없습니다. GitHub에서 완료 여부를 확인한 뒤 다시 시도하세요."
       : "GitHub 응답 시간이 초과되었습니다. 연결을 확인하고 다시 조회하세요.", "github-timeout", 504, write);
+    // 인증 거부는 쓰기 전에 끝나므로 완료 여부가 불확실하지 않다.
+    const auth = gitAuthFailure(error.stderr || error.message);
+    if (auth) return auth;
     const message = cleanError(error.stderr || error.stdout || error.message);
     const http = Number(message.match(/HTTP\s+(\d{3})/i)?.[1]);
     if (http === 401) return new GitHubError("GitHub 인증이 만료되었습니다. 설정에서 GitHub CLI에 다시 로그인하세요.", "gh-auth", 401);
@@ -174,13 +198,15 @@ export class GitHubPulls {
 
   async target(dir, selected) {
     const names = (await this.git(dir, ["remote"])).trim().split(/\r?\n/).filter(Boolean);
-    const remotes = (await Promise.all(names.map(async (name) => {
-      const out = await this.git(dir, ["remote", "get-url", "--all", name]);
-      const identity = parseGitHubRemote(out.trim().split(/\r?\n/)[0]);
-      return identity ? { name, ...identity } : null;
-    }))).filter(Boolean);
+    const found = await Promise.all(names.map(async (name) => {
+      const url = (await this.git(dir, ["remote", "get-url", "--all", name])).trim().split(/\r?\n/)[0];
+      const identity = parseGitHubRemote(url);
+      return identity ? { name, ...identity } : { name, url: cleanError(url).slice(0, 200), unsupported: true };
+    }));
+    const remotes = found.filter((item) => !item.unsupported);
     if (!remotes.length) throw new GitHubError(names.length
-      ? "현재 원격 저장소는 지원하지 않습니다. github.com HTTPS 또는 SSH 원격 저장소를 추가하세요."
+      ? "현재 원격 저장소는 지원하지 않습니다(" + found.map((item) => item.name + ": " + item.url).join(", ") + "). "
+        + "https://github.com/<소유자>/<저장소>.git 또는 git@github.com:<소유자>/<저장소>.git 형식의 GitHub.com 원격 저장소를 추가하세요."
       : "GitHub 원격 저장소가 없습니다. git remote add origin <GitHub 저장소 주소>로 연결하세요.", names.length ? "github-unsupported" : "github-remote");
     const remote = selected ? remotes.find((item) => item.name === selected) : remotes.find((item) => item.name === "origin") ?? remotes[0];
     if (!remote) throw new GitHubError("고른 GitHub 원격 저장소가 없습니다. 목록을 새로고침하세요.", "github-remote");
@@ -357,7 +383,7 @@ export class GitHubPulls {
       if (!identity || identity.repo.toLowerCase() !== target.repo.toLowerCase()) throw new GitHubError("푸시 주소가 바뀌었습니다. 목록을 새로고침하세요.", "github-remote", 409);
       await this.assertHead(target, body);
       try {
-        const result = await this.git(dir, ["-c", "remote." + target.name + ".mirror=false", "push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no",
+        const result = await this.git(dir, [...githubCredentialArgs(), "-c", "remote." + target.name + ".mirror=false", "push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no",
           "--", pushes[0], local.headSha + ":refs/heads/" + local.branch], { timeout: 60_000 });
         return { ok: true, result: cleanError(result) || "현재 브랜치를 GitHub에 푸시했습니다." };
       } catch (error) { throw this.failure(error, true); }
