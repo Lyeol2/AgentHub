@@ -78,11 +78,14 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     $("pr-remote").value = c.remote;
     $("pr-remote").hidden = c.remotes.length < 2;
     const previous = $("pr-base").value;
-    $("pr-base").replaceChildren(...c.baseBranches.map((branch) => node("option", { value: branch }, branch)));
-    $("pr-base").value = c.baseBranches.includes(previous) ? previous : c.defaultBranch;
+    // GitFlow 브랜치는 정해진 대상 브랜치만 고를 수 있다.
+    const bases = c.allowedBases ?? c.baseBranches;
+    $("pr-base").replaceChildren(...bases.map((branch) => node("option", { value: branch }, branch)));
+    $("pr-base").value = bases.includes(previous) ? previous : c.suggestedBase ?? c.defaultBranch;
     $("pr-head").value = c.branch ?? "";
     $("pr-push").hidden = !c.needsPush;
-    $("pr-publish-note").textContent = c.createReason || (c.dirtyCount ? "커밋된 내용으로 PR을 만듭니다. 작업 폴더의 변경 " + c.dirtyCount + "개는 포함되지 않습니다." : "현재 브랜치의 원격 커밋으로 PR을 만듭니다.");
+    $("pr-publish-note").textContent = c.createReason || [c.allowedBases ? c.baseReason : "",
+      c.dirtyCount ? "커밋된 내용으로 PR을 만듭니다. 작업 폴더의 변경 " + c.dirtyCount + "개는 포함되지 않습니다." : "현재 브랜치의 원격 커밋으로 PR을 만듭니다."].filter(Boolean).join(" ");
   }
 
   function listView(s) {
