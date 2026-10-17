@@ -76,6 +76,13 @@ async function browser(temp, url, expression) {
     assert.equal(settingsFit.result.value, true, "GitFlow settings must fit the mobile viewport");
     const shot = await command("Page.captureScreenshot", { format: "png", captureBeyondViewport: false });
     await fs.writeFile(path.join(output, "mobile.png"), Buffer.from(shot.data, "base64"));
+    // 창을 닫은 작업 카드 화면: 단계 노선과 다음 동작을 눈으로 확인한다.
+    const showCards = "new Promise(resolve => { document.querySelectorAll('dialog[open]').forEach(dialog => dialog.close()); document.getElementById('tasks-context').scrollIntoView({block:'start'}); requestAnimationFrame(() => requestAnimationFrame(resolve)); })";
+    await command("Runtime.evaluate", { expression: showCards, awaitPromise: true });
+    await fs.writeFile(path.join(output, "cards-mobile.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+    await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await command("Runtime.evaluate", { expression: showCards, awaitPromise: true });
+    await fs.writeFile(path.join(output, "cards.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
     return { checks: result.result.value, errors, mobile: mobile.result.value };
   } finally {
     socket?.close(); child.kill();
@@ -157,6 +164,11 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
       } else if (url.pathname.startsWith("/api/tasks/")) {
         const [, , , id, action] = url.pathname.split("/"); const task = tasks.find((item) => item.id === id);
         if (!task) throw Error("Task not found");
+        if (action === "status") {
+          const review = reviews.get(id);
+          value = { id, state: task.state, dirty: review ? review.files.length : 0, commits: review && review.head !== "b".repeat(40) ? 1 : 0,
+            shortHead: (review?.head ?? "a".repeat(40)).slice(0, 7), pushed: !!task.pull, sessions: 1, running: 0, folder: true, behind: false };
+        } else {
         if (!reviews.has(id)) {
           const files = mode.reviewScenario ? [{ path: 'chosen.txt', label: '수정' }, { path: 'remaining.txt', label: '새 파일' }] : [];
           reviews.set(id, { files, head: 'b'.repeat(40), token: 'review-' + id, behind: !!mode.reviewScenario });
@@ -184,6 +196,7 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
           value = { task };
         }
         else value = { task };
+        }
       } else if (url.pathname === "/api/sessions") {
         if (req.method === 'POST') {
           const owner = tasks.find((task) => task.branch === body.workBranch);

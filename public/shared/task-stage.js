@@ -87,6 +87,8 @@ export function buildTaskPipeline(task, status = null, ctx = {}) {
   };
   if (ctx.sessionId) add('open-session', finished ? '대화 기록' : '세션 열기');
   if (state === 'working') {
+    // 완료 여부를 모르는 PR 생성 뒤에도 연결된 PR은 바로 열어 볼 수 있다.
+    if (pull?.url) actions.push({ id: 'pull-link', label: 'PR 열기', url: pull.url, primary: false, disabled: false, reason: '' });
     add('finish', '변경 보기', { reason: waitReason || (folderMissing ? '작업 폴더가 없습니다.' : '') });
     if (behind) add('sync', '기준 반영', { primary: true, reason: waitReason || runReason || (dirty > 0 ? '커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.' : '') });
     else add('finish', '마무리', { primary: true, reason: waitReason || (folderMissing ? '작업 폴더가 없습니다.' : '') || runReason

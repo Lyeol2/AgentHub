@@ -1,3 +1,4 @@
+import { confirmAction } from '../../shared/confirm-dialog.js';
 // One review dialog owns the next step: commit → integrate → verify → publish/merge.
 export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, onUnknown, decorateError = () => {} }) {
   const $ = id => document.getElementById(id);
@@ -10,9 +11,10 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
   const selected = () => [...($('task-finish-files')?.querySelectorAll('input:checked') || [])].map(input => input.value);
   const behind = () => review?.task?.freshness?.behind || (mode() === 'local' && review?.localBehind);
   const blockedBase = () => task?.type !== 'hotfix' && review?.task?.freshness?.mainMissing;
-  function message(text = '', reason) {
+  function message(text = '', reason, hint = '') {
     const el = $('task-finish-error');
     el.textContent = text; el.hidden = !text;
+    if (text && hint) { const tip = document.createElement('span'); tip.className = 'task-error-hint'; tip.textContent = hint; el.append(tip); }
     if (text) decorateError(el, reason);
   }
   function saveDraft() {
@@ -36,7 +38,10 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
     const steps = $('task-finish-steps');
     steps.replaceChildren();
     for (const [text, done] of [['변경 커밋', !!review && !dirty], ['기준 반영', !!review && !needsSync && !blockedBase()], [merging ? 'PR 병합' : mode() === 'local' ? '대상 브랜치 반영' : 'PR 만들기', false]]) {
-      const step = el('span', `${done ? '✓ ' : ''}${text}`); step.dataset.done = String(done); steps.append(step);
+      const step = el('span', `${done ? '✓ ' : ''}${text}`); step.dataset.done = String(done);
+      // 아직 끝나지 않은 첫 단계가 지금 할 일이다.
+      if (!done && review && !steps.querySelector('[aria-current]')) step.setAttribute('aria-current', 'step');
+      steps.append(step);
     }
     const hint = loading ? '작업 폴더와 기준 브랜치를 확인하고 있습니다…' : !review ? '변경 목록을 확인한 뒤 진행할 수 있습니다.'
       : blockedBase() ? '배포 브랜치 변경을 개발 브랜치에 먼저 반영하세요. 현재 변경은 아래에서 커밋할 수 있습니다.'
@@ -100,6 +105,22 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
     if (dirty) body.files = selected();
     if (action === 'finish') { body.expectedTargetHead = review.localTargetHead; body.push = mode() === 'local' && $('task-finish-push').checked; }
     if (action === 'merge') { body.expectedPullHead = task.pull?.headRefOid; body.method = $('task-finish-merge-method').value; }
+    // 병합은 대상 브랜치를 바꾸므로 무엇이 합쳐지는지 요약해 한 번 더 확인한다.
+    if (action === 'merge' || (action === 'finish' && mode() === 'local')) {
+      const select = $('task-finish-merge-method');
+      const commits = review.commits?.length ?? 0;
+      const answer = await confirmAction({
+        title: action === 'merge' ? 'PR 병합' : '대상 브랜치에 반영', subject: task.title,
+        changes: [
+          action === 'merge' ? `PR #${task.pull?.number}: ${task.branch} → ${task.targetBranch}` : `로컬 ${task.targetBranch}에 ${task.branch}를 병합합니다.`,
+          `합쳐지는 커밋 ${commits}${commits >= 100 ? '개 이상' : '개'}`,
+          action === 'merge' ? `병합 방식: ${select?.selectedOptions?.[0]?.textContent || body.method}` : body.push ? `병합 후 ${task.targetBranch}를 원격에 푸시합니다.` : '',
+        ],
+        keeps: [`작업 브랜치 ${task.branch}와 작업 폴더 (정리는 따로 합니다)`],
+        confirmLabel: action === 'merge' ? '병합' : '반영',
+      });
+      if (!answer.ok || !active(serial) || busy) return;
+    }
     busy = true; onBusy(true, id); message(); render();
     try {
       const result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/${action}`, body);
@@ -112,9 +133,10 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
     } catch (error) {
       const text = error.outcomeUnknown ? '완료 여부를 확인하지 못했습니다. 중복 실행을 막기 위해 작업 카드의 최신 확인으로 결과를 먼저 확인하세요.' : error.message;
       const reason = error.outcomeUnknown ? undefined : error.reason;
-      onError(id, text, reason);
+      const hint = error.outcomeUnknown ? '' : error.hint || '';
+      onError(id, text, reason, { hint, raw: error.outcomeUnknown ? undefined : error.raw });
       if (error.outcomeUnknown) { uncertain = true; onUnknown(id, action); }
-      if (active(serial)) message(text, reason);
+      if (active(serial)) message(text, reason, hint);
       // A local merge may have finished before publishing failed. Reflect that state.
       try {
         const value = await api('GET', `/api/tasks?path=${encodeURIComponent(project)}`);
