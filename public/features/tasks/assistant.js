@@ -2,7 +2,7 @@
 export function createTaskAssistant({ api, getContext, getStatus, fillModels, onDraft = () => {}, onState = () => {} }) {
   const $ = (id) => document.getElementById(id);
   const prompt = $('task-assistant-prompt');
-  if (!prompt) return { open() {}, close() {}, setCreating() {}, ready: () => true, busy: () => false, creationId: () => undefined };
+  if (!prompt) return { open() {}, close() {}, setCreating() {}, useManual() {}, ready: () => true, busy: () => false, creationId: () => undefined };
   const fields = { title: 'task-title', content: 'task-content', acceptance: 'task-acceptance', agent: 'task-agent', type: 'task-type', version: 'task-version', branchName: 'task-branch-name', worktreeName: 'task-worktree-name' };
   let history = [], generation = 0, planning = false, creating = false, ready = false, mode = 'ai', requestId;
   const current = (context) => {
@@ -108,5 +108,6 @@ export function createTaskAssistant({ api, getContext, getStatus, fillModels, on
     if (event.key !== 'Enter' || event.shiftKey || event.isComposing) return;
     event.preventDefault(); void ask();
   });
-  return { open, close, ready: () => ready, busy: () => planning, creationId: () => requestId, setCreating(value) { creating = value; sync(); } };
+  // 내용을 미리 채워 연 창은 초안 도우미 대신 직접 작성으로 바로 확인하게 한다.
+  return { open, close, useManual: () => setMode('manual'), ready: () => ready, busy: () => planning, creationId: () => requestId, setCreating(value) { creating = value; sync(); } };
 }

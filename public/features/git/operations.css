@@ -45,12 +45,20 @@ dialog.git-operation-dialog { width: min(850px, calc(100vw - 32px)); max-height:
 .git-operation-commits li { padding: 4px 0; }
 .git-operation-diff, .git-operation-output { max-height: 320px; overflow: auto; padding: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; margin: 0; }
 .git-operation-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
-.git-worktrees { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
-.git-worktree { border: 1px solid var(--line); border-radius: 6px; padding: 12px; min-width: 0; }
-.git-worktree > span { margin-left: 10px; }
-.git-worktree p { margin: 7px 0; overflow-wrap: anywhere; }
+.git-worktrees { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.git-worktree { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 2px 12px; border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; min-width: 0; }
+.git-worktree.active { border-color: var(--accent); background: var(--accent-soft); }
+.git-worktree-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.git-worktree-folder { font-size: 13px; }
+.git-worktree-branch { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.git-worktree-badge { padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); font-size: 10px; line-height: 16px; white-space: nowrap; }
+.git-worktree-badge.accent { border-color: var(--accent); color: var(--accent); }
+.git-worktree-badge.warn { border-color: var(--warn); color: var(--warn); }
+.git-worktree .git-operation-buttons { grid-column: 2; grid-row: 1 / span 2; margin: 0; }
+
+.git-worktree p.git-worktree-path { margin: 0; font-size: 10.5px; overflow-wrap: anywhere; }
 .git-worktree-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
 .git-worktree-form h4 { grid-column: 1 / -1; }
 .git-worktree-form button { justify-self: end; align-self: end; }
 #g-operation-error { white-space: pre-wrap; overflow-wrap: anywhere; }
-@media (max-width: 600px) { .git-worktree-form { grid-template-columns: 1fr; } .git-location { flex-basis: calc(100% - 150px); } }
+@media (max-width: 600px) { .git-worktree-form, .git-worktree { grid-template-columns: 1fr; } .git-worktree .git-operation-buttons { grid-column: 1; grid-row: auto; } .git-location { flex-basis: calc(100% - 150px); } }

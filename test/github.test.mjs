@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { GitHubPulls, parseGitHubRemote, normalizePull, summarizeChecks, runGitHubCommand, gitAuthFailure, githubCredentialArgs, gitflowPullBases } from "../server/github.mjs";
+import { GitHubPulls, GitHubError, parseGitHubRemote, normalizePull, normalizeLabels, labelNames, summarizeChecks, runGitHubCommand, gitAuthFailure, githubCredentialArgs, gitflowPullBases } from "../server/github.mjs";
 import { DEFAULT_GITFLOW_SETTINGS, normalizeGitflowSettings } from "../server/gitflow-settings.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-pulls-"));
@@ -61,6 +61,7 @@ function fixture() {
       state.pull = { ...state.pull, ...data, head: { ref: data.head, sha }, base: { ref: data.base } }; state.existing = [state.pull];
       return JSON.stringify(state.pull);
     }
+    if (endpoint === "repos/acme/widget/issues/7/labels" && method === "POST") return JSON.stringify(data.labels.map((name) => ({ name, color: "ededed" })));
     if (endpoint === "repos/acme/widget/pulls/7/merge") return JSON.stringify({ merged: true, message: "merged" });
     if (endpoint === "repos/acme/widget/pulls/7/files?per_page=100") return JSON.stringify([{ filename: "file.txt", status: "modified", additions: 2, deletions: 1 }]);
     if (endpoint === "repos/acme/widget/pulls/7") {
@@ -292,4 +293,47 @@ test("github: 연속 PR 생성은 직렬화하여 중복 원격 변경을 막는
   assert.equal(result.filter((item) => item.status === "fulfilled").length, 1);
   assert.equal(result.filter((item) => item.status === "rejected" && item.reason.reason === "pull-exists").length, 1);
   assert.equal(writes(f.state).length, 1);
+});
+
+test("github: PR 라벨을 정리해 보여 주고, 붙이고 떼며, PR을 만들 때 함께 붙인다", async () => {
+  assert.deepEqual(normalizeLabels([{ name: "bug", color: "d73a4a" }, { name: "ui", color: "javascript:" }, "docs", { name: "" }]),
+    [{ name: "bug", color: "d73a4a" }, { name: "ui", color: "" }, { name: "docs", color: "" }]);
+  assert.deepEqual(normalizePull({ number: 3, state: "open", labels: [{ name: "bug", color: "d73a4a" }] }, "acme/widget").labels, [{ name: "bug", color: "d73a4a" }]);
+  assert.deepEqual(labelNames(" bug, ui ,bug,, "), ["bug", "ui"]);
+  assert.throws(() => labelNames(["x".repeat(51)]), /50자/);
+  assert.throws(() => labelNames(["a\nb"]), /줄바꿈/);
+
+  const calls = [];
+  const client = new GitHubPulls({ locate: () => "gh" });
+  client.target = async (dir) => ({ repo: "acme/widget", name: "origin", dir, file: "gh" });
+  client.api = async (target, method, endpoint, data, options = {}) => {
+    calls.push({ method, endpoint, data, options });
+    if (method === "POST" && endpoint === "repos/acme/widget/issues/7/labels") return [{ name: "bug", color: "d73a4a" }, ...data.labels.map((name) => ({ name, color: "ededed" }))];
+    if (method === "DELETE" && endpoint === "repos/acme/widget/issues/7/labels/needs%20review") return [{ name: "bug", color: "d73a4a" }];
+    if (method === "DELETE" && endpoint === "repos/acme/widget/issues/7/labels/gone") throw new GitHubError("gh: Label does not exist (HTTP 404)");
+    throw new Error("Unexpected endpoint " + method + " " + endpoint);
+  };
+  const added = await client.labels(tmp, 7, { add: ["ui"], repo: "acme/widget" });
+  assert.deepEqual(added.labels.map((label) => label.name), ["bug", "ui"]);
+  assert.equal(calls[0].options.write, true);
+  const removed = await client.labels(tmp, 7, { remove: ["needs review", "gone"], repo: "acme/widget" });
+  assert.deepEqual(removed.labels.map((label) => label.name), ["bug"], "이미 없는 라벨을 떼도 실패하지 않는다");
+  await assert.rejects(client.labels(tmp, 7, { repo: "acme/widget" }), /라벨을 고르세요/);
+  await assert.rejects(client.labels(tmp, 7, { add: ["ui"], repo: "other/repo" }), /원격 저장소/);
+});
+
+test("github: PR을 만들 때 고른 라벨을 붙이고, 라벨만 실패하면 PR은 남기고 알린다", async () => {
+  const f = fixture();
+  const result = await f.client.create(f.dir, { ...f.body, labels: ["bug", " ui "] });
+  assert.equal(result.pull.number, 7);
+  assert.deepEqual(result.pull.labels.map((label) => label.name), ["bug", "ui"]);
+  const label = f.state.calls.find((call) => call.args.includes("repos/acme/widget/issues/7/labels"));
+  assert.deepEqual(JSON.parse(label.options.input), { labels: ["bug", "ui"] });
+
+  const g = fixture();
+  g.state.fail = ({ endpoint }) => { if (endpoint === "repos/acme/widget/issues/7/labels") throw new Error("gh: Validation Failed (HTTP 422)"); };
+  const partial = await g.client.create(g.dir, { ...g.body, labels: ["bug"] });
+  assert.equal(partial.ok, true);
+  assert.match(partial.warning, /라벨을 붙이지 못했습니다/);
+  await assert.rejects(fixture().client.create(f.dir, { ...f.body, labels: ["x".repeat(51)] }), /50자/);
 });

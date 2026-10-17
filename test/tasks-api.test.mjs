@@ -392,3 +392,55 @@ test('public session creation cannot inject task ownership or reuse a task workt
   const stored = (await f.tasks()).find(item => item.id === task.id);
   assert.deepEqual(stored.sessionIds, [session.id]);
 });
+
+test('tasks without a branch name get a tidy branch from the title and avoid existing branches', async t => {
+  const f = await fixture(t);
+  const first = (await f.createTask('feature', 'Login 버튼 수정!')).task;
+  assert.equal(first.branch, 'feature/login-버튼-수정');
+  const second = (await f.createTask('feature', 'login  버튼 -- 수정')).task;
+  assert.equal(second.branch, 'feature/login-버튼-수정-2');
+  // 원격에만 있는 같은 이름도 피한다.
+  git(f.repo, 'push', 'origin', `${f.mainSha}:refs/heads/feature/remote-taken`);
+  git(f.repo, 'fetch', 'origin');
+  const third = (await f.createTask('feature', 'Remote taken')).task;
+  assert.equal(third.branch, 'feature/remote-taken-2');
+  assert.equal(git(third.cwd, 'branch', '--show-current'), 'feature/remote-taken-2');
+  const hotfix = (await f.createTask('hotfix', '!!!')).task;
+  assert.equal(hotfix.branch, 'hotfix/work');
+});
+
+test('abandoning a task removes its sessions, worktree, local branch, pushed remote branch and record', async t => {
+  const f = await fixture(t);
+  const { task, session } = await f.createTask('feature', 'Give up');
+  await writeFile(path.join(task.cwd, 'work.txt'), 'Committed work\n');
+  git(task.cwd, 'add', 'work.txt');
+  configureIdentity(task.cwd);
+  git(task.cwd, 'commit', '-m', 'Work in progress');
+  git(task.cwd, 'push', 'origin', task.branch);
+  assert.match(git(f.origin, 'branch', '--list', task.branch), /give-up/);
+
+  await writeFile(path.join(task.cwd, 'unsaved.txt'), 'Uncommitted\n');
+  const dirty = await f.request('POST', `/tasks/${task.id}/abandon`, {});
+  assert.equal(dirty.status, 409, JSON.stringify(dirty.body));
+  assert.equal(dirty.body.reason, 'task-dirty');
+  assert.ok(existsSync(task.cwd));
+  assert.match(git(f.origin, 'branch', '--list', task.branch), /give-up/, 'a refused abandon leaves the remote branch alone');
+
+  const result = await f.success('POST', `/tasks/${task.id}/abandon`, { force: true });
+  assert.equal(result.remoteBranchRemoved, true);
+  assert.equal(result.branchRemoved, true);
+  assert.equal(result.worktreeRemoved, true);
+  assert.deepEqual(result.sessionIds, [session.id]);
+  assert.equal(existsSync(task.cwd), false);
+  assert.equal(git(f.repo, 'branch', '--list', task.branch), '');
+  assert.equal(git(f.origin, 'branch', '--list', task.branch), '');
+  assert.equal((await f.success('GET', '/sessions')).some(item => item.id === session.id), false);
+  assert.deepEqual(await f.tasks(), []);
+
+  // 게시하지 않은 작업도 그만둘 수 있고, 원격에는 아무것도 하지 않는다.
+  const local = (await f.createTask('feature', 'Never pushed')).task;
+  const quiet = await f.success('POST', `/tasks/${local.id}/abandon`, {});
+  assert.equal(quiet.remoteBranchRemoved, false);
+  assert.equal(git(f.repo, 'branch', '--list', local.branch), '');
+  assert.equal((await f.request('POST', `/tasks/${local.id}/abandon`, {})).status, 404);
+});

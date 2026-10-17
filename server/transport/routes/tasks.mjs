@@ -20,6 +20,7 @@ export function taskRoutes(s) {
     ["DELETE", "tasks/:id/issue", ({ params }) => s.unlinkIssue(params.id)],
     ["POST", "tasks/:id/cleanup", ({ params }) => s.cleanup(params.id)],
     ["POST", "tasks/:id/session", ({ params, body }) => s.addSession(params.id, body)],
+    ["POST", "tasks/:id/abandon", ({ params, body }) => s.abandon(params.id, { force: body?.force === true })],
     ["DELETE", "tasks/:id", ({ params, query }) => s.remove(params.id, { force: query.get("force") === "1", deleteBranch: query.get("branch") === "delete" })],
   ];
 }

@@ -185,3 +185,6 @@
   .task-dialog .task-form-grid { grid-template-columns: 1fr; gap: 0; }
   .task-dialog-actions > button { flex: 1 1 auto; }
 }
+.tasks-filter { margin-bottom: 12px; }
+.tasks-filter button[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); font-weight: 600; }
+.task-abandon { margin-left: auto; }

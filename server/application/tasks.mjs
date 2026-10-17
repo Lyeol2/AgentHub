@@ -9,7 +9,7 @@ import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
-  taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle } from "../tasks.mjs";
+  taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle, taskBranchSlug } from "../tasks.mjs";
 import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey, gitflowBranches } from "../gitflow-settings.mjs";
 import { reviewSnapshot, commitReviewedFiles, assertReviewed } from "../task-review.mjs";
 import { fileDiff, parseStatus } from "../gitpanel.mjs";
@@ -368,11 +368,21 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       const current = await gitflowContext(project.path, undefined, gitflow);
       if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, `새 작업을 만들기 전에 ${gitflow.main}의 변경을 ${gitflow.develop}에 반영하세요.`, "gitflow-develop-behind");
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
-      const slug = title.normalize("NFKC").replace(/[^A-Za-z0-9가-힣_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "work";
       const flowBranches = gitflowBranches(type, gitflow);
       const prefix = flowBranches.prefix;
       const name = taskBranchName(gitflow, type, branchName);
-      const branch = selectedBranch ?? `${prefix}${name || (type === "release" ? version : `${id}-${slug}`)}`;
+      // 이름을 정하지 않으면 제목으로 만든 이름을 쓰고, 이미 있는 브랜치와 겹치면 -2, -3을 붙인다.
+      const taken = async (candidate) => !!branchOwner(repo.common, candidate) || !!await taskRef(project.path, `refs/heads/${candidate}`)
+        || !!await taskRef(project.path, `refs/remotes/${current.remote}/${candidate}`);
+      let branch = selectedBranch ?? (name || type === "release" ? `${prefix}${name || version}` : null);
+      if (!branch) {
+        const slug = taskBranchSlug(title);
+        for (let n = 1; n <= 50 && !branch; n++) {
+          const candidate = `${prefix}${slug}${n > 1 ? `-${n}` : ""}`;
+          if (!await taken(candidate)) branch = candidate;
+        }
+        branch ??= `${prefix}${slug}-${id.split("-")[0]}`;
+      }
       try {
         await taskGit(project.path, ["check-ref-format", "--branch", branch]);
         if (branchName) await taskGit(project.path, ["check-ref-format", `refs/heads/${branch}`]);
@@ -1178,6 +1188,56 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       } finally { busy.delete(id); }
     });
   }
+  // 작업을 그만둔다. 열린 PR을 닫고, 이 작업이 만든 원격 브랜치를 지우고, 연결된 이슈에서 내 담당을 뺀 뒤
+  // 세션·작업 폴더·로컬 브랜치·작업 기록을 모두 지운다. 원격 처리에 실패하면 로컬은 그대로 두고 알린다.
+  // 기존 브랜치를 골라 시작한 작업은 그 브랜치를 남긴다.
+  async function abandon(id, { force = false } = {}) {
+    const task = get(id);
+    if (task.state === "merged" || task.state === "cleaned") throw new HttpError(409, "이미 반영한 작업은 그만둘 수 없습니다. 작업 삭제나 정리를 사용하세요.", "task-completed");
+    if (busy.has(id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
+    if (task.pendingAction) throw new HttpError(409, "이전 요청의 결과를 먼저 확인하세요.", "task-outcome-unknown", { outcomeUnknown: true });
+    const owned = store.list().filter((session) => session.taskId === id || task.sessionIds.includes(session.id));
+    if (!force && owned.some((session) => runner.isRunning(session.id))) throw new HttpError(409, "이 작업에서 실행 중인 세션이 있습니다.", "running");
+    if (!force && !task.inPlace && task.ownsWorktree !== false && fs.existsSync(task.cwd) && await taskDirty(task))
+      throw new HttpError(409, "작업 폴더에 커밋하지 않은 변경이나 새 파일이 있습니다.", "task-dirty");
+    const remote = { pullClosed: null, remoteBranchRemoved: false, issueUnassigned: false };
+    const warnings = [];
+    await locked(task.gitCommonDir, async () => {
+      busy.add(id);
+      try {
+        if (task.pull?.number && task.pull.state === "OPEN") {
+          const target = await githubTarget(task);
+          await github.close(task.projectPath, task.pull.number, { remote: task.remote, repo: target.repo });
+          remote.pullClosed = task.pull.number;
+          task.pull = { ...task.pull, state: "CLOSED" };
+          save(task);
+        }
+        if (task.ownsBranch !== false && task.remote) {
+          const url = (await taskGit(task.projectPath, ["remote", "get-url", task.remote])).trim();
+          if (remoteFingerprint(url) !== task.remoteFingerprint) throw new HttpError(409, "작업 생성 후 원격 주소가 바뀌었습니다. 원격 브랜치는 Git 탭에서 직접 확인하세요.", "task-remote");
+          const line = (await taskGit(task.projectPath, [...githubCredentialArgs(), "ls-remote", "--heads", "--", url, `refs/heads/${task.branch}`])).trim();
+          const sha = line.split(/\s+/)[0];
+          if (sha) {
+            // 확인한 커밋일 때만 지운다. 그사이 누가 올렸으면 거절된다.
+            await taskGit(task.projectPath, [...githubCredentialArgs(), "push", `--force-with-lease=refs/heads/${task.branch}:${sha}`, "--", url, `:refs/heads/${task.branch}`], { write: true });
+            remote.remoteBranchRemoved = true;
+          }
+        }
+      } catch (error) { recordError(task, error); save(task); throw failure(error); }
+      finally { busy.delete(id); }
+    });
+    if (task.issue?.number) {
+      try {
+        const target = await githubTarget(task);
+        const viewer = await issues.viewer(target);
+        await github.api(target, "DELETE", `repos/${task.issue.repo}/issues/${task.issue.number}/assignees`, { assignees: [viewer] }, { write: true });
+        remote.issueUnassigned = true;
+      } catch (error) { warnings.push(`이슈 #${task.issue.number}의 담당을 해제하지 못했습니다: ${error.message}`); }
+    }
+    const result = await remove(id, { force: true, deleteBranch: true });
+    if (result.warning) warnings.push(result.warning);
+    return { ...result, ...remote, ...(warnings.length ? { warning: warnings.join("\n") } : {}) };
+  }
   // 흐름의 작업 노드가 만든 작업에 그래프에 놓아 둔 세션을 연결한다. 대화 기록 확인은 호출하는 쪽이 한다.
   function adoptSession(id, session) {
     const task = get(id);
@@ -1211,7 +1271,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, get: (id) => clone(get(id)), adoptSession, context, settings, updateSettings, create, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, refresh, sync, cleanup, remove, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
+  return { list, get: (id) => clone(get(id)), adoptSession, context, settings, updateSettings, create, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, refresh, sync, cleanup, remove, abandon, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
     mergeDevelop, linkIssue, unlinkIssue,
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }

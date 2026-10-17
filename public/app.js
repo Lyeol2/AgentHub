@@ -235,7 +235,8 @@ const account = createAccountController({
   api, openSetup, onChange: () => issues?.accountChanged(),
 });
 const issues = createIssuesController({
-  api, account: () => account.account(), connectAccount: () => account.connect(), goProject, showProjectTab, projectTab, selectSession, navigation
+  api, account: () => account.account(), connectAccount: () => account.connect(), goProject, showProjectTab, projectTab, selectSession, navigation,
+  startTask: (...args) => tasks.startFromIssue(...args),
 });
 const records = createRecordsController({ api, loadSessions, selectSession, data, navigation });
 const creation = createCreationController({
@@ -243,7 +244,7 @@ const creation = createCreationController({
 });
 const tasks = createTasksController({
   api, data, navigation, loadStatus, loadSessions, loadProjects, fillModels, fillEfforts, selectSession,
-  getProjectPath: () => navigation.project, openSetup,
+  getProjectPath: () => navigation.project, openSetup, showTasksTab: () => showProjectTab("tasks"),
   reloadData: () => Promise.all([loadSessions(), loadProjects()]),
 });
 

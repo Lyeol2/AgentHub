@@ -189,6 +189,7 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
         } else if (action === "refresh") { delete task.pendingAction; if (task.pull) task.state = "review"; value = { task }; }
         else if (action === "sync") { review.behind = false; review.head = 'd'.repeat(40); review.token += '-sync'; value = { task }; }
         else if (action === "cleanup") { task.state = "cleaned"; value = { task }; }
+        else if (action === "abandon") { tasks.splice(tasks.indexOf(task), 1); value = { ok: true, sessionIds: task.sessionIds, worktreeRemoved: true, branchRemoved: true, remoteBranchRemoved: true }; }
         else if (action === "issue") {
           if (req.method === "DELETE") delete task.issue;
           else if (body.number === "13") throw Object.assign(Error("GitHub CLI 인증이 필요합니다."), { status: 401, reason: "gh-auth" });

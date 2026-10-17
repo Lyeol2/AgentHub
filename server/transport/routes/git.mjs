@@ -26,5 +26,6 @@ export function gitRoutes(s) {
     ["POST", "git/pulls", (ctx) => s.execute("createPull", options(ctx, true))],
     ["POST", "git/pulls/:number/merge", (ctx) => s.execute("mergePull", options(ctx, true))],
     ["POST", "git/pulls/:number/close", (ctx) => s.execute("closePull", options(ctx, true))],
+    ["POST", "git/pulls/:number/labels", (ctx) => s.execute("pullLabels", options(ctx, true))],
   ];
 }
