@@ -43,6 +43,9 @@ export function createGitService({ sessions, projects, runner, notify, tasks }) 
       if (action === "removeWorktree") return await changed(client.remove(ctx, options));
       if (action === "remotes") return await client.remotes(ctx, remote);
       if (action === "fetch") return await changed(client.fetch(ctx, options));
+      if (action === "pullState") return await client.pullState(ctx);
+      if (action === "pullRemote") return await changed(client.pull(ctx, options));
+      if (action === "createBranch") return await changed(client.createBranch(ctx, options));
       if (action === "preview") return await client.preview(ctx, options);
       if (action === "execute") return await changed(client.execute(ctx, options));
       if (action === "recovery") return await client.recovery(ctx);
