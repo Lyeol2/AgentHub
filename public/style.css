@@ -849,11 +849,35 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 #p-session-filter { margin: 0; width: 220px; }
 
 /* ── Git 탭 ──────────────────────────────────────────────── */
-.git-tabs { display: flex; gap: 4px; padding: 0 14px; border-bottom: 1px solid var(--line); }
-.git-tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 10px 14px; background: transparent; color: var(--muted); font-weight: 600; }
-.git-tabs button.active { color: var(--text); border-bottom-color: var(--accent); }
-.git-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -4px; }
+/* Fork처럼 왼쪽 탐색(Local Changes·History·Pull Requests·Branches)과 오른쪽 작업 화면으로 나눈다. */
+.git-layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); min-height: 520px; }
+.git-layout[hidden] { display: none; }
+.git-nav { display: flex; flex-direction: column; gap: 14px; padding: 12px 8px; border-right: 1px solid var(--line); background: var(--panel-2); min-width: 0; }
+.git-tabs { display: grid; gap: 2px; }
+.git-tabs button { display: flex; align-items: center; gap: 8px; width: 100%; border: 0; border-radius: 6px; padding: 7px 10px; background: transparent; color: var(--muted); font-weight: 600; text-align: left; }
+.git-tabs button:hover { background: var(--hover); color: var(--text); }
+.git-tabs button.active { color: var(--text); background: var(--accent-soft); box-shadow: inset 2px 0 var(--accent); }
+.git-tabs button .icon { flex-shrink: 0; }
+.git-tabs button.active .icon { color: var(--accent); }
+.git-tab-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-tabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.git-nav-branches { min-height: 0; overflow-y: auto; border-top: 1px solid var(--line); padding-top: 10px; }
+.git-nav-branches h4 { margin: 0 4px 6px; font-size: 10.5px; font-weight: 700; letter-spacing: .6px; text-transform: uppercase; color: var(--faint); display: flex; gap: 6px; align-items: center; }
+.git-stage { min-width: 0; display: flex; flex-direction: column; }
 .git-panel[hidden] { display: none; }
+.git-history-panel { min-height: 300px; }
+.git-stage-resizer { height: 6px; margin: -10px 0; cursor: row-resize; touch-action: none; position: relative; outline: none; }
+.git-stage-resizer::after { content: ""; position: absolute; left: 0; right: 0; top: 2px; height: 2px; border-radius: 2px; background: var(--line); }
+.git-stage-resizer:hover::after, .git-stage-resizer:focus-visible::after, body.resizing-git-rows .git-stage-resizer::after { background: var(--accent); }
+body.resizing-git-rows, body.resizing-git-rows * { cursor: row-resize !important; user-select: none !important; }
+.git-commit-buttons { display: inline-flex; gap: 6px; }
+.git-view-body { display: grid; grid-template-columns: minmax(0, 1fr); min-width: 0; }
+.git-view.with-files .git-view-body { grid-template-columns: minmax(160px, 240px) minmax(0, 1fr); }
+.git-view-files { list-style: none; margin: 0; padding: 6px; border-right: 1px solid var(--line); max-height: 38vh; overflow: auto; font-size: 11.5px; }
+.git-view-files[hidden] { display: none; }
+.git-view-files button { display: block; width: 100%; text-align: left; padding: 4px 6px; border-radius: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.git-view-files button.active, .git-view-files button:hover { background: var(--accent-soft); }
+.git-view .diff .file { display: inline-block; width: 100%; margin-top: 6px; color: var(--accent); font-weight: 600; }
 .git-changes-grid { display: grid; grid-template-columns: var(--git-work-width, minmax(320px, .85fr)) 6px minmax(0, 1.15fr); min-height: 460px; }
 .git-changes-resizer { position: relative; cursor: col-resize; touch-action: none; outline: none; }
 .git-changes-resizer::after { content: ""; position: absolute; inset: 0 2px; background: var(--line); }
@@ -963,6 +987,13 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .git-view-title { font-size: 12px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .git-view .diff { margin: 0; max-height: 38vh; border: 0; border-radius: 0; font-size: 11.5px; }
 @media (max-width: 900px) {
+  .git-layout { grid-template-columns: minmax(0, 1fr); }
+  .git-nav { flex-direction: row; flex-wrap: wrap; align-items: flex-start; border-right: 0; border-bottom: 1px solid var(--line); padding: 8px; }
+  .git-tabs { display: flex; flex-wrap: wrap; flex: 1 1 100%; }
+  .git-tabs button { width: auto; }
+  .git-nav-branches { flex: 1 1 100%; max-height: 180px; }
+  .git-view.with-files .git-view-body { grid-template-columns: minmax(0, 1fr); }
+  .git-view-files { border-right: 0; border-bottom: 1px solid var(--line); max-height: 120px; }
   .git-grid { grid-template-columns: 200px minmax(0, 1fr); }
   .git-changes-grid { grid-template-columns: minmax(0, 1fr); }
   .git-changes-resizer { display: none; }

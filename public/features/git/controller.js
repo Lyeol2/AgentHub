@@ -1,13 +1,17 @@
 import { createGitView } from "./view.js";
-import { initGitResizer } from "./resizer.js";
+import { initGitResizer, initGitStageResizer } from "./resizer.js";
 import { createGitOperations } from "./operations.js";
 import { $, renderDiff } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { renderMarkdown } from "../../markdown.js";
 import { createPullRequests } from "../../gitpulls.js";
+import { icon } from "../../shared/icons.js";
+import { confirmAction } from "../../shared/confirm-dialog.js";
 
 export function createGitController({ api, selectSession, openSetup, currentProject, projectTab, pullIssues = () => [], navigation }) {
   initGitResizer();
+  initGitStageResizer();
+  for (const slot of $("g-tabs").querySelectorAll("[data-icon]")) slot.replaceWith(icon(slot.dataset.icon, { size: 16 }));
   const ui = {
     "git": null
   };
@@ -162,8 +166,11 @@ export function createGitController({ api, selectSession, openSetup, currentProj
     const current = ui.git;
     if (gitBusy() || b.current || b.checkedOutAt) return;
     const dirty = current.data.files.length + current.data.moreFiles;
-    const note = dirty ? "\n커밋하지 않은 변경 " + dirty + "개는 그대로 가져갑니다. 겹치는 파일이 있으면 체크아웃하지 않습니다." : "";
-    if (!confirm(current.cwd + "\n" + current.data.branch + " → " + b.name + " 브랜치로 체크아웃할까요?" + note)) return;
+    const answer = await confirmAction({ title: "브랜치 전환 (Checkout)", subject: current.cwd,
+      changes: [current.data.branch + " → " + b.name + " 브랜치로 작업 폴더를 바꿉니다."],
+      keeps: [dirty ? "커밋하지 않은 변경 " + dirty + "개는 그대로 가져갑니다. 겹치는 파일이 있으면 전환하지 않습니다." : "커밋한 기록은 그대로 남습니다."],
+      confirmLabel: "전환" });
+    if (!answer.ok || ui.git !== current || gitBusy()) return;
     current.checkingOut = true;
     renderGitControls();
     try {
@@ -183,9 +190,10 @@ export function createGitController({ api, selectSession, openSetup, currentProj
     if (button) showGitTab(button.dataset.gitTab);
   });
   $("g-tabs").addEventListener("keydown", (e) => {
-    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
     const active = GIT_TABS.indexOf(ui.git?.tab ?? gitTab());
-    const index = e.key === "Home" ? 0 : e.key === "End" ? GIT_TABS.length - 1 : (active + (e.key === "ArrowRight" ? 1 : -1) + GIT_TABS.length) % GIT_TABS.length;
+    const forward = e.key === "ArrowRight" || e.key === "ArrowDown";
+    const index = e.key === "Home" ? 0 : e.key === "End" ? GIT_TABS.length - 1 : (active + (forward ? 1 : -1) + GIT_TABS.length) % GIT_TABS.length;
     e.preventDefault();
     showGitTab(GIT_TABS[index]);
     $("g-tab-" + GIT_TABS[index]).focus();
@@ -225,7 +233,9 @@ export function createGitController({ api, selectSession, openSetup, currentProj
     }
   }
 
-  $("g-commit").addEventListener("click", async () => {
+  $("g-commit-push").addEventListener("click", () => commitStaged({ push: true }));
+  $("g-commit").addEventListener("click", () => commitStaged());
+  async function commitStaged({ push = false } = {}) {
     const current = ui.git;
     const staged = current?.data?.stagedCount ?? gitFiles("staged").length;
     if (!staged || !$("g-message").value.trim() || gitBusy()) return;
@@ -248,7 +258,9 @@ export function createGitController({ api, selectSession, openSetup, currentProj
       if (ui.git === current) renderGitControls();
     }
     if (result && ui.git === current && samePath(current.project, navigation.project) && current.tab === "changes") showGitView("커밋 완료", result);
-  });
+    // 커밋 후 Push: 커밋에 성공했을 때만 푸시 미리보기를 연다. 실제 푸시는 미리보기에서 확인한 뒤 실행한다.
+    if (push && result && ui.git === current && samePath(current.project, navigation.project)) operations.push();
+  }
 
   // 창을 다시 열어 보면 외부 Git 작업도 반영한다.
   window.addEventListener("focus", () => {

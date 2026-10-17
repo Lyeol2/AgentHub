@@ -2,6 +2,28 @@
 .git-location { flex: 1 1 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .git-operation-notice { flex-basis: 100%; overflow-wrap: anywhere; }
 .git-operations button { flex-shrink: 0; }
+.git-workspace { display: flex; align-items: center; gap: 8px; flex: 1 1 220px; min-width: 0; }
+/* Fork식 도구 막대: 아이콘 위, 영어 이름 아래 */
+.git-tools { display: flex; align-items: stretch; gap: 2px; }
+.git-tool { position: relative; display: inline-flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 58px; padding: 5px 8px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); font-size: 11px; line-height: 1.1; }
+.git-tool:hover:not(:disabled) { background: var(--hover); border-color: var(--line); }
+.git-tool:disabled { opacity: .45; cursor: not-allowed; }
+.git-tool .icon { color: var(--accent); }
+.git-tool:disabled .icon { color: var(--muted); }
+.git-tool-badge { position: absolute; top: 1px; right: 6px; min-width: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--accent-text); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; }
+.git-tool-badge[hidden], .git-tool-badge:empty { display: none; }
+.git-tool-sep { width: 1px; margin: 6px 4px; background: var(--line-strong); }
+.git-tool-reason { flex-basis: 100%; margin: 0; color: var(--warn); font-size: 11.5px; }
+.git-tool-reason[hidden] { display: none; }
+.git-branch-form { display: grid; gap: 12px; }
+.git-branch-form label { display: grid; gap: 5px; font-size: 12px; }
+.git-branch-form label.check { display: flex; align-items: center; gap: 8px; }
+.git-branch-form label.check input { width: auto; }
+.git-branch-name-input { display: flex; align-items: stretch; min-width: 0; }
+.git-branch-prefix:not(:empty) { display: flex; align-items: center; padding: 0 8px; border: 1px solid var(--line); border-right: 0; border-radius: 6px 0 0 6px; color: var(--muted); font-size: 12px; white-space: nowrap; }
+.git-branch-prefix:not(:empty) + input { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+.git-branch-name-input input { flex: 1; min-width: 0; }
+@media (max-width: 640px) { .git-tool { min-width: 40px; padding: 6px; } .git-tool-label { display: none; } .git-tools { flex-wrap: wrap; } }
 .git-commit-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px; border-bottom: 1px solid var(--line); }
 .git-history-advanced { position: relative; font-size: 12px; }
 .git-history-advanced summary { cursor: pointer; padding: 5px; }

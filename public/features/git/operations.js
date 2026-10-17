@@ -1,5 +1,7 @@
 import { $, el, renderDiff } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
+import { icon } from "../../shared/icons.js";
+import { gitflowBranches, DEFAULT_GITFLOW } from "../../shared/gitflow.js";
 
 const LABELS = { merge: "브랜치 병합", push: "현재 브랜치 푸시", revert: "변경 되돌리기", uncommit: "커밋 취소 · 파일 유지", reset: "이 커밋으로 복귀", drop: "선택 커밋 제거" };
 const NOTES = {
@@ -20,9 +22,20 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
   const location = el("span", { id: "g-location", class: "mono muted git-location" });
   const notice = el("p", { id: "g-operation-notice", class: "hint git-operation-notice", role: "status" });
   notice.hidden = true;
-  toolbar.append(workspace, location,
-    button("병합", () => merge(), "g-merge"), button("원격 가져오기", () => remote("fetch"), "g-fetch"),
-    button("푸시", () => remote("push"), "g-push"), button("복구 기록", () => recoveries(), "g-recovery"), notice);
+  // Fork처럼 아이콘과 영어 이름을 함께 쓰는 도구 막대. 꺼진 버튼은 이유를 툴팁과 아래 한 줄로 알린다.
+  const tools = {
+    fetch: tool("fetch", "Fetch", "원격 기록 가져오기 · 작업 파일은 바뀌지 않습니다", () => remote("fetch"), "g-fetch"),
+    pull: tool("pull", "Pull", "원격 변경을 현재 브랜치에 받기", () => pull(), "g-pull"),
+    push: tool("push", "Push", "현재 브랜치를 원격에 보내기", () => remote("push"), "g-push"),
+    branch: tool("branch", "Branch", "새 브랜치 만들기", () => branch(), "g-new-branch"),
+    merge: tool("merge", "Merge", "다른 브랜치를 현재 브랜치에 병합", () => merge(), "g-merge"),
+    recovery: tool("recovery", "Recovery", "기록을 바꾸기 전 위치로 복구", () => recoveries(), "g-recovery"),
+  };
+  const toolReason = el("p", { id: "g-tool-reason", class: "hint git-tool-reason", role: "status" });
+  toolReason.hidden = true;
+  toolbar.append(el("div", { class: "git-workspace" }, workspace, location),
+    el("div", { class: "git-tools", role: "toolbar", "aria-label": "Git 동작" }, tools.fetch, tools.pull, tools.push, tools.branch,
+      el("span", { class: "git-tool-sep", "aria-hidden": "true" }), tools.merge, tools.recovery), toolReason, notice);
   $("g-note").before(toolbar);
   const commitActions = el("div", { id: "g-commit-actions", class: "git-commit-actions" });
   commitActions.hidden = true;
@@ -38,6 +51,12 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
   dialog.addEventListener("cancel", (event) => { if (writing) event.preventDefault(); else ++requestVersion; });
   dialog.addEventListener("close", () => { if (!dialog.open) { ++requestVersion; dialogModel = null; } });
 
+  function tool(name, label, description, click, id) {
+    const b = el("button", { type: "button", class: "git-tool", id, title: description, "aria-label": label + " · " + description, onclick: click },
+      icon(name, { size: 18 }), el("span", { class: "git-tool-label" }, label), el("span", { class: "git-tool-badge", "aria-hidden": "true" }));
+    b.dataset.description = description;
+    return b;
+  }
   function button(text, click, id) {
     const b = el("button", { type: "button", class: "ghost sm", onclick: click }, text);
     if (id) b.id = id;
@@ -60,6 +79,7 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
   function fail(errorValue, m, version) {
     if (!valid(m, version)) return;
     error.textContent = errorValue.message
+      + (errorValue.hint ? "\n해결 방법: " + errorValue.hint : "")
       + (errorValue.outcomeUnknown ? "\n완료 여부가 불확실합니다. 현재 상태를 확인하기 전에는 다시 실행하지 마세요." : "")
       + (errorValue.recoveryId ? "\n복구 기록: " + errorValue.recoveryId + "\n이 창을 닫고 ‘복구 기록’에서 확인하세요." : "");
     const loading = content.querySelector("[data-git-operation-loading]");
@@ -220,6 +240,76 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
     } catch (err) { fail(err, m, version); }
   }
 
+  // 원격 변경 받기. 앞으로 감기를 기본으로 하고, 갈라졌으면 병합·리베이스 중에서 고른다.
+  async function pull() {
+    const request = open("원격 변경 받기 (Pull)"); if (!request) return;
+    const { m, version } = request;
+    try {
+      const data = await api("GET", "/api/git/pull-state?" + query(m));
+      if (!valid(m, version)) return;
+      const diverged = data.ahead > 0 && data.behind > 0;
+      const strategy = el("select", { id: "g-pull-strategy", "aria-label": "받기 방식" },
+        el("option", { value: "ff-only" }, "앞으로 감기만 (기록을 바꾸지 않음)"),
+        el("option", { value: "merge" }, "Merge · 병합 커밋으로 합치기"),
+        el("option", { value: "rebase" }, "Rebase · 내 커밋을 원격 뒤로 옮기기"));
+      strategy.value = diverged ? "merge" : "ff-only";
+      const counts = data.behind === null ? "원격 기록을 아직 가져오지 않았습니다. 받으면서 함께 가져옵니다."
+        : "받을 커밋 " + data.behind + "개 · 내 커밋 " + data.ahead + "개 (마지막으로 가져온 기록 기준)";
+      content.replaceChildren(info(m, data),
+        el("p", { class: "git-operation-summary mono" }, data.upstream + " → " + data.branch),
+        el("p", {}, counts),
+        diverged ? el("p", { class: "hint" }, "로컬과 원격이 서로 다른 커밋을 가지고 있습니다. 앞으로 감기만으로는 받을 수 없어 합치는 방식을 골라야 합니다.") : null,
+        data.dirty ? el("p", { class: "hint" }, "커밋하지 않은 변경이 있습니다. 받을 변경과 겹치면 Git이 거절하고 아무것도 바꾸지 않습니다.") : null,
+        el("label", {}, "받기 방식", strategy),
+        el("p", { class: "hint" }, "충돌이 나면 받기를 취소하고 실행 전 상태로 되돌립니다."),
+        action("Pull 실행", () => write(m, version, "/api/git/pull-remote", { strategy: strategy.value, expectedHead: data.head })));
+    } catch (err) { fail(err, m, version); }
+  }
+
+  // 새 브랜치 만들기. 유형을 고르면 GitFlow 설정의 접두어와 기준 브랜치를 채운다.
+  async function branch(startPoint = "") {
+    const request = open("새 브랜치 만들기"); if (!request) return;
+    const { m, version } = request;
+    let flow = DEFAULT_GITFLOW;
+    try { flow = { ...DEFAULT_GITFLOW, ...(await api("GET", "/api/tasks/settings?" + new URLSearchParams({ path: m.project })))?.settings }; } catch { /* 기본 접두어를 쓴다. */ }
+    if (!valid(m, version)) return;
+    const branches = (m.data.branches ?? []).map((b) => b.name);
+    const kind = el("select", { id: "g-branch-kind", "aria-label": "브랜치 유형" },
+      el("option", { value: "feature" }, "기능 개발 (" + flow.featurePrefix + ")"), el("option", { value: "hotfix" }, "긴급 수정 (" + flow.hotfixPrefix + ")"),
+      el("option", { value: "release" }, "배포 준비 (" + flow.releasePrefix + ")"), el("option", { value: "custom" }, "직접 입력"));
+    const name = el("input", { id: "g-branch-name", required: "", maxlength: "200", autocomplete: "off", spellcheck: "false", placeholder: "예: login-fix" });
+    const prefix = el("span", { class: "git-branch-prefix mono" });
+    const start = el("select", { id: "g-branch-start", "aria-label": "시작 지점" },
+      el("option", { value: "" }, "현재 위치 (" + (m.data.branch || "HEAD") + ")"),
+      ...(startPoint ? [el("option", { value: startPoint }, "선택한 커밋 " + startPoint.slice(0, 8))] : []),
+      ...branches.map((value) => el("option", { value }, value)));
+    const checkout = el("input", { id: "g-branch-checkout", type: "checkbox" });
+    checkout.checked = true;
+    const preview = el("p", { class: "git-operation-summary mono", id: "g-branch-preview" });
+    const sync = (fromKind) => {
+      const type = kind.value;
+      prefix.textContent = type === "custom" ? "" : flow[type + "Prefix"];
+      if (fromKind && type !== "custom") {
+        const base = gitflowBranches(type, flow).base;
+        start.value = branches.includes(base) ? base : start.value;
+      }
+      preview.textContent = (start.value || m.data.branch || "HEAD") + "에서 " + (prefix.textContent + (name.value.trim() || "<이름>")) + " 만들기" + (checkout.checked ? " · 바로 전환" : "");
+    };
+    kind.addEventListener("change", () => sync(true));
+    for (const input of [name, start, checkout]) input.addEventListener(input === name ? "input" : "change", () => sync(false));
+    const form = el("form", { class: "git-branch-form", onsubmit: (event) => {
+      event.preventDefault();
+      if (!form.reportValidity() || writing) return;
+      write(m, version, "/api/git/branches", { name: prefix.textContent + name.value.trim(), ...(start.value ? { startPoint: start.value } : {}), checkout: checkout.checked });
+    } }, el("label", {}, "유형", kind), el("label", {}, "브랜치 이름", el("span", { class: "git-branch-name-input" }, prefix, name)),
+      el("label", {}, "시작 지점", start), el("label", { class: "check" }, checkout, " 만든 뒤 이 브랜치로 전환"),
+      m.data.files?.length ? el("p", { class: "hint" }, "커밋하지 않은 변경은 새 브랜치로 그대로 가져갑니다. 시작 지점과 겹치는 파일이 있으면 Git이 전환을 거절합니다.") : null,
+      preview, el("button", { type: "submit", class: "primary", id: "g-operation-apply" }, "브랜치 만들기"));
+    content.replaceChildren(info(m), form);
+    sync(true);
+    name.focus();
+  }
+
   async function recoveries() {
     const request = open("커밋 복구 기록"); if (!request) return;
     const { m, version } = request;
@@ -246,6 +336,23 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
     if (notice.dataset.project && !samePath(notice.dataset.project, m?.project)) notice.hidden = true;
     location.textContent = m?.cwd ?? m?.project ?? ""; location.title = location.textContent;
     workspace.textContent = m && !samePath(m.cwd ?? m.project, m.project) ? "워크트리 선택 ▾" : "원본 폴더 ▾";
+    const data = m?.data;
+    const reasons = !data ? {} : {
+      pull: !data.branch || data.branch === "HEAD" ? "브랜치가 아닌 커밋을 보고 있어 받을 수 없습니다." : !data.upstream ? "따라갈 원격 브랜치가 없습니다. 먼저 Push로 게시하세요." : "",
+      push: !data.branch || data.branch === "HEAD" ? "브랜치가 아닌 커밋은 푸시할 수 없습니다." : data.upstream && data.behind > 0 ? "원격이 " + data.behind + "개 앞서 있습니다. 먼저 Pull로 받으세요." : "",
+      merge: !(data.branches ?? []).some((b) => !b.current) ? "병합할 다른 브랜치가 없습니다." : "",
+    };
+    for (const [key, b] of Object.entries(tools)) {
+      b.dataset.blocked = String(!!reasons[key]);
+      b.title = reasons[key] || b.dataset.description;
+      const count = key === "pull" ? data?.behind : key === "push" ? data?.ahead : 0;
+      const badge = b.querySelector(".git-tool-badge");
+      badge.textContent = count > 0 ? String(count) : "";
+      badge.hidden = !(count > 0);
+    }
+    const shown = Object.entries(reasons).filter(([, text]) => text).map(([key, text]) => tools[key].querySelector(".git-tool-label").textContent + ": " + text);
+    toolReason.textContent = shown.join(" · ");
+    toolReason.hidden = !shown.length;
     for (const b of [...toolbar.querySelectorAll("button"), ...commitActions.querySelectorAll("button")]) b.disabled = !m?.data || isBusy() || b.dataset.blocked === "true";
     workspace.disabled = !m || isBusy();
     if (dialogModel && (dialogModel !== m || !isCurrent(dialogModel))) { ++requestVersion; if (!writing) dialog.close(); }
@@ -259,10 +366,11 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
     }
     const advanced = el("details", { class: "git-history-advanced" }, el("summary", {}, "기록 정리…"),
       ...["reset", "drop"].map((name) => button(LABELS[name], () => preview(name, { commit: c.hash }), "g-history-" + name)));
-    commitActions.replaceChildren(...basic, advanced);
+    const fromHere = button("여기서 새 브랜치", () => branch(c.hash), "g-history-branch");
+    commitActions.replaceChildren(fromHere, ...basic, advanced);
     commitActions.hidden = false;
     update();
   }
 
-  return { update, commit, merge, clearCommit: () => { commitActions.hidden = true; } };
+  return { update, commit, merge, push: () => remote("push"), branch, clearCommit: () => { commitActions.hidden = true; } };
 }
