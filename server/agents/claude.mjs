@@ -31,7 +31,8 @@ const CHAT_PROMPT = "You are Claude, a helpful AI assistant having a conversatio
 export function buildArgs(session, { mcp = null } = {}) {
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio"];
   if (mcp) args.push("--mcp-config", mcp.configFile, "--allowedTools", "mcp__agenthub");
-  args.push("--permission-mode", session.permission ?? "acceptEdits");
+  // /plan 요청은 그 턴만 계획 모드로 실행한다(파일 수정·명령 없이 계획을 세우고 ExitPlanMode로 승인을 묻는다).
+  args.push("--permission-mode", session.planTurn ? "plan" : session.permission ?? "acceptEdits");
   if (session.model) args.push("--model", session.model);
   if (session.effort) args.push("--effort", session.effort);
   if (session.chat) {
@@ -72,12 +73,26 @@ export const controlResponse = (requestId, response) => JSON.stringify({
 
 // CLI가 보낸 control_request를 화면에 띄울 요청으로 바꾼다. 화면에 물을 필요가 없는 요청이면 null.
 // { kind: "question" | "permission", ... }
-export function parseControl(msg) {
+export function parseControl(msg, session = {}) {
   const req = msg.request ?? {};
   if (req.subtype !== "can_use_tool") return null;
   const input = req.input ?? {};
   if (req.tool_name === "AskUserQuestion") {
     return { kind: "question", questions: input.questions ?? [], input };
+  }
+  // 계획 모드를 끝내고 진행할지 묻는다. 승인하면 세션에 고른 권한으로 돌아가 이어서 작업한다.
+  if (req.tool_name === "ExitPlanMode") {
+    return {
+      kind: "permission",
+      tool: req.tool_name,
+      text: "계획대로 진행할까요?",
+      detail: typeof input.plan === "string" ? input.plan : truncate(input),
+      reason: null,
+      input,
+      suggestions: [],
+      planApproval: true,
+      mode: session.permission && session.permission !== "plan" ? session.permission : "default",
+    };
   }
   return {
     kind: "permission",
@@ -105,6 +120,7 @@ export function questionResponse(input, answers) {
 export function permissionResponse(pending, decision, message) {
   if (decision === "deny") return { behavior: "deny", message: message || "사용자가 거절했습니다." };
   const response = { behavior: "allow", updatedInput: pending.input };
+  if (pending.planApproval) response.updatedPermissions = [{ type: "setMode", mode: pending.mode, destination: "session" }];
   if (decision === "always" && pending.suggestions?.length) response.updatedPermissions = pending.suggestions;
   return response;
 }

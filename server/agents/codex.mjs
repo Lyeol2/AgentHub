@@ -96,6 +96,8 @@ export const transport = "app-server";
 // AgentHub 권한 선택을 CLI 설정과 대화 시작·재개에 같은 정책으로 넘긴다.
 export function permissionSettings(session = {}) {
   const permission = session.chat ? CHAT_PERMISSION : session.permission ?? "workspace-write";
+  // /plan 요청은 그 턴만 읽기 전용으로 실행해 계획만 세우게 한다.
+  if (session.planTurn) return { sandbox: "read-only", approvalPolicy: "never", approvalsReviewer: "user" };
   return {
     sandbox: permission === "auto-review" ? "workspace-write" : permission,
     approvalPolicy: session.chat || permission === "danger-full-access" ? "never" : "on-request",

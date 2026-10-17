@@ -111,7 +111,7 @@ export function createCompletion({ textarea, api, getSession, onBuiltin, getRefe
     if (trigger.type === "command") {
       const commands = [...BUILTIN_COMMANDS, ...(await skills(session.projectPath)).filter((s) => !BUILTIN_COMMANDS.some((b) => b.name === s.name))];
       if (seq !== state.seq) return;
-      state.items = filterCommands(commands, trigger.query).slice(0, 30).map((c) => ({ type: "command", value: c.name, description: c.description, builtin: !!c.builtin, scope: c.scope }));
+      state.items = filterCommands(commands, trigger.query).slice(0, 30).map((c) => ({ type: "command", value: c.name, description: c.description, builtin: !!c.builtin && !c.prompt, scope: c.scope }));
       state.index = sameWord ? Math.min(state.index, Math.max(0, state.items.length - 1)) : 0;
       return render();
     }

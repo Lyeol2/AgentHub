@@ -290,7 +290,7 @@ main { display: flex; min-width: 0; min-height: 0; height: 100%; overflow: hidde
   overflow-y: auto; flex: 1; min-height: 0;
   display: flex; flex-direction: column; gap: 8px;
 }
-.ev { max-width: 920px; width: fit-content; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ev { flex: none; max-width: 920px; width: fit-content; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ev.user {
   align-self: flex-end; background: var(--user-bg); border: 1px solid var(--user-line);
   padding: 9px 13px; border-radius: 10px 10px 2px 10px; max-width: 75%;
@@ -502,6 +502,8 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
 .ev.permission { width: 100%; max-width: 920px; display: grid; gap: 8px; padding: 12px 14px; border-radius: 8px; border: 1px solid rgb(229 180 75 / .5); background: rgb(229 180 75 / .06); white-space: normal; }
 .ev.permission.allowed, .ev.permission.denied, .ev.permission.skipped { border-color: var(--line-strong); background: transparent; opacity: .75; }
 .perm-tool { overflow-wrap: anywhere; }
+.ev.permission.plan-approval { border-color: rgb(170 120 255 / .45); background: rgb(170 120 255 / .06); }
+.plan-approval-body { line-height: 1.65; overflow-wrap: anywhere; }
 .perm-detail { margin: 6px 0 0; max-height: 240px; overflow: auto; font-family: var(--mono); font-size: 12px; background: var(--code-bg); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; }
 .pill.p-pending { color: var(--warn); border-color: rgb(229 180 75 / .5); background: rgb(229 180 75 / .1); }
 .pill.p-allowed { color: var(--ok); border-color: rgb(76 194 138 / .4); }
