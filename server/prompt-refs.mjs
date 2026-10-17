@@ -196,9 +196,26 @@ export function expandSlash(session, text, skills) {
   };
 }
 
-// CLI에 넘기기 전에 /스킬과 @참조를 풀어 쓴다. 일반 채팅은 작업 폴더가 없으므로 그대로 둔다.
+// "/plan 요청": 이번 요청은 파일을 고치지 않고 계획만 세운다. 세션은 그 턴을 계획 모드로 실행한다.
+export const PLAN_NOTE = "[계획 모드] 이번 요청은 계획만 세운다. 파일을 만들거나 고치지 말고, 상태를 바꾸는 명령도 실행하지 않는다. " +
+  "필요한 코드와 자료는 읽어 보고 구현 단계, 고칠 파일, 확인 방법을 정리해 보고한 뒤 사용자의 승인을 기다린다.";
+
+export function planRequest(text) {
+  const slash = parseSlash(text);
+  return slash?.name === "plan" ? slash : null;
+}
+
+export function expandPlan(text) {
+  const plan = planRequest(text);
+  if (!plan) return text;
+  return `${plan.prefix}${PLAN_NOTE}\n\n[요청]\n${plan.rest || "(추가 요청 없음. 지금까지의 대화를 바탕으로 계획을 세운다.)"}`;
+}
+
+// CLI에 넘기기 전에 /plan·/스킬과 @참조를 풀어 쓴다. 일반 채팅은 작업 폴더가 없으므로 /plan만 풀어 쓴다.
 export function expandPrompt(session, text, { skills } = {}) {
-  if (session.chat || typeof text !== "string") return text;
+  if (typeof text !== "string") return text;
+  text = expandPlan(text);
+  if (session.chat) return text;
   let out = text;
   if (text.includes("/")) {
     const expanded = expandSlash(session, text, skills ?? listSkills(session.projectPath));

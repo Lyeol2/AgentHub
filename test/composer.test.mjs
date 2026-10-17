@@ -43,7 +43,8 @@ test("고른 항목으로 커서의 낱말을 바꾸고 폴더는 이어서 고�
   assert.equal(builtinCommand(" /clear "), "clear");
   assert.equal(builtinCommand("/clear 지금"), null);
   assert.equal(builtinCommand("/code-review"), null);
-  assert.deepEqual(BUILTIN_COMMANDS.map((c) => c.name), ["clear", "export", "import"]);
+  assert.equal(builtinCommand("/plan"), null, "/plan은 요청과 함께 보내는 명령이다");
+  assert.deepEqual(BUILTIN_COMMANDS.map((c) => c.name), ["plan", "clear", "export", "import"]);
 });
 
 test("고른 파일은 파일 이름으로 줄여 보이고 보낼 때 전체 경로로 되돌린다", () => {
