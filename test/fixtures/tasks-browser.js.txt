@@ -56,6 +56,7 @@
   $('task-create-manual').click();
   await until(() => $('new-task-dialog').open && !$('task-create-submit').disabled);
   check($('task-type').value === 'feature', 'new task defaults to feature');
+  check([...$('task-agent').options].map((option) => option.value).join() === 'codex' && $('task-agent').value === 'codex', 'only CLIs found on this machine can be chosen');
   check($('task-permission').value !== 'read-only', 'worker starts with editing permission');
   $('task-type').value = 'release'; $('task-type').dispatchEvent(new Event('change'));
   check($('task-version').required && !$('task-version').disabled, 'release requires version');
@@ -115,6 +116,8 @@
   $('task-create-manual').click();
   await until(() => $('new-task-dialog').open && !$('task-create-submit').disabled);
   $('task-title').value = '긴급 수정 <img src=x onerror="window.taskInjected=1">'; $('task-type').value = 'hotfix'; $('task-type').dispatchEvent(new Event('change'));
+  $('task-worktree').value = 'none'; $('task-worktree').dispatchEvent(new Event('change'));
+  $('task-permission').value = 'read-only';
   $('new-task-form').requestSubmit($('task-create-submit'));
   await until(() => !$('new-task-dialog').open && !$('view-session').hidden);
   await returnToTasks(); await until(() => card('task-2'));
@@ -150,6 +153,8 @@
   $('task-settings-cancel').click(); await mode({ settingsReadFailure: false });
   $('tasks-new').click(); await until(() => $('new-task-dialog').open);
   $('task-create-manual').click();
+  check($('task-title').value === '' && $('task-type').value === 'hotfix' && $('task-worktree').value === 'none' && $('task-permission').value === 'read-only', 'new task remembers the previous task settings but not its title');
+  $('task-type').value = 'feature'; $('task-worktree').value = 'create'; $('task-type').dispatchEvent(new Event('change'));
   $('task-title').value = '보존할 작업 제목';
   const readCount = (await settingsRequests('GET')).length;
   await mode({ holdSettingsRead: true }); $('task-create-settings').click();
@@ -187,6 +192,7 @@
   await openSettings(); check($('task-settings-develop').value === 'Develop', 'failed save preserves the last committed settings'); $('task-settings-cancel').click();
   $('tasks-new').click(); await until(() => $('new-task-dialog').open);
   $('task-create-manual').click();
+  $('task-type').value = 'feature'; $('task-worktree').value = 'create'; $('task-type').dispatchEvent(new Event('change'));
   $('task-title').value = '사용자 브랜치 작업'; $('new-task-form').requestSubmit($('task-create-submit'));
   await until(() => !$('new-task-dialog').open && !$('view-session').hidden); await returnToTasks(); await until(() => card('task-3'));
   check(card('task-3').textContent.includes('Feature/task-3 → Develop'), 'new tasks use the saved branch names while old tasks remain unchanged');

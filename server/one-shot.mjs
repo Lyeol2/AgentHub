@@ -1,6 +1,7 @@
 // 한 번 묻고 답 한 개를 받는다. 기존 CLI 로그인과 설정을 사용하며 작업 파일은 읽기만 한다.
 import { spawnCli, killProcessTree } from "./cli.mjs";
 import { HttpError } from "./application/errors.mjs";
+import { configMcpServers } from "./agents/codex.mjs";
 
 export function selectOneShotAgent(paths, requested) {
   if (requested !== undefined && !["claude", "codex"].includes(requested)) throw new HttpError(400, "초안을 만들 AI는 Claude 또는 Codex를 선택하세요.", "assistant-agent");
@@ -9,13 +10,30 @@ export function selectOneShotAgent(paths, requested) {
   return agent;
 }
 
-export function oneShotArgs({ agent, model, cwd }) {
+// 읽기 전용 한 번 요청에는 MCP가 필요 없다. 사용자가 Codex에 등록한 MCP 서버(Unity 등)가 꺼져 있으면
+// 연결 오류가 섞이므로 이 요청에서만 끈다. Claude는 --strict-mcp-config로 같은 효과를 낸다.
+export function oneShotArgs({ agent, model, cwd, mcpServers = agent === "codex" ? configMcpServers() : [] }) {
   if (model !== undefined && (typeof model !== "string" || model.length > 200 || /[\u0000-\u001f]/.test(model))) throw new HttpError(400, "모델 이름을 확인하세요.", "assistant-model");
   const selected = model?.trim();
   return agent === "claude"
     ? ["-p", "--output-format", "json", ...(selected ? ["--model", selected] : []), "--tools", "Read,Glob,Grep", "--allowedTools", "Read,Glob,Grep",
       "--permission-mode", "default", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
-    : ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", ...(selected ? ["--model", selected] : []), "--cd", cwd, "-"];
+    : ["exec", "--json", "--sandbox", "read-only", "--skip-git-repo-check", ...(selected ? ["--model", selected] : []),
+      ...mcpServers.flatMap((name) => ["-c", `mcp_servers.${name}.enabled=false`]), "--cd", cwd, "-"];
+}
+
+// stderr에는 설정 경고·MCP 연결 로그가 섞인다. 실패 이유를 가리지 않도록 이런 줄은 빼고 마지막 부분만 쓴다.
+const NOISE = /rmcp::|\bERROR codex_|Codex is ignoring|is ignored\.$/;
+function stderrDetail(text) {
+  return text.split(/\r?\n/).filter((line) => line.trim() && !NOISE.test(line)).join("\n").trim().slice(-300);
+}
+
+// Codex는 실패 이유(사용량 한도·로그인 등)를 stdout JSON 이벤트로 보낸다.
+// 턴 실패를 먼저 보고, 없으면 마지막 오류 이벤트를 쓴다.
+function codexFailure(out) {
+  const events = out.split("\n").map((line) => { try { return JSON.parse(line); } catch { return null; } });
+  const failure = events.findLast((event) => event?.type === "turn.failed") ?? events.findLast((event) => event?.type === "error");
+  return failure ? String(failure.error?.message || failure.message || "CLI 요청 실패") : null;
 }
 
 export async function askOnce({ cliPaths, prompt, cwd, agent: requested, model, timeoutMs = 120_000, label = "AI 요청", spawn = spawnCli }) {
@@ -50,7 +68,7 @@ export async function askOnce({ cliPaths, prompt, cwd, agent: requested, model, 
     child.on("error", (error) => finish(new HttpError(500, `${label} 실패: ${error.message}`, "assistant-cli")));
     child.on("close", (code) => {
       if (settled) return;
-      const detail = err.trim().slice(-300);
+      const detail = (agent === "codex" ? codexFailure(out)?.slice(-300) : null) || stderrDetail(err);
       if (code !== 0) { finish(new HttpError(502, `${label} 실패: ${detail || "CLI 실행을 완료하지 못했습니다. 설치·로그인과 모델을 확인하세요."}`, "assistant-cli")); return; }
       try {
         let text;
@@ -60,13 +78,13 @@ export async function askOnce({ cliPaths, prompt, cwd, agent: requested, model, 
           text = result.result;
         } else {
           const events = out.split("\n").map((line) => { try { return JSON.parse(line); } catch { return null; } });
-          const failure = events.find((event) => event?.type === "turn.failed" || event?.type === "error");
-          if (failure) throw Error(failure.error?.message || failure.message || "CLI 요청 실패");
+          const failure = codexFailure(out);
+          if (failure) throw Error(failure);
           text = events.filter((event) => event?.item?.type === "agent_message").at(-1)?.item.text;
         }
         if (typeof text !== "string" || !text.trim()) throw Error("AI가 답을 보내지 않았습니다. 로그인과 선택한 모델을 확인하세요.");
         finish(null, text);
-      } catch (error) { finish(new HttpError(502, `${label} 실패: ${detail || error.message.slice(-300)}`, "assistant-response")); }
+      } catch (error) { finish(new HttpError(502, `${label} 실패: ${error.message.slice(-300) || detail}`, "assistant-response")); }
     });
     child.stdin.on("error", () => {});
     child.stdin.end(prompt);
