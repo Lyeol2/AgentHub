@@ -58,12 +58,14 @@ async function inspectWorktree(repo, entry, original, { forTarget = false, readG
   else if (entry.prunable) result.reason = "정리가 필요한 작업 폴더입니다. Git 워크트리 상태를 먼저 복구하세요.";
   else {
     try {
-      const actual = await readRepo(entry.cwd);
-      if (!samePath(actual.common, repo.common) || !samePath(actual.top, entry.cwd))
+      // 두 조회를 함께 시작하되 결과는 원래 순서대로 판정한다.
+      const [actual, head] = await Promise.allSettled([readRepo(entry.cwd), readGit(entry.cwd, ["symbolic-ref", "--quiet", "HEAD"])]);
+      if (actual.status === "rejected") throw actual.reason;
+      if (!samePath(actual.value.common, repo.common) || !samePath(actual.value.top, entry.cwd))
         result.reason = "작업 폴더가 다른 Git 저장소에 연결되어 있습니다.";
       else {
-        const branch = (await readGit(entry.cwd, ["symbolic-ref", "--quiet", "HEAD"])).trim();
-        if (branch !== `refs/heads/${entry.branch}`) result.reason = "작업 폴더의 브랜치가 변경됐습니다. 목록을 다시 확인하세요.";
+        if (head.status === "rejected") throw head.reason;
+        if (head.value.trim() !== `refs/heads/${entry.branch}`) result.reason = "작업 폴더의 브랜치가 변경됐습니다. 목록을 다시 확인하세요.";
       }
     } catch (error) {
       if (error.reason === "git-timeout" || error.stopped || error.timedOut) throw error;

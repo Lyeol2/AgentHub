@@ -45,9 +45,17 @@ async function operationInProgress(cwd, git = taskGit) {
 }
 
 export async function listGitNodeBranches(projectPath, { sessions = [], isSessionBusy } = {}) {
-  const repo = await taskRepo(projectPath);
+  // 사용·대상 두 목록이 같은 저장소 정보를 읽는다. 이 요청 안에서만 같은 git 조회 결과를 나눠 쓴다.
+  const reads = new Map();
+  const readGit = (cwd, args) => {
+    const key = JSON.stringify([cwd, args]);
+    if (!reads.has(key)) reads.set(key, taskGit(cwd, args));
+    return reads.get(key);
+  };
+  const readRepo = (dir) => taskRepo(dir, readGit);
+  const repo = await readRepo(projectPath);
   const [uses, targets] = await Promise.all([
-    listWorkbranches(projectPath), listWorkbranches(projectPath, { forTarget: true }),
+    listWorkbranches(projectPath, { readGit, readRepo }), listWorkbranches(projectPath, { forTarget: true, readGit, readRepo }),
   ]);
   const branches = await Promise.all(uses.branches.map(async (item) => {
     const target = targets.branches.find((entry) => entry.name === item.name);
@@ -146,7 +154,7 @@ export async function runGitNode({ command, sessions = [], signal, isSessionBusy
     return executeGit(cwd, args, { signal, deadline, ...options });
   };
   const readRepo = async (cwd) => {
-    const [top, common] = await Promise.all([git(cwd, ["rev-parse", "--show-toplevel"]), git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"])]);
+    const [top, common] = (await git(cwd, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"])).split(/\r?\n/);
     return { top: top.trim(), common: common.trim() };
   };
   const worktreeOptions = { readGit: git, readRepo, writeGit: git };

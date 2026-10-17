@@ -29,12 +29,10 @@ export async function taskGit(cwd, args, { write = false, ...options } = {}) {
   }
 }
 
-export async function taskRepo(dir) {
+// 두 값을 git 한 번으로 받는다. 출력 줄 순서는 인자 순서와 같다.
+export async function taskRepo(dir, git = taskGit) {
   try {
-    const [top, common] = await Promise.all([
-      taskGit(dir, ["rev-parse", "--show-toplevel"]),
-      taskGit(dir, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
-    ]);
+    const [top, common] = (await git(dir, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"])).split(/\r?\n/);
     return { top: top.trim(), common: common.trim() };
   } catch { throw new HttpError(400, "작업은 커밋이 있는 Git 저장소에서 만들 수 있습니다.", "not-git"); }
 }
