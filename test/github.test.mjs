@@ -122,6 +122,21 @@ test("github: Git 인증 실패를 로그인 안내로 바꾸고 GitHub CLI 자�
   assert.deepEqual(githubCredentialArgs('/tmp/$(evil)/gh'), []);
 });
 
+test("github: gh 미설치·미로그인·권한 오류를 해결 방법이 담긴 사유로 바꾼다", () => {
+  const client = new GitHubPulls({ locate: () => "gh" });
+  const fail = (extra) => client.failure(Object.assign(new Error(extra.stderr ?? "failed"), extra));
+  assert.equal(fail({ code: "ENOENT" }).reason, "gh-missing");
+  assert.equal(fail({ stderr: "To get started with GitHub CLI, please run:  gh auth login" }).reason, "gh-auth");
+  assert.equal(fail({ stderr: "gh: Bad credentials (HTTP 401)" }).reason, "gh-auth");
+  const denied = fail({ stderr: "gh: Resource not accessible by integration (HTTP 403)" });
+  assert.deepEqual([denied.reason, denied.status, denied.outcomeUnknown], ["gh-permission", 403, false]);
+  assert.match(denied.message, /권한.*\n.*HTTP 403/s);
+  assert.equal(fail({ stderr: "gh: API rate limit exceeded for user (HTTP 403)" }).reason, "github-rate-limit");
+  assert.equal(fail({ stderr: "gh: Issues are disabled for this repo (HTTP 410)" }).reason, "github-issues-disabled");
+  // 이슈·라벨 확인은 404 응답 문구로 없음을 판별한다.
+  assert.match(fail({ stderr: "gh: Not Found (HTTP 404)" }).message, /\bHTTP 404\b/);
+});
+
 test("github: shell 없이 stdin을 보내고 명령 시간을 제한한다", async () => {
   const input = "@secret\n$(command) " + String.fromCharCode(96) + "literal 한글";
   assert.equal(await runGitHubCommand(process.execPath, ["-e", "process.stdin.pipe(process.stdout)"], { input }), input);

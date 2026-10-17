@@ -29,7 +29,7 @@ const MODEL_PATTERN = /^[\w.\-:[\]]{1,64}$/;
 
 export function createSessionService({
   config, dataDir, store, runner, chain, links, mailbox, mcpTokens, mcpDir, chatDir,
-  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks, commands = null, nodeGroups, graphTabs
+  cliPaths, notify: broadcast, saveConfig, projects, workflows, tasks, commands = null, nodeGroups, graphTabs, issueLinks = null
 }) {
   const { ensureProject, projectSessions } = projects;
   const summary = (session) => ({ ...storedSummary(session), ...(graphTabs && !session.chat ? { tabId: graphTabs.tabFor(session) } : {}) });
@@ -785,6 +785,7 @@ export function createSessionService({
     });
     store.touch(created);
     tasks?.()?.replaceSession?.(id, created.id);
+    issueLinks?.replaceSession?.(id, created.id);
     for (const link of links.list()) {
       if (link.from === id) links.update(link, { from: created.id, pending: null });
       if (link.to === id) links.update(link, { to: created.id, pending: null });
@@ -832,6 +833,7 @@ export function createSessionService({
     const records = cleanupSession(session, { deleteRecords });
     nodeGroups?.()?.pruneNode(id);
     tasks?.()?.detachSession?.(id);
+    issueLinks?.dropSession?.(id);
     // 이 세션을 열어 둔 화면·팝업 창이 닫히도록 알린다.
     broadcast("session-removed", { sessionId: id, projectPath: session.projectPath ?? null });
     broadcast("sessions", {});

@@ -2,7 +2,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { withGitRepoLock } from "../git-lock.mjs";
 import { createHash, randomBytes } from "node:crypto";
-import { githubPulls, normalizePull } from "../github.mjs";
+import { githubCredentialArgs, githubPulls, normalizePull } from "../github.mjs";
+import { GitHubIssues, githubIssues, normalizeIssue } from "../issues.mjs";
 import { summary } from "../store.mjs";
 import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
@@ -20,10 +21,30 @@ const isGitflowBase = (flow, branch) => branch === flow.main || branch === flow.
 const clone = (value) => structuredClone(value);
 const now = () => new Date().toISOString();
 const remoteFingerprint = (value) => createHash("sha256").update(value).digest("hex");
+// 사용자가 접두어까지 적은 브랜치 이름(feature/login)에 접두어를 한 번 더 붙이지 않는다.
+// 다른 유형의 접두어로 시작하면 기준·대상 브랜치가 어긋나므로 받지 않는다.
+export function taskBranchName(flow, type, value = "") {
+  const prefix = flow[`${type}Prefix`];
+  if (!value) return "";
+  if (value.startsWith(prefix)) {
+    const rest = value.slice(prefix.length);
+    if (!rest) throw new HttpError(400, `브랜치 이름에 ${prefix} 뒤의 이름을 입력하세요.`, "task-branch-name");
+    return rest;
+  }
+  const other = ["featurePrefix", "hotfixPrefix", "releasePrefix"].map((key) => flow[key]).find((item) => item !== prefix && value.startsWith(item));
+  if (other) throw new HttpError(400, `브랜치 이름이 다른 작업 유형의 접두어(${other})로 시작합니다. 작업 유형을 바꾸거나 접두어를 빼고 입력하세요.`, "task-branch-name");
+  return value;
+}
 const failure = (error) => error instanceof HttpError ? error : new HttpError(error.status ?? 409, error.message, error.reason ?? "task-error", { outcomeUnknown: !!error.outcomeUnknown });
 
+// 배포 준비·긴급 수정은 main에 반영한 뒤 develop에도 반영해야 끝난다.
+const needsDevelop = (task) => ["hotfix", "release"].includes(task.type);
+const ISSUE_NUMBER = /^[1-9][0-9]{0,8}$/;
+const issueSummary = (issue) => ({ repo: issue.repo, number: issue.number, title: issue.title, url: issue.url, state: issue.state,
+  stateReason: issue.stateReason ?? null, checkedAt: new Date().toISOString() });
+
 export function createTaskService({ dataDir, store, runner, sessions, projects, graphTabs, notify = () => {}, github = githubPulls,
-  config = {}, saveConfig = () => {} }) {
+  issues = github === githubPulls ? githubIssues : new GitHubIssues({ pulls: github }), config = {}, saveConfig = () => {} }) {
   const directory = path.join(dataDir, "tasks");
   fs.mkdirSync(directory, { recursive: true });
   const records = new Map();
@@ -84,6 +105,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     }
     await taskGit(task.cwd, ["switch", "--detach", "HEAD"], { write: true });
   }
+  const sessionBusy = (session) => runner.isRunning(typeof session === "string" ? session : session.id);
   function assertActive(task) {
     if (["merged", "cleaned"].includes(task.state)) throw new HttpError(409, "병합이 완료된 작업입니다. 새 작업에서 이어서 진행하세요.", "task-completed");
   }
@@ -343,7 +365,9 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, `새 작업을 만들기 전에 ${gitflow.main}의 변경을 ${gitflow.develop}에 반영하세요.`, "gitflow-develop-behind");
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
       const slug = title.normalize("NFKC").replace(/[^A-Za-z0-9가-힣_-]+/gu, "-").replace(/^-+|-+$/g, "").slice(0, 36) || "work";
-      const branch = selectedBranch ?? `${gitflow[`${type}Prefix`]}${branchName || (type === "release" ? version : `${id}-${slug}`)}`;
+      const prefix = gitflow[`${type}Prefix`];
+      const name = taskBranchName(gitflow, type, branchName);
+      const branch = selectedBranch ?? `${prefix}${name || (type === "release" ? version : `${id}-${slug}`)}`;
       try {
         await taskGit(project.path, ["check-ref-format", "--branch", branch]);
         if (branchName) await taskGit(project.path, ["check-ref-format", `refs/heads/${branch}`]);
@@ -368,7 +392,9 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         throw new HttpError(409, `같은 이름의 작업 폴더가 이미 있습니다: ${worktreeName}`, "task-worktree-exists");
       const targetSha = type === "feature" ? current.developSha ?? current.mainSha : current.mainSha;
       const behind = !!selected && !await taskAncestor(project.path, targetSha, await taskRef(selected.dir, "HEAD"));
-      const task = { id, projectPath: project.path, title, content, acceptance, type, version: type === "release" ? version : undefined,
+      // 기존 배포 준비 브랜치를 고르면 접두어 뒤 이름이 버전이다.
+      const releaseVersion = version || (selectedBranch && branch.startsWith(gitflow.releasePrefix) ? branch.slice(gitflow.releasePrefix.length) : "");
+      const task = { id, projectPath: project.path, title, content, acceptance, type, version: type === "release" ? releaseVersion || undefined : undefined,
         ...(requestId ? { requestId, requestFingerprint } : {}),
         finishMode: finishModeFor(repo.top),
         agent: body.agent ?? "claude", model: body.model, effort: body.effort, permission: body.permission, role: body.role,
@@ -549,7 +575,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const targetHead = beforeHead || task.freshness.targetSha;
     const result = await externalWrite(task, "local-merge", head, async () => {
       const merged = await runGitNode({ command: { projectPath: task.projectPath, gitAction: "merge", branch: task.branch, targetBranch: task.targetBranch,
-        expectedSourceHead: head, expectedTargetHead: targetHead }, sessions: store.list(), isSessionBusy: (session) => runner.isRunning(typeof session === "string" ? session : session.id) });
+        expectedSourceHead: head, expectedTargetHead: targetHead }, sessions: store.list(), isSessionBusy: sessionBusy });
       if (!merged.ok) throw new HttpError(409, merged.output || "병합하지 못했습니다.", merged.reason, { outcomeUnknown: !!merged.recoveryRequired });
       return merged;
     });
@@ -559,27 +585,122 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     task.completion = { kind: "local", sourceHead: head, beforeHead: targetHead, targetHead: result.afterHead, cwd: result.cwd, mergedAt: now(), publishState: body.push === true ? "pending" : "not-requested" };
     task.finishProgress = { ...task.finishProgress, merge: { at: now(), head: result.afterHead } };
     save(task);
+    if (needsDevelop(task)) {
+      // GitFlow처럼 main 반영에 이어 develop에도 병합한다. 충돌하면 main 반영은 그대로 두고 카드에서 다시 시도한다.
+      task.developPending = true;
+      try { await mergeLocalDevelop(task); }
+      catch (error) {
+        if (error.outcomeUnknown) throw error;
+        task.error = error.message; task.errorReason = error.reason;
+        save(task);
+      }
+    }
     if (body.push === true) await pushLocalTarget(task);
     return { task: clone(task), merge: result };
   }
+  async function mergeLocalDevelop(task) {
+    const { develop } = taskSettings(task);
+    const source = task.mergedHead;
+    let developHead = await taskRef(task.projectPath, `refs/heads/${develop}`);
+    if (developHead && await taskAncestor(task.projectPath, source, developHead)) {
+      Object.assign(task.completion, { developHead, developPublishState: task.completion.developPublishState ?? "done" });
+      task.developPending = false;
+      save(task);
+      return;
+    }
+    if (!developHead) {
+      // 로컬 develop이 없으면 원격 develop(없으면 방금 반영한 main)에서 만든다.
+      developHead = task.freshness?.developSha || task.completion.targetHead;
+      await taskGit(task.projectPath, ["branch", develop, developHead], { write: true });
+    }
+    const result = await externalWrite(task, "develop-merge", source, async () => {
+      const merged = await runGitNode({ command: { projectPath: task.projectPath, gitAction: "merge", branch: task.branch, targetBranch: develop,
+        expectedSourceHead: source, expectedTargetHead: developHead }, sessions: store.list(), isSessionBusy: sessionBusy });
+      if (!merged.ok) throw new HttpError(409, merged.reason === "git-merge-conflict"
+        ? `${task.targetBranch}에는 반영했지만 ${develop}에 병합하다 충돌이 났습니다. 실행 전 상태로 되돌렸습니다. Git 탭에서 ${task.branch}를 ${develop}에 직접 병합해 충돌을 해결한 뒤 최신 확인을 누르세요.\n${merged.output || ""}`.trim()
+        : merged.output || `${develop}에 병합하지 못했습니다.`, merged.reason, { outcomeUnknown: !!merged.recoveryRequired });
+      return merged;
+    });
+    Object.assign(task.completion, { developHead: result.afterHead, developPublishState: task.completion.publishState === "not-requested" ? "not-requested" : "pending" });
+    task.developPending = false;
+    task.finishProgress = { ...task.finishProgress, develop: { at: now(), head: result.afterHead } };
+    save(task);
+  }
+  // PR 방식에서는 main → develop 반영 PR을 연다. 같은 PR이 열려 있으면 다시 쓴다.
+  async function openDevelopPull(task) {
+    const { main, develop } = taskSettings(task);
+    await freshness(task);
+    const target = await githubTarget(task);
+    if (!task.freshness.developSha) await ensureDevelop(task, target);
+    if (!task.freshness.mainMissing) { task.developPending = false; save(task); return; }
+    let pull = await findBackMerge(task, target);
+    if (!pull) {
+      const body = [`${main}에 반영한 ${task.type === "hotfix" ? "긴급 수정" : "배포 준비"}을 ${develop}에도 반영합니다.`,
+        `AgentHub 작업: ${task.id}\n작업 브랜치: ${task.branch}${task.pull?.number ? `\n원래 PR: #${task.pull.number}` : ""}`].join("\n\n");
+      try {
+        const raw = await externalWrite(task, "develop-pull", task.freshness.mainSha, () => github.api(target, "POST", `repos/${target.repo}/pulls`,
+          { title: `${main} → ${develop} 반영: ${task.title}`.slice(0, 256), body, head: main, base: develop }, { write: true }));
+        pull = normalizePull(raw, target.repo);
+      } catch (error) {
+        if (error.outcomeUnknown) throw error;
+        // 동시에 만든 경우 열린 PR을 다시 찾는다.
+        pull = await findBackMerge(task, target);
+        if (!pull) throw error;
+      }
+    }
+    task.developPull = pull;
+    task.developPending = true;
+    save(task);
+  }
+  async function findBackMerge(task, target) {
+    const { main, develop } = taskSettings(task);
+    const [owner] = target.repo.split("/");
+    const raw = await github.api(target, "GET", `repos/${target.repo}/pulls?state=open&head=${encodeURIComponent(`${owner}:${main}`)}&base=${encodeURIComponent(develop)}&per_page=10`);
+    return raw.length ? normalizePull(raw[0], target.repo) : null;
+  }
+  const mergeDevelop = (id) => mutate(id, async (task) => {
+    if (!needsDevelop(task) || task.state !== "merged")
+      throw new HttpError(409, "배포 브랜치에 반영을 마친 배포 준비·긴급 수정만 개발 브랜치에 반영할 수 있습니다.", "task-state");
+    if (task.pendingAction) throw new HttpError(409, "이전 요청의 결과를 먼저 확인하세요.", "task-outcome-unknown");
+    await assertTaskWorktree(task);
+    if (task.completion?.kind === "local") await mergeLocalDevelop(task);
+    else await openDevelopPull(task);
+    delete task.error;
+    save(task);
+    return { task: clone(task) };
+  });
   async function pushLocalTarget(task) {
     const completion = task.completion;
     if (task.state !== "merged" || completion?.kind !== "local") throw new HttpError(409, "로컬 반영을 먼저 완료하세요.");
-    const selected = await resolveWorkbranch(task.projectPath, task.targetBranch, { forTarget: true });
-    assertIdle({ cwd: selected.dir });
-    await assertTaskGitIdle({ cwd: selected.dir });
-    if (await taskRef(selected.dir, "HEAD") !== completion.targetHead) throw new HttpError(409, "반영 후 대상 브랜치가 변경됐습니다. Git 탭에서 새 커밋을 검토한 뒤 푸시하세요.", "task-stale-head");
     const fetchUrl = (await taskGit(task.projectPath, ["remote", "get-url", task.remote])).trim();
     const pushes = (await taskGit(task.projectPath, ["remote", "get-url", "--push", "--all", task.remote])).trim().split(/\r?\n/);
     if (remoteFingerprint(fetchUrl) !== task.remoteFingerprint || pushes.length !== 1 || pushes[0] !== fetchUrl)
       throw new HttpError(409, "작업 생성 때의 원격 주소와 푸시 주소가 다릅니다. Git 탭에서 원격 설정을 확인하세요.", "task-remote");
-    completion.publishState = "pending";
-    save(task);
-    await externalWrite(task, "target-push", completion.targetHead, () => taskGit(selected.dir,
-      ["-c", `remote.${task.remote}.mirror=false`, "push", "--no-follow-tags", "--recurse-submodules=no", "--", pushes[0], `${completion.targetHead}:refs/heads/${task.targetBranch}`], { write: true }));
-    completion.publishState = "done";
-    task.finishProgress = { ...task.finishProgress, push: { at: now(), head: completion.targetHead } };
-    save(task);
+    const push = (cwd, sha, branch) => taskGit(cwd, [...githubCredentialArgs(), "-c", `remote.${task.remote}.mirror=false`, "push", "--no-follow-tags", "--recurse-submodules=no",
+      "--", pushes[0], `${sha}:refs/heads/${branch}`], { write: true });
+    if (completion.publishState !== "done") {
+      const selected = await resolveWorkbranch(task.projectPath, task.targetBranch, { forTarget: true });
+      assertIdle({ cwd: selected.dir });
+      await assertTaskGitIdle({ cwd: selected.dir });
+      if (await taskRef(selected.dir, "HEAD") !== completion.targetHead) throw new HttpError(409, "반영 후 대상 브랜치가 변경됐습니다. Git 탭에서 새 커밋을 검토한 뒤 푸시하세요.", "task-stale-head");
+      completion.publishState = "pending";
+      save(task);
+      await externalWrite(task, "target-push", completion.targetHead, () => push(selected.dir, completion.targetHead, task.targetBranch));
+      completion.publishState = "done";
+      task.finishProgress = { ...task.finishProgress, push: { at: now(), head: completion.targetHead } };
+      save(task);
+    }
+    // 배포 준비·긴급 수정은 develop에 병합한 커밋도 함께 보낸다.
+    if (completion.developHead && completion.developPublishState !== "done") {
+      const { develop } = taskSettings(task);
+      if (await taskRef(task.projectPath, `refs/heads/${develop}`) !== completion.developHead)
+        throw new HttpError(409, `반영 후 ${develop} 브랜치가 변경됐습니다. Git 탭에서 새 커밋을 검토한 뒤 푸시하세요.`, "task-stale-head");
+      completion.developPublishState = "pending";
+      save(task);
+      await externalWrite(task, "develop-push", completion.developHead, () => push(task.projectPath, completion.developHead, develop));
+      completion.developPublishState = "done";
+      save(task);
+    }
   }
   const pushTarget = (id) => mutate(id, async (task) => {
     if (task.pendingAction) throw new HttpError(409, "이전 요청의 결과를 먼저 확인하세요.", "task-outcome-unknown");
@@ -644,8 +765,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       // Recheck the base after publication; a moving target must be integrated before opening the PR.
       await freshness(task);
       requireFresh(task);
+      // 연결한 이슈는 PR이 기본 브랜치에 병합될 때 GitHub가 닫는다.
+      const issueLine = task.issue && task.issue.repo.toLowerCase() === target.repo.toLowerCase() ? `\n관련 이슈: Closes #${task.issue.number}` : "";
       const text = [`## 작업\n${description || task.title}`, `## 검증\n${verification || "검증 결과를 입력하지 않았습니다."}`,
-        `AgentHub 작업: ${task.id}\n유형: ${task.type}\n기준: ${task.baseBranch} → ${task.targetBranch}`].join("\n\n");
+        `AgentHub 작업: ${task.id}\n유형: ${task.type}${task.version ? `\n버전: ${task.version}` : ""}\n기준: ${task.baseBranch} → ${task.targetBranch}${issueLine}`].join("\n\n");
       if (!existing) {
         try {
           const result = await externalWrite(task, "pull", head, () => github.create(task.cwd, { ...args, base: task.targetBranch, title: task.title, body: text }));
@@ -688,6 +811,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       const result = await externalWrite(task, "merge-pull", snapshot.head, () => github.merge(task.cwd, pull.number,
         { remote: task.remote, repo: target.repo, sha: snapshot.head, method: body.method || "merge" }));
       setPull(task, result.pull);
+      // main에 막 병합했으므로 develop 반영이 남았다. 최신 확인에서 다시 계산한다.
+      if (needsDevelop(task) && task.state === "merged") task.developPending = true;
       task.finishProgress = { ...task.finishProgress, merge: { at: now(), head: snapshot.head } };
       save(task);
       return { task: clone(task), pull: clone(task.pull) };
@@ -728,6 +853,14 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
             const remote = (await taskGit(task.projectPath, ["ls-remote", "--heads", task.remote, `refs/heads/${task.targetBranch}`])).trim().split(/\s+/)[0];
             resolved = remote === pending.expectedHead;
             task.completion.publishState = resolved ? "done" : "pending";
+          } else if (pending.action === "develop-merge") {
+            const developHead = await taskRef(task.projectPath, `refs/heads/${taskSettings(task).develop}`);
+            resolved = !!developHead && await taskAncestor(task.cwd, pending.expectedHead, developHead);
+            if (resolved) Object.assign(task.completion, { developHead, developPublishState: task.completion.publishState === "not-requested" ? "not-requested" : "pending" });
+          } else if (pending.action === "develop-push") {
+            const remote = (await taskGit(task.projectPath, ["ls-remote", "--heads", task.remote, `refs/heads/${taskSettings(task).develop}`])).trim().split(/\s+/)[0];
+            resolved = remote === pending.expectedHead;
+            task.completion.developPublishState = resolved ? "done" : "pending";
           } else if (pending.action === "commit") resolved = await taskRef(task.cwd, "HEAD") !== pending.expectedHead;
           else throw new HttpError(409, "이전 요청의 종류가 달라 자동 확인할 수 없습니다.", "task-outcome-unknown");
           task.lastRecovery = { ...pending, checkedAt: now(), result: resolved ? "confirmed" : "not-observed" };
@@ -736,6 +869,11 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         delete task.error;
         if (task.state === "merged" && (!targetHead || !await taskAncestor(task.cwd, task.mergedHead, targetHead)))
           task.error = "대상 브랜치에서 반영한 커밋을 찾지 못했습니다. Git 탭에서 기록을 확인하세요.";
+        if (needsDevelop(task) && task.state === "merged") {
+          const developHead = await taskRef(task.projectPath, `refs/heads/${taskSettings(task).develop}`);
+          task.developPending = !developHead || !await taskAncestor(task.cwd, task.mergedHead, developHead);
+        }
+        await syncIssue(task);
         save(task);
         return { task: clone(task) };
       }
@@ -755,6 +893,11 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
           checked = true;
           if (resolved) task.publishedHead = pending.expectedHead;
         } else if (pending.action === "develop") { resolved = !!task.freshness.developSha; checked = true; }
+        else if (pending.action === "develop-pull") {
+          const back = await findBackMerge(task, target);
+          if (back) task.developPull = back;
+          resolved = !!back || !task.freshness.mainMissing; checked = true;
+        }
         else if (pending.action === "commit") {
           await assertTaskGitIdle(task);
           resolved = await taskRef(task.cwd, "HEAD") !== pending.expectedHead; checked = true;
@@ -765,8 +908,13 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
           if (!resolved) task.error = "이전 요청의 결과가 현재 상태에서 확인되지 않았습니다. 작업 마무리를 다시 누르면 현재 상태를 재검증하고 재시도합니다.";
         }
       }
-      if (["hotfix", "release"].includes(task.type) && task.state === "merged")
+      if (needsDevelop(task) && task.state === "merged")
         task.developPending = !task.freshness.developSha || task.freshness.mainMissing;
+      if (task.developPull?.state === "OPEN") {
+        try { task.developPull = normalizePull(await github.api(target, "GET", `repos/${target.repo}/pulls/${task.developPull.number}`), target.repo); }
+        catch (error) { if (error.reason === "github-timeout") throw error; }
+      }
+      await syncIssue(task, target);
       save(task);
       return { task: clone(task) };
     });
@@ -806,6 +954,72 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       return { task: clone(task) };
     });
   }
+  // 이슈 상태는 보조 정보다. 읽지 못해도 작업 최신 확인을 실패로 만들지 않는다.
+  async function syncIssue(task, target) {
+    if (!task.issue) return;
+    try {
+      target ??= await github.target(task.projectPath, task.remote);
+      const raw = await github.api(target, "GET", `repos/${task.issue.repo}/issues/${task.issue.number}`);
+      task.issue = issueSummary(normalizeIssue(raw, task.issue.repo));
+    } catch (error) {
+      task.issue = { ...task.issue, checkedAt: now(), error: error.message, errorReason: error.reason ?? "github-error" };
+    }
+  }
+  // 작업에 이슈를 연결하거나 작업 내용으로 새 이슈를 만든다. 작업 기록만 바꾸므로 AI 세션이 실행 중이어도 막지 않는다.
+  function annotate(id, action) {
+    const task = get(id);
+    return locked(task.gitCommonDir, async () => {
+      if (records.get(id) !== task) throw new HttpError(404, "작업이 없습니다.", "task-missing");
+      if (busy.has(id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
+      if (task.state === "cleaned") throw new HttpError(409, "정리한 작업의 이슈 연결은 바꿀 수 없습니다.", "task-completed");
+      busy.add(id);
+      try { return await action(task); }
+      catch (error) { throw failure(error); }
+      finally { busy.delete(id); }
+    });
+  }
+  const linkIssue = (id, body = {}) => annotate(id, async (task) => {
+    const create = body.create === true;
+    const number = String(body.number ?? "").trim().replace(/^#/, "");
+    if (!create && !ISSUE_NUMBER.test(number)) throw new HttpError(400, "연결할 이슈 번호를 입력하세요.", "task-issue");
+    const target = await github.target(task.projectPath, task.remote);
+    if (target.name !== task.remote || (task.repo && task.repo.toLowerCase() !== target.repo.toLowerCase()))
+      throw new HttpError(409, "작업에 연결된 GitHub 저장소가 바뀌었습니다.", "task-remote");
+    let issue;
+    if (create) {
+      const title = String(body.title ?? task.title).trim();
+      const text = [task.content, task.acceptance ? `## 완료 기준\n${task.acceptance}` : "", `AgentHub 작업 브랜치: ${task.branch} → ${task.targetBranch}`].filter(Boolean).join("\n\n");
+      try {
+        // 이슈 메타데이터에 작업 브랜치와 커밋이 남도록 작업 폴더에서 만든다.
+        ({ issue } = await issues.create(fs.existsSync(task.cwd) ? task.cwd : task.projectPath, { title, body: text, assignee: await issues.viewer(target), remote: task.remote, repo: target.repo }));
+      } catch (error) {
+        // 같은 이슈를 두 번 만들지 않도록 자동으로 다시 시도하지 않는다.
+        if (error.outcomeUnknown) throw new HttpError(504, "이슈를 만들었는지 확인하지 못했습니다. GitHub에서 이슈가 생겼는지 확인한 뒤 번호로 연결하세요.", "github-timeout");
+        throw error;
+      }
+    } else {
+      const other = [...records.values()].find((item) => item.id !== task.id && item.state !== "cleaned" && item.issue?.number === Number(number)
+        && item.issue.repo.toLowerCase() === target.repo.toLowerCase());
+      if (other) throw new HttpError(409, `이슈 #${number}은 이미 "${other.title}" 작업에 연결되어 있습니다.`, "task-issue-linked");
+      let raw;
+      try { raw = await github.api(target, "GET", `repos/${target.repo}/issues/${number}`); }
+      catch (error) {
+        if (/\bHTTP 404\b/.test(error.message)) throw new HttpError(404, `${target.repo}에 #${number} 이슈가 없습니다. 번호를 확인하세요.`, "task-issue");
+        throw error;
+      }
+      if (raw.pull_request) throw new HttpError(400, `#${number}은 Pull Request입니다. 이슈 번호를 입력하세요.`, "task-issue");
+      issue = normalizeIssue(raw, target.repo);
+    }
+    task.repo = target.repo;
+    task.issue = issueSummary(issue);
+    save(task);
+    return { task: clone(task) };
+  });
+  const unlinkIssue = (id) => annotate(id, async (task) => {
+    delete task.issue;
+    save(task);
+    return { task: clone(task) };
+  });
   async function cleanup(id) {
     return mutate(id, async (task) => {
       if (task.state === "cleaned") return { task: clone(task) };
@@ -818,6 +1032,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         if (task.state !== "merged" || head !== task.mergedHead || !targetHead || !await taskAncestor(task.cwd, head, targetHead))
           throw new HttpError(409, "대상 브랜치에 반영되지 않은 커밋이 있어 정리할 수 없습니다.", "task-unmerged-commits");
         if (task.completion.publishState === "pending") throw new HttpError(409, "대상 브랜치 푸시를 먼저 완료하세요.", "task-unpushed");
+        if (task.completion.developPublishState === "pending") throw new HttpError(409, `${taskSettings(task).develop} 브랜치 푸시를 먼저 완료하세요.`, "task-unpushed");
         if (["hotfix", "release"].includes(task.type)) {
           const developHead = await taskRef(task.projectPath, `refs/heads/${taskSettings(task).develop}`);
           if (!developHead || !await taskAncestor(task.cwd, head, developHead)) throw new HttpError(409, "개발 브랜치에도 작업을 반영한 뒤 정리하세요.", "gitflow-develop-pending");
@@ -961,5 +1176,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     }
   }
   return { list, get: (id) => clone(get(id)), adoptSession, context, settings, updateSettings, create, finish, review, reviewDiff, commitReview, mergePull, pushTarget, refresh, sync, cleanup, remove, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
+    mergeDevelop, linkIssue, unlinkIssue,
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }
