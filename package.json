@@ -1,6 +1,6 @@
 {
   "name": "agenthub",
-  "version": "0.11.6",
+  "version": "0.11.7",
   "private": true,
   "description": "Local web app that runs Claude Code and Codex CLI sessions side by side.",
   "author": "Lyeol2",
@@ -10,7 +10,7 @@
     "start": "node server/index.mjs",
     "app": "electron .",
     "dist": "electron-builder --win --publish never",
-    "test": "node --test",
+    "test": "node --test --test-concurrency=4",
     "test:groups": "node --test test/node-groups.test.mjs test/node-groups-api.test.mjs test/node-groups-browser.test.mjs",
     "test:fast": "node --test test/composer.test.mjs test/elapsed.test.mjs test/frontend-core.test.mjs test/gitgraph.test.mjs test/markdown.test.mjs test/report-references.test.mjs",
     "test:git": "node --test test/api.test.mjs test/git-readonly.test.mjs test/git-worktree.test.mjs test/git-nodes.test.mjs test/git-node-workflows.test.mjs test/gitgraph.test.mjs test/github.test.mjs test/gitpanel.test.mjs test/gitpanel-graph.test.mjs test/gitpanel-staging.test.mjs",
