@@ -36,6 +36,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   const sessionService = () => typeof sessions === "function" ? sessions() : sessions;
   const projectService = () => typeof projects === "function" ? projects() : projects;
   function save(task) {
+    if (!task.error) delete task.errorReason;
     task.updatedAt = now();
     const file = path.join(directory, `${task.id}.json`);
     writeJsonAtomic(file, task);
@@ -259,6 +260,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     } catch (error) {
       task.freshness = { state: "error", checkedAt: now(), message: error.message };
       task.error = error.message;
+      task.errorReason = error.reason;
       save(task);
       throw error;
     }
@@ -446,7 +448,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       assertIdle(task);
       busy.add(id);
       try { return await action(task); }
-      catch (error) { task.error = error.message; save(task); throw failure(error); }
+      catch (error) { task.error = error.message; task.errorReason = error.reason; save(task); throw failure(error); }
       finally { busy.delete(id); }
     });
   }

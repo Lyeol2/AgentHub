@@ -243,7 +243,7 @@ const creation = createCreationController({
 });
 const tasks = createTasksController({
   api, data, navigation, loadStatus, loadSessions, loadProjects, fillModels, fillEfforts, selectSession,
-  getProjectPath: () => navigation.project,
+  getProjectPath: () => navigation.project, openSetup,
   reloadData: () => Promise.all([loadSessions(), loadProjects()]),
 });
 
