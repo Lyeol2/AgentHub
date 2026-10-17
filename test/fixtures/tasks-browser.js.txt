@@ -72,10 +72,22 @@
   check((await requests()).find((request) => request.path === '/api/tasks' && request.method === 'POST').body.worktree === false, 'new task works in the original folder by default when it is free');
   await fetch('/fixture/release', { method: 'POST' });
   await until(() => !$('new-task-dialog').open && !$('view-session').hidden);
+  const created = (await requests()).find((request) => request.path === '/api/tasks' && request.method === 'POST').body;
+  check(created.start === undefined && !(await requests()).some((request) => request.method === 'POST' && /\/api\/sessions\/[^/]+\/messages$/.test(request.path)), 'new task does not send the first request by itself');
+  await until(() => $('s-prompt').value === '로그인 버튼 수정');
+  check(document.activeElement === $('s-prompt'), 'new task leaves the request in the focused session input');
+  $('s-prompt').value = ''; $('s-prompt').dispatchEvent(new Event('input', { bubbles: true }));
   await returnToTasks();
   await until(() => card('task-1'));
   check(card('task-1').textContent.includes('feature/task-1') && card('task-1').textContent.includes('develop'), 'created task shows GitFlow branch and target');
   check(action('task-1', 'open-session'), 'task links its session');
+  const more = card('task-1').querySelector('.task-more');
+  more.open = true;
+  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  const menuRect = more.querySelector('.task-more-menu').getBoundingClientRect();
+  const lastItem = [...more.querySelectorAll('.task-more-menu button')].at(-1).getBoundingClientRect();
+  check(more.querySelector('.task-more-menu').contains(document.elementFromPoint(lastItem.left + 8, lastItem.top + lastItem.height / 2)) && menuRect.height > lastItem.height, 'task more menu is not clipped by its card');
+  more.open = false;
   action('task-1', 'open-session').click();
   await until(() => !$('view-session').hidden && $('s-title').textContent === '로그인 버튼 수정');
   await fetch('/fixture/emit', { method: 'POST', body: JSON.stringify({ type: 'event', payload: {

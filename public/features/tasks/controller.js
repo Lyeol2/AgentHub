@@ -374,6 +374,7 @@ export function createTasksController({
       moreSummary.setAttribute('aria-label', '다른 동작');
       moreSummary.title = '다른 동작';
       more.append(moreSummary);
+      more.addEventListener('toggle', () => placeMenu(more));
       const secondary = node('div', 'task-more-menu');
       more.append(secondary);
       const blocked = uncertainTasks.has(task.id) || Boolean(task.pendingAction);
@@ -878,7 +879,7 @@ export function createTasksController({
     }
   }
 
-  // prefill: 팀 작업에서 시작할 때 채울 { title, content, issue }. 사용자가 확인한 뒤 만들고 시작한다.
+  // prefill: 팀 작업에서 시작할 때 채울 { title, content, issue }. 사용자가 확인한 뒤 만든다.
   function openNewTask(prefill = null) {
     const path = getProjectPath();
     if (!path || path !== projectPath || createBusy || settingsBusy || uncertainCreates.has(path)) return false;
@@ -942,7 +943,7 @@ export function createTasksController({
       agent: $('task-agent')?.value || 'codex',
       permission: $('task-permission')?.value || 'workspace-write',
       content: $('task-content')?.value.trim() || '', acceptance: $('task-acceptance')?.value.trim() || '',
-      start: true, requestId: taskAssistant.creationId(),
+      requestId: taskAssistant.creationId(),
     };
     if (existing) payload.workBranch = workbranchPicker.selected().name;
     else if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
@@ -994,7 +995,11 @@ export function createTasksController({
         renderTasks();
         createDialog?.close();
         const sessionId = result.session?.id || result.task?.sessionIds?.at(-1);
-        if (sessionId && tabId === navigation?.graphTabId) await selectSession(sessionId);
+        if (sessionId && tabId === navigation?.graphTabId) {
+          await selectSession(sessionId);
+          // 첫 요청은 바로 보내지 않고 입력창에 채워 둔다. 사용자가 확인한 뒤 보낸다.
+          if (data?.current?.id === sessionId && !result.reused) fillPrompt([payload.title, payload.content, payload.acceptance ? `완료 기준:\n${payload.acceptance}` : ''].filter(Boolean).join('\n\n'));
+        }
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainCreates.add(path);
@@ -1002,9 +1007,28 @@ export function createTasksController({
     } finally {
       createBusy = false;
       taskAssistant.setCreating(false);
-      if (submit) { submit.disabled = uncertainCreates.has(path); submit.textContent = '만들고 시작'; }
+      if (submit) { submit.disabled = uncertainCreates.has(path); submit.textContent = '만들기'; }
       updateToolbar();
     }
+  }
+
+  // 스크롤 영역 아래쪽에 자리가 없으면 메뉴를 위로 펼친다.
+  function placeMenu(more) {
+    more.classList.remove('up');
+    if (!more.open) return;
+    const menu = more.querySelector('.task-more-menu');
+    const area = more.closest('.tab-panel') || document.documentElement;
+    const bottom = Math.min(area.getBoundingClientRect().bottom, innerHeight);
+    const rect = menu.getBoundingClientRect();
+    if (rect.bottom > bottom && more.getBoundingClientRect().top - rect.height - 4 >= Math.max(area.getBoundingClientRect().top, 0)) more.classList.add('up');
+  }
+
+  function fillPrompt(text) {
+    const input = $('s-prompt');
+    if (!input || input.value.trim()) return;
+    input.value = text;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
   }
 
   function openFinish(task, options = {}) {
