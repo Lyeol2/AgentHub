@@ -33,7 +33,7 @@ export function taskBranchPreview(type, version = '', settings = DEFAULT_GITFLOW
 export function createTasksController({
   api, data, navigation, getProjectPath = () => navigation?.project,
   fillModels = () => {}, fillEfforts = () => {}, selectSession = () => {},
-  reloadData = async () => {},
+  reloadData = async () => {}, openSetup = () => {},
 }) {
   const $ = id => document.getElementById(id);
   const list = $('tasks-list');
@@ -88,6 +88,15 @@ export function createTasksController({
     onState: () => updateCreateSubmit(),
   });
 
+  // GitHub 로그인으로 풀 수 있는 오류에는 설정의 GitHub CLI 설치·로그인을 바로 연다.
+  function appendLogin(parent, reason) {
+    if (!['git-auth', 'gh-auth', 'gh-missing'].includes(reason)) return;
+    const button = node('button', 'ghost sm task-login', reason === 'gh-missing' ? 'GitHub CLI 설치' : 'GitHub 로그인');
+    button.type = 'button';
+    button.addEventListener('click', () => openSetup('gh', reason === 'gh-missing' ? 'install' : 'login'));
+    parent.append(button);
+  }
+
   function node(tag, className, value) {
     const el = document.createElement(tag);
     if (className) el.className = className;
@@ -95,11 +104,12 @@ export function createTasksController({
     return el;
   }
 
-  function showError(id, message = '') {
+  function showError(id, message = '', reason) {
     const el = $(id);
     if (!el) return;
     el.textContent = message;
     el.hidden = !message;
+    if (message) appendLogin(el, reason);
   }
 
   function sameProject(path, epoch = projectEpoch) {
@@ -149,7 +159,8 @@ export function createTasksController({
     const mainMissing = context.mainInDevelop === false;
     el.dataset.state = failed ? 'error' : mainMissing ? 'stale' : freshness.state || 'current';
     el.append(node('strong', '', failed ? `${settings.main} 최신 확인 실패` : mainMissing ? `${settings.main} 변경을 ${settings.develop}에 반영해야 합니다` : `${settings.main} 최신 확인 완료`));
-    if (failed) el.append(node('span', '', typeof context.error === 'string' ? context.error : context.error?.message || freshness.error || '원격 저장소 연결을 확인해 주세요.'));
+    const failure = typeof context.error === 'string' ? context.error : context.error?.message || freshness.error || '원격 저장소 연결을 확인해 주세요.';
+    if (failed) el.append(node('span', '', failure));
     else if (context.needsSetup || context.needsDevelop || context.developExists === false) {
       el.append(node('span', '', `첫 기능 작업을 만들 때 최신 ${settings.main}을 기준으로 ${settings.develop}을 준비합니다.`));
     } else if (!mainMissing) {
@@ -158,8 +169,9 @@ export function createTasksController({
     const checked = timestamp(context.checkedAt || freshness.checkedAt);
     if (checked) el.append(node('span', '', `${checked} 확인`));
     if (Array.isArray(context.warnings)) for (const warning of context.warnings) {
-      if (typeof warning === 'string' && warning) el.append(node('span', '', warning));
+      if (typeof warning === 'string' && warning && !(failed && warning === failure)) el.append(node('span', '', warning));
     }
+    if (failed) appendLogin(el, context.reason);
   }
 
   function actionButton(label, action, task, { primary = false, disabled = false } = {}) {
@@ -258,11 +270,16 @@ export function createTasksController({
           ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
           : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
       if (task.cleanupWarning) card.append(node('p', 'task-note', typeof task.cleanupWarning === 'string' ? task.cleanupWarning : task.cleanupWarning.message || '정리 결과를 확인해 주세요.'));
-      const error = taskErrors.get(task.id) || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
+      // 화면 오류는 문자열이거나 { message, reason }이다. 문자열이면 서버에 남은 같은 오류의 사유를 쓴다.
+      const local = taskErrors.get(task.id);
+      const localMessage = typeof local === 'string' ? local : local?.message;
+      const reason = local && typeof local === 'object' ? local.reason : !local || local === task.error ? task.errorReason : undefined;
+      const error = localMessage || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
       if (error) {
         const errorEl = node('p', 'task-inline-error', error);
         errorEl.setAttribute('role', 'alert');
         card.append(errorEl);
+        appendLogin(card, reason);
       }
       list.append(card);
     }
@@ -330,7 +347,7 @@ export function createTasksController({
         uncertainCreates.delete(path);
         showError('tasks-error', '작업 목록을 확인했습니다. 이미 생성된 작업이 없는지 확인한 뒤 새 작업을 만들어 주세요.');
       }
-    } else showError('tasks-error', requestError(taskResult.reason));
+    } else showError('tasks-error', requestError(taskResult.reason), taskResult.reason?.reason);
     if (contextResult?.status === 'fulfilled') {
       context = contextResult.value?.context || contextResult.value;
       settings = gitflowSettings(contextResult.value?.settings || context?.settings);
@@ -584,7 +601,7 @@ export function createTasksController({
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainCreates.add(path);
-      if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : requestError(error));
+      if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : requestError(error), error.reason);
     } finally {
       createBusy = false;
       taskAssistant.setCreating(false);
@@ -627,7 +644,7 @@ export function createTasksController({
     } catch (error) {
       if (error.outcomeUnknown && action !== 'refresh') uncertainTasks.set(id, action);
       const label = action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : '최신 확인';
-      taskErrors.set(id, error.outcomeUnknown ? unknownMessage(label) : requestError(error));
+      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();

@@ -2,7 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { askOnce, selectOneShotAgent } from "../server/one-shot.mjs";
+import { askOnce, oneShotArgs, selectOneShotAgent } from "../server/one-shot.mjs";
+import { configMcpServers } from "../server/agents/codex.mjs";
 
 function fixture(options = {}) {
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
@@ -50,4 +51,24 @@ test("one-shot: timeout and output limits terminate work and return actionable e
   large.child.stdout.write("x".repeat(2_000_001));
   await assert.rejects(large.promise, (error) => error.reason === "assistant-output");
   assert.equal(large.child.killed, true);
+});
+
+test("one-shot: Codex 사용자 MCP 서버를 끄고 실패 이유를 MCP 연결 로그로 가리지 않는다", async () => {
+  assert.deepEqual(configMcpServers('model = "x"\n[mcp_servers.unityMCP]\nurl = "http://127.0.0.1:8080/mcp"\n[mcp_servers.unityMCP.tools.read_console]\n[mcp_servers.node_repl.env]\n[mcp_servers."quoted name"]\n'),
+    ["unityMCP", "node_repl"]);
+  const args = oneShotArgs({ agent: "codex", cwd: ".", mcpServers: ["unityMCP"] });
+  assert.deepEqual(args.slice(args.indexOf("-c"), args.indexOf("-c") + 2), ["-c", "mcp_servers.unityMCP.enabled=false"]);
+  assert.ok(!oneShotArgs({ agent: "claude", cwd: ".", mcpServers: ["unityMCP"] }).includes("-c"));
+  const noise = 'ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when Client(HttpRequest("http://127.0.0.1:8080/mcp"))\n';
+  const failed = fixture({ agent: "codex" });
+  failed.child.stderr.write(noise);
+  failed.child.stdout.write(JSON.stringify({ type: "turn.failed", error: { message: "You've hit your usage limit." } }) + "\n");
+  await new Promise((resolve) => setImmediate(resolve));
+  failed.child.emit("close", 1);
+  await assert.rejects(failed.promise, (error) => /usage limit/.test(error.message) && !/rmcp/.test(error.message));
+  const silent = fixture({ agent: "codex" });
+  silent.child.stderr.write(noise);
+  await new Promise((resolve) => setImmediate(resolve));
+  silent.child.emit("close", 1);
+  await assert.rejects(silent.promise, (error) => /설치·로그인/.test(error.message) && !/rmcp/.test(error.message));
 });

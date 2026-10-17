@@ -19,6 +19,7 @@ import { McpTokens, createMessagingTools } from "./mcp.mjs";
 import { Setup } from "./setup.mjs";
 import { CliAutoUpdater } from "./cli-auto-update.mjs";
 import { askOnce, selectOneShotAgent } from "./one-shot.mjs";
+import { CodexMcpProbe } from "./codex-mcp-probe.mjs";
 import { createTaskAssistantService } from "./application/task-assistant.mjs";
 import { HttpError } from "./application/errors.mjs";
 import { locateCli } from "./cli.mjs";
@@ -172,6 +173,10 @@ export function createHub(options = {}) {
     logger: deps.logger ?? console,
   });
 
+  // 꺼진 사용자 Codex MCP 서버는 세션 실행에서 빼 연결 재시도·오류를 막는다.
+  const mcpProbe = deps.mcpProbe ?? new CodexMcpProbe();
+  runner.unreachableMcp = () => mcpProbe.unreachable();
+
   // Resolve the MCP URL lazily, after an ephemeral port has been assigned.
   runner.mcp = (session) => {
     const url = `http://127.0.0.1:${port}/mcp/${mcpTokens.token(session.id)}`;
@@ -252,6 +257,7 @@ export function createHub(options = {}) {
         if (!closed) events.start();
         if (!closed) chain.workflow?.restoreSchedules?.();
         if (!closed) cliAutoUpdater?.start();
+        if (!closed) mcpProbe.start();
         if (!closed) logger.log?.(`AgentHub: http://127.0.0.1:${port}`);
         if (!closed && options.warmup !== false) {
           warmupTimer = setTimeout(() => {
@@ -282,6 +288,7 @@ export function createHub(options = {}) {
     clearTimeout(warmupTimer);
     warmupTimer = null;
     cliAutoUpdater?.dispose();
+    mcpProbe.stop();
     events.close();
     for (const remove of listeners) remove();
     setUpdater(null);

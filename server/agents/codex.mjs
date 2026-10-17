@@ -23,6 +23,36 @@ export function configDefaults() {
   return { model: get("model"), effort: get("model_reasoning_effort") };
 }
 
+// config.toml에 등록된 MCP 서버 이름. 이름이 따옴표로 묶였거나 파일이 없으면 건너뛴다.
+export function configMcpServers(text) {
+  if (text === undefined) {
+    try { text = fs.readFileSync(CONFIG_TOML, "utf8"); } catch { return []; }
+  }
+  return [...new Set([...String(text).matchAll(/^\s*\[\s*mcp_servers\.([A-Za-z0-9_-]+)\s*[.\]]/gm)].map((match) => match[1]))];
+}
+
+// config.toml에서 켜져 있는 URL 방식 MCP 서버. 명령(stdio) 방식은 미리 연결해 볼 수 없어 뺀다.
+export function configMcpUrls(text) {
+  if (text === undefined) {
+    try { text = fs.readFileSync(CONFIG_TOML, "utf8"); } catch { return []; }
+  }
+  const servers = [];
+  let current = null;
+  for (const line of String(text).split(/\r?\n/)) {
+    const header = line.match(/^\s*\[\s*([^\]]+?)\s*\]/);
+    if (header) {
+      current = header[1].match(/^mcp_servers\.([A-Za-z0-9_-]+)$/) ? { name: header[1].slice("mcp_servers.".length), url: null, enabled: true } : null;
+      if (current) servers.push(current);
+      continue;
+    }
+    if (!current) continue;
+    const url = line.match(/^\s*url\s*=\s*["']([^"']+)["']/);
+    if (url) current.url = url[1];
+    if (/^\s*enabled\s*=\s*false\b/.test(line)) current.enabled = false;
+  }
+  return servers.filter((server) => server.url && server.enabled && server.name !== "agenthub").map(({ name, url }) => ({ name, url }));
+}
+
 // Codex가 아는 모든 모델 ID(목록에 보이지 않는 모델 포함). 캐시가 없으면 빈 목록.
 export function knownModels() {
   try {
@@ -105,7 +135,7 @@ export function permissionSettings(session = {}) {
   };
 }
 
-export function buildArgs(session, { mcp = null, resolved = resolveModel(session) } = {}) {
+export function buildArgs(session, { mcp = null, resolved = resolveModel(session), disabledMcp = [] } = {}) {
   const args = ["app-server", "--listen", "stdio://"];
   const policy = permissionSettings(session);
   const settings = { approval_policy: policy.approvalPolicy, approvals_reviewer: policy.approvalsReviewer, sandbox_mode: policy.sandbox };
@@ -117,6 +147,8 @@ export function buildArgs(session, { mcp = null, resolved = resolveModel(session
     settings["mcp_servers.agenthub.tool_timeout_sec"] = 660;
     settings["mcp_servers.agenthub.default_tools_approval_mode"] = "approve";
   }
+  // 연결할 수 없는 사용자 MCP 서버는 이번 실행에서만 끈다. 연결 재시도와 오류 로그를 막는다.
+  for (const name of disabledMcp) if (/^[A-Za-z0-9_-]+$/.test(name) && name !== "agenthub") settings[`mcp_servers.${name}.enabled`] = false;
   for (const [key, value] of Object.entries(settings)) args.push("-c", `${key}=${JSON.stringify(value)}`);
   return args;
 }
