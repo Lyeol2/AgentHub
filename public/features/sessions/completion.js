@@ -18,7 +18,7 @@ export function createCompletion({ textarea, api, getSession, onBuiltin, getRefe
   field.append(mirror, textarea);
   parent?.append(menu);
   textarea.setAttribute("aria-autocomplete", "list");
-  const state = { trigger: null, items: [], index: 0, seq: 0, timer: null, dismissed: null };
+  const state = { trigger: null, items: [], index: 0, seq: 0, timer: null, dismissed: null, empty: null };
   const skillCache = new Map(); // projectPath → { at, skills }
   const refsBySession = new Map(); // sessionId → Map(작성창 이름 → 전체 경로)
   const sessionRefs = () => refsBySession.get(getSession()?.id);
@@ -98,10 +98,14 @@ export function createCompletion({ textarea, api, getSession, onBuiltin, getRefe
 
   async function update() {
     const session = getSession();
-    const trigger = session && !session.chat ? completionTrigger(textarea.value, textarea.selectionStart) : null;
+    let trigger = session && !session.chat ? completionTrigger(textarea.value, textarea.selectionStart) : null;
+    // 이미 골라 넣은 참조 뒤에 이어 쓰는 글은 검색어로 보지 않는다.
+    if (trigger?.type === "file" && refMatches(textarea.value, sessionRefs() ?? new Map()).some((ref) => ref.start === trigger.start && ref.end < trigger.end)) trigger = null;
+    // 띄어쓰기를 넣어 이어 쓰다 결과가 없어진 검색어는 더 길게 써도 다시 찾지 않는다.
+    if (trigger && state.empty && state.empty.start === trigger.start && trigger.query.startsWith(state.empty.query)) trigger = null;
     // Esc로 닫은 자리에서는 다시 열지 않는다(같은 낱말을 고치면 다시 연다).
     if (!trigger || (state.dismissed && state.dismissed.start === trigger.start && state.dismissed.type === trigger.type && textarea.value.slice(trigger.start, trigger.end) === state.dismissed.word)) {
-      if (!trigger) state.dismissed = null;
+      if (!trigger) { state.dismissed = null; if (state.empty && !completionTrigger(textarea.value, textarea.selectionStart)) state.empty = null; }
       return close();
     }
     state.dismissed = null;
@@ -124,11 +128,13 @@ export function createCompletion({ textarea, api, getSession, onBuiltin, getRefe
       if (seq !== state.seq) return;
       const files = fileResult.status === "fulfilled" && Array.isArray(fileResult.value?.files) ? fileResult.value.files : [];
       const references = referenceResult.status === "fulfilled" && Array.isArray(referenceResult.value) ? referenceResult.value : [];
-      const query = trigger.query.toLocaleLowerCase();
+      // 띄어쓰기로 나눈 낱말이 모두 들어 있는 세션·작업을 찾는다.
+      const terms = trigger.query.toLocaleLowerCase().split(/\s+/).filter(Boolean);
       const matches = references.filter((item) => ["session", "task"].includes(item.type)
         && typeof item.path === "string" && typeof item.value === "string"
-        && (`${item.type === "session" ? "세션" : "작업"}/${item.value} ${item.description ?? ""}`).toLocaleLowerCase().includes(query));
+        && terms.every((term) => (`${item.type === "session" ? "세션" : "작업"}/${item.value} ${item.description ?? ""}`).toLocaleLowerCase().includes(term)));
       state.items = [...matches.slice(0, 10), ...files.map((value) => ({ type: "file", value }))].slice(0, 40);
+      if (!state.items.length && /\s/.test(trigger.query)) state.empty = { start: trigger.start, query: trigger.query };
       state.index = sameWord ? Math.min(state.index, Math.max(0, state.items.length - 1)) : 0;
       render();
     }, 80);

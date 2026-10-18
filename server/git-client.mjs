@@ -152,7 +152,7 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
   async function guard(ctx, action, { clean = false } = {}) {
     if (ctx.entry.locked) throw error("잠긴 워크트리는 변경할 수 없습니다.", "git-locked");
     const refs = references(ctx);
-    const active = refs.sessions.find(s => isRunning(s.id) || s.state === "running");
+    const active = refs.sessions.find(s => isRunning(s.id) || s.state === "running" || s.state === "background");
     if (active) throw error(`"${active.title || active.id}" 세션이 실행 중입니다. 종료하거나 일시중지한 뒤 진행하세요.`, "running");
     await assertTaskOperation(ctx.cwd, action);
     for (const task of refs.tasks) if (task.cwd !== ctx.cwd) await assertTaskOperation(task.cwd, action);

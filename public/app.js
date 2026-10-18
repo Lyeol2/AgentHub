@@ -1,6 +1,7 @@
 import { $ } from "./shared/dom.js";
 import { createApiClient } from "./shared/api.js";
-import { createStore } from "./shared/store.js";
+import { configureErrorReports } from "./shared/error-report.js";
+import { createStore, samePath } from "./shared/store.js";
 import { refreshElapsedTimes } from "./shared/elapsed.js";
 import { createModelControls } from "./shared/model-controls.js";
 import { connectLiveUpdates } from "./application/live-updates.js";
@@ -20,6 +21,8 @@ import { createExecutionControls } from "./features/executions/controller.js";
 import { createRecordsController } from "./features/records/controller.js";
 
 const api = createApiClient();
+// 오류 알림의 "AI에게 해결 요청"은 일반 메시지로 보낸다. 실행 중이면 서버가 대기열에 넣는다.
+configureErrorReports({ ask: async (sessionId, prompt) => { const result = await api("POST", `/api/sessions/${sessionId}/messages`, { prompt }); if (result?.queued) void refreshQueue(sessionId); return result; } });
 const { data, navigation } = createStore();
 const POPUP = new URLSearchParams(location.search).get("session") ?? new URLSearchParams(location.search).get("chat");
 const openWindow = (query) => window.open(`/?${query}`, "_blank", "width=760,height=900");
@@ -202,7 +205,9 @@ const projects = createProjectsController({
   sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation
 });
 const git = createGitController({
-  api, selectSession, openSetup, currentProject, projectTab, pullIssues, navigation
+  api, selectSession, openSetup, currentProject, projectTab, pullIssues, navigation,
+  // Git 탭의 작업 폴더를 쓰는 세션 중 가장 최근 세션. 오류 해결 요청을 보낼 곳이다.
+  sessionForFolder: (cwd) => data.sessions.filter((s) => !s.chat && s.cwd && samePath(s.cwd, cwd)).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""))).at(-1)?.id ?? null,
 });
 const graph = createGraphController({
   openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation
@@ -266,11 +271,13 @@ if (POPUP) {
 } else if (navigation.viewRevision === bootView && sessionSelectionRevision === bootSelection) goDashboard();
 
 const stream = connectLiveUpdates({
-  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved
+  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved,
+  refreshSessionMeta: sessions.refreshSessionMeta, applyActivity: sessions.applyActivity, markOutput: sessions.markOutput, sessionStateChanged: sessions.sessionStateChanged,
+  updateEvent: sessions.updateEvent, appendDraft: sessions.appendDraft, taskProgress: tasks.taskProgress, applySubtasks: sessions.applySubtasks,
 });
 loadAuth();
 loadSetup();
-const refreshTimers = () => refreshElapsedTimes(data, commands.commandNodeFoot);
+const refreshTimers = () => { refreshElapsedTimes(data, commands.commandNodeFoot); sessions.renderRunActivity(); };
 const timers = [
   setInterval(loadAuth, 5 * 60_000),
   setInterval(loadProjects, 120_000),

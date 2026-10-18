@@ -33,7 +33,7 @@
 .tasks-context { gap: 6px 8px; }
 .tasks-context-status { margin-left: 4px; }
 .tasks-context-detail { flex-basis: 100%; }
-.tasks-context[data-state="error"], .task-inline-error {
+.tasks-context[data-state="error"] {
   color: var(--danger, #f87171);
 }
 .tasks-context[data-state="stale"] { color: var(--warn); }
@@ -74,6 +74,18 @@
 .task-state[data-state="working"] { color: var(--accent, #8fa6ff); background: var(--accent-soft); }
 .task-state[data-state="review"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 .task-state[data-state="merged"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.task-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; flex-shrink: 0; }
+.task-badge {
+  padding: 2px 9px;
+  border: 1px solid currentColor;
+  border-radius: 20px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: help;
+}
+.task-notice { margin: 8px 0 0; padding: 8px 10px; border-left: 3px solid var(--warn); border-radius: 4px; background: color-mix(in srgb, var(--warn) 8%, transparent); font-size: 12px; line-height: 1.6; }
 /* GitFlow 단계 노선 */
 .task-pipeline-wrap { margin: 12px 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow-x: auto; }
 .task-pipeline { display: flex; align-items: center; margin: 0; padding: 0; list-style: none; min-width: max-content; }
@@ -126,12 +138,10 @@
 .task-issue[data-state="closed"] .task-pull-link { color: var(--muted, #9ca3af); }
 .task-issue-error { color: var(--danger); }
 .task-issue > .task-login { margin-left: 8px; }
-.task-inline-error { margin: 10px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.task-inline-error p { margin: 0; }
+/* 작업 카드의 오류는 공용 오류 표시(error-report)를 쓰고 카드 안에서 조금 작게 보인다. */
+.task-inline-error { margin: 10px 0 0; font-size: 12px; }
 .task-error-hint { display: block; color: var(--text); opacity: .85; }
 .task-error-hint::before { content: "해결 방법: "; color: var(--muted); }
-.task-error-raw summary { cursor: pointer; color: var(--muted); }
-.task-error-raw pre { margin: 6px 0 0; padding: 8px; max-height: 160px; overflow: auto; background: var(--code-bg); color: var(--code-text); border-radius: 6px; font-size: 11px; white-space: pre-wrap; }
 .task-card > .task-login { margin-top: 8px; }
 .error > .task-login { margin-left: 8px; }
 .workbranch-status { overflow-wrap: anywhere; }
@@ -197,3 +207,15 @@
 .tasks-filter { margin-bottom: 12px; }
 .tasks-filter button[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); font-weight: 600; }
 .task-abandon { margin-left: auto; }
+/* 원본 폴더에서 작업 결과를 확인하는 중 표시 */
+.tasks-preview { display: grid; gap: 6px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid var(--accent, #8fa6ff); border-radius: 8px; background: var(--accent-soft); font-size: 12px; }
+.tasks-preview-title { font-size: 13px; overflow-wrap: anywhere; }
+.tasks-preview-back { color: var(--muted, #9ca3af); }
+.tasks-preview-note { margin: 0; color: var(--muted, #9ca3af); }
+.tasks-preview-note[data-warn="true"] { color: var(--warn); }
+.task-preview-badge { display: inline-block; margin: 6px 0 0; padding: 2px 9px; border: 1px solid var(--accent, #8fa6ff); border-radius: 20px; color: var(--accent, #8fa6ff); font-size: 11px; }
+.task-library-copy progress { display: block; width: 100%; margin-top: 4px; }
+.task-workspace-pool { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.task-workspace-folder { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.task-workspace-folder .task-folder-path { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); }
+.tasks-preview .error { margin: 0; white-space: pre-line; }

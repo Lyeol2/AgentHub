@@ -1,0 +1,58 @@
+// 오류 사유(reason)별로 사용자가 다음에 할 수 있는 일. 오류를 만든 곳에서 hint를 주지 않았을 때만 덧붙인다.
+// 같은 사유를 여러 문장이 함께 쓰므로 어느 문장과 함께 보여도 맞는 행동만 적는다.
+const REFRESH = "작업 카드의 '최신 상태 확인'을 눌러 바뀐 내용을 다시 읽은 뒤 다시 시도하세요.";
+const RECOVERY = "Git 탭의 '복구 기록'에서 실행 전 상태를 확인하세요. 상태를 확인하기 전에는 같은 작업을 다시 실행하지 마세요.";
+const HINTS = {
+  // 작업(tasks)
+  "running": "세션 화면에서 '중지'를 누르거나 실행이 끝날 때까지 기다린 뒤 다시 시도하세요.",
+  "task-busy": "다른 Git 처리가 끝날 때까지 잠시 기다린 뒤 '최신 상태 확인'을 누르고 다시 시도하세요.",
+  "task-outcome-unknown": "작업 카드의 '최신 상태 확인'으로 이전 요청이 끝났는지 먼저 확인하세요. 바로 다시 요청하면 같은 작업이 두 번 실행될 수 있습니다.",
+  "task-dirty": "Git 탭에서 남은 변경을 커밋하거나 되돌린 뒤 다시 시도하세요. 세션에 커밋을 요청해도 됩니다.",
+  "task-worktree": "작업 카드의 '최신 상태 확인'으로 작업 폴더와 브랜치를 확인하세요. 폴더가 사라졌다면 '작업 삭제'로 기록을 정리하고 새 작업을 만들 수 있습니다.",
+  "task-branch": "Git 탭에서 작업 폴더를 작업 브랜치로 전환하거나 세션에 전환을 요청한 뒤 다시 시도하세요.",
+  "task-git-operation": "작업 카드의 '진행 중인 Git 작업 취소'를 누르거나, 세션에 진행 중인 병합·리베이스를 마무리하도록 요청하세요.",
+  "task-recovery-required": "Git 탭에서 작업 폴더 상태를 확인하고, 작업 카드의 '진행 중인 Git 작업 취소'로 멈춘 병합·리베이스를 되돌리세요.",
+  "task-conflict": "세션에 충돌 해결을 요청하거나 충돌한 파일을 직접 고쳐 커밋한 뒤 다시 시도하세요.",
+  "task-behind": "작업 마무리 창에서 '기준 변경 반영'으로 대상 브랜치 변경을 먼저 가져오고 결과를 확인한 뒤 다시 마무리하세요.",
+  "task-empty": "세션이 만든 변경이 커밋됐는지 Git 탭에서 확인하세요. 커밋하지 않은 변경은 커밋해야 반영할 수 있습니다.",
+  "task-unpushed": "작업 카드의 '대상 브랜치 푸시'나 Git 탭의 Push로 푸시를 마친 뒤 다시 시도하세요.",
+  "task-unmerged": "GitHub에서 PR을 병합한 뒤 작업 카드의 '최신 상태 확인'을 누르세요.",
+  "task-pull": "작업 카드의 '최신 상태 확인'으로 PR 상태를 새로 읽은 뒤 GitHub의 PR 페이지에서 진행하세요.",
+  "task-pull-closed": "GitHub에서 닫힌 PR을 다시 열거나, 이 작업을 정리하고 새 작업에서 이어 가세요.",
+  "task-pull-ambiguous": "GitHub에서 필요 없는 PR을 닫은 뒤 '최신 상태 확인'을 누르세요.",
+  "task-remote": "터미널에서 git remote -v로 원격 주소를 확인해 작업을 만들 때의 주소로 되돌리거나, 이 작업을 정리하고 새 작업을 만드세요.",
+  "task-stale-head": REFRESH,
+  "task-stale-review": REFRESH,
+  "task-state": "작업 카드의 '최신 상태 확인'으로 작업의 현재 단계를 확인한 뒤 그 단계의 버튼을 사용하세요.",
+  "task-completed": "끝난 작업은 '작업 폴더 정리'나 '작업 삭제'로 마무리하고, 이어서 할 일은 새 작업으로 만드세요.",
+  "task-worktree-locked": "그 폴더를 연 탐색기·편집기·터미널을 모두 닫은 뒤 다시 시도하세요.",
+  "task-worktree-exists": "같은 이름의 폴더를 지우거나 옮긴 뒤 다시 만들거나, 다른 브랜치 이름으로 새 작업을 만드세요.",
+  "task-branch-exists": "그 브랜치를 쓰는 작업에서 세션을 추가하거나, 다른 브랜치 이름으로 새 작업을 만드세요.",
+  "task-issue-linked": "이슈가 연결된 작업에서 '이슈 연결 해제'를 누른 뒤 다시 연결하세요.",
+  "gitflow-remote": "터미널에서 git remote add origin <저장소 주소>로 원격 저장소를 연결하거나 git remote -v로 이름을 확인한 뒤 다시 시도하세요.",
+  "gitflow-main": "작업 탭의 GitFlow 설정에서 배포 브랜치 이름을 원격에 있는 브랜치로 바꾸거나, 그 브랜치를 원격에 먼저 푸시하세요.",
+  "gitflow-develop-behind": "배포 브랜치를 개발 브랜치에 병합하고 푸시한 뒤 다시 시도하세요. 세션에 병합을 요청해도 됩니다.",
+  "gitflow-develop-pending": "배포 브랜치를 개발 브랜치에 병합하고 푸시한 뒤 다시 정리하세요.",
+  "workbranch-protected": "새 작업 브랜치를 만들거나 기능 브랜치를 선택하세요.",
+  "workbranch-changed": "작업 브랜치 목록을 새로 열어 다시 선택하세요.",
+  "workbranch-unavailable": "작업 브랜치 목록을 새로 열어 다른 브랜치를 선택하거나 새 작업 브랜치를 만드세요.",
+  "worktree": "그 폴더를 연 프로그램을 닫고, 커밋하지 않은 변경이 있으면 커밋하거나 옮긴 뒤 다시 삭제하세요.",
+  // Git 탭(git-client)
+  "git-state": "Git 탭의 새로고침을 눌러 상태를 다시 읽은 뒤 시도하세요.",
+  "git-context": "프로젝트를 다시 선택하거나 Git 탭의 새로고침을 누른 뒤 다시 시도하세요.",
+  "git-dirty": "Git 탭에서 변경을 커밋하거나 되돌린 뒤 다시 시도하세요.",
+  "git-locked": "세션이나 다른 Git 프로그램의 작업이 끝날 때까지 기다린 뒤 다시 시도하세요.",
+  "git-operation": "세션에 진행 중인 병합·리베이스를 마무리하도록 요청하거나, 작업 폴더에서 git merge --abort 또는 git rebase --abort로 취소하세요.",
+  "git-recovery-required": RECOVERY,
+  "git-outcome-unknown": RECOVERY,
+  "git-non-fast-forward": "Fetch로 원격 변경을 가져와 Pull로 합친 뒤 다시 푸시하세요.",
+  "git-fetch-required": "Git 탭에서 Fetch를 먼저 실행한 뒤 다시 시도하세요.",
+  "git-branch-used": "그 브랜치가 열린 작업 폴더를 Git 탭의 작업 폴더 목록에서 선택해 진행하거나, 다른 브랜치를 선택하세요.",
+  "git-referenced": "연결된 세션을 삭제하거나 작업 탭에서 작업을 정리한 뒤 다시 시도하세요.",
+  "git-unmerged": "그 브랜치의 커밋을 다른 브랜치에 병합하거나 푸시해 보존한 뒤 다시 삭제하세요.",
+  "git-detached": "Git 탭에서 브랜치로 전환한 뒤 다시 시도하세요.",
+  "stale-head": "Git 탭의 새로고침을 눌러 최신 상태를 확인한 뒤 다시 시도하세요.",
+  "not-git": "프로젝트 폴더가 Git 저장소인지 확인하세요. 새 저장소라면 터미널에서 git init을 실행하세요.",
+};
+
+export const hintFor = (reason) => (typeof reason === "string" && HINTS[reason]) || "";

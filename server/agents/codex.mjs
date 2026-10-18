@@ -31,6 +31,16 @@ export function configMcpServers(text) {
   return [...new Set([...String(text).matchAll(/^\s*\[\s*mcp_servers\.([A-Za-z0-9_-]+)\s*[.\]]/gm)].map((match) => match[1]))];
 }
 
+// config.toml에서 MCP 서버별로 따로 적은 도구 이름([mcp_servers.<서버>.tools.<도구>]). 서버 이름 → 도구 이름 목록
+export function configMcpTools(text) {
+  if (text === undefined) {
+    try { text = fs.readFileSync(CONFIG_TOML, "utf8"); } catch { return {}; }
+  }
+  const tools = {};
+  for (const [, server, tool] of String(text).matchAll(/^\s*\[\s*mcp_servers\.([A-Za-z0-9_-]+)\.tools\.([A-Za-z0-9_-]+)\s*\]/gm)) (tools[server] ??= []).includes(tool) || tools[server].push(tool);
+  return tools;
+}
+
 // config.toml에서 켜져 있는 URL 방식 MCP 서버. 명령(stdio) 방식은 미리 연결해 볼 수 없어 뺀다.
 export function configMcpUrls(text) {
   if (text === undefined) {
@@ -135,7 +145,8 @@ export function permissionSettings(session = {}) {
   };
 }
 
-export function buildArgs(session, { mcp = null, resolved = resolveModel(session), disabledMcp = [] } = {}) {
+// unity: 프로젝트 설정의 유니티 통제({ mode, settings }, server/unity-control.mjs). 서버를 끄거나 도구 승인 방식을 prompt로 덮어쓴다.
+export function buildArgs(session, { mcp = null, resolved = resolveModel(session), disabledMcp = [], unity = null } = {}) {
   const args = ["app-server", "--listen", "stdio://"];
   const policy = permissionSettings(session);
   const settings = { approval_policy: policy.approvalPolicy, approvals_reviewer: policy.approvalsReviewer, sandbox_mode: policy.sandbox };
@@ -148,42 +159,111 @@ export function buildArgs(session, { mcp = null, resolved = resolveModel(session
     settings["mcp_servers.agenthub.default_tools_approval_mode"] = "approve";
   }
   // 연결할 수 없는 사용자 MCP 서버는 이번 실행에서만 끈다. 연결 재시도와 오류 로그를 막는다.
+  if (!session.chat) Object.assign(settings, unity?.settings);
   for (const name of disabledMcp) if (/^[A-Za-z0-9_-]+$/.test(name) && name !== "agenthub") settings[`mcp_servers.${name}.enabled`] = false;
   for (const [key, value] of Object.entries(settings)) args.push("-c", `${key}=${JSON.stringify(value)}`);
   return args;
 }
+
+export const REMEMBER_LABEL = "이 세션에서 계속 허용";
+const REMEMBER_DESCRIPTION = "이 AgentHub 세션에서는 같은 요청을 다시 묻지 않습니다. 다음 요청에서 Codex를 다시 실행해도 AgentHub가 대신 허용하며, 세션 설정에서 지울 수 있습니다.";
+// Codex MCP 도구 승인은 MCP elicitation 요청으로 온다(_meta.codex_approval_kind = "mcp_tool_call").
+export const MCP_APPROVAL = "mcpServer/elicitation/request";
+export const isMcpApproval = (method, params = {}) => method === MCP_APPROVAL && params?._meta?.codex_approval_kind === "mcp_tool_call";
 
 export function parseControl(msg) {
   const { method, params = {} } = msg.request ?? {};
   if (method === "item/tool/requestUserInput") {
     return { kind: "question", input: params, questions: (params.questions ?? []).map((q) => ({ ...q, multiSelect: false })) };
   }
+  const remember = { rememberLabel: REMEMBER_LABEL, rememberDescription: REMEMBER_DESCRIPTION };
+  if (isMcpApproval(method, params)) {
+    const tool = params._meta?.tool_title || params._meta?.tool_name;
+    return { kind: "permission", method, input: params, ...remember, tool: "MCP 도구", text: params.message || `MCP ${params.serverName}${tool ? `.${tool}` : ""}`,
+      detail: truncate(params), reason: null, suggestions: ["session"] };
+  }
   const tools = { "item/commandExecution/requestApproval": "명령 실행", "item/fileChange/requestApproval": "파일 변경", "item/permissions/requestApproval": "추가 권한" };
   if (!tools[method]) return null;
   const network = params.networkApprovalContext;
   return {
-    kind: "permission", method, input: params,
-    rememberLabel: "이번 실행에서 허용",
-    rememberDescription: "현재 Codex 실행이 끝날 때까지 요청한 범위를 허용합니다. 다음 요청에는 다시 물을 수 있습니다.",
+    kind: "permission", method, input: params, ...remember,
     tool: network ? "네트워크 접근" : tools[method],
     text: network ? `네트워크 접근: ${network.protocol ?? ""} ${network.host ?? ""}`.trim() : params.command || (params.changes?.length ? `파일 변경: ${params.changes.map((change) => change.path).join(", ")}` : tools[method]),
     detail: truncate(params), reason: params.reason ?? null,
-    suggestions: params.availableDecisions && !params.availableDecisions.includes("acceptForSession") ? [] : ["session"],
+    suggestions: params.availableDecisions && !params.availableDecisions.includes("acceptForSession") && !params.availableDecisions.includes("accept") ? [] : ["session"],
   };
 }
 
 export function permissionResponse(control, decision) {
   if (!["allow", "always", "deny"].includes(decision)) throw new Error("올바른 권한 결정을 선택하세요.");
+  if (control.method === MCP_APPROVAL) {
+    if (decision === "deny") return { action: "decline", content: null };
+    const persist = [control.input?._meta?.persist].flat().filter(Boolean);
+    return { action: "accept", content: {}, ...(decision === "always" && persist.includes("session") ? { _meta: { persist: "session" } } : {}) };
+  }
   if (control.method === "item/permissions/requestApproval") {
     return { permissions: decision === "deny" ? {} : control.input.permissions, scope: decision === "always" ? "session" : "turn" };
   }
-  const selected = decision === "deny" ? "decline" : decision === "always" ? "acceptForSession" : "accept";
+  let selected = decision === "deny" ? "decline" : decision === "always" ? "acceptForSession" : "accept";
+  // 세션 범위 허용을 지원하지 않는 요청이어도 AgentHub가 규칙을 기억하므로 이번에는 그냥 허용한다.
+  if (selected === "acceptForSession" && control.input.availableDecisions?.length && !control.input.availableDecisions.includes(selected)) selected = "accept";
   if (control.input.availableDecisions?.length && !control.input.availableDecisions.includes(selected)) throw new Error("이 요청에서 지원하지 않는 결정입니다.");
   return { decision: selected };
 }
 
+// "이 세션에서 계속 허용"한 요청을 세션에 남길 규칙으로 바꾼다. Codex는 다음 실행에 넘길 규칙 플래그가 없어
+// 다음 실행부터는 같은 요청이 오면 AgentHub가 카드 없이 대신 허용한다(ruleMatches).
+export function rememberedRules(control) {
+  const p = control.input ?? {};
+  if (control.method === MCP_APPROVAL) {
+    const tool = p._meta?.tool_name ?? p._meta?.tool_title ?? p.message ?? "";
+    return { rules: [{ key: `mcp:${p.serverName}:${tool}`, kind: "mcp", server: p.serverName, tool, label: `MCP ${p.serverName}${tool ? ` · ${tool}` : ""}` }] };
+  }
+  if (control.method === "item/permissions/requestApproval") {
+    const value = JSON.stringify(p.permissions ?? {});
+    return { rules: [{ key: `permissions:${value}`, kind: "permissions", value, label: `추가 권한: ${value}` }] };
+  }
+  if (p.networkApprovalContext?.host) {
+    const host = p.networkApprovalContext.host;
+    return { rules: [{ key: `network:${host}`, kind: "network", host, label: `네트워크 접근: ${host}` }] };
+  }
+  if (control.method === "item/fileChange/requestApproval") {
+    const paths = [...new Set((p.changes ?? []).map((change) => change.path).filter(Boolean))].sort();
+    return paths.length ? { rules: [{ key: `files:${paths.join("|")}`, kind: "files", paths, label: `파일 변경: ${paths.join(", ")}` }] } : { rules: [] };
+  }
+  if (control.method === "item/commandExecution/requestApproval" && p.command) {
+    return { rules: [{ key: `command:${p.command}`, kind: "command", command: p.command, label: `명령: ${p.command}` }] };
+  }
+  return { rules: [] };
+}
+
+// 저장한 규칙이 이번 요청을 허용하는지. 명령은 같은 명령만, 파일은 저장한 파일 안에서의 변경만 허용한다.
+export function ruleMatches(rule, control) {
+  const p = control.input ?? {};
+  switch (rule.kind) {
+    case "mcp": return control.method === MCP_APPROVAL && rule.server === p.serverName && rule.tool === (p._meta?.tool_name ?? p._meta?.tool_title ?? p.message ?? "");
+    case "permissions": return control.method === "item/permissions/requestApproval" && rule.value === JSON.stringify(p.permissions ?? {});
+    case "network": return !!p.networkApprovalContext && rule.host === p.networkApprovalContext.host;
+    case "files": {
+      const paths = (p.changes ?? []).map((change) => change.path).filter(Boolean);
+      return control.method === "item/fileChange/requestApproval" && paths.length > 0 && paths.every((file) => rule.paths.includes(file));
+    }
+    case "command": return control.method === "item/commandExecution/requestApproval" && !p.networkApprovalContext && rule.command === p.command;
+    default: return false;
+  }
+}
+
 export function questionResponse(input, answers) {
   return { answers: Object.fromEntries((input.questions ?? []).map((q, i) => [q.id, { answers: [...(answers?.[i]?.selected ?? []), String(answers?.[i]?.text ?? "").trim()].filter(Boolean) }])) };
+}
+
+// 셸 명령 도구 이벤트. 긴 명령이나 여러 줄 명령은 한 줄 요약만 보이고, 펼치면 전체 명령을 본다.
+export const COMMAND_SUMMARY_MAX = 120;
+export function commandEvent(command) {
+  const full = String(command ?? "");
+  const first = full.split(/\r?\n/)[0];
+  const long = full.length > COMMAND_SUMMARY_MAX || first !== full;
+  return { kind: "tool", text: `$ ${long ? `${first.slice(0, COMMAND_SUMMARY_MAX)} …` : full}`, ...(long ? { detail: truncate(full) } : {}) };
 }
 
 function truncate(text, max = 4000) {
@@ -198,7 +278,7 @@ function itemEvents(phase, item) {
     case "reasoning":
       return phase === "completed" && item.text ? [{ kind: "thinking", text: item.text }] : [];
     case "command_execution":
-      if (phase === "started") return [{ kind: "tool", text: `$ ${item.command}` }];
+      if (phase === "started") return [commandEvent(item.command)];
       if (phase === "completed") {
         const code = item.exit_code ?? "?";
         return [{

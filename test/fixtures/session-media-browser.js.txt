@@ -1,6 +1,6 @@
 (async function () {
   const checks = [], alerts = [], $ = (id) => document.getElementById(id);
-  window.alert = (text) => alerts.push(text); window.prompt = () => "fixture denial";
+  window.alert = (text) => alerts.push(text); window.prompt = () => "fixture denial"; new MutationObserver((records) => { for (const record of records) for (const added of record.addedNodes) if (added.classList?.contains("error-toast")) alerts.push(added.querySelector(".error-report-message")?.textContent ?? added.textContent); }).observe(document.body, { childList: true, subtree: true });
   const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
   const until = async (predicate) => { const end = Date.now() + 8000; while (!await predicate()) { if (Date.now() > end) throw Error("Timed out waiting: " + predicate + " alerts " + JSON.stringify(alerts)); await new Promise((resolve) => setTimeout(resolve, 20)); } };
   const post = (url, body = {}) => fetch(url, { method: "POST", body: JSON.stringify(body) });
@@ -163,6 +163,15 @@
   history.state = "idle";
   conversation.settleEvents(list);
   check(list.querySelector(".work > details") && !list.querySelector(".work > details").open, "stop without a completion event still collapses its work");
+  const longPrompt = Array.from({ length: 20 }, (_, i) => `요청 ${i + 1}번째 줄`).join("\n");
+  conversation.renderEvents(list, [{ kind: "user", text: "짧은 요청" }, { kind: "user", text: longPrompt }]);
+  const [shortUser, longUser] = list.querySelectorAll(":scope > .user");
+  check(!shortUser.querySelector(".ev-fold") && longUser.classList.contains("folded") && longUser.textContent === longPrompt, "long prompts start folded without changing their text");
+  document.body.append(list);
+  check(longUser.querySelector(".user-text").clientHeight < longUser.querySelector(".user-text").scrollHeight, "folded prompts show only their first lines");
+  list.remove();
+  longUser.querySelector(".ev-fold").click();
+  check(!longUser.classList.contains("folded") && longUser.querySelector(".ev-fold").getAttribute("aria-expanded") === "true" && longUser.querySelector(".ev-fold").dataset.label === "접기", "more expands the prompt and offers to fold it again");
   $("s-expand-tools").checked = false;
   $("s-expand-tools").dispatchEvent(new Event("change"));
   const note = new File(["fixture attachment content"], "notes.txt", { type: "text/plain" });
@@ -215,5 +224,18 @@
   nativeForm.remove(); window.agenthubDesktop = originalDesktop;
   input("s", "이미지와 파일을 함께 검토해 주세요."); files("s", [image("preview.png"), note]);
   await until(() => $("s-attachments").querySelector("img").complete);
+  // 세션에 연결된 오류는 "AI에게 해결 요청"으로 동작 · 원인 · 해결 방법 · 원문 일부를 일반 메시지로 보낸다.
+  const { showError } = await import("/shared/error-report.js");
+  const plain = showError({ message: "fixture plain failure" }, { action: "fixture 확인" });
+  check(!plain.querySelector(".error-report-ask") && plain.querySelector(".error-report-action").textContent === "fixture 확인 실패", "errors without a session hide the AI request button");
+  plain.querySelector(".error-report-close").click();
+  const asked = await count("/messages");
+  const toast = showError({ message: "fixture git failure", hint: "fixture hint", raw: "fixture raw line", reason: "git-dirty" }, { action: "fixture 커밋", sessionId: "s1" });
+  check(toast.querySelector(".error-report-hint").textContent.includes("fixture hint") && toast.querySelector(".error-report-raw pre").textContent === "fixture raw line", "error toast shows hint and folded raw output");
+  toast.querySelector(".error-report-ask").click();
+  await until(async () => await count("/messages") === asked + 1 && toast.querySelector(".error-report-status").textContent.includes("요청"));
+  const request = (await requests()).filter((r) => r.path.endsWith("/s1/messages")).at(-1);
+  check(["fixture 커밋", "fixture git failure", "fixture hint", "fixture raw line", "해결해 주세요"].every((part) => request.body.prompt.includes(part)) && !request.body.mode, "AI request sends the error as a normal session message");
+  toast.remove();
   return checks;
 })()

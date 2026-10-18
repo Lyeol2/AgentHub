@@ -101,7 +101,7 @@ async function flowBrowserChecks() {
   const check = (value, name) => { if (!value) throw Error(name); checks.push(name); };
   const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
   const until = async (predicate) => { const deadline = Date.now() + 8000; while (!predicate()) { if (Date.now() > deadline) throw Error('Timed out: ' + predicate); await tick(); } };
-  window.alert = (text) => alerts.push(text);
+  window.alert = (text) => alerts.push(text); new MutationObserver((records) => { for (const record of records) for (const added of record.addedNodes) if (added.classList?.contains("error-toast")) alerts.push(added.querySelector(".error-report-message")?.textContent ?? added.textContent); }).observe(document.body, { childList: true, subtree: true });
   const project = 'C:/flow-fixture';
   const input = { id: 'cmd-input', kind: 'input', title: '작업 입력', projectPath: project, state: 'idle', fields: [{ key: 'task', label: '작업', type: 'textarea', required: true }, { key: 'count', label: '횟수', type: 'number', defaultValue: 2 }, { key: 'branch', label: '브랜치', type: 'text', defaultValue: 'develop' }], prompt: '{{task}} {{count}}', pos: { x: 20, y: 20 } };
   const repeat = { id: 'cmd-repeat', kind: 'repeat', title: '수정 반복', projectPath: project, state: 'idle', maxIterations: 3, delayMs: 100, pos: { x: 20, y: 180 } };

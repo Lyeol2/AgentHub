@@ -3,6 +3,7 @@ import path from "node:path";
 import { discoverProjects, discoverSessions } from "../discover.mjs";
 import { removeWorktree } from "../git.mjs";
 import { HttpError } from "./errors.mjs";
+import { projectSettings, projectSettingsKey, checkProjectSettings } from "../project-settings.mjs";
 export const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
 export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks, nodeGroups, graphTabs }) {
@@ -31,16 +32,20 @@ export function createProjectService({ config, store, runner, links, commands, c
 
   // 일반 채팅 세션은 프로젝트 경로가 없어 어느 프로젝트에도 속하지 않는다.
   const projectSessions = (projectPath) => store.list().filter((s) => s.projectPath && samePath(s.projectPath, projectPath));
+  // 턴 실행 중이거나 백그라운드 작업 중이다(대체 runner는 isRunning만 있을 수 있다).
+  const isBusy = (id) => runner.isBusy?.(id) ?? runner.isRunning(id);
   async function removeProject(projectPath, { force = false, removeWorktrees = false } = {}) {
     const dir = path.resolve(projectPath);
     const sessions = projectSessions(dir).filter((s) => !s.chat);
-    const running = sessions.filter((s) => runner.isRunning(s.id));
+    const running = sessions.filter((s) => isBusy(s.id));
     if (running.length && !force) {
       throw new HttpError(409, `실행 중인 세션이 ${running.length}개 있습니다: ${running.map((s) => s.title).join(", ")}`, "running");
     }
     const worktreeErrors = [];
     for (const s of sessions) {
-      if (runner.isRunning(s.id)) runner.stop(s);
+      // 실행 중·백그라운드 작업 중이면 멈추고, 쉬고 있는 CLI는 닫는다.
+      if (runner.release) runner.release(s, { kill: true });
+      else if (runner.isRunning(s.id)) runner.stop(s);
       if (removeWorktrees && s.worktree && !s.taskId && !s.worktree.shared) {
         try {
           await removeWorktree(s.projectPath, s.worktree.dir);
@@ -91,11 +96,11 @@ export function createProjectService({ config, store, runner, links, commands, c
     const detected = discoverProjects();
     const merged = config.projects.map((p) => {
       const d = detected.find((x) => samePath(x.path, p.path));
-      return { name: p.name, path: p.path, registered: true, claude: d?.claude ?? 0, codex: d?.codex ?? 0, lastActive: d?.lastActive ?? null };
+      return { name: p.name, path: p.path, registered: true, claude: d?.claude ?? 0, codex: d?.codex ?? 0, lastActive: d?.lastActive ?? null, settings: projectSettings(config, p.path) };
     });
     for (const d of detected) {
       if (merged.some((p) => samePath(p.path, d.path)) || config.hiddenProjects.some((h) => samePath(h, d.path))) continue;
-      merged.push({ ...d, registered: false });
+      merged.push({ ...d, registered: false, settings: projectSettings(config, d.path) });
     }
     return merged;
   }
@@ -125,5 +130,20 @@ export function createProjectService({ config, store, runner, links, commands, c
     return config.projects;
   }
 
-  return { add, remove, all, discover, hide, unregister, ensureProject, projectSessions };
+  // 프로젝트별 기본값(AI·권한·워크트리)과 유니티 사용. 보내지 않은 부분은 그대로 둔다.
+  function settings(projectPath) {
+    return projectSettings(config, projectPath);
+  }
+
+  function updateSettings(projectPath, body = {}) {
+    const key = projectSettingsKey(projectPath);
+    const current = projectSettings(config, projectPath);
+    const next = checkProjectSettings({ defaults: body.defaults === undefined ? current.defaults : body.defaults, unity: body.unity ?? current.unity });
+    config.projectSettings = { ...config.projectSettings, [key]: next };
+    saveConfig(config);
+    broadcast("projects", {});
+    return next;
+  }
+
+  return { add, remove, all, discover, hide, unregister, ensureProject, projectSessions, settings, updateSettings };
 }

@@ -1,7 +1,7 @@
 import { connectEventStream } from "../shared/stream.js";
 import { applySessionState, samePath } from "../shared/store.js";
 
-export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved }) {
+export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved, refreshSessionMeta, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, taskProgress, applySubtasks }) {
   const source = connectEventStream({ handlers: {
   event: (e) => {
     const { sessionId, event } = JSON.parse(e.data);
@@ -9,16 +9,53 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     const s = data.current;
     if (s?.id !== sessionId || event.seq < s.events.length) return;
     s.events.push(event);
+    markOutput?.(sessionId);
     const list = eventsList();
     const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
     appendEvent(list, event);
     if (atBottom) scrollToBottom();
-    if (event.kind === "status" || event.kind === "result") selectSession(sessionId); // CLI 세션 ID 등 메타 갱신
+    // CLI 세션 ID·사용량 등 세션 정보만 다시 받는다. 기록은 이미 이어 붙였으므로 다시 그리지 않는다.
+    if (event.kind === "status" || event.kind === "result") (refreshSessionMeta ?? selectSession)(sessionId);
   },
+  // 실행 중 진행 표시(시작 단계·마지막 출력 시각·답 대기)
+  activity: (e) => {
+    const { sessionId, ...activity } = JSON.parse(e.data);
+    applyActivity?.(sessionId, activity);
+  },
+  // 답을 쓰는 중인 글. 기록에는 남지 않고 최종 답변이 오면 사라진다.
+  draft: (e) => {
+    const { sessionId, draftId, text } = JSON.parse(e.data);
+    if (data.current?.id !== sessionId || !text) return;
+    markOutput?.(sessionId);
+    const list = eventsList();
+    const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 80;
+    appendDraft?.(list, draftId, text);
+    if (atBottom) scrollToBottom();
+  },
+  // 이미 받은 이벤트의 상태가 바뀌었다(실행 중에 붙인 요청의 반영 여부).
+  "event-update": (e) => {
+    const { sessionId, seq, patch } = JSON.parse(e.data);
+    const s = data.current;
+    if (s?.id !== sessionId) return;
+    if (s.events[seq]?.seq === seq) Object.assign(s.events[seq], patch);
+    else Object.assign(s.events.find((event) => event.seq === seq) ?? {}, patch);
+    updateEvent?.(eventsList(), seq, patch);
+  },
+  // 하위 작업(서브에이전트·백그라운드 명령)이 바뀌었다. 보고 있는 세션은 패널만 고치고, 개수가 바뀌면 목록·그래프 배지를 다시 그린다.
+  subtasks: (e) => {
+    if (!applySubtasks?.(JSON.parse(e.data))) return;
+    renderSessionList();
+    renderProjectNav();
+    if (navigation.view === "dashboard") renderDashboard();
+    if (navigation.view === "project") renderProjectSessions();
+  },
+  // 작업 만들기 진행 단계(원격 확인 → 작업 폴더 → 세션)
+  "task-progress": (e) => taskProgress?.(JSON.parse(e.data)),
   state: (e) => {
     const payload = JSON.parse(e.data);
     const { sessionId, state: next } = payload;
     const item = applySessionState(data, payload);
+    sessionStateChanged?.(sessionId, next);
     // Codex 한도는 턴이 끝난 뒤 기록 파일에서 읽는다.
     if (item?.agent === "codex" && next !== "running") loadLimits();
     renderSessionList();

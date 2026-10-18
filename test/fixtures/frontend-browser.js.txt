@@ -71,16 +71,16 @@
     const buttonCard = canvas.querySelector('[data-id="cmd-button"]');
     const markdownCard = canvas.querySelector('[data-id="cmd-md"]');
     check(buttonCard.querySelector(".gcmd-btn").textContent === "실행" && !markdownCard.querySelector(".gcard-handle"), "button has run action and Markdown is a terminal node");
-    const oldLinkAlert = window.alert;
-    let linkError = "";
-    window.alert = (text) => { linkError = text; };
+    // 오류는 alert 대신 화면 안 오류 알림(.error-toast)으로 보인다.
+    const toastText = () => [...document.querySelectorAll(".error-toast")].map((toast) => toast.textContent).join("\n");
+    document.querySelectorAll(".error-toast").forEach((toast) => toast.remove());
     const handle = firstCard.querySelector(".gcard-handle");
     const fromRect = handle.getBoundingClientRect(), toRect = buttonCard.getBoundingClientRect();
     pointer(handle, "pointerdown", { clientX: fromRect.x + fromRect.width / 2, clientY: fromRect.y + fromRect.height / 2 });
     pointer(window, "pointermove", { clientX: toRect.x + 60, clientY: toRect.y + 50 });
     pointer(window, "pointerup", { clientX: toRect.x + 60, clientY: toRect.y + 50 });
-    check(linkError.includes("버튼 노드") && !$("link-dialog").open, "graph rejects incoming links to manual button nodes");
-    window.alert = oldLinkAlert;
+    check(toastText().includes("버튼 노드") && toastText().includes("연결 실패") && !$("link-dialog").open, "graph rejects incoming links to manual button nodes in an in-app error");
+    document.querySelectorAll(".error-toast").forEach((toast) => toast.remove());
     pointer(firstCard, "pointerdown"); pointer(window, "pointerup");
     pointer(command, "pointerdown", { ctrlKey: true }); pointer(window, "pointerup");
     check(firstCard.classList.contains("selected") && command.classList.contains("selected"), "mixed session and command selection");
@@ -287,7 +287,8 @@
     await submitNewSession("Separate workspace");
 
     await openNewSession();
-    check($("new-isolate").value === "false" && $("new-worktree-name").value === "" && $("new-worktree-mode").value === "new", "successful creation resets workspace selection on reopen");
+    // 마지막에 고른 워크트리 사용은 다시 고르고, 이름은 새로 받는다.
+    check($("new-isolate").value === "true" && $("new-worktree-name").value === "" && $("new-worktree-name").required && $("new-worktree-mode").value === "new", "successful creation restores the last worktree choice without the old name");
     setWorktree(true); setWorktreeName("stale-worktree"); setWorktree(false);
     check($("new-worktree-name").disabled && !$("new-worktree-name").required && $("new-worktree-row").hidden, "turning worktrees off removes the name requirement");
     await submitNewSession("Worktree disabled");
@@ -321,10 +322,9 @@
     const retained = $("p-graph").querySelector(".gcmd");
     pointer(removable, "pointerdown"); pointer(window, "pointerup");
     pointer(retained, "pointerdown", { ctrlKey: true }); pointer(window, "pointerup");
-    const savedConfirm = window.confirm, savedAlert = window.alert;
-    let confirmations = 0, deletionError = "";
+    const savedConfirm = window.confirm;
+    let confirmations = 0;
     window.confirm = () => { confirmations++; return true; };
-    window.alert = (text) => { deletionError = text; };
     const editor = document.createElement("input"); $("p-graph").append(editor);
     editor.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
     $("p-graph").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true, repeat: true }));
@@ -333,10 +333,14 @@
     check(confirmations === 0, "Delete ignores editors repeated keys and open dialogs");
     $("new-dialog").close(); editor.remove();
     $("p-graph").dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true }));
-    await until(() => deletionError.includes("locked"));
+    await until(() => toastText().includes("locked"));
+    const deletionToast = document.querySelector(".error-toast");
+    check(deletionToast.querySelector(".error-report-action").textContent === "노드 삭제 실패" && deletionToast.querySelector(".error-report-raw pre").textContent.includes("locked") && !!deletionToast.querySelector(".error-report-copy") && !deletionToast.querySelector(".error-report-ask"), "partial deletion shows action, raw detail and copy without an unrelated AI request");
+    deletionToast.querySelector(".error-report-close").click();
+    check(!document.querySelector(".error-toast"), "error toast closes");
     check(confirmations === 1 && !$("p-graph").querySelector('.gcard[data-id="s2"]'), "Delete removes the selected fixture session with one confirmation");
     check($("p-graph").querySelector(".gcmd").classList.contains("selected"), "failed command deletion retains selection");
-    window.confirm = savedConfirm; window.alert = savedAlert;
+    window.confirm = savedConfirm;
     $("p-tabs").querySelector('[data-tab="flow"]').click();
 
     return checks;

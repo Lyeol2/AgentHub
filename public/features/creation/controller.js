@@ -2,6 +2,17 @@ import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 import { createWorkbranchPicker } from "../../shared/workbranches.js";
+import { showError } from "../../shared/error-report.js";
+
+// 새 세션 창에서 마지막으로 고른 값. 종류·워크트리 사용과 AI별 권한·모델·추론 강도를 기억한다.
+// 창을 열 때는 프로젝트 기본값(프로젝트 설정) → 마지막 선택 → 기존 기본값 순으로 쓴다.
+const NEW_SESSION_PREFS_KEY = "agenthub.newSession";
+function loadNewSessionPrefs() {
+  try { return JSON.parse(globalThis.localStorage?.getItem(NEW_SESSION_PREFS_KEY) ?? "{}") || {}; } catch { return {}; }
+}
+function saveNewSessionPrefs(prefs) {
+  try { globalThis.localStorage?.setItem(NEW_SESSION_PREFS_KEY, JSON.stringify(prefs)); } catch { /* 저장하지 못해도 세션 생성에는 지장 없다. */ }
+}
 
 export function createCreationController({ api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, fillModels, fillEfforts, openChat, openSettings, data, navigation }) {
   const ui = {
@@ -36,7 +47,16 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       : "예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 '검토 요청'이라고 쓴다.";
     fillPermissions();
     fillModels("new-models", agent);
-    fillEfforts("new-effort", agent, $("new-model").value.trim());
+    // 모델 이름은 AI마다 다르므로 AI별로 마지막에 쓴 값을 채운다.
+    const prefs = loadNewSessionPrefs();
+    $("new-model").value = typeof prefs.model?.[agent] === "string" ? prefs.model[agent] : "";
+    fillEfforts("new-effort", agent, $("new-model").value.trim(), prefs.effort?.[agent] ?? "");
+  }
+
+  // 고른 프로젝트의 기본값(프로젝트 목록에 함께 온다). 없으면 빈 값.
+  function projectDefaults(projectPath = $("new-project").value) {
+    const project = projectPath && sortedProjects().find((p) => samePath(p.path, projectPath));
+    return project?.settings?.defaults ?? {};
   }
 
   function worktreeNameError(value) {
@@ -80,7 +100,16 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     const { agent } = newKind();
     const modes = data.status.agents[agent].permissions;
     $("new-permission").replaceChildren(...modes.map((m) => el("option", { value: m }, permissionLabel(m))));
-    $("new-permission").value = defaultPermission(agent, modes);
+    const preferred = [projectDefaults().permission?.[agent], loadNewSessionPrefs().permission?.[agent]].find((mode) => modes.includes(mode));
+    $("new-permission").value = preferred ?? defaultPermission(agent, modes);
+  }
+
+  // 워크트리 사용 여부: 프로젝트 기본값 → 마지막 선택 → 사용 안 함. 오케스트레이터는 원본 폴더에서 읽기만 한다.
+  function applyWorktreeDefault(orchestrator = $("new-orchestrator").checked) {
+    const prefs = loadNewSessionPrefs();
+    const isolate = orchestrator || newKind().chat ? false : projectDefaults().isolate ?? prefs.isolate ?? false;
+    $("new-isolate").value = isolate ? "true" : "false";
+    $("new-worktree-mode").value = isolate && prefs.worktreeMode === "existing" ? "existing" : "new";
   }
 
   // 오케스트레이터는 선택한 작업 폴더에서 읽기만 한다.
@@ -102,7 +131,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       await loadStatus();
     } catch (err) {
       if (ui.newSessionContext === context) ui.newSessionContext = null;
-      alert(err.message);
+      showError(err, { action: "AI CLI 상태 확인" });
       return;
     }
     if (ui.newSessionContext !== context || context.cancelled) return;
@@ -121,14 +150,18 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       ...projects.map((p) => el("option", { value: p.path }, `${p.name} — ${p.path}`)));
     const match = projectPath && projects.find((p) => samePath(p.path, projectPath));
     if (match) $("new-project").value = match.path;
+    // 종류: 지정한 종류 → 프로젝트 기본 AI → 마지막에 고른 코딩 에이전트. 일반 채팅은 지정했을 때만 연다.
+    const last = loadNewSessionPrefs().kind;
     if (kind) $("new-agent").value = kind;
-    else if ($("new-agent").value.endsWith("-chat")) $("new-agent").value = "claude";
+    else $("new-agent").value = [projectDefaults().agent, last].find((value) => ["claude", "codex"].includes(value))
+      ?? ($("new-agent").value.endsWith("-chat") ? "claude" : $("new-agent").value || "claude");
     $("new-error").textContent = "";
     $("new-orchestrator").checked = orchestrator;
-    $("new-isolate").value = "false";
-    $("new-worktree-mode").value = "new";
+    if ($("new-save-defaults")) $("new-save-defaults").checked = false;
+    applyWorktreeDefault(orchestrator);
     $("new-worktree-name").value = "";
     syncNewKind();
+    syncNewWorktree(true);
     syncOrchestrator();
     $("new-dialog").showModal();
   }
@@ -152,6 +185,12 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
   $("p-orchestrator").addEventListener("click", () => openNew(navigation.project, { orchestrator: true }));
   $("new-project").addEventListener("change", () => {
     branchPicker.reset();
+    // 바꾼 프로젝트에 기본값이 있으면 그 값으로 권한·워크트리를 다시 고른다. 없으면 지금 고른 값을 그대로 둔다.
+    const defaults = projectDefaults();
+    if (!newKind().chat && !$("new-orchestrator").checked) {
+      if (defaults.isolate != null) applyWorktreeDefault();
+      if (defaults.permission?.[newKind().agent]) fillPermissions();
+    }
     syncNewWorktree(true);
   });
 
@@ -198,10 +237,15 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     }
     if (body.chat) delete body.projectPath;
     else if (context?.tabId && samePath(context.tabProjectPath, body.projectPath)) body.tabId = context.tabId;
+    const saveDefaults = form.has("saveDefaults") && !body.chat && !body.orchestrator;
+    delete body.saveDefaults;
+    const chosenIsolate = existing || body.isolate;
     ui.creating = true;
     syncNewSubmit();
     try {
       const created = await api("POST", "/api/sessions", body);
+      rememberChoice(body, chosenIsolate, existing);
+      if (saveDefaults) await saveProjectDefaults(body.projectPath, body, chosenIsolate);
       // 생성 후 연결이 실패해도 세션을 중복 생성하지 않게 생성 창부터 닫는다.
       if (ui.newSessionContext === context) {
         ui.newSessionContext = null;
@@ -225,6 +269,28 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       syncNewSubmit();
     }
   });
+
+  // 다음 새 세션 창의 기본값으로 쓸 마지막 선택. 오케스트레이터가 강제로 바꾼 권한·폴더는 남기지 않는다.
+  function rememberChoice(body, isolate, existing) {
+    const prefs = loadNewSessionPrefs();
+    const { agent, chat } = body;
+    const next = { ...prefs, kind: chat ? `${agent}-chat` : agent,
+      model: { ...prefs.model, [agent]: body.model ?? "" }, effort: { ...prefs.effort, [agent]: body.effort ?? "" } };
+    if (!chat && !body.orchestrator) {
+      if (body.permission) next.permission = { ...prefs.permission, [agent]: body.permission };
+      next.isolate = !!isolate;
+      next.worktreeMode = existing ? "existing" : "new";
+    }
+    saveNewSessionPrefs(next);
+  }
+
+  // "이 프로젝트 기본값으로 저장": 고른 AI·권한·워크트리 사용을 프로젝트 설정에 남긴다. 실패해도 만든 세션은 그대로 둔다.
+  async function saveProjectDefaults(projectPath, body, isolate) {
+    const current = projectDefaults(projectPath);
+    const defaults = { agent: body.agent, permission: { ...current.permission, ...(body.permission ? { [body.agent]: body.permission } : {}) }, isolate: !!isolate };
+    try { await api("PUT", `/api/projects/settings?path=${encodeURIComponent(projectPath)}`, { defaults }); }
+    catch (err) { showError(err, { action: "프로젝트 기본값 저장", title: "세션은 만들었지만 프로젝트 기본값을 저장하지 못했습니다." }); }
+  }
 
   function cancelCreation() {
     if (ui.newSessionContext) ui.newSessionContext.cancelled = true;

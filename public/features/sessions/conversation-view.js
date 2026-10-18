@@ -3,10 +3,19 @@ import { firstLine } from "../../shared/store.js";
 import { linkLabel } from "../../shared/flow.js";
 import { renderMarkdown } from "../../markdown.js";
 import { renderAttachmentLinks } from "./image-composer.js";
+
+// 접어서 보여 줄 만큼 긴 요청인지. 줄 수나 글자 수가 많으면 접는다.
+export const USER_FOLD_LINES = 8;
+export const USER_FOLD_CHARS = 600;
+export function longUserText(text = "") {
+  return text.length > USER_FOLD_CHARS || text.split("\n").length > USER_FOLD_LINES;
+}
 import { createReportView } from "./report-view.js";
+import { showError } from "../../shared/error-report.js";
+import { SUBTASK_STATUS } from "../../shared/subtasks.js";
 
 /** Render conversation history; user decisions are commands supplied by the controller. */
-export function createConversationView({ api, getSession, sessionById, selectSession, onTaskReference, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision }) {
+export function createConversationView({ api, getSession, sessionById, selectSession, onTaskReference, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision, onSubtaskFocus }) {
   const reports = createReportView({ api, getSession, sessionById, selectSession, onTaskReference });
   const PLAN_STATUS = { pending: "승인 대기", applied: "실행함", rejected: "거절함", invalid: "형식 오류" };
 
@@ -37,7 +46,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       try {
         await onPlanDecision(s.id, ev.planId, { action, reason });
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: action === "approve" ? "계획 승인" : "계획 거절", sessionId: action === "approve" ? s.id : null });
       }
     };
     if (ev.status === "pending") {
@@ -49,7 +58,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
         } }, "거절")));
     } else if (ev.status === "invalid") {
       node.append(el("div", { class: "plan-actions" },
-        el("button", { class: "ghost sm", onclick: () => onPlanError(s.id, ev.error).catch((err) => alert(err.message)) }, "오케스트레이터에게 오류 알리기")));
+        el("button", { class: "ghost sm", onclick: () => onPlanError(s.id, ev.error).catch((err) => showError(err, { action: "오케스트레이터에게 오류 알리기" })) }, "오케스트레이터에게 오류 알리기")));
     } else if (ev.result) {
       node.append(el("div", { class: "plan-result" }, ev.result));
     }
@@ -89,12 +98,12 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     const texts = [];
     const submit = async (button) => {
       const answers = ev.questions.map((_, i) => ({ selected: [...picks[i]], text: texts[i].value.trim() }));
-      if (!answers.some((a) => a.selected.length || a.text)) return alert("답을 고르거나 적으세요.");
+      if (!answers.some((a) => a.selected.length || a.text)) return showError("답을 고르거나 적으세요.", { action: "질문에 답하기" });
       button.disabled = true;
       try {
         await onQuestionAnswer(s.id, ev.questionId, answers);
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: "질문에 답하기" });
         button.disabled = false;
       }
     };
@@ -152,7 +161,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       try {
         await onPermissionDecision(s.id, ev.requestId, { decision, message });
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: ev.planApproval ? "계획 승인 응답" : "권한 요청 응답" });
         for (const b of button.parentElement.children) b.disabled = false;
       }
     };
@@ -165,8 +174,8 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       ev.detail ? el("details", {}, el("summary", {}, "자세히"), el("pre", { class: "perm-detail" }, ev.detail)) : null);
     if (ev.status === "pending") {
       node.append(el("div", { class: "plan-actions" },
-        el("button", { class: "primary sm", onclick: (e) => decide("allow", e.currentTarget) }, "허용"),
-        ev.canRemember ? el("button", { class: "ghost sm", title: ev.rememberDescription ?? "이 프로젝트에서 같은 종류의 요청은 다시 묻지 않습니다", onclick: (e) => decide("always", e.currentTarget) }, ev.rememberLabel ?? "항상 허용") : null,
+        el("button", { class: "primary sm", title: "이 요청만 허용합니다. 같은 요청이 다시 오면 또 묻습니다.", onclick: (e) => decide("allow", e.currentTarget) }, "이번만 허용"),
+        ev.canRemember ? el("button", { class: "ghost sm", title: ev.rememberDescription ?? "이 세션에서는 같은 요청을 다시 묻지 않습니다. 세션 설정에서 지울 수 있습니다.", onclick: (e) => decide("always", e.currentTarget) }, ev.rememberLabel ?? "이 세션에서 계속 허용") : null,
         el("button", { class: "ghost sm danger", onclick: (e) => decide("deny", e.currentTarget) }, "거절")));
     }
     return node;
@@ -195,14 +204,58 @@ export function createConversationView({ api, getSession, sessionById, selectSes
   const EXPAND_TOOLS_KEY = "agenthub-expand-tools";
   const expandTools = () => localStorage.getItem(EXPAND_TOOLS_KEY) === "1";
 
+  // 긴 요청은 처음 몇 줄만 보이게 접고 "더 보기"로 펼친다. 버튼 글자는 CSS로 그려 메시지 글자에 섞이지 않게 한다.
+  function renderUserText(node, ev) {
+    const text = ev.text ?? "";
+    if (!longUserText(text)) return reports.renderUser(node, text, ev.references);
+    const body = el("div", { class: "user-text" });
+    reports.renderUser(body, text, ev.references);
+    const toggle = el("button", { type: "button", class: "ev-fold", "aria-expanded": "false" });
+    const set = (open) => {
+      node.classList.toggle("folded", !open);
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.dataset.label = open ? "접기" : "더 보기";
+      toggle.setAttribute("aria-label", open ? "요청 접기" : "요청 더 보기");
+    };
+    toggle.addEventListener("click", () => set(node.classList.contains("folded")));
+    node.classList.add("foldable");
+    node.append(body, toggle);
+    set(false);
+  }
+
   function renderTool(ev, cls) {
     const body = el("div", { class: "tool-body" });
     if (ev.detail) body.append(el("div", { class: "tool-label" }, "입력"), el("pre", { class: "tool-input" }, ev.detail));
     const details = el("details", {},
-      el("summary", {}, el("span", { class: "tool-name" }, ev.text ?? ""), el("span", { class: "tool-state" })),
+      el("summary", {}, ev.label ? el("span", { class: "tool-kind" }, ev.label) : null, el("span", { class: "tool-name" }, ev.text ?? ""), el("span", { class: "tool-state" })),
       body);
     details.open = expandTools();
-    return el("li", { class: `${cls} pending`, title: ev.text ?? "" }, details);
+    const node = el("li", { class: `${cls} pending`, title: ev.label ? `${ev.label} · ${ev.detail || ev.text || ""}` : ev.detail || ev.text || "", ...(ev.toolUseId ? { "data-tool-use-id": ev.toolUseId } : {}) }, details);
+    renderSubtaskBadge(node);
+    return node;
+  }
+
+  // ── 하위 작업 연결 ──────────────────────────────────────────────
+  // 하위 작업을 띄운 도구 호출(Agent·Task·백그라운드 명령) 줄에 그 작업의 상태를 붙인다. 누르면 하위 작업 패널의 카드로 간다.
+  function renderSubtaskBadge(node) {
+    const id = node.dataset.toolUseId;
+    const task = id ? (getSession()?.subtasks ?? []).find((item) => item.toolUseId === id && !item.ambient) : null;
+    const old = node.querySelector(":scope > details > summary > .subtask-link");
+    if (!task) return old?.remove();
+    const text = `하위 작업 · ${SUBTASK_STATUS[task.status] ?? task.status}`;
+    if (old?.dataset.taskId === task.id && old.textContent === text) return;
+    const badge = el("button", { type: "button", class: `subtask-link ${task.status}`, "data-task-id": task.id, title: `${task.description || "하위 작업"} · 하위 작업 패널에서 보기`, onclick: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onSubtaskFocus?.(task.id);
+    } }, text);
+    if (old) old.replaceWith(badge);
+    else node.querySelector(":scope > details > summary > .tool-state").before(badge);
+  }
+
+  // 하위 작업 목록이 바뀌었다. 이미 그린 도구 호출 줄의 상태 표시만 고친다.
+  function updateSubtaskLinks(list) {
+    for (const node of list.querySelectorAll("li.ev.tool[data-tool-use-id]")) renderSubtaskBadge(node);
   }
 
   // 같은 실행에서 아직 결과를 받지 않은 도구에만 출력을 붙인다.
@@ -284,7 +337,46 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     }
   }
 
+  // 실행 중에 붙인 요청의 반영 상태. 예전 기록(delivery 없음)은 표시하지 않는다.
+  const DELIVERY = { sent: "전달됨 · 반영 확인 중", applied: "반영됨", requeued: "반영 못 함 · 대기열로 되돌림", dropped: "반영 못 함 · 중지해서 보내지 않음" };
+  const deliveryBadge = (ev) => ev.injected && DELIVERY[ev.delivery] ? el("span", { class: `delivery ${ev.delivery}` }, DELIVERY[ev.delivery]) : null;
+
+  // 이미 그린 이벤트의 일부가 바뀌었다(추가 요청의 반영 상태). 그 줄만 고친다.
+  function updateEvent(list, seq, patch) {
+    const ev = histories.get(list)?.events.find((item) => item.seq === seq);
+    if (ev) Object.assign(ev, patch);
+    const node = list.querySelector(`li.ev.user[data-seq="${seq}"]`);
+    if (!node || !("delivery" in patch)) return;
+    node.querySelector(".delivery")?.remove();
+    const badge = deliveryBadge({ injected: true, ...patch });
+    if (badge) node.append(badge);
+  }
+
+  // ── 답을 쓰는 중인 글 ───────────────────────────────────────────
+  // 기록에 남지 않는 글자 조각을 목록 끝 한 줄에 이어 붙인다. 최종 답변·도구 호출이 오거나 턴이 끝나면 지운다.
+  const DRAFT_END = new Set(["text", "thinking", "tool", "result", "error", "user"]);
+  const drafts = new WeakMap(); // 목록 → { id, sessionId, text, node }
+
+  function appendDraft(list, draftId, text) {
+    if (isSettled()) return clearDraft(list);
+    let draft = drafts.get(list);
+    if (!draft || draft.id !== draftId) {
+      draft?.node.remove();
+      draft = { id: draftId, sessionId: getSession()?.id, text: "", node: el("li", { class: "ev text draft", "aria-live": "off" }) };
+      drafts.set(list, draft);
+    }
+    draft.text += text;
+    draft.node.textContent = draft.text;
+    if (draft.node !== list.lastElementChild) list.append(draft.node);
+  }
+
+  function clearDraft(list) {
+    drafts.get(list)?.node.remove();
+    drafts.delete(list);
+  }
+
   function appendEvent(list, ev) {
+    if (DRAFT_END.has(ev.kind)) clearDraft(list);
     const history = histories.get(list);
     if (!history) return renderEvents(list, [ev]);
     history.events.push(ev);
@@ -297,6 +389,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
   }
 
   function renderEvents(list, events) {
+    const draft = drafts.get(list);
     const history = { events: [...events], pendingTools: [], settled: isSettled(), sessionId: getSession()?.id };
     const groups = turns(history.events, history.settled);
     history.complete = groups.at(-1)?.complete ?? false;
@@ -306,10 +399,14 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       history.pendingTools = [];
       renderTurn(list, turn, history.pendingTools);
     }
+    // 다시 그려도 같은 세션의 쓰는 중인 글은 끝에 남긴다.
+    if (draft && !history.settled && draft.sessionId === history.sessionId) list.append(draft.node);
+    else clearDraft(list);
   }
 
   // 실패·중단은 result가 없으므로 실제 실행 상태가 끝났을 때 마지막 과정도 접는다.
   function settleEvents(list) {
+    if (isSettled()) clearDraft(list);
     const history = histories.get(list);
     if (history && history.sessionId === getSession()?.id && !history.settled && isSettled()) renderEvents(list, history.events);
   }
@@ -357,13 +454,15 @@ export function createConversationView({ api, getSession, sessionById, selectSes
             ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
           el("div", { class: "handoff-body" }, ev.text)));
     }
-    const node = el("li", { class: cls });
-    if (ev.kind === "user") reports.renderUser(node, ev.text ?? "", ev.references);
+    const node = el("li", { class: cls, ...(ev.kind === "user" && Number.isInteger(ev.seq) ? { "data-seq": ev.seq } : {}) });
+    if (ev.kind === "user") renderUserText(node, ev);
     else node.append(ev.text ?? "");
     if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
+    const delivery = deliveryBadge(ev);
+    if (delivery) node.append(delivery);
     if (ev.detail) node.title = ev.detail;
     return node;
   }
 
-  return { renderEvents, appendEvent, settleEvents };
+  return { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft, clearDraft, updateSubtaskLinks };
 }

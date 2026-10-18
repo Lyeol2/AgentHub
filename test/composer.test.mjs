@@ -35,6 +35,19 @@ test("자동 완성은 요청 맨 앞의 /와 공백 뒤의 @에서만 열린다
   assert.equal(completionTrigger("@src/a 다음", 6).query, "src/a");
 });
 
+test("@ 검색어는 띄어쓰기를 넣어도 이어지고 줄이 바뀌거나 80자를 넘으면 끝난다", () => {
+  assert.deepEqual(completionTrigger("봐 @my notes"), { type: "file", query: "my notes", start: 2, end: 11 });
+  assert.equal(completionTrigger("@my ").query, "my");
+  assert.deepEqual(completionTrigger('@"작업/시각 개'), { type: "file", query: "작업/시각 개", start: 0, end: 9 });
+  assert.equal(completionTrigger("@ "), null);
+  assert.equal(completionTrigger('@"done" 다음'), null);
+  assert.equal(completionTrigger("@src\n다음"), null);
+  assert.equal(completionTrigger(`@${"a".repeat(80)}`).query.length, 80);
+  assert.equal(completionTrigger(`@${"a".repeat(81)}`), null);
+  const spaced = completionTrigger("@my no");
+  assert.equal(applyCompletion("@my no", spaced, "my notes.md").text, '@"my notes.md" ');
+});
+
 test("고른 항목으로 커서의 낱말을 바꾸고 폴더는 이어서 고를 수 있게 둔다", () => {
   assert.deepEqual(applyCompletion("/co", completionTrigger("/co"), "code-review"), { text: "/code-review ", caret: 13 });
   assert.deepEqual(applyCompletion("@sr 다음", completionTrigger("@sr", 3), "src/"), { text: "@src/ 다음", caret: 5 });

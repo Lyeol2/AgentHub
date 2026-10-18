@@ -27,7 +27,7 @@
     if (method === "POST" && url === "/api/sessions/s1/messages") return { queued: false };
     if (method === "GET" && url.startsWith("/api/sessions/s1/files?q=")) {
       const q = decodeURIComponent(url.split("q=")[1]);
-      return { files: ["src/", "src/app.js", "src/lib/", "README.md"].filter((f) => f.includes(q)) };
+      return { files: ["src/", "src/app.js", "src/lib/", "README.md", "docs/my notes.md"].filter((f) => f.includes(q)) };
     }
     throw Error("Unexpected API " + method + " " + url);
   };
@@ -48,10 +48,11 @@
   check(requests.some((r) => r.method === "POST" && r.url === "/api/commands/cmd-group/run"), "manual hand-off calls run");
   sessions[1].state = "paused"; renderGraph();
   const before = requests.length;
-  const originalAlert = window.alert; let alerted = ""; window.alert = (message) => { alerted = message; };
+  document.querySelectorAll(".error-toast").forEach((toast) => toast.remove());
   await controller.runCommand(group);
-  window.alert = originalAlert;
+  const alerted = document.querySelector(".error-toast")?.textContent ?? "";
   check(requests.length === before && alerted.includes("진행 중"), "paused member blocks manual hand-off");
+  document.querySelectorAll(".error-toast").forEach((toast) => toast.remove());
   sessions[1].state = "idle";
 
   controller.openCommandDialog(null, { x: 10, y: 20 }, null, "group", { members: ["b"] });
@@ -94,6 +95,18 @@
   check(completion.expand(textarea.value.trim()) === "검토 @src/app.js", "sending restores the full file path");
   check(JSON.stringify(completion.references("검토 @app.js @app.js")) === JSON.stringify([{ label: "app.js", path: "src/app.js" }]), "stored references retain the label and original path once");
   check(completion.references("고르지 않은 @README.md 와 지운 참조").length === 0, "only selected references actually present in the prompt are stored");
+  type("검토 @app.js 다음 말");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  check(menu.hidden, "text typed after a chosen reference is not searched");
+  type("@my no");
+  await until(() => !menu.hidden && menu.textContent.includes("docs/my notes.md"));
+  key("Enter");
+  check(textarea.value === '@"my notes.md" ', "a query with a space keeps searching and inserts the quoted file");
+  type("@없는 파일");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  type("@없는 파일 이름도");
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  check(menu.hidden, "a spaced query with no results stops searching");
   type("@sr");
   await until(() => !menu.hidden && menu.children.length >= 2);
   key("ArrowDown"); key("Tab");

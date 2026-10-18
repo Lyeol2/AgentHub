@@ -9,6 +9,7 @@ import { openContextMenu, closeContextMenu } from "../../shared/context-menu.js"
 import { createFlowAssistant } from "./flow-assistant.js";
 import { createGraphHistory, linkBody, commandBody } from "./history.js";
 import { createGraphTabs, graphScopeKey, inGraphTab, nodeTabId } from "./tabs.js";
+import { showError } from "../../shared/error-report.js";
 
 export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
   const ui = {
@@ -217,7 +218,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     if (navigation.view !== "project" || ui.graph?.dragging || document.querySelector("dialog[open]")) return;
     closeContextMenu();
     const result = await history[action](navigation.project);
-    if (result && !result.ok) alert(`"${result.label}"을(를) ${action === "undo" ? "되돌리지" : "다시 실행하지"} 못했습니다. 그 사이 노드나 연결이 바뀌었을 수 있습니다.\n\n${result.error.message}`);
+    if (result && !result.ok) showError({ message: `"${result.label}"을(를) ${action === "undo" ? "되돌리지" : "다시 실행하지"} 못했습니다. 그 사이 노드나 연결이 바뀌었을 수 있습니다.`, hint: "그래프에서 노드와 연결을 직접 확인해 고치세요.", raw: result.error.message }, { action: action === "undo" ? "실행 취소" : "다시 실행" });
   }
   $("p-undo").addEventListener("click", () => { void stepHistory("undo"); });
   $("p-redo").addEventListener("click", () => { void stepHistory("redo"); });
@@ -415,7 +416,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       if (link?.id) recordLinkCreated(projectPath, link, tabId);
       await loadLinks();
     } catch (err) {
-      alert(`노드는 만들었지만 연결하지 못했습니다. 손잡이를 끌어 다시 연결해 주세요.\n\n${err.message}`);
+      showError({ message: `노드는 만들었지만 연결하지 못했습니다: ${err.message}`, hint: "노드의 손잡이를 끌어 다시 연결해 주세요.", reason: err.reason }, { action: "새 노드 연결" });
     }
   }
 
@@ -649,7 +650,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       try {
         await api("POST", `/api/links/${link.id}/decide`, { action });
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: "연결 승인 응답" });
       }
       loadLinks();
     };
@@ -838,7 +839,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       if (s) s.graphPos = pos;
       await api("PUT", `/api/sessions/${id}`, { graphPos: pos });
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "노드 위치 저장" });
     }
   }
 
@@ -938,7 +939,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       });
       recordNodesRemoved(projectPath, removed, tabId);
       await Promise.all([loadSessions(), loadCommands(projectPath), loadLinks()]);
-      if (errors.length) alert(`일부 노드를 삭제하지 못했습니다.\n\n${errors.join("\n")}`);
+      if (errors.length) showError({ message: "일부 노드를 삭제하지 못했습니다.", hint: "실행 중인 노드는 멈춘 뒤 다시 삭제하세요.", raw: errors.join("\n") }, { action: "노드 삭제" });
     } finally {
       ui.deletingGraphNodes = false;
       syncGraphSelection();
@@ -1005,8 +1006,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   function openLinkDialog(link, from = link?.from, to = link?.to, connectWhen = null, connectKeyword = "") {
     const source = commandById(from);
     const target = commandById(to);
-    if (source?.kind === "markdown") return alert("Markdown 출력 노드는 완료 메시지를 받는 노드입니다.");
-    if (isSourceOnly(target)) return alert(KIND_LABEL[target.kind] + " 노드는 흐름의 시작점입니다. 카드에서 직접 실행해 주세요.");
+    if (source?.kind === "markdown") return showError({ message: "Markdown 출력 노드는 완료 메시지를 받는 노드입니다.", hint: "Markdown 출력 노드로 들어오는 방향으로 연결하세요." }, { action: "연결" });
+    if (isSourceOnly(target)) return showError({ message: KIND_LABEL[target.kind] + " 노드는 흐름의 시작점입니다.", hint: "이 노드에서 나가는 방향으로 연결하고, 카드에서 직접 실행해 주세요." }, { action: "연결" });
     ui.editingLink = { link, from, to };
     $("link-names").textContent = `${nodeTitle(from)} → ${nodeTitle(to)}`;
     renderLinkConditions(source);

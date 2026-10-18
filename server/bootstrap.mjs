@@ -27,6 +27,7 @@ import { discoverProjects, useDiscoverCache, flushDiscoverCache } from "./discov
 import { createLimitsService } from "./limits.mjs";
 import { createSessionService } from "./application/sessions.mjs";
 import { createProjectService } from "./application/projects.mjs";
+import { projectUnityMode } from "./project-settings.mjs";
 import { createWorkflowService } from "./application/workflows.mjs";
 import { createCommandService } from "./application/commands.mjs";
 import { createSkillService } from "./application/skills.mjs";
@@ -61,7 +62,7 @@ export function createHub(options = {}) {
   const persistConfig = deps.saveConfig ?? ((value) => saveConfig(value, dataDir));
   const store = deps.store ?? new SessionStore({ dataDir });
   let setup;
-  const runner = deps.runner ?? new Runner(store, { isUpdating: (tool) => setup?.isUpdating?.(tool) ?? false });
+  const runner = deps.runner ?? new Runner(store, { isUpdating: (tool) => setup?.isUpdating?.(tool) ?? false, keepAlive: () => config.cliKeepAlive ?? {} });
   const links = deps.links ?? new LinkStore({ dataDir });
   const commands = deps.commands ?? new CommandStore({ dataDir });
   const runHistory = deps.runHistory ?? new RunHistoryStore({ dataDir });
@@ -78,7 +79,9 @@ export function createHub(options = {}) {
     codex: locateCli("codex", config.cli.codex),
   }));
   const oneShotRuns = new Map();
-  const isCliBusy = (tool) => (runner.running?.size ?? 0) > 0
+  // 쉬고 있는 CLI는 업데이트를 막지 않도록 닫는다. 닫히는 동안(실행 파일을 잡고 있음)은 아직 사용 중으로 본다.
+  const isCliBusy = (tool) => { runner.releaseIdle?.(); return isCliInUse(tool); };
+  const isCliInUse = (tool) => (runner.running?.size ?? 0) > 0 || (runner.procs?.size ?? 0) > 0 || (runner.closing?.size ?? 0) > 0
     || store.list().some((session) => runner.isRunning(session.id))
     || [...(chain.runs?.values() ?? [])].some((run) => run.kind !== "schedule")
     || (oneShotRuns.get(tool) ?? 0) > 0;
@@ -179,15 +182,23 @@ export function createHub(options = {}) {
   // 꺼진 사용자 Codex MCP 서버는 세션 실행에서 빼 연결 재시도·오류를 막는다.
   const mcpProbe = deps.mcpProbe ?? new CodexMcpProbe();
   runner.unreachableMcp = () => mcpProbe.unreachable();
+  // 프로젝트 설정의 "유니티 사용"(실행 전 확인·허용·끔)을 세션 실행 인자와 권한 응답에 반영한다.
+  runner.unityMode = (session) => projectUnityMode(config, session.projectPath);
 
   // Resolve the MCP URL lazily, after an ephemeral port has been assigned.
+  // 설정 파일은 내용이 바뀌었거나 지워졌을 때만 다시 쓴다(요청마다 디스크에 쓰지 않는다).
+  const mcpWritten = new Map(); // 설정 파일 → 마지막으로 쓴 내용
   runner.mcp = (session) => {
     const url = `http://127.0.0.1:${port}/mcp/${mcpTokens.token(session.id)}`;
     const configFile = path.join(mcpDir, `${session.id}.json`);
-    fs.mkdirSync(mcpDir, { recursive: true });
-    fs.writeFileSync(configFile, JSON.stringify({
+    const content = JSON.stringify({
       mcpServers: { agenthub: { type: "http", url } },
-    }, null, 2));
+    }, null, 2);
+    if (mcpWritten.get(configFile) !== content || !fs.existsSync(configFile)) {
+      fs.mkdirSync(mcpDir, { recursive: true });
+      fs.writeFileSync(configFile, content);
+      mcpWritten.set(configFile, content);
+    }
     return { url, configFile };
   };
   const tools = createMessagingTools({ mailbox, board, notify });
@@ -218,6 +229,14 @@ export function createHub(options = {}) {
   listen(runner, "state", (sessionId, state, runningStartedAt) => {
     notify("state", { sessionId, state, runningStartedAt });
   });
+  // 실행 중 진행 표시(시작 단계·마지막 출력 시각·답 대기), 쓰는 중인 글, 이미 남긴 이벤트의 상태 변경
+  listen(runner, "activity", (sessionId, activity) => notify("activity", { sessionId, ...activity }));
+  listen(runner, "draft", (sessionId, draft) => notify("draft", { sessionId, ...draft }));
+  listen(runner, "eventUpdate", (sessionId, seq, patch) => notify("event-update", { sessionId, seq, patch }));
+  // 하위 작업(백그라운드 서브에이전트 등) 목록의 바뀐 작업. 화면은 id로 합친다.
+  listen(runner, "subtasks", (sessionId, patch) => notify("subtasks", { sessionId, ...patch }));
+  // 지금 작업에 반영하지 못한 추가 요청을 대기열 앞으로 되돌린다. 사용자가 쓴 요청은 보낼 때 다시 /스킬·@참조를 풀어 쓴다.
+  listen(runner, "requeue", (session, items) => chain.requeue?.(session, items.map(({ text, meta }) => ({ text, meta: meta?.from ? meta : { user: true, ...meta } }))));
   listen(setup, "change", (jobs) => notify("setup", jobs));
   listen(setup, "finished", (tool, job) => {
     notify("cli", {});

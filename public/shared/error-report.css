@@ -1,0 +1,18 @@
+/* 공용 오류 표시: 동작 · 원인 · 해결 방법 · 원문(접기) · 복사 · AI에게 해결 요청 */
+.error-report { display: grid; gap: 6px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--line)); border-left: 3px solid var(--danger); border-radius: var(--radius); background: color-mix(in srgb, var(--danger) 6%, var(--panel)); color: var(--text); font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; min-width: 0; }
+.error-report p { margin: 0; }
+.error-report-head { display: flex; align-items: start; justify-content: space-between; gap: 10px; }
+.error-report-action { color: var(--danger); font-weight: 600; }
+.error-report-close { flex-shrink: 0; margin: -4px -6px 0 0; }
+.error-report-message { white-space: pre-wrap; }
+.error-report-hint, .error-report-note { color: var(--text); opacity: .9; }
+.error-report-label { display: inline-block; margin-right: 6px; color: var(--muted); font-size: 12px; }
+.error-report-label::after { content: ":"; }
+.error-report-raw summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.error-report-raw pre { margin: 6px 0 0; padding: 8px; max-height: 180px; overflow: auto; background: var(--code-bg); color: var(--code-text, var(--text)); border-radius: 6px; font-size: 11px; white-space: pre-wrap; }
+.error-report-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; }
+.error-report-status { color: var(--muted); font-size: 12px; }
+.error-report-status:empty { display: none; }
+.error-toast-tray { position: fixed; top: 16px; right: 16px; width: min(420px, calc(100vw - 32px)); z-index: 10030; display: grid; gap: 10px; pointer-events: none; }
+.error-toast-tray:empty { display: none; }
+.error-toast { pointer-events: auto; box-shadow: 0 8px 30px var(--shadow); background: var(--panel); max-height: min(60vh, 520px); overflow: auto; }

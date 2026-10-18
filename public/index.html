@@ -8,6 +8,7 @@
   <script src="/theme.js"></script>
   <link rel="stylesheet" href="/vendor/katex/katex.min.css">
   <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/shared/error-report.css">
   <link rel="stylesheet" href="/features/tasks/tasks.css">
   <link rel="stylesheet" href="/features/tasks/finish.css">
   <link rel="stylesheet" href="/features/git/operations.css">
@@ -106,6 +107,7 @@
         </div>
         <div class="actions">
           <button class="ghost danger" id="p-remove" title="AgentHub 목록에서 이 프로젝트를 뺍니다. 프로젝트 폴더와 파일은 그대로 둡니다.">프로젝트 제거</button>
+          <button class="ghost" id="p-settings" title="이 프로젝트의 새 세션·새 작업 기본값과 유니티 사용을 정합니다">프로젝트 설정</button>
           <button class="ghost" id="p-rescan">다시 찾기</button>
           <button class="primary" id="p-new">새 세션</button>
         </div>
@@ -169,9 +171,10 @@
           <div class="card tasks-card">
             <div class="card-head">
               <div><h3>작업</h3><p class="hint">작업마다 브랜치와 폴더를 만들고, 마무리하면 Pull Request로 연결합니다.</p></div>
-              <div class="actions"><button type="button" class="ghost sm" id="tasks-settings">GitFlow 설정</button><button type="button" class="ghost sm" id="tasks-refresh">최신 상태 확인</button><button type="button" class="primary sm" id="tasks-new">새 작업</button></div>
+              <div class="actions"><button type="button" class="ghost sm" id="tasks-settings">GitFlow 설정</button><button type="button" class="ghost sm" id="tasks-workspace" title="작업 폴더 재사용과 유니티 Library 복사">작업 폴더 설정</button><button type="button" class="ghost sm" id="tasks-refresh">최신 상태 확인</button><button type="button" class="primary sm" id="tasks-new">새 작업</button></div>
             </div>
             <div id="tasks-context" class="tasks-context" role="status"></div>
+            <div id="tasks-preview" class="tasks-preview" role="status" hidden></div>
             <div class="issue-boxes tasks-filter" id="tasks-filter" role="group" aria-label="작업 상태로 보기">
               <button type="button" data-task-filter="all" aria-pressed="true">전체 <span class="tab-count" data-task-count="all"></span></button>
               <button type="button" data-task-filter="active" aria-pressed="false" title="진행 중이거나 검토를 기다리는 작업">진행 중 <span class="tab-count" data-task-count="active"></span></button>
@@ -291,7 +294,7 @@
                     <label for="g-message">커밋 메시지</label>
                     <textarea id="g-message" rows="3" placeholder="변경한 내용을 적어 주세요" aria-label="커밋 메시지"></textarea>
                     <div class="git-row"><span class="muted" id="g-commit-note"></span><span class="git-commit-buttons"><button type="button" class="ghost sm" id="g-commit-push" title="커밋한 뒤 푸시 미리보기를 엽니다">커밋 후 Push</button><button type="button" class="primary sm" id="g-commit">커밋</button></span></div>
-                    <p class="error" id="g-error" role="alert"></p>
+                    <div class="error" id="g-error" role="alert"></div>
                   </div>
                 </div>
                 <div id="g-changes-resizer" class="git-changes-resizer" role="separator" tabindex="0" aria-label="Git 파일 목록 너비 조절" aria-orientation="vertical" aria-controls="g-work g-change-preview" title="끌어서 너비 조절 · 방향키로 조절 · 두 번 클릭해 초기화"></div>
@@ -386,6 +389,8 @@
       </header>
       <p id="s-export-result" class="export-result" role="status" hidden></p>
       <ol id="s-events" class="events"></ol>
+      <section id="s-subtasks" class="subtasks" aria-label="하위 작업" hidden></section>
+      <div id="s-activity" class="run-activity" role="status" hidden></div>
       <ul id="s-queue" class="queue" hidden></ul>
       <form id="s-form" class="composer">
         <div class="composer-body">
@@ -430,6 +435,7 @@
         </div>
         <ol id="c-events" class="events chat-events"></ol>
       </div>
+      <div id="c-activity" class="run-activity chat-activity" role="status" hidden></div>
       <ul id="c-queue" class="queue chat-queue" hidden></ul>
       <form id="c-form" class="composer chat-composer">
         <div class="composer-body">
@@ -493,6 +499,9 @@
       <label class="check for-project"><input type="checkbox" name="orchestrator" id="new-orchestrator">
         오케스트레이터 세션 (코드를 고치지 않고 다른 세션을 만들어 지휘)
       </label>
+      <label class="check for-project" title="다음에 이 프로젝트에서 새 세션을 열면 지금 고른 AI·권한·워크트리 사용이 먼저 선택됩니다. 프로젝트 설정에서 바꿀 수 있습니다."><input type="checkbox" name="saveDefaults" id="new-save-defaults">
+        이 프로젝트 기본값으로 저장 (AI·권한·워크트리 사용)
+      </label>
       <p class="hint for-chat" hidden>프로젝트 없이 대화만 합니다. 파일 수정이나 명령 실행은 하지 않으며, 설치된 CLI의 로그인(구독)을 그대로 씁니다.</p>
       <p class="error" id="new-error"></p>
       <menu>
@@ -530,6 +539,12 @@
       <div id="cli-status" class="cli-status"></div>
       <label class="check"><input type="checkbox" id="cli-auto-update" checked>Codex·Claude CLI 자동 업데이트</label>
       <p class="hint">앱 시작 후와 12시간마다 설치된 CLI를 업데이트합니다. 실행 중인 작업이 끝날 때까지 기다리며, 설치 방식을 확인할 수 없는 CLI는 수동 업데이트 안내를 표시합니다.</p>
+      <h4>Claude CLI 띄워 두기</h4>
+      <div class="row keep-alive-row">
+        <label>쉬는 시간 <input type="number" id="cli-keep-idle" min="0" max="1440" step="1" required>분</label>
+        <label>동시 유지 <input type="number" id="cli-keep-max" min="1" max="64" step="1" required>개</label>
+      </div>
+      <p class="hint">턴이 끝나도 Claude CLI를 닫지 않고 두었다가 다음 요청을 바로 보냅니다. 백그라운드 작업(서브에이전트 등)은 끝날 때까지 닫지 않습니다. 쉬는 시간이 지나거나 동시 유지 수를 넘으면 가장 오래 쉰 CLI부터 닫습니다. 0분이면 백그라운드 작업이 없을 때 바로 닫습니다.</p>
       <h4>프로젝트</h4>
       <ul id="project-list" class="project-list"></ul>
       <div class="row">
@@ -815,8 +830,37 @@
       </div>
       <datalist id="config-models"></datalist>
       <label id="config-permission-row">권한 <select id="config-permission"></select></label>
-      <p class="hint">모델·추론 강도·권한은 다음 요청부터 적용되고, 같은 AI면 대화는 그대로 이어집니다.</p>
+      <p class="hint" id="config-apply-hint">모델·추론 강도는 다음 요청부터 적용되고, 같은 AI면 대화는 그대로 이어집니다. 권한은 실행 중이면 Claude는 바로 적용하고, Codex는 다음 요청부터 적용합니다.</p>
+      <div id="config-rules-row" class="config-rules" hidden>
+        <span>이 세션에서 계속 허용한 요청</span>
+        <ul id="config-rules" class="config-rules-list"></ul>
+        <p class="hint">지우면 다음 요청부터 다시 묻습니다. 지금 실행 중인 작업에는 끝날 때까지 남아 있을 수 있습니다.</p>
+      </div>
       <p class="error" id="config-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate class="ghost">취소</button>
+        <button value="ok" class="primary">저장</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="project-settings-dialog">
+    <form method="dialog" id="project-settings-form" class="dialog-form">
+      <h3>프로젝트 설정 <small id="project-settings-name"></small></h3>
+      <p class="hint">새 세션·새 작업 창을 열 때 먼저 고를 값입니다. 지정하지 않으면 그 창에서 마지막으로 고른 값을 씁니다.</p>
+      <label>기본 AI <select id="project-settings-agent"><option value="">지정 안 함</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+      <div class="two">
+        <label>Claude 기본 권한 <select id="project-settings-permission-claude"></select></label>
+        <label>Codex 기본 권한 <select id="project-settings-permission-codex"></select></label>
+      </div>
+      <label>워크트리 사용 <select id="project-settings-isolate"><option value="">지정 안 함</option><option value="false">사용 안 함 (원본 폴더에서 작업)</option><option value="true">사용 (별도 작업 폴더에서 작업)</option></select></label>
+      <label>유니티 사용 <select id="project-settings-unity">
+        <option value="ask">실행 전 확인 (기본)</option>
+        <option value="allow">허용</option>
+        <option value="off">끔</option>
+      </select></label>
+      <p class="hint" id="project-settings-unity-hint"></p>
+      <p class="error" id="project-settings-error"></p>
       <menu>
         <button value="cancel" formnovalidate class="ghost">취소</button>
         <button value="ok" class="primary">저장</button>
@@ -955,8 +999,15 @@
       <label>할 일 <textarea id="task-content" rows="4" maxlength="12000" placeholder="작업할 범위와 필요한 변경 내용을 적어 주세요"></textarea></label>
       <label>완료 기준 <textarea id="task-acceptance" rows="3" maxlength="8000" placeholder="어떤 결과가 나오면 완료인지, 확인할 테스트를 적어 주세요"></textarea></label>
       <label>작업 담당 AI <select id="task-agent"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
-      <label id="task-worktree-row">작업할 폴더 <select id="task-worktree"><option value="none">원본 폴더에서 작업</option><option value="create">워크트리 만들기 (별도 작업 폴더)</option></select></label>
+      <label id="task-worktree-row">작업할 폴더 <select id="task-worktree"><option value="none">원본 폴더에서 작업</option><option value="create">워크트리 만들기 (별도 작업 폴더)</option><option value="reuse">기존 워크트리 선택</option></select></label>
+      <div id="task-reuse-row" hidden>
+        <label>기존 워크트리 <select id="task-reuse-worktree" aria-describedby="task-reuse-status" disabled></select></label>
+        <p class="hint workbranch-status" id="task-reuse-status" aria-live="polite"></p>
+        <button type="button" class="ghost sm" id="task-reuse-refresh">목록 새로고침</button>
+      </div>
       <p class="hint task-worktree-hint" id="task-worktree-hint" aria-live="polite"></p>
+      <label class="check" id="task-library-row" hidden><input type="checkbox" id="task-copy-library" checked> <span id="task-library-label">원본의 Library 폴더 복사</span></label>
+      <p class="hint" id="task-library-hint" hidden></p>
       <details id="task-create-advanced" class="task-create-advanced"><summary>세부 설정 · 브랜치, 작업 폴더 이름, 모델, 권한</summary>
       <label>작업 브랜치 <select id="task-workbranch-mode"><option value="new">새 작업 브랜치 만들기</option><option value="existing">기존 작업 브랜치 선택</option></select></label>
       <div id="task-workbranch-row" hidden>
@@ -979,7 +1030,7 @@
       <p class="hint" id="task-create-hint">원격 main과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.</p>
       </details>
       </fieldset>
-      <p class="error" id="task-create-error" role="alert"></p>
+      <div class="error" id="task-create-error" role="alert"></div>
       <menu><button type="button" class="ghost" id="task-create-cancel">취소</button><button type="submit" class="primary" id="task-create-submit" hidden>만들기</button></menu>
     </form>
   </dialog>
@@ -1000,6 +1051,20 @@
       <p class="hint" id="task-settings-status" role="status"></p>
       <p class="error" id="task-settings-error" role="alert" hidden></p>
       <menu><button type="button" class="ghost" id="task-settings-cancel">취소</button><button type="submit" class="primary" id="task-settings-save">저장</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="task-workspace-dialog" class="task-dialog" aria-labelledby="task-workspace-heading">
+    <form method="dialog" class="dialog-form">
+      <h3 id="task-workspace-heading">작업 폴더 설정</h3>
+      <p class="hint" id="task-workspace-unity"></p>
+      <label class="check"><input type="checkbox" id="task-workspace-reuse"> 정리한 작업 폴더를 지우지 않고 재사용 대기 폴더로 남기기</label>
+      <p class="hint">새 워크트리 작업을 만들 때 재사용 대기 폴더가 있으면 그 폴더에 새 작업 브랜치를 만들어 씁니다. Git이 무시하는 파일(유니티 Library 등)이 남아 다시 임포트하는 시간이 줄어듭니다. 커밋하지 않은 변경이 있는 폴더는 쓰지 않습니다.</p>
+      <label class="check" id="task-workspace-copy-row"><input type="checkbox" id="task-workspace-copy"> 새 워크트리를 만들 때 원본의 Library 폴더 복사(기본값)</label>
+      <h4>재사용 대기 폴더</h4>
+      <ul id="task-workspace-pool" class="task-workspace-pool"></ul>
+      <p class="error" id="task-workspace-error" role="alert"></p>
+      <menu><button type="button" class="ghost" id="task-workspace-close">닫기</button></menu>
     </form>
   </dialog>
 

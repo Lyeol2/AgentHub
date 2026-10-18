@@ -216,7 +216,7 @@ async function graphTabsBrowserChecks() {
   const context = (element) => element.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 650, clientY: 350 }));
   const menuItem = (label) => [...document.querySelectorAll(".context-menu button")].find((button) => button.textContent.trim() === label);
   const pointer = (element, type, props = {}) => element.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 4, button: 0, clientX: 400, clientY: 300, ...props }));
-  window.alert = (text) => alerts.push(text); window.confirm = () => true;
+  window.alert = (text) => alerts.push(text); window.confirm = () => true; new MutationObserver((records) => { for (const record of records) for (const added of record.addedNodes) if (added.classList?.contains("error-toast")) alerts.push(added.querySelector(".error-report-message")?.textContent ?? added.textContent); }).observe(document.body, { childList: true, subtree: true });
   await until(() => $("project-nav").querySelector("button") && $("kpis").children.length === 4);
   $("project-nav").querySelector("button").click();
   await until(async () => (await snapshot()).pendingTabLoads > 0);

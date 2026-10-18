@@ -1,4 +1,4 @@
-import { el, badge, pill, lifePill } from "../../shared/dom.js";
+import { el, badge, pill, lifePill, subtaskPill } from "../../shared/dom.js";
 import { elapsedElement } from "../../shared/elapsed.js";
 import { firstLine } from "../../shared/store.js";
 import { sessionLockButton } from "../../shared/session-lock.js";
@@ -19,6 +19,7 @@ export function createGraphView({ skillChips, restartSession, commandNode, toggl
       const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}${s.locked ? " locked" : ""}`, "data-id": s.id, title: s.role || s.title },
         el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null,
           s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : pill(s.state),
+          subtaskPill(s),
           sessionLockButton(s, toggleSessionLock)),
         el("div", { class: "gcard-title" }, s.title),
         el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
@@ -30,7 +31,7 @@ export function createGraphView({ skillChips, restartSession, commandNode, toggl
               class: "gcard-restart",
               title: "다시 시작: CLI 대화를 새로 시작해 컨텍스트를 비웁니다. 기록·역할·연결은 그대로 둡니다.",
               onclick: () => restartSession(s),
-              ...(s.state === "running" ? { disabled: "" } : {}),
+              ...(s.state === "running" || s.state === "background" ? { disabled: "" } : {}),
             }, "↻"))),
         el("span", { class: "gcard-handle", title: "끌어서 다른 세션에 연결" }));
       cards.set(s.id, card);

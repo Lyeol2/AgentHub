@@ -7,8 +7,9 @@ import { renderMarkdown } from "../../markdown.js";
 import { createPullRequests } from "../../gitpulls.js";
 import { icon } from "../../shared/icons.js";
 import { confirmAction } from "../../shared/confirm-dialog.js";
+import { errorPanel, showError } from "../../shared/error-report.js";
 
-export function createGitController({ api, selectSession, openSetup, currentProject, projectTab, pullIssues = () => [], navigation }) {
+export function createGitController({ api, selectSession, openSetup, currentProject, projectTab, pullIssues = () => [], sessionForFolder = () => null, navigation }) {
   initGitResizer();
   initGitStageResizer();
   for (const slot of $("g-tabs").querySelectorAll("[data-icon]")) slot.replaceWith(icon(slot.dataset.icon, { size: 16 }));
@@ -31,8 +32,13 @@ export function createGitController({ api, selectSession, openSetup, currentProj
   const gitTab = () => GIT_TABS.includes(localStorage.getItem(GIT_TAB_KEY)) ? localStorage.getItem(GIT_TAB_KEY) : "changes";
   const gitBusy = () => !!(ui.git?.indexBusy || ui.git?.committing || ui.git?.merging || ui.git?.checkingOut || ui.git?.operationBusy);
   const gitFiles = (area) => (ui.git?.data?.files ?? []).filter((f) => f[area]);
+  // 원본 폴더가 아닌 작업 폴더면 그 폴더를 쓰는 세션(작업이면 마지막 세션)에 오류 해결을 요청할 수 있다.
+  const folderSession = (m = ui.git) => m && !samePath(m.cwd ?? m.project, m.project) ? sessionForFolder(m.cwd) : null;
   const operations = createGitOperations({ api, getModel: () => ui.git, isCurrent: (m) => samePath(m.project, navigation.project), isBusy: gitBusy,
-    setWorkspace, reload: loadGit, controls: renderGitControls });
+    setWorkspace, reload: loadGit, controls: renderGitControls, sessionFor: folderSession });
+  function gitError(err, action) {
+    $("g-error").replaceChildren(errorPanel(err, { action, sessionId: folderSession(), rawLabel: "Git 원문 보기", onClose: () => $("g-error").replaceChildren() }));
+  }
 
   async function setWorkspace(cwd) {
     if (!ui.git || gitBusy() || samePath(ui.git.cwd, cwd)) return;
@@ -177,7 +183,7 @@ export function createGitController({ api, selectSession, openSetup, currentProj
       await api("POST", "/api/git/checkout", { path: current.project, cwd: current.cwd, branch: b.name });
       if (ui.git === current && samePath(current.project, navigation.project)) closeGitDetail();
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "브랜치 체크아웃", sessionId: folderSession(current) });
     } finally {
       current.checkingOut = false;
       if (ui.git === current) renderGitControls();
@@ -225,7 +231,7 @@ export function createGitController({ api, selectSession, openSetup, currentProj
       await api("POST", "/api/git/" + action, { path: current.project, cwd: current.cwd, files });
       if (ui.git === current && samePath(current.project, navigation.project)) closeGitDetail();
     } catch (err) {
-      if (ui.git === current && samePath(current.project, navigation.project)) $("g-error").textContent = err.message;
+      if (ui.git === current && samePath(current.project, navigation.project)) gitError(err, action === "stage" ? "스테이징" : "스테이징 취소");
     } finally {
       if (ui.git === current && samePath(current.project, navigation.project)) await loadGit();
       current.indexBusy = false;
@@ -251,7 +257,7 @@ export function createGitController({ api, selectSession, openSetup, currentProj
         closeGitDetail();
       }
     } catch (err) {
-      if (ui.git === current && samePath(current.project, navigation.project)) $("g-error").textContent = err.message;
+      if (ui.git === current && samePath(current.project, navigation.project)) gitError(err, "커밋");
     } finally {
       if (ui.git === current && samePath(current.project, navigation.project)) await loadGit();
       current.committing = false;

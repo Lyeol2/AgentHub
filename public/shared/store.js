@@ -19,7 +19,8 @@ export function applySessionState(data, payload) {
   for (const session of targets) {
     if (!session) continue;
     session.state = next;
-    if (next !== "running") session.runningStartedAt = null;
+    // 진행 표시(시작 단계·마지막 출력 시각)는 실행 중에만 쓴다. 다음 실행의 값은 진행 알림으로 받는다.
+    if (next !== "running") { session.runningStartedAt = null; delete session.runPhase; delete session.lastOutputAt; }
     else if (Object.hasOwn(payload, "runningStartedAt")) session.runningStartedAt = payload.runningStartedAt;
   }
   return data.sessions.find((s) => s.id === sessionId);

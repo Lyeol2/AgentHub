@@ -1,0 +1,91 @@
+(async () => {
+  const checks = [];
+  const $ = (id) => document.getElementById(id);
+  const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
+  const until = async (predicate, label = String(predicate)) => {
+    const end = Date.now() + 8000;
+    while (!predicate()) { if (Date.now() > end) throw Error("Timed out: " + label); await new Promise((resolve) => setTimeout(resolve, 20)); }
+  };
+  const post = (url, body) => fetch(url, { method: "POST", body: JSON.stringify(body) }).then((res) => res.json());
+  const card = (id) => [...document.querySelectorAll("#s-subtasks .subtask-card")].find((node) => node.dataset.subtaskId === id);
+  const sidebarPill = () => document.querySelector("#session-list .pill.subtasks-running");
+  const ago = (seconds) => new Date(Date.now() - seconds * 1000).toISOString();
+
+  // 목록·프로젝트·그래프 배지
+  await until(() => sidebarPill(), "sidebar subtask pill");
+  check(sidebarPill().textContent === "하위 작업 1개", "sidebar shows running subtask count without ambient tasks");
+  check(document.querySelector("#session-list .dot.background") && document.querySelector("#project-nav .dot.background"), "background state uses a distinct dot in sidebar and project nav");
+  document.querySelector("#project-nav .nav-item").click();
+  await until(() => document.querySelector(".gcard"), "graph card");
+  const gcard = document.querySelector(".gcard");
+  check(gcard.classList.contains("background") && gcard.querySelector(".pill.subtasks-running")?.textContent === "하위 작업 1개", "graph node shows background state and subtask badge");
+  check(gcard.querySelector(".gcard-restart").disabled, "graph restart is disabled while background work runs");
+  check($("p-sessions").querySelector(".pill.subtasks-running")?.textContent === "하위 작업 1개", "project session table shows subtask badge");
+
+  // 세션 화면의 패널
+  document.querySelector("#session-list .session-item").click();
+  await until(() => !$("view-session").hidden && !$("s-subtasks").hidden, "subtask panel");
+  const panel = () => $("s-subtasks").querySelector("details.subtasks-panel");
+  check(panel().open, "panel opens automatically while a subtask runs");
+  check(panel().querySelector(":scope > summary").textContent.includes("하위 작업 2개 · 실행 중 1개"), "panel summary counts visible subtasks");
+  check(!card("t3"), "ambient CLI tasks are hidden");
+  const t1 = card("t1"), t2 = card("t2");
+  check(t1 && t2 && t1.compareDocumentPosition(t2) & Node.DOCUMENT_POSITION_FOLLOWING && t2.style.getPropertyValue("--level") === "1", "child task is nested under its parent");
+  check(t1.querySelector(".subtask-status").textContent === "실행 중" && t2.querySelector(".subtask-status").textContent === "완료", "status badges");
+  check(t1.querySelector(".subtask-kind").textContent === "서브에이전트 · Explore · 백그라운드", "kind shows subagent type and background");
+  check(t1.querySelector(".subtask-facts").textContent === "도구 3회 · 토큰 1,234", "tool uses and tokens");
+  check(t1.querySelector(".subtask-now").textContent === "지금 · 파일 읽기" && t1.querySelector(".subtask-summary").textContent === "runner.mjs 읽는 중", "current tool and summary");
+  check(!t1.querySelector(".subtask-stall").hidden && /분 \d+초째 진행 없음/.test(t1.querySelector(".subtask-stall").textContent), "stall warning after 60 seconds without progress");
+  check(t2.querySelector(".subtask-elapsed").textContent === "10초" && !t2.querySelector(".subtask-stop"), "finished task shows duration and no stop button");
+  const firstElapsed = t1.querySelector(".subtask-elapsed").textContent;
+  await until(() => card("t1").querySelector(".subtask-elapsed").textContent !== firstElapsed, "running elapsed ticks");
+  check(card("t1") === t1, "timer updates text without rebuilding cards");
+
+  // 대화의 도구 호출 줄과 연결
+  const toolNode = document.querySelector('#s-events li.ev.tool[data-tool-use-id="toolu_1"]');
+  const link = toolNode?.querySelector(".subtask-link");
+  check(link?.textContent === "하위 작업 · 실행 중", "Agent tool line shows the subtask status");
+  check(!document.querySelector('#s-events li.ev.tool[data-tool-use-id="toolu_x"] .subtask-link'), "unrelated tool lines have no subtask badge");
+  const toolOpen = toolNode.querySelector("details").open;
+  link.click();
+  await until(() => card("t1")?.classList.contains("flash"), "card highlight");
+  check(toolNode.querySelector("details").open === toolOpen, "badge click does not toggle the tool line");
+
+  // 자세히: 활동·요청·출력 파일
+  card("t1").querySelector(".subtask-more > summary").click();
+  await until(() => card("t1").querySelector(".subtask-more").open, "details open");
+  check(card("t1").querySelectorAll(".subtask-activity li").length === 2 && card("t1").querySelector(".subtask-act-label").textContent === "파일 읽기", "activity list shows label and text");
+  check(!card("t1").querySelector(".subtask-prompt").open && card("t1").querySelector(".subtask-prompt pre").textContent.includes("하위 작업 코드"), "prompt is collapsed");
+  check(card("t1").querySelector(".subtask-output code").textContent === "C:/tmp/t1.output", "output file path");
+
+  // 중지: 확인 → CLI가 늦으면 안내, 실패는 오류 표시
+  const asked = [];
+  window.confirm = (text) => { asked.push(text); return true; };
+  card("t1").querySelector(".subtask-stop").click();
+  await until(() => card("t1")?.querySelector(".subtask-notice"), "unconfirmed notice");
+  check(asked.length === 1 && card("t1").querySelector(".subtask-notice").textContent.includes("CLI가 아직 응답하지 않았습니다"), "unconfirmed stop explains that CLI has not answered");
+  check(card("t1").querySelector(".subtask-more").open, "re-render keeps opened details");
+  await post("/fixture/stop-mode", { mode: "conflict" });
+  card("t1").querySelector(".subtask-stop").click();
+  await until(() => document.querySelector(".error-toast"), "error toast");
+  check(document.querySelector(".error-toast").textContent.includes("이미 끝난 하위 작업입니다"), "stop failure uses the error report");
+  window.confirm = () => false;
+  card("t1").querySelector(".subtask-stop").click();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  check(asked.length === 2, "cancelled confirm sends nothing");
+
+  // SSE 병합: 패널만 고치고 대화는 다시 그리지 않는다.
+  const parent = structuredClone((await fetch("/api/sessions/s1").then((res) => res.json())).subtasks[0]);
+  await post("/fixture/emit", { tasks: [{ id: "t4", toolUseId: "toolu_4", description: "새 작업", taskType: "local_agent", type: "general-purpose", status: "running", background: false, startedAt: ago(1), activity: [] }] });
+  await until(() => card("t4") && sidebarPill()?.textContent === "하위 작업 2개", "new task merged");
+  check(panel().open && panel().querySelector(":scope > summary").textContent.includes("실행 중 2개"), "new running task keeps panel open and updates the summary");
+  await post("/fixture/emit", { tasks: [{ ...parent, status: "completed", endedAt: new Date().toISOString(), summary: "조사 끝" }, { id: "t4", toolUseId: "toolu_4", description: "새 작업", status: "completed", startedAt: ago(2), endedAt: ago(0), activity: [] }] });
+  await until(() => panel().querySelector(":scope > summary").textContent.includes("모두 완료"), "all completed");
+  check(!panel().open, "panel collapses to a summary when everything finished");
+  check(document.querySelector('#s-events li.ev.tool[data-tool-use-id="toolu_1"]') === toolNode && toolNode.querySelector(".subtask-link").textContent === "하위 작업 · 완료", "conversation is not re-rendered and the tool badge follows");
+  check(!sidebarPill() && card("t1").querySelector(".subtask-summary").textContent === "조사 끝" && !card("t1").querySelector(".subtask-notice"), "list badge disappears and finished card shows result");
+  await post("/fixture/emit", { removed: ["t2"] });
+  await until(() => !card("t2"), "removed task");
+  check(panel().querySelector(":scope > summary").textContent.includes("하위 작업 2개"), "removed tasks leave the panel");
+  return checks;
+})()

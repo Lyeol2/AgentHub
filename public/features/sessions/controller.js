@@ -1,6 +1,7 @@
 import { createConversationView } from "./conversation-view.js";
 import { $, AGENT_LABEL, STATE_LABEL, el, badge, sessionLabel, pill, renderLife, renderDiff } from "../../shared/dom.js";
 import { renderSessionElapsed } from "../../shared/elapsed.js";
+import { renderActivity } from "../../shared/activity.js";
 import { linkLabel } from "../../shared/flow.js";
 import { firstLine, samePath } from "../../shared/store.js";
 import { closeContextMenu, openContextMenu } from "../../shared/context-menu.js";
@@ -8,13 +9,17 @@ import { composerAction, builtinCommand } from "../../composer.js";
 import { createCompletion } from "./completion.js";
 import { createAttachmentComposer, uploadAttachments, renderAttachmentLinks } from "./image-composer.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
+import { showError } from "../../shared/error-report.js";
+import { createSubtasksView } from "./subtasks-view.js";
+import { mergeSubtasks, countSubtasks } from "../../shared/subtasks.js";
 
 export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
   const ui = {
     "chatDraft": null
   };
-  const { renderEvents, appendEvent, settleEvents } = createConversationView({
-    api, getSession: () => data.current, sessionById, selectSession, onTaskReference,
+  const subtasksView = createSubtasksView({ api, getSession: () => data.current });
+  const { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft, updateSubtaskLinks } = createConversationView({
+    api, getSession: () => data.current, sessionById, selectSession, onTaskReference, onSubtaskFocus: (id) => subtasksView.focus(id),
     onPlanDecision: (id, plan, body) => api("POST", `/api/sessions/${id}/plans/${plan}`, body),
     onPlanError: (id, error) => api("POST", `/api/sessions/${id}/messages`, { prompt: `[계획 오류] ${error}\n계획 블록을 고쳐 다시 제안하라.` }),
     onQuestionAnswer: (id, question, answers) => api("POST", `/api/sessions/${id}/questions/${question}`, { answers }),
@@ -42,8 +47,15 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   }
 
   function renderSession() {
+    if (!renderSessionHeader()) return;
+    renderEvents($("s-events"), data.current.events);
+    scrollToBottom();
+  }
+
+  // 기록(events)을 빼고 머리글·상태만 그린다. 실행 중 상태·결과 알림은 이것만 다시 그린다.
+  function renderSessionHeader() {
     const s = data.current;
-    if (!s) return;
+    if (!s) return false;
     $("s-crumb-project").textContent = s.chat ? "대시보드" : s.projectName;
     $("s-crumb").textContent = ` / ${s.chat ? "일반 채팅" : "세션"}${s.imported ? " · 가져옴" : ""}`;
     $("s-agent").className = `badge ${s.agent}${s.chat ? " chat" : ""}`;
@@ -54,6 +66,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     completion?.close();
     renderExportResult(s);
     renderState();
+    renderSubtasks();
 
     const meta = [
       s.chat ? "도구 없이 대화만" : s.worktree ? `작업 폴더 ${s.cwd} (브랜치 ${s.worktree.branch})` : `원본 폴더 ${s.cwd}${s.branch ? ` (브랜치 ${s.branch})` : ""}`,
@@ -72,9 +85,108 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("s-popout").hidden = !!POPUP;
     if (POPUP) document.title = `${s.title} · AgentHub`;
     renderFlow();
+    return true;
+  }
 
-    renderEvents($("s-events"), s.events);
-    scrollToBottom();
+  // 상태·결과 이벤트 뒤에 세션 정보(CLI 세션 ID, 사용량 등)만 다시 받아 머리글을 고친다.
+  // 놓친 이벤트가 있거나 받지 못하면 전체를 다시 받는다.
+  async function refreshSessionMeta(id) {
+    const s = data.current;
+    if (s?.id !== id) return;
+    let meta;
+    try { meta = await api("GET", `/api/sessions/${id}?meta=1`); }
+    catch { return data.current === s ? selectSession(id) : undefined; }
+    if (data.current !== s) return;
+    if (meta.locked || meta.eventCount > s.events.length) return selectSession(id);
+    const { eventCount, handoverPending, ...rest } = meta;
+    Object.assign(s, rest);
+    if (navigation.view === "chat") {
+      $("c-title").textContent = s.title;
+      renderChatState();
+    } else if (navigation.view === "session") renderSessionHeader();
+  }
+
+  // ── 하위 작업 ───────────────────────────────────────────────────
+  // 패널과 대화의 도구 호출 줄 상태만 다시 그린다. 목록의 개수도 상세에 맞춘다.
+  function renderSubtasks() {
+    const s = data.current;
+    if (!s) return;
+    const summary = sessionById(s.id);
+    if (summary && s.subtasks) setSubtaskCount(summary, countSubtasks(s.subtasks));
+    if (navigation.view !== "session") return;
+    subtasksView.render();
+    updateSubtaskLinks($("s-events"));
+  }
+
+  const setSubtaskCount = (item, count) => { if (count) item.subtaskCount = count; else delete item.subtaskCount; };
+  const seenSubtasks = new Map(); // 세션 → 작업 id → 마지막으로 받은 상태(보고 있지 않은 세션의 목록을 다시 받을지 정한다)
+  let reloadTimer = null;
+
+  // SSE subtasks: 보고 있는 세션이면 패널만 고친다. 목록 개수가 바뀌었으면 true(목록을 다시 그린다).
+  // 보고 있지 않은 세션은 목록에 개수만 있으므로, 처음 보는 작업이나 상태가 바뀐 작업이 오면 목록을 다시 받는다.
+  function applySubtasks({ sessionId, tasks = [], removed = [] }) {
+    const summary = sessionById(sessionId);
+    const before = JSON.stringify(summary?.subtaskCount ?? null);
+    const seen = seenSubtasks.get(sessionId) ?? new Map();
+    seenSubtasks.set(sessionId, seen);
+    let reload = removed.length > 0;
+    for (const task of tasks) {
+      if (seen.get(task.id) !== task.status) reload = true;
+      seen.set(task.id, task.status);
+    }
+    if (data.current?.id === sessionId) {
+      data.current.subtasks = mergeSubtasks(data.current.subtasks, tasks, removed);
+      renderSubtasks();
+    } else if (summary && reload) {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => loadSessions().catch(() => {}), 1000);
+    }
+    return JSON.stringify(summary?.subtaskCount ?? null) !== before;
+  }
+
+  // ── 실행 중 진행 표시 ───────────────────────────────────────────
+  // 멈춘 것 같을 때의 다시 시도: 일시중지로 지금 턴을 멈추고, 멈추면 재개해 멈춘 곳부터 이어 간다.
+  const retrying = new Set();
+  async function retrySession(id) {
+    if (retrying.has(id)) return;
+    retrying.add(id);
+    try { await api("POST", `/api/sessions/${id}/pause`); }
+    catch (err) { retrying.delete(id); showError(err, { action: "다시 시도", sessionId: id }); }
+  }
+
+  function sessionStateChanged(id, state) {
+    if (!retrying.has(id) || state === "running") return;
+    retrying.delete(id);
+    if (state === "paused") api("POST", `/api/sessions/${id}/resume`).catch((err) => showError(err, { action: "세션 재개", sessionId: id }));
+  }
+
+  function renderRunActivity(now = Date.now()) {
+    const s = data.current;
+    const prefix = navigation.view === "chat" ? "c" : navigation.view === "session" ? "s" : null;
+    if (!prefix) return;
+    if (prefix === "s") subtasksView.tick(now);
+    renderActivity(prefix, s, {
+      now,
+      onStop: () => s && api("POST", `/api/sessions/${s.id}/stop`).catch((e) => showError(e, { action: "세션 중지" })),
+      onRetry: () => s && retrySession(s.id),
+    });
+  }
+
+  // 실시간 진행 알림(activity)과 출력 이벤트를 세션에 반영한다.
+  function applyActivity(id, activity) {
+    for (const item of new Set([sessionById(id), data.current?.id === id ? data.current : null])) {
+      if (!item) continue;
+      if (Object.hasOwn(activity, "runPhase")) item.runPhase = activity.runPhase;
+      if (Object.hasOwn(activity, "lastOutputAt")) item.lastOutputAt = activity.lastOutputAt;
+      if (Object.hasOwn(activity, "waiting")) item.waiting = activity.waiting;
+    }
+    if (data.current?.id === id) renderRunActivity();
+  }
+
+  // 화면에 출력이 왔다. 서버의 진행 알림은 몇 초마다 오므로 그 사이는 화면이 받은 시각을 쓴다.
+  function markOutput(id) {
+    if (data.current?.id !== id || data.current.state !== "running") return;
+    applyActivity(id, { runPhase: "working", lastOutputAt: new Date().toISOString() });
   }
 
   function renderState() {
@@ -85,13 +197,20 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     label.className = `pill ${s.state}`;
     renderSessionElapsed("s", s);
     const running = s.state === "running";
-    $("s-stop").disabled = !running && s.state !== "paused";
+    // 백그라운드 작업 중에도 중지하면 남은 하위 작업과 CLI를 함께 멈춘다.
+    // 중지를 누른 뒤 CLI가 끝날 때까지는 다시 누를 수 없게 하고 멈추는 중임을 보여 준다.
+    const active = running || s.state === "background";
+    if (!active) stopping.delete(s.id);
+    const halting = active && stopping.has(s.id);
+    $("s-stop").disabled = halting || (!active && s.state !== "paused");
+    $("s-stop").textContent = halting ? "중지하는 중…" : "중지";
     // 도구 호출의 "실행 중" 표시는 턴이 도는 동안에만 보인다.
     $("s-events").classList.toggle("running", running);
     settleEvents($("s-events"));
-    $("s-restart").disabled = running || !s.agentSessionId;
+    $("s-restart").disabled = running || s.state === "background" || !s.agentSessionId;
     renderLife("s-life", s);
     renderComposer("s", s);
+    renderRunActivity();
   }
 
   // ── 실행 중에 보내기 ────────────────────────────────────────────
@@ -102,6 +221,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   }
 
   const composerBusy = new Set();
+  const stopping = new Set(); // 중지를 눌러 CLI가 끝나기를 기다리는 세션 ID
   let completion = null;
   const imageComposers = Object.fromEntries(["s", "c"].map((prefix) => [prefix, createAttachmentComposer({ prefix, onChange: () => renderComposerAction(prefix, data.current) })]));
   let newChatDraft = 0;
@@ -184,7 +304,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         if (action === "delete") await api("DELETE", `/api/sessions/${s.id}/queue/${item.id}`);
         else await api("POST", `/api/sessions/${s.id}/queue/${item.id}`, { action });
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: action === "delete" ? "대기열에서 지우기" : action === "steer" ? "대기 요청 붙이기" : "대기 요청 보내기" });
       }
       refreshQueue(s.id);
     };
@@ -279,7 +399,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       completion.sync();
       if (result.queued) refreshQueue(s.id);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "요청 보내기" });
     } finally {
       composerBusy.delete("s");
       if (navigation.view === "session") renderComposer("s", data.current);
@@ -332,7 +452,14 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     }
   });
 
-  $("s-stop").addEventListener("click", () => api("POST", `/api/sessions/${data.current.id}/stop`).catch((e) => alert(e.message)));
+  $("s-stop").addEventListener("click", () => {
+    const s = data.current;
+    if (!s) return;
+    if (s.state === "running" || s.state === "background") { stopping.add(s.id); renderState(); }
+    api("POST", `/api/sessions/${s.id}/stop`).then((result) => {
+      if (!result?.stopped) stopping.delete(s.id);
+    }, (e) => { stopping.delete(s.id); showError(e, { action: "세션 중지" }); }).finally(() => { if (data.current?.id === s.id) renderState(); });
+  });
 
   // 일시중지·재개. 일시중지는 대화를 그대로 두고 멈추며, 재개하면 멈춘 곳부터 이어서 진행한다.
   async function togglePause() {
@@ -356,7 +483,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         delete data.current.pausedMidTurn;
       }
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "세션 일시중지·재개" });
     } finally {
       composerBusy.delete(prefix);
       if (data.current?.id === s.id) renderState();
@@ -372,7 +499,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     try {
       await api("POST", `/api/sessions/${s.id}/restart`);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "세션 다시 시작" });
     }
   }
   $("s-restart").addEventListener("click", () => restartSession());
@@ -404,7 +531,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       }
       await loadSessions();
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "세션 잠금 변경" });
     } finally {
       lockRequests.delete(s.id);
     }
@@ -473,7 +600,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       await Promise.all([loadSessions(), loadLinks()]);
       if (data.current?.id === s.id) await selectSession(created.id);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "세션 재생성", sessionId: s.chat ? null : s.id });
     }
   }
 
@@ -514,7 +641,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     if (force) query.set("force", "1");
     try {
       const { records } = await api("DELETE", `/api/sessions/${s.id}?${query}`);
-      if (records?.errors.length) alert(`세션은 지웠지만 일부 기록 파일을 지우지 못했습니다(목록에서는 숨겼습니다).\n\n${records.errors.join("\n")}`);
+      if (records?.errors.length) showError({ message: "세션은 지웠지만 일부 기록 파일을 지우지 못했습니다(목록에서는 숨겼습니다).", hint: "그 파일을 연 프로그램을 닫은 뒤 원문에 적힌 파일을 직접 지워도 됩니다.", raw: records.errors.join("\n") }, { action: "CLI 기록 파일 삭제" });
       return true;
     } catch (err) {
       if (err.reason === "running" && confirm("실행 중인 세션입니다. 실행을 멈추고 삭제할까요?")) {
@@ -523,7 +650,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       if (err.reason === "worktree" && confirm(`${err.message}\n\n작업 폴더는 남겨 두고 세션만 삭제할까요?`)) {
         return deleteSession(s, { deleteRecords, force });
       }
-      if (!["running", "worktree"].includes(err.reason)) alert(err.message);
+      if (!["running", "worktree"].includes(err.reason)) showError(err, { action: s.chat ? "채팅 삭제" : "세션 삭제" });
       return false;
     }
   }
@@ -539,7 +666,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       $("diff-body").replaceChildren(...renderDiff(diffData.diff || "(커밋된 파일의 변경 없음)"));
       $("diff-dialog").showModal();
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "변경 보기", sessionId: data.current?.id });
     }
   });
 
@@ -555,9 +682,29 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("config-model").value = s.model ?? "";
     fillConfigAgent(s.agent, s.effort ?? "", s.permission);
     $("config-permission-row").hidden = !!s.chat;
+    renderConfigRules(s);
     $("config-error").textContent = "";
     $("config-dialog").showModal();
   });
+
+  // "이 세션에서 계속 허용"으로 남긴 규칙. 지우면 다음 요청부터 다시 묻는다.
+  function renderConfigRules(s) {
+    const rules = (s.allowRules ?? []).filter((rule) => rule.agent === s.agent);
+    $("config-rules-row").hidden = !!s.chat || !rules.length;
+    $("config-rules").replaceChildren(...rules.map((rule) => el("li", {},
+      el("span", { class: "mono" }, rule.label ?? rule.key),
+      el("button", { type: "button", class: "ghost sm", title: "이 규칙을 지웁니다", onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          const updated = await api("PUT", `/api/sessions/${s.id}`, { removeAllowRules: [rule.key] });
+          s.allowRules = updated.allowRules ?? [];
+          renderConfigRules(s);
+        } catch (err) {
+          $("config-error").textContent = err.message;
+          e.currentTarget.disabled = false;
+        }
+      } }, "지우기"))));
+  }
 
   // 고른 AI에 맞춰 모델 후보·추론 강도·권한 목록을 채운다. AI를 바꾸면 이어받기 선택을 보인다.
   // 권한은 비슷한 것으로 옮긴다. 서버의 handover.mjs와 같다.
@@ -605,7 +752,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       // AI를 바꾸면 기록에 상태 줄이 붙고 CLI 대화 ID도 바뀌므로 세션을 통째로 다시 받는다.
       if (updated.agent !== s.agent) await selectSession(s.id);
       else {
-        Object.assign(data.current, { title: updated.title, model: updated.model, effort: updated.effort, permission: updated.permission });
+        Object.assign(data.current, { title: updated.title, model: updated.model, effort: updated.effort, permission: updated.permission, allowRules: updated.allowRules });
         renderSession();
       }
       loadSessions();
@@ -698,6 +845,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("c-events").classList.toggle("running", running);
     settleEvents($("c-events"));
     if (running) $("c-empty").hidden = true;
+    renderRunActivity();
   }
 
   // 새 채팅이면 초안만 바꾸고, 진행 중인 채팅이면 다음 메시지부터 적용되도록 저장한다.
@@ -714,7 +862,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       Object.assign(s, { model: updated.model, effort: updated.effort });
       saveChatPrefs(s);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "채팅 설정 변경" });
     }
     renderChatPick();
     loadSessions();
@@ -769,7 +917,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         if (!data.current && navigation.view === "chat" && navigation.viewRevision === viewRevision) await selectSession(s.id);
       }
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "메시지 보내기" });
     } finally {
       composerBusy.delete("c");
       if (navigation.view === "chat") renderChatState();
@@ -788,7 +936,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       renderChat();
       loadSessions();
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "채팅 이름 바꾸기" });
     }
   });
 
@@ -805,5 +953,6 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
 
   $("c-popout").addEventListener("click", () => openWindow(`chat=${data.current?.id ?? "new"}`));
 
-  return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, toggleSessionLock, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom };
+  return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, toggleSessionLock, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom,
+    refreshSessionMeta, renderRunActivity, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, applySubtasks };
 }

@@ -59,14 +59,20 @@ export async function projectFiles(cwd, { now = Date.now() } = {}) {
 }
 
 // 이름이 query로 시작하면 가장 앞, 이름에 있으면 다음, 경로에 있으면 그다음, 글자가 차례로 들어 있으면 마지막이다.
+// 띄어쓰기가 있으면 그대로 맞춰 보고, 안 맞으면 나눈 낱말이 모두 경로에 들어 있는 파일을 찾는다.
 export function rankFiles(files, query, limit = 30) {
-  const q = String(query ?? "").replace(/\\/g, "/").toLowerCase();
+  const q = String(query ?? "").replace(/\\/g, "/").toLowerCase().trim();
+  const terms = q.split(/\s+/).filter(Boolean);
   const scored = [];
   for (const file of files) {
     const lower = file.toLowerCase();
     const name = lower.replace(/\/$/, "").split("/").pop();
     let score;
     if (!q) score = file.split("/").length * 10 + (file.endsWith("/") ? 0 : 5);
+    else if (terms.length > 1 && !lower.includes(q)) {
+      if (!terms.every((term) => lower.includes(term))) continue;
+      score = terms.every((term) => name.includes(term)) ? 2 : 3;
+    }
     else if (name.startsWith(q)) score = 0;
     else if (lower.startsWith(q)) score = 1;
     else if (name.includes(q)) score = 2;

@@ -60,6 +60,28 @@ npm run release
   - Claude: AgentHub에서 Claude 세션을 실행할 때 `stream-json`의 `rate_limit_event`를 받아 데이터 폴더의 `limits.json`에 저장한다. 로그인한 계정의 사용량 API(Claude Code의 `/usage`와 같은 곳)에서도 1분마다 사용률을 읽고, 요청이 많아 거절(429)되면 몇 분 쉬었다가 다시 읽는다.
   - Codex: `~/.codex/sessions` 기록에 남는 `rate_limits` 중 가장 최근 값을 읽는다.
 
+### Claude CLI 띄워 두기와 하위 작업
+
+Claude CLI는 입력(stdin)이 닫히면 백그라운드 작업(서브에이전트·백그라운드 명령)을 강제로 끝낸다. 그래서 AgentHub는 턴이 끝나도(`result`) 입력을 닫지 않는다.
+
+- 턴 마무리(`turnEnd`, 대기 전환, 대기열 전송, 비용·컨텍스트)는 `result`마다 한다. 프로세스가 끝나는 것은 정리만 한다.
+- 다음 요청은 같은 프로세스의 열린 입력에 쓴다(쓰기 전에 그 턴의 권한 모드를 `set_permission_mode`로 맞춘다). CLI 인자에 영향을 주는 변경(모델·추론 강도·MCP 주소·작업 폴더·유니티 통제·추가 폴더, 모든 권한 허용 켜고 끄기, 지운 허용 규칙, 다시 시작으로 바뀐 대화)이 있으면 다음 요청 때 이전 프로세스를 닫고 `--resume`으로 새로 띄운다. 단, 백그라운드 작업이 도는 중이면 작업이 끊기지 않게 같은 프로세스를 계속 쓰고 그 사실을 기록에 알린다.
+- 하위 작업이 없으면 `config.json`의 `cliKeepAlive.idleMinutes`(기본 15분) 동안 쉬면 입력을 닫아 끝낸다. 0이면 하위 작업이 없을 때 바로 닫는다. 동시에 띄워 두는 수는 `cliKeepAlive.maxProcesses`(기본 8)이며, 넘으면 가장 오래 쉰 프로세스부터 닫는다. 실행 중·백그라운드 작업 중인 프로세스는 닫지 않는다. 설정 화면의 "Claude CLI 띄워 두기"에서 바꾼다. CLI 업데이트 전에는 쉬는 프로세스를 닫는다.
+- `initialize`에 `perTaskStopAffordance`·`agentProgressSummaries`·`forwardSubagentText`를 선언한다. 일시중지(interrupt)는 턴만 멈추고 백그라운드 작업은 살려 둔다. 세션 "중지"는 프로세스를 끝내며 남은 작업은 `stopped`가 된다. 프로세스가 비정상으로 끝나면 남은 작업은 `interrupted`로 표시하고 상태 메시지를 남긴다.
+- 백그라운드 작업이 끝나면 CLI가 스스로 다음 턴을 시작한다(`system/init` → 답변 → `result`). AgentHub는 이를 실행 중으로 보이고 결과가 오면 평소 턴처럼 마친다. 일시중지 중에 시작된 턴은 바로 멈춘다.
+- Codex는 턴마다 `app-server`를 띄우고 턴이 끝나면 닫는다(띄워 두기 미적용).
+
+#### 화면용 서버 계약
+
+- 세션 상태 `state`에 `background`가 있다: 턴은 끝났고 CLI에서 하위 작업이 도는 중. 새 요청은 바로 보낼 수 있고(대기열에 넣지 않음) 같은 프로세스에 쓴다. 중지(`POST /api/sessions/:id/stop`)는 남은 작업과 CLI를 함께 멈춘다. 라벨은 `STATE_LABEL.background`("백그라운드 작업 중").
+- `GET /api/sessions/:id`(및 `?meta=1`)의 `subtasks`: 최근 30개 작업 배열(넘으면 끝난 작업부터 오래된 순으로 지움). 목록(`GET /api/sessions`)에는 배열 대신 `subtaskCount: { running, total }`만 싣는다.
+  - `id`(CLI task_id), `toolUseId`(작업을 시작한 Agent 도구 호출 ID), `description`, `type`(서브에이전트 종류 또는 작업 종류), `taskType`(`local_agent`·`local_bash`·`local_workflow` 등), `status`(`running`·`completed`·`failed`·`stopped`·`interrupted`), `background`(백그라운드로 띄웠는지. 동기 Agent 도구는 `false`), `parentId`(이 작업을 띄운 상위 작업), `depth`(서브에이전트 중첩 깊이), `prompt`(최대 2000자), `startedAt`·`endedAt`·`lastProgressAt`(ISO 시각), `usage: { totalTokens, toolUses, durationMs } | null`, `lastTool`(한국어 도구 라벨, 예: "파일 읽기"), `summary`(진행 한 줄 요약 또는 끝난 뒤 결과 요약), `error`, `outputFile`, `reason`, `ambient`(CLI 정리 작업. 상태 계산에서 뺀다), `activity`(최근 30개 `{ ts, kind: "text"|"tool"|"error", label?, text }`. 하위 작업 안의 대화는 본 기록 `events`에 넣지 않고 여기에만 둔다).
+- SSE `subtasks` `{ sessionId, tasks: [작업 전체 객체], removed: [작업 id] }`: 바뀐 작업만 보낸다. 화면은 `id`로 합치고 `removed`는 지운다.
+- `POST /api/sessions/:id/subtasks/:taskId/stop`: 작업 하나만 멈춘다(Claude `stop_task`). CLI가 받으면 `{ ok: true, confirmed: true }`, 10초 안에 답이 없으면 `{ ok: true, confirmed: false }`. 이미 끝났거나 CLI가 없으면 409. 멈춘 결과는 SSE `subtasks`로 온다.
+- 설정: `GET /api/status`의 `cliKeepAlive: { idleMinutes, maxProcesses }`, `PUT /api/settings`의 `cliKeepAlive`(0~1440분, 1~64개).
+- 본 기록의 Claude 도구 호출 이벤트(`kind: "tool"`)에는 CLI의 `tool_use` ID가 `toolUseId`로 있다. 화면은 이것으로 Agent 도구 호출 줄과 하위 작업을 잇는다.
+- 화면: 세션 화면 대화 아래 "하위 작업" 패널(`public/features/sessions/subtasks-view.js`, 계산은 `public/shared/subtasks.js`)이 실행 중 작업이 있으면 펼쳐지고 모두 끝나면 요약 한 줄로 접힌다. SSE `subtasks`는 패널과 도구 호출 줄의 상태 배지만 고치고 대화는 다시 그리지 않는다. 목록·프로젝트 표·그래프 노드는 `subtaskCount.running`으로 "하위 작업 N개" 배지를, `background` 상태는 속이 빈 점·점선 테두리로 보인다.
+
 ### 작성창 명령과 세션 파일
 
 - 작성창의 `/이름`·`@경로`는 `server/prompt-refs.mjs`가 CLI에 넘길 내용으로 풀어 쓴다(화면 기록에는 입력 그대로). 사용자가 직접 보낸 요청·대기열 요청·작업 중 붙인 요청·버튼 프롬프트만 풀어 쓰고, 연결로 넘어온 글은 그대로 둔다. `/스킬`은 스킬 실행 지시로 바꾸고, 워크트리에서 일하는 Claude에는 프로젝트 스킬 폴더를 `--add-dir`로 연다. `@`는 작업 폴더 안의 실제 파일·폴더만 받으며(심볼릭 링크로 밖을 가리키면 무시), 64KiB 이하 텍스트는 내용을, 그 밖은 경로를 붙인다. 요청 하나에 10개, 붙이는 내용 합계 256KiB까지다. 자동 완성 목록은 `GET /api/sessions/:id/files?q=`가 `git ls-files --cached --others --exclude-standard`(git이 아니면 폴더 탐색) 결과를 15초 동안 캐시해 이름순 점수로 고른다.

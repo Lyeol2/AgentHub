@@ -16,7 +16,7 @@
 
   const windows = [], alerts = [];
   window.open = (...args) => windows.push(args);
-  window.alert = (text) => alerts.push(text);
+  window.alert = (text) => alerts.push(text); new MutationObserver((records) => { for (const record of records) for (const added of record.addedNodes) if (added.classList?.contains("error-toast")) alerts.push(added.querySelector(".error-report-message")?.textContent ?? added.textContent); }).observe(document.body, { childList: true, subtree: true });
   context(document.querySelector('.gcard'));
   check(menuItem('열기').disabled && menuItem('새 창으로 열기').disabled, 'locked graph menu disables both chat open actions');
   menuItem('🔓 세션 잠금 해제').click();

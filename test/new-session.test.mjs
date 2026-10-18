@@ -379,3 +379,55 @@ test("생성 요청이 진행 중이면 반복 제출해도 세션을 한 번만
   await creating;
   assert.equal(h.get("new-dialog").open, false);
 });
+
+function withStorage(t, initial = {}) {
+  const store = new Map(Object.entries(initial).map(([key, value]) => [key, JSON.stringify(value)]));
+  globalThis.localStorage = { getItem: (key) => store.get(key) ?? null, setItem: (key, value) => store.set(key, value) };
+  t.after(() => { delete globalThis.localStorage; });
+  return store;
+}
+
+test("새 세션 창은 마지막으로 고른 종류·AI별 권한·모델·워크트리 사용을 다시 고른다", async (t) => {
+  const store = withStorage(t);
+  const h = setup();
+  await h.controller.openNew("C:/repo", { kind: "claude" });
+  await submit(h, [["projectPath", "C:/repo"], ["permission", "bypassPermissions"], ["model", "opus"], ["isolate", "true"], ["worktreeName", "bag-ui"]]);
+  const saved = JSON.parse(store.get("agenthub.newSession"));
+  assert.equal(saved.kind, "claude");
+  assert.equal(saved.permission.claude, "bypassPermissions");
+  assert.equal(saved.isolate, true);
+  h.get("new-agent").value = "codex";
+  await h.controller.openNew("C:/repo");
+  assert.equal(h.get("new-agent").value, "claude");
+  assert.equal(h.get("new-permission").value, "bypassPermissions");
+  assert.equal(h.get("new-model").value, "opus");
+  assert.equal(h.get("new-isolate").value, "true");
+  assert.equal(h.get("new-worktree-name").required, true);
+  // 오케스트레이터는 지금처럼 읽기 권한·원본 폴더로 강제하고, 그 선택은 다음 기본값으로 남기지 않는다.
+  await h.controller.openNew("C:/repo", { orchestrator: true });
+  assert.equal(h.get("new-permission").value, "default");
+  assert.equal(h.get("new-isolate").value, "false");
+  await submit(h, [["projectPath", "C:/repo"], ["permission", "default"], ["orchestrator", "on"]]);
+  assert.equal(JSON.parse(store.get("agenthub.newSession")).permission.claude, "bypassPermissions");
+});
+
+test("새 세션 창은 프로젝트 기본값을 마지막 선택보다 먼저 쓰고, 체크하면 프로젝트 기본값으로 저장한다", async (t) => {
+  withStorage(t, { "agenthub.newSession": { kind: "claude", permission: { codex: "read-only" }, isolate: true } });
+  const h = setup();
+  const project = { path: "C:/repo", name: "repo", settings: { defaults: { agent: "codex", permission: { codex: "danger-full-access" }, isolate: false }, unity: "ask" } };
+  const controller = createCreationController({
+    data: h.data, navigation: h.navigation, api: (...args) => h.service.api(...args),
+    loadStatus: async () => {}, loadSessions: async () => {}, loadProjects: async () => {},
+    sortedProjects: () => [project], fillModels: () => {}, fillEfforts: () => {},
+    connectCreatedGraphNode: async () => {}, openChat: () => {}, openSettings: () => {},
+  });
+  await controller.openNew("C:/repo");
+  assert.equal(h.get("new-agent").value, "codex");
+  assert.equal(h.get("new-permission").value, "danger-full-access");
+  assert.equal(h.get("new-isolate").value, "false");
+  await submit(h, [["projectPath", "C:/repo"], ["permission", "workspace-write"], ["saveDefaults", "on"]]);
+  const put = h.calls.find((call) => call[0] === "PUT");
+  assert.equal(put[1], "/api/projects/settings?path=C%3A%2Frepo");
+  assert.deepEqual(put[2], { defaults: { agent: "codex", permission: { codex: "workspace-write" }, isolate: false } });
+  assert.equal(Object.hasOwn(h.calls.find((call) => call[0] === "POST")[2], "saveDefaults"), false);
+});
