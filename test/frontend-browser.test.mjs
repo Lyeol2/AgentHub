@@ -189,8 +189,8 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
     for (const endpoint of ["status", "auth", "setup"]) assert.ok(requests.some((request) => request.path === `/api/${endpoint}` && request.search === "?fresh=1"), `${endpoint} must bypass cached detection on recheck`);
     assert.deepEqual(requests.filter((request) => request.method === "POST" && request.path.startsWith("/api/setup/")).map((request) => request.path), ["/api/setup/winget/install", "/api/setup/winget/cancel", "/api/setup/codex/update", "/api/setup/codex/update"], "setup actions stay inside fixture handlers and duplicate clicks do not start another update");
     assert.deepEqual(requests.filter((request) => request.method === "PUT" && request.path === "/api/settings").map((request) => request.body), [
-      { cli: { claude: "", codex: "" }, cliAutoUpdate: false },
-      { cli: { claude: "", codex: "" }, cliAutoUpdate: true },
+      { cli: { claude: "", codex: "" }, cliAutoUpdate: false, cliKeepAlive: { idleMinutes: 15, maxProcesses: 8 } },
+      { cli: { claude: "", codex: "" }, cliAutoUpdate: true, cliKeepAlive: { idleMinutes: 15, maxProcesses: 8 } },
     ], "automatic CLI update preference saves both disabled and enabled states");
     for (const request of requests.filter((request) => request.method === "POST" && request.path === "/api/setup/codex/update")) {
       assert.ok(requests.slice(requests.indexOf(request) + 1).some((next) => next.method === "GET" && next.path === "/api/setup" && !next.search), "updates re-read the latest job state after their response");

@@ -341,7 +341,7 @@ export function createTasksController({
       const sessionId = (connected.find(session => session.id === ids.at(-1)) || connected[0])?.id || (!known ? ids.at(-1) : null);
       const status = statuses.get(task.id) || null;
       const sessionCount = known ? connected.length : status?.sessions ?? ids.length;
-      const running = known ? connected.filter(session => session.state === 'running').length : status?.running ?? 0;
+      const running = known ? connected.filter(session => ['running', 'background'].includes(session.state)).length : status?.running ?? 0;
       const pipeline = buildTaskPipeline({ ...task, gitflow: flow }, status, {
         sessionId, sessions: sessionCount, running,
         uncertain: uncertainTasks.has(task.id), pending: pendingTasks.has(task.id),

@@ -48,6 +48,16 @@ test("자동 업데이트만 저장하면 CLI 경로를 유지하고 boolean만 
   assert.equal(h.saves(), 1);
 });
 
+test("Claude CLI 띄워 두기 설정은 범위를 확인하고 기본값과 합쳐 저장한다", () => {
+  const h = service();
+  h.system.settings({ cliKeepAlive: { idleMinutes: 0 } });
+  assert.deepEqual(h.config.cliKeepAlive, { idleMinutes: 0, maxProcesses: 8 });
+  for (const bad of [{ idleMinutes: -1 }, { idleMinutes: 1.5 }, { maxProcesses: 0 }, { maxProcesses: 65 }, "15"])
+    assert.throws(() => h.system.settings({ cliKeepAlive: bad }), { status: 400 });
+  assert.deepEqual(h.config.cliKeepAlive, { idleMinutes: 0, maxProcesses: 8 });
+  assert.equal(h.saves(), 1);
+});
+
 test("CLI 설정은 따옴표를 정리하고 두 실행 파일 검증이 끝나야 저장한다", async () => {
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), "agenthub-cli-settings-"));
   try {
@@ -303,11 +313,14 @@ test("자동 업데이트 설정은 저장된 값을 표시하고 CLI 경로와 
     if (method === "PUT") writes.push(body);
     return api(method, url);
   };
+  h.data.status.cliKeepAlive = { idleMinutes: 30, maxProcesses: 4 };
   await h.controller.openSettings();
   assert.equal(h.get("cli-auto-update").checked, false);
+  assert.equal(String(h.get("cli-keep-idle").value), "30");
   h.get("cli-auto-update").checked = true;
+  h.get("cli-keep-max").value = "6";
   await h.get("settings-form").handlers.submit({ submitter: { value: "ok" }, preventDefault() {} });
-  assert.deepEqual(writes, [{ cli: { claude: "", codex: "" }, cliAutoUpdate: true }]);
+  assert.deepEqual(writes, [{ cli: { claude: "", codex: "" }, cliAutoUpdate: true, cliKeepAlive: { idleMinutes: 30, maxProcesses: 6 } }]);
 });
 
 test("늦은 업데이트 응답과 새로고침 실패가 먼저 도착한 완료 상태를 되돌리지 않는다", async (t) => {

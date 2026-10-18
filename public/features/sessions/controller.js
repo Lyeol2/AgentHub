@@ -154,11 +154,12 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     label.className = `pill ${s.state}`;
     renderSessionElapsed("s", s);
     const running = s.state === "running";
-    $("s-stop").disabled = !running && s.state !== "paused";
+    // 백그라운드 작업 중에도 중지하면 남은 하위 작업과 CLI를 함께 멈춘다.
+    $("s-stop").disabled = !running && s.state !== "paused" && s.state !== "background";
     // 도구 호출의 "실행 중" 표시는 턴이 도는 동안에만 보인다.
     $("s-events").classList.toggle("running", running);
     settleEvents($("s-events"));
-    $("s-restart").disabled = running || !s.agentSessionId;
+    $("s-restart").disabled = running || s.state === "background" || !s.agentSessionId;
     renderLife("s-life", s);
     renderComposer("s", s);
     renderRunActivity();
