@@ -12,10 +12,13 @@ test("claude: init 이벤트에서 세션 ID를 꺼낸다", () => {
 test("claude: 텍스트와 도구 호출, 도구 결과를 구분한다", () => {
   const assistant = claude.parseLine(JSON.stringify({
     type: "assistant",
-    message: { content: [{ type: "text", text: "안녕" }, { type: "tool_use", name: "Bash", input: { command: "ls" } }] },
+    message: { content: [{ type: "text", text: "안녕" }, { type: "tool_use", id: "toolu_9", name: "Bash", input: { command: "ls" } }] },
   }));
   assert.deepEqual(assistant.map((e) => e.kind), ["text", "tool"]);
   assert.equal(assistant[1].text, "Bash: ls");
+  // 하위 작업과 잇도록 도구 호출 ID를 남긴다. ID가 없으면 필드도 없다.
+  assert.equal(assistant[1].toolUseId, "toolu_9");
+  assert.equal("toolUseId" in claude.parseLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: {} }] } }))[0], false);
 
   const [result] = claude.parseLine(JSON.stringify({
     type: "user",
@@ -49,6 +52,33 @@ test("claude: 재개할 때는 --resume, 처음에는 --session-id를 쓴다", (
   assert.ok(!first.includes("--resume"));
   const next = claude.buildArgs({ agentSessionId: "abc", permission: "plan" });
   assert.deepEqual(next.slice(next.indexOf("--resume"), next.indexOf("--resume") + 2), ["--resume", "abc"]);
+});
+
+test("claude: 쓰는 중인 글(stream_event)은 글자 조각으로만 넘기고 최종 답변과 겹치지 않는다", () => {
+  const args = claude.buildArgs({ permission: "acceptEdits" });
+  assert.ok(args.includes("--include-partial-messages"));
+  assert.ok(args.includes("--replay-user-messages"));
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "stream_event", event: { type: "message_start", message: { content: [] } } })), [{ kind: "delta", reset: true }]);
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "안" } } })), [{ kind: "delta", text: "안" }]);
+  // 생각·도구 입력 조각, 블록 경계, 하위 에이전트의 출력은 보이지 않는다.
+  for (const event of [{ type: "content_block_delta", delta: { type: "thinking_delta", thinking: "음" } }, { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{" } },
+    { type: "content_block_start", content_block: { type: "text", text: "" } }, { type: "message_stop" }]) {
+    assert.deepEqual(claude.parseLine(JSON.stringify({ type: "stream_event", event })), []);
+  }
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "stream_event", parent_tool_use_id: "t1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "x" } } })), []);
+  // 최종 답변은 그대로 한 번만 기록에 남는다.
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "안녕" }] } })), [{ kind: "text", text: "안녕" }]);
+});
+
+test("claude: CLI가 돌려준 사용자 요청과 도구 결과를 구분하고, 도구 줄에 동작 이름을 붙인다", () => {
+  assert.equal(claude.replayedUserText({ type: "user", message: { role: "user", content: [{ type: "text", text: "추가 조건" }, { type: "image", source: {} }] } }), "추가 조건");
+  assert.equal(claude.replayedUserText({ type: "user", message: { role: "user", content: "문자열 요청" } }), "문자열 요청");
+  assert.equal(claude.replayedUserText({ type: "user", message: { content: [{ type: "tool_result", content: "출력" }] } }), null);
+  assert.equal(claude.replayedUserText({ type: "user", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "하위" }] } }), null);
+  assert.equal(claude.replayedUserText({ type: "assistant", message: { content: [{ type: "text", text: "답" }] } }), null);
+  const [read, edit, unity] = claude.parseLine(JSON.stringify({ type: "assistant", message: { content: [
+    { type: "tool_use", name: "Read", input: { file_path: "a.js" } }, { type: "tool_use", name: "Edit", input: { file_path: "a.js" } }, { type: "tool_use", name: "mcp__unityMCP__manage_scene", input: {} }] } }));
+  assert.deepEqual([read.label, edit.label, unity.label], ["파일 읽기", "파일 수정", "유니티 조작"]);
 });
 
 test("codex: thread.started와 명령 실행 이벤트를 변환한다", () => {
@@ -285,4 +315,39 @@ test("codex: 쓸 수 없는 모델(설정의 기본값이나 세션에 고른 �
   assert.match(codex.modelNote({}, gone), /Codex 설정의 기본 모델 gpt-6\.1-sol.*gpt-6-astra/);
   assert.match(codex.modelNote({ model: "gpt-6.1-sol" }, saved), /이 세션의 모델 gpt-6\.1-sol.*gpt-6-astra/);
   assert.equal(codex.modelNote({}, codex.resolveModel({}, list, { model: null, effort: null }, known)), null);
+});
+
+test("claude: initialize에 작업별 중지·진행 요약·하위 작업 글 받기를 선언하고, stop_task로 작업 하나를 멈춘다", () => {
+  const init = JSON.parse(claude.initLine());
+  assert.deepEqual(init.request, { subtype: "initialize", perTaskStopAffordance: true, agentProgressSummaries: true, forwardSubagentText: true });
+  const stop = JSON.parse(claude.stopTaskLine("task-1", "stop-1"));
+  assert.deepEqual(stop, { type: "control_request", request_id: "stop-1", request: { subtype: "stop_task", task_id: "task-1" } });
+  assert.equal(claude.keepAlive, true);
+});
+
+test("claude: task_started·progress·updated·notification을 하위 작업 이벤트로 바꾼다", () => {
+  const [started] = claude.parseLine(JSON.stringify({ type: "system", subtype: "task_started", task_id: "t1", tool_use_id: "toolu_1", description: "조사", subagent_type: "Explore", is_backgrounded: true, task_type: "local_agent", prompt: "찾아", parent_task_id: "t0", spawn_depth: 2 }));
+  assert.deepEqual(started, { kind: "subtask", phase: "started", taskId: "t1", toolUseId: "toolu_1", description: "조사", subagentType: "Explore", taskType: "local_agent", background: true, parentId: "t0", depth: 2, prompt: "찾아" });
+  const [progress] = claude.parseLine(JSON.stringify({ type: "system", subtype: "task_progress", task_id: "t1", usage: { total_tokens: 5, tool_uses: 1, duration_ms: 10 }, last_tool_name: "Bash", summary: "테스트 실행 중" }));
+  assert.equal(progress.phase, "progress");
+  assert.equal(progress.lastTool, "명령 실행");
+  assert.equal(progress.summary, "테스트 실행 중");
+  const [updated] = claude.parseLine(JSON.stringify({ type: "system", subtype: "task_updated", task_id: "t1", patch: { status: "killed", end_time: 1 } }));
+  assert.deepEqual(updated, { kind: "subtask", phase: "updated", taskId: "t1", patch: { status: "killed", end_time: 1 } });
+  const [done] = claude.parseLine(JSON.stringify({ type: "system", subtype: "task_notification", task_id: "t1", tool_use_id: "toolu_1", status: "completed", output_file: "o.txt", summary: "끝", usage: { total_tokens: 9, tool_uses: 2, duration_ms: 20 } }));
+  assert.equal(done.phase, "notification");
+  assert.equal(done.status, "completed");
+  assert.equal(done.outputFile, "o.txt");
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "system", subtype: "background_tasks_changed", tasks: [] })), []);
+});
+
+test("claude: 하위 작업 안의 메시지는 본 기록이 아니라 작업 활동으로 넘긴다", () => {
+  const [activity] = claude.parseLine(JSON.stringify({ type: "assistant", parent_tool_use_id: "toolu_1", message: { content: [{ type: "text", text: "중간 보고" }, { type: "tool_use", name: "Edit", input: { file_path: "a.js" } }], usage: { input_tokens: 999 } } }));
+  assert.equal(activity.kind, "subtask_activity");
+  assert.equal(activity.toolUseId, "toolu_1");
+  assert.deepEqual(activity.items.map((item) => [item.kind, item.label ?? null, item.text]), [["text", null, "중간 보고"], ["tool", "파일 수정", "Edit: a.js"]]);
+  // 하위 작업의 정상 도구 결과는 남기지 않고 실패만 남긴다. 사용량은 본 대화의 컨텍스트 크기가 아니다.
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "user", parent_tool_use_id: "toolu_1", message: { content: [{ type: "tool_result", content: "ok" }] } })), []);
+  const [failed] = claude.parseLine(JSON.stringify({ type: "user", parent_tool_use_id: "toolu_1", message: { content: [{ type: "tool_result", content: "권한 없음", is_error: true }] } }));
+  assert.deepEqual(failed.items, [{ kind: "error", text: "권한 없음" }]);
 });

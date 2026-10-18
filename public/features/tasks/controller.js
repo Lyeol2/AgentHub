@@ -6,6 +6,8 @@ import { DEFAULT_GITFLOW, gitflowBranches } from '../../shared/gitflow.js';
 import { buildTaskPipeline } from '../../shared/task-stage.js';
 import { renderTaskPipeline, relativeTime } from './pipeline.js';
 import { confirmAction } from '../../shared/confirm-dialog.js';
+import { errorPanel, showError as showErrorToast } from '../../shared/error-report.js';
+import { createTaskWorkspace } from './workspace.js';
 
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
 const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
@@ -83,6 +85,7 @@ export function createTasksController({
   const pendingTasks = new Set();
   const REVIEW_CHECK_MS = 3 * 60_000;
   const reviewChecks = new Map(); // 작업 ID → 마지막으로 PR 병합을 자동 확인한 시각
+  const freshChecks = new Map(); // 작업 ID → 마지막으로 오래된 최신 확인 결과를 자동으로 다시 확인한 시각
   const mergedNotice = new Set(); // 자동 확인으로 병합을 알게 된 작업
   // 카드 단계 표시용 로컬 Git 상태. 작업 ID → GET /api/tasks/:id/status 결과
   const statuses = new Map();
@@ -158,10 +161,24 @@ export function createTasksController({
     if (message) appendLogin(el, reason);
   }
 
+  // 창 안의 오류 칸에 동작 · 원인 · 해결 방법 · 원문을 함께 보여 준다.
+  function showErrorDetail(id, error, action) {
+    const el = $(id);
+    if (!el) return;
+    const box = errorPanel(error, { action, rawLabel: 'Git 원문 보기' });
+    appendLogin(box.querySelector('.error-report-actions') || box, error?.reason);
+    el.replaceChildren(box);
+    el.hidden = false;
+  }
+
   function sameProject(path, epoch = projectEpoch) {
     return Boolean(epoch === projectEpoch && path && path === projectPath && path === getProjectPath());
   }
 
+  // 원본 폴더 확인·재사용 폴더·Library 복사·폴더 열기
+  const workspace = createTaskWorkspace({ api, node, getProjectPath: () => projectPath, requestError: error => requestError(error),
+    taskNote: (id, value) => { taskErrors.set(id, value); renderTasks(); },
+    onChange: ({ cardsOnly } = {}) => { if (cardsOnly) renderTasks(); else if (projectPath) void loadTasks(projectPath, { localOnly: true }); } });
   function isTasksVisible() {
     const panel = $('tab-tasks');
     return Boolean(panel && !panel.hidden && panel.getClientRects().length);
@@ -256,17 +273,11 @@ export function createTasksController({
     return line;
   }
 
-  function errorBlock(message, { reason, hint, raw } = {}) {
-    const box = node('div', 'task-inline-error');
-    box.setAttribute('role', 'alert');
-    box.append(node('p', 'task-error-message', message));
-    if (hint) box.append(node('p', 'task-error-hint', hint));
-    if (raw && raw !== message) {
-      const details = node('details', 'task-error-raw');
-      details.append(node('summary', '', 'Git 원문 보기'), node('pre', '', raw));
-      box.append(details);
-    }
-    appendLogin(box, reason);
+  // 공용 오류 표시로 동작 · 원인 · 해결 방법 · Git 원문을 보여 준다. 작업의 마지막 세션이 있으면 그 세션에 해결을 요청할 수 있다.
+  function errorBlock(message, { reason, hint, raw, action } = {}, { sessionId = null, onClose = null } = {}) {
+    const box = errorPanel({ message, reason, hint, raw }, { action, title: '작업 오류', sessionId, onClose, rawLabel: 'Git 원문 보기' });
+    box.classList.add('task-inline-error');
+    appendLogin(box.querySelector('.error-report-actions') || box, reason);
     return box;
   }
 
@@ -281,11 +292,28 @@ export function createTasksController({
           const result = await api('GET', `/api/tasks/${encodeURIComponent(id)}/status`);
           if (!sameProject(path, epoch)) return;
           if (result && typeof result === 'object') statuses.set(id, result);
+          if (result?.freshness?.stale) void recheckFreshness(id);
         } catch { if (!sameProject(path, epoch)) return; statuses.delete(id); }
         if (request === statusGeneration || ids.length === 1) renderTasks();
       }
     };
     await Promise.all([worker(), worker(), worker()]);
+  }
+
+  // 저장된 최신 확인 결과가 오래됐거나 그 뒤로 작업 브랜치가 바뀌었으면 조용히 다시 확인한다.
+  // 같은 작업은 몇 분에 한 번만 묻고, 실패하면 이전 결과를 그대로 둔다.
+  async function recheckFreshness(id) {
+    const task = getTask(id);
+    if (!task || pendingTasks.has(id) || uncertainTasks.has(id) || task.pendingAction || !['working', 'review'].includes(task.state)) return;
+    if (Date.now() - (freshChecks.get(id) || 0) < REVIEW_CHECK_MS) return;
+    freshChecks.set(id, Date.now());
+    const path = projectPath, epoch = projectEpoch;
+    try {
+      const result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/freshness`, {});
+      if (!sameProject(path, epoch) || !result?.checked || pendingTasks.has(id)) return;
+      replaceTask(result.task);
+      void loadStatuses([id]);
+    } catch { /* 자동 확인 실패는 카드 오류로 남기지 않는다. 최신 상태 확인을 누르면 사유를 볼 수 있다. */ }
   }
 
   function renderTasks() {
@@ -313,7 +341,7 @@ export function createTasksController({
       const sessionId = (connected.find(session => session.id === ids.at(-1)) || connected[0])?.id || (!known ? ids.at(-1) : null);
       const status = statuses.get(task.id) || null;
       const sessionCount = known ? connected.length : status?.sessions ?? ids.length;
-      const running = known ? connected.filter(session => session.state === 'running').length : status?.running ?? 0;
+      const running = known ? connected.filter(session => ['running', 'background'].includes(session.state)).length : status?.running ?? 0;
       const pipeline = buildTaskPipeline({ ...task, gitflow: flow }, status, {
         sessionId, sessions: sessionCount, running,
         uncertain: uncertainTasks.has(task.id), pending: pendingTasks.has(task.id),
@@ -328,7 +356,16 @@ export function createTasksController({
       if (task.issue?.number) heading.append(node('span', 'task-number', `#${task.issue.number}`));
       const state = node('span', 'task-state', pipeline.stateLabel);
       state.dataset.state = task.state;
-      header.append(heading, state);
+      // 푸시 안 된 커밋·원본 폴더 브랜치 이탈처럼 놓치기 쉬운 상태는 제목 옆 배지로 알린다.
+      const badges = node('div', 'task-badges');
+      for (const item of pipeline.badges) {
+        const badge = node('span', 'task-badge', item.label);
+        badge.dataset.badge = item.id;
+        badge.title = item.title || '';
+        badges.append(badge);
+      }
+      badges.append(state);
+      header.append(heading, badges);
       card.append(header);
       const meta = node('div', 'task-meta');
       meta.append(node('span', 'task-branch', `${task.branch || '브랜치 준비 중'} → ${pipeline.target}`));
@@ -339,14 +376,23 @@ export function createTasksController({
       if (updated) meta.append(node('span', 'task-updated', updated));
       card.append(meta);
       card.append(folderLine(task, status));
+      workspace.decorate(card, task);
       if (task.issue) card.append(issueLine(task.issue));
       card.append(renderTaskPipeline(pipeline));
-      if (task.state !== 'cleaned' && task.freshness?.state && !['current', 'up-to-date'].includes(task.freshness.state)) {
-        const freshness = node('div', 'task-freshness', describeTaskFreshness(task.freshness));
-        freshness.dataset.state = task.freshness.state;
-        const checked = timestamp(task.freshness?.checkedAt);
+      // 상태 조회가 지금 HEAD로 다시 따진 결과가 있으면 저장된 결과보다 그것을 보여 준다.
+      const fresh = status?.freshness || task.freshness;
+      if (task.state !== 'cleaned' && fresh?.state && !['current', 'up-to-date'].includes(fresh.state)) {
+        const freshness = node('div', 'task-freshness', describeTaskFreshness(fresh));
+        freshness.dataset.state = fresh.state;
+        const checked = timestamp(fresh.checkedAt);
         if (checked) freshness.append(node('span', '', ` · ${checked} 확인`));
         card.append(freshness);
+      }
+      // 버튼으로 풀 수 없는 상태는 해야 할 일을 글로 안내한다.
+      if (pipeline.notice) {
+        const notice = node('p', 'task-notice', pipeline.notice);
+        notice.setAttribute('role', 'status');
+        card.append(notice);
       }
       // 단계별 다음 동작. 할 수 없는 동작은 꺼 두고 이유를 바로 아래에 보여 준다.
       const actions = node('div', 'task-actions');
@@ -383,6 +429,7 @@ export function createTasksController({
         if (task.state === 'review') secondary.append(actionButton('PR 업데이트', 'finish', task, { disabled: blocked }));
       }
       if (task.state !== 'cleaned') secondary.append(actionButton('최신 상태 확인', 'refresh', task));
+      secondary.append(...workspace.menu(task, actionButton));
       if (task.state === 'merged') {
         const unpushed = task.completion?.kind === 'local' && (task.completion.publishState !== 'done' || (task.completion.developHead && task.completion.developPublishState !== 'done'));
         if (unpushed) secondary.append(actionButton('대상 브랜치 푸시', 'push-target', task, { disabled: blocked }));
@@ -410,6 +457,8 @@ export function createTasksController({
         ? `원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌렸습니다. 작업과 PR 기록은 보관됩니다.`
         : task.worktreePreserved
         ? '작업 기록을 정리했습니다. 선택했던 기존 작업 폴더와 브랜치는 보존됩니다.'
+        : task.parkedWorktree
+        ? '작업 폴더를 재사용 대기 폴더로 남기고 로컬 브랜치를 정리했습니다. 다음 새 작업이 이 폴더를 씁니다.'
         : task.localBranchRemoved === false
           ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
           : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
@@ -422,8 +471,11 @@ export function createTasksController({
       const localMessage = typeof local === 'string' ? local : local?.message;
       const fromServer = !local || local === task.error;
       const detail = local && typeof local === 'object' ? local : fromServer ? { reason: task.errorReason, hint: task.errorHint } : {};
-      const error = localMessage || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
-      if (error) card.append(errorBlock(error, detail));
+      // 오류가 아닌 안내(예: 충돌 해결 요청을 보냄)는 일반 안내 줄로 보여 준다.
+      if (local?.notice) card.append(node('p', 'task-note', local.message));
+      const error = local?.notice ? '' : localMessage || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
+      // 화면에서만 생긴 오류는 닫을 수 있다. 서버에 남은 오류는 다음 작업이나 최신 확인으로 지워진다.
+      if (error) card.append(errorBlock(error, detail, { sessionId, onClose: localMessage && !fromServer ? () => { taskErrors.delete(task.id); renderTasks(); } : null }));
       // 시간 초과 등으로 병합·리베이스가 중간에 멈춰 작업이 막혔으면 되돌릴 수 있게 한다.
       if (error && ['task-git-operation', 'task-recovery-required'].includes(detail.reason) && task.state !== 'cleaned')
         card.append(actionButton('진행 중인 Git 작업 취소', 'abort', task, { disabled: running > 0, reason: running > 0 ? '세션이 작업 중입니다.' : '' }));
@@ -548,7 +600,7 @@ export function createTasksController({
       const result = await api('DELETE', `/api/tasks/${encodeURIComponent(id)}/issue`);
       if (sameProject(path, epoch)) replaceTask(result.task);
     } catch (error) {
-      taskErrors.set(id, { message: requestError(error), reason: error.reason });
+      taskErrors.set(id, { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '이슈 연결 해제' });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();
@@ -567,6 +619,7 @@ export function createTasksController({
     if (createDialog?.open) createDialog.close();
     if (finishDialog?.open) finishDialog.close();
     if (issueDialog?.open) issueDialog.close();
+    workspace.reset();
     updateToolbar();
   }
 
@@ -617,7 +670,8 @@ export function createTasksController({
     renderTasks();
     renderContext();
     const requests = [api('GET', `/api/tasks?path=${encodeURIComponent(path)}`)];
-    if (!options.localOnly) requests.push(api('GET', `/api/tasks/context?path=${encodeURIComponent(path)}`));
+    // 최신 상태 확인을 누르면 서버가 방금 받은 fetch를 다시 쓰지 않고 새로 받는다.
+    if (!options.localOnly) requests.push(api('GET', `/api/tasks/context?path=${encodeURIComponent(path)}${options.manual ? '&refresh=1' : ''}`));
     const results = await Promise.allSettled(requests);
     if (request !== generation || !sameProject(path)) return;
     const [taskResult, contextResult] = results;
@@ -633,7 +687,7 @@ export function createTasksController({
             replaceTask(result.value.task);
             if (!result.value.task?.pendingAction) uncertainTasks.delete(id);
             taskErrors.delete(id);
-          } else taskErrors.set(id, { message: requestError(result.reason), reason: result.reason?.reason });
+          } else taskErrors.set(id, { message: requestError(result.reason), reason: result.reason?.reason, hint: result.reason?.hint, raw: result.reason?.raw, action: '최신 확인' });
         }
       }
       if (options.manual && uncertainCreates.has(path)) {
@@ -653,7 +707,7 @@ export function createTasksController({
     renderTasks();
     renderContext();
     updateCreatePreview();
-    if (taskResult.status === 'fulfilled') void loadStatuses();
+    if (taskResult.status === 'fulfilled') { void loadStatuses(); void workspace.load(path); }
   }
 
   function resetSettings() {
@@ -808,6 +862,7 @@ export function createTasksController({
       ? selected ? `브랜치 ${selected.name} 이어서 사용` : '기존 작업 브랜치를 세부 설정에서 고르세요'
       : `브랜치 ${taskBranchFullName(type, $('task-version')?.value.trim(), settings, $('task-branch-name')?.value.trim(), $('task-title')?.value || '')} · 세부 설정에서 바꿀 수 있습니다`;
     if ($('task-gitflow-summary')) $('task-gitflow-summary').textContent = `기준: ${settings.main} / ${settings.develop}`;
+    workspace.updateCreate({ existing, inPlace });
     if ($('task-create-hint')) $('task-create-hint').textContent = inPlace
       ? `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 원본 폴더를 새 작업 브랜치로 바꾸고 세션을 연결합니다. 원본 폴더에 커밋하지 않은 변경이 없어야 하며, 정리하면 원래 브랜치로 돌아갑니다.`
       : `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.`;
@@ -863,15 +918,27 @@ export function createTasksController({
     return Boolean($('task-agent')?.value);
   }
 
+  // 프로젝트 설정의 새 작업 기본값(AI·권한·워크트리 사용). 프로젝트 목록에 함께 온다.
+  function projectDefaults(path = getProjectPath()) {
+    const norm = value => String(value ?? '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+    return data?.projects?.find(project => norm(project.path) === norm(path))?.settings?.defaults ?? {};
+  }
+
+  // 프로젝트 기본값 → 지난번 선택 → 기존 기본값 순으로 고른다.
   function applyCreatePrefs() {
     const prefs = loadCreatePrefs();
+    const defaults = projectDefaults();
     fillAgentOptions();
-    // 지난번 선택을 기억하지 않고 매번 원본 폴더를 기본으로 둔다. 원본 폴더를 쓰는 중이면 만들 때 워크트리로 진행할지 묻는다.
-    if ($('task-worktree')) $('task-worktree').value = 'none';
+    // 워크트리 사용도 기억한다. 원본 폴더를 골랐는데 이미 쓰고 있으면 만들 때 워크트리로 진행할지 묻는다.
+    const worktree = defaults.isolate != null ? (defaults.isolate ? 'create' : 'none') : prefs.worktree === 'create' ? 'create' : 'none';
+    if ($('task-worktree')) $('task-worktree').value = worktree;
     if (prefs.type !== 'release') selectIfPresent('task-type', prefs.type);
     selectIfPresent('task-agent', prefs.agent);
+    selectIfPresent('task-agent', defaults.agent);
     updateAgentControls();
-    selectIfPresent('task-permission', prefs.permission);
+    const agent = $('task-agent')?.value;
+    if (prefs.agent === agent) selectIfPresent('task-permission', prefs.permission);
+    selectIfPresent('task-permission', defaults.permission?.[agent]);
     if ($('task-model') && typeof prefs.model === 'string') $('task-model').value = prefs.model;
     if ($('task-effort')) {
       fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model')?.value);
@@ -890,6 +957,8 @@ export function createTasksController({
     workbranchPicker.reset();
     showError('task-create-error');
     applyCreatePrefs();
+    workspace.resetCreate();
+    void workspace.prepareCreate(path);
     taskAssistant.open();
     if ($('task-create-heading')) $('task-create-heading').textContent = createIssue ? `새 작업 · 이슈 #${createIssue.number}` : '새 작업';
     if (prefill) {
@@ -948,11 +1017,13 @@ export function createTasksController({
     if (existing) payload.workBranch = workbranchPicker.selected().name;
     else if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
     if (!existing && $('task-worktree')?.value === 'none') payload.worktree = false;
+    const chosenWorktree = payload.worktree === false ? 'none' : 'create';
     if (!existing && $('task-branch-name')?.value.trim()) payload.branchName = $('task-branch-name').value.trim();
     if (!existing && payload.worktree !== false && $('task-worktree-name')?.value.trim()) payload.worktreeName = $('task-worktree-name').value.trim();
     if ($('task-model')?.value.trim()) payload.model = $('task-model').value.trim();
     if ($('task-effort')?.value) payload.effort = $('task-effort').value;
     if ($('task-role')?.value.trim()) payload.role = $('task-role').value.trim();
+    Object.assign(payload, workspace.createPayload(payload));
     createBusy = true;
     taskAssistant.setCreating(true);
     showError('task-create-error');
@@ -977,7 +1048,8 @@ export function createTasksController({
       const result = await api('POST', '/api/tasks', payload);
       saveCreatePrefs({
         ...loadCreatePrefs(),
-        ...(existing ? {} : { worktree: payload.worktree === false ? 'none' : 'create', type: payload.type }),
+        // 원본 폴더를 이미 써서 이번만 워크트리로 바꿨어도 사용자가 고른 값을 기억한다.
+        ...(existing ? {} : { worktree: chosenWorktree, type: payload.type }),
         agent: payload.agent, permission: payload.permission, model: payload.model || '', effort: payload.effort || '',
       });
       // 팀 작업에서 시작했으면 그 이슈를 작업에 연결한다. 연결에 실패해도 작업은 남기고 카드에 알린다.
@@ -1003,7 +1075,7 @@ export function createTasksController({
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainCreates.add(path);
-      if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : [requestError(error), error.hint].filter(Boolean).join(' '), error.reason);
+      if (sameProject(path, epoch)) showErrorDetail('task-create-error', error.outcomeUnknown ? { message: unknownMessage('작업 생성') } : error, '작업 생성');
     } finally {
       createBusy = false;
       taskAssistant.setCreating(false);
@@ -1048,7 +1120,7 @@ export function createTasksController({
       const changes = [], keeps = ['작업·대화 기록', `원격 브랜치 ${task.remote || 'origin'}/${task.branch}`, task.pull?.number ? `PR #${task.pull.number}` : ''];
       if (task.inPlace) changes.push(`원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌립니다.`);
       else if (task.ownsWorktree === false) keeps.push(`기존 작업 폴더 ${task.cwd}`);
-      else changes.push(`작업 폴더를 삭제합니다: ${task.cwd}`);
+      else changes.push(workspace.reuseOn() ? `작업 폴더를 지우지 않고 재사용 대기 폴더로 남깁니다(자리가 없거나 옮길 수 없으면 삭제): ${task.cwd}` : `작업 폴더를 삭제합니다: ${task.cwd}`);
       if (task.ownsBranch === false) keeps.push(`기존 로컬 브랜치 ${task.branch}`);
       else changes.push(`로컬 브랜치 ${task.branch}를 삭제합니다.`);
       return (await confirmAction({ title: '작업 폴더 정리', subject: task.title, changes, keeps,
@@ -1059,6 +1131,11 @@ export function createTasksController({
       const changes = [completion.publishState !== 'done' ? `${task.targetBranch} → ${task.remote}/${task.targetBranch}${completion.targetHead ? ` (${completion.targetHead.slice(0, 7)})` : ''}` : '',
         completion.developHead && completion.developPublishState !== 'done' ? `${develop} → ${task.remote}/${develop} (${completion.developHead.slice(0, 7)})` : ''];
       return (await confirmAction({ title: '대상 브랜치 푸시', subject: task.title, changes, keeps: ['강제 푸시는 하지 않습니다. 원격이 앞서 있으면 거절됩니다.'], confirmLabel: '푸시' })).ok;
+    }
+    if (action === 'backup') {
+      return (await confirmAction({ title: '원격에 백업', subject: task.title,
+        changes: [`작업 브랜치 ${task.branch} → ${task.remote || 'origin'}/${task.branch}`],
+        keeps: [`대상 브랜치 ${task.targetBranch}와 PR (만들거나 바꾸지 않습니다)`, '강제 푸시는 하지 않습니다. 원격이 앞서 있으면 거절됩니다.'], confirmLabel: '푸시' })).ok;
     }
     if (action === 'abort') {
       return (await confirmAction({ title: '진행 중인 Git 작업 취소', subject: task.title,
@@ -1087,8 +1164,8 @@ export function createTasksController({
     if (!confirm(`작업 세션에 다음 요청을 보낼까요?\n\n${prompt}`)) return;
     try {
       await api('POST', `/api/sessions/${encodeURIComponent(sessionId)}/messages`, { prompt });
-      taskErrors.set(task.id, { message: '세션에 충돌 해결을 요청했습니다. 세션이 병합을 마치면 최신 상태 확인을 눌러 주세요.' });
-    } catch (error) { taskErrors.set(task.id, { message: requestError(error), reason: error.reason }); }
+      taskErrors.set(task.id, { notice: true, message: '세션에 충돌 해결을 요청했습니다. 세션이 병합을 마치면 최신 상태 확인을 눌러 주세요.' });
+    } catch (error) { taskErrors.set(task.id, { message: requestError(error), reason: error.reason, hint: error.hint, action: '세션에 충돌 해결 요청' }); }
     renderTasks();
   }
 
@@ -1118,8 +1195,8 @@ export function createTasksController({
       if (sameProject(path, epoch)) void loadStatuses([id]);
     } catch (error) {
       if (error.outcomeUnknown && action !== 'refresh') uncertainTasks.set(id, action);
-      const label = action === 'abort' ? '진행 중인 Git 작업 취소' : action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : '최신 확인';
-      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, conflicts: error.conflicts });
+      const label = action === 'abort' ? '진행 중인 Git 작업 취소' : action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : action === 'backup' ? '원격에 백업' : '최신 확인';
+      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label), action: label } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, conflicts: error.conflicts, action: label });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();
@@ -1134,7 +1211,7 @@ export function createTasksController({
     if (task.state === 'cleaned') keeps.push('이미 정리한 작업이라 폴더는 없습니다.');
     else if (task.inPlace) keeps.push('원본 폴더 (원본 폴더에서 한 작업)');
     else if (task.ownsWorktree === false) keeps.push(`선택했던 기존 작업 폴더 ${task.cwd}`);
-    else changes.push(`작업 폴더를 지웁니다: ${task.cwd}`);
+    else changes.push(workspace.reuseOn() ? `작업 폴더에 변경이 없으면 재사용 대기 폴더로 남기고, 아니면 지웁니다: ${task.cwd}` : `작업 폴더를 지웁니다: ${task.cwd}`);
     return { changes, keeps };
   }
 
@@ -1177,9 +1254,9 @@ export function createTasksController({
       uncertainTasks.delete(id);
       if (sameProject(path, epoch)) tasks = tasks.filter(item => item.id !== id);
       await reloadSessions();
-      if (result?.warning) alert(result.warning);
+      if (result?.warning) showErrorToast({ message: result.warning }, { action: '작업 삭제 마무리' });
     } catch (error) {
-      taskErrors.set(id, { message: requestError(error), reason: error.reason });
+      taskErrors.set(id, { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '작업 삭제' });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();
@@ -1233,9 +1310,9 @@ export function createTasksController({
       uncertainTasks.delete(id);
       if (sameProject(path, epoch)) tasks = tasks.filter(item => item.id !== id);
       await reloadSessions();
-      if (result?.warning) alert(result.warning);
+      if (result?.warning) showErrorToast({ message: result.warning }, { action: '작업 그만두기 마무리' });
     } catch (error) {
-      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage('작업 그만두기') } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw });
+      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage('작업 그만두기'), action: '작업 그만두기' } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '작업 그만두기' });
       if (sameProject(path, epoch)) void loadTasks(path, { localOnly: true });
     } finally {
       pendingTasks.delete(id);
@@ -1269,7 +1346,7 @@ export function createTasksController({
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainTasks.set(task.id, 'session');
-      taskErrors.set(task.id, error.outcomeUnknown ? { message: unknownMessage('세션 생성') } : { message: requestError(error), reason: error.reason });
+      taskErrors.set(task.id, error.outcomeUnknown ? { message: unknownMessage('세션 생성'), action: '세션 추가' } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '세션 추가' });
     } finally {
       pendingTasks.delete(task.id);
       if (sameProject(path, epoch)) renderTasks();
@@ -1328,7 +1405,8 @@ export function createTasksController({
     if (action === 'link-issue') { openIssue(task); return; }
     if (action === 'unlink-issue') { void unlinkIssue(task); return; }
     if (action === 'resolve-conflict') { void askConflict(task, button.dataset.sessionId); return; }
-    if (['refresh', 'sync', 'cleanup', 'push-target', 'develop', 'abort'].includes(action)) void runTaskAction(action, task);
+    if (workspace.handles(action)) { taskErrors.delete(task.id); void workspace.run(action, task, { setError: value => { taskErrors.set(task.id, value); renderTasks(); }, setPending: on => { if (on) pendingTasks.add(task.id); else pendingTasks.delete(task.id); renderTasks(); } }); return; }
+    if (['refresh', 'sync', 'backup', 'cleanup', 'push-target', 'develop', 'abort'].includes(action)) void runTaskAction(action, task);
   });
   $('tasks-filter')?.addEventListener('click', event => {
     const button = event.target.closest('[data-task-filter]');
@@ -1340,8 +1418,17 @@ export function createTasksController({
   $('task-issue-mode')?.addEventListener('change', updateIssueForm);
   updateToolbar();
 
+  // 작업 만들기 진행 단계(원격 확인 → 작업 폴더 → 세션). 만드는 중인 같은 프로젝트의 버튼 글자로 보여 준다.
+  function taskProgress({ projectPath: path, requestId, step } = {}) {
+    const submit = $('task-create-submit');
+    const key = value => String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!createBusy || !submit || !step || key(path) !== key(createProject)) return;
+    if (requestId && taskAssistant.creationId() && requestId !== taskAssistant.creationId()) return;
+    submit.textContent = `${step}…`;
+  }
+
   return {
-    loadTasks, invalidateProject, renderTasks, cancelCreation, startFromIssue,
+    loadTasks, invalidateProject, renderTasks, cancelCreation, startFromIssue, taskProgress,
     async openReference(id, path = getProjectPath()) {
       await loadTasks(path, { localOnly: true });
       if (!sameProject(path)) return;

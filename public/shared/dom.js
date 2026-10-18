@@ -2,7 +2,8 @@ export const $ = (id) => document.getElementById(id);
 
 export const AGENT_LABEL = { claude: "Claude", codex: "Codex" };
 export const CHAT_LABEL = { claude: "Claude 채팅", codex: "ChatGPT" };
-export const STATE_LABEL = { idle: "대기", running: "실행 중", error: "오류", interrupted: "중단됨", paused: "일시중지됨" };
+// background: 턴은 끝났고 CLI에서 하위 작업(백그라운드 서브에이전트 등)이 도는 중. 새 요청은 바로 보낼 수 있다.
+export const STATE_LABEL = { idle: "대기", running: "실행 중", background: "백그라운드 작업 중", error: "오류", interrupted: "중단됨", paused: "일시중지됨" };
 
 export function el(tag, attrs = {}, ...children) {
   const node = document.createElement(tag);
@@ -20,6 +21,9 @@ export const badge = (agent) => el("span", { class: `badge ${agent}` }, AGENT_LA
 export const sessionLabel = (s) => (s.chat ? CHAT_LABEL : AGENT_LABEL)[s.agent];
 export const sessionBadge = (s) => el("span", { class: `badge ${s.agent}${s.chat ? " chat" : ""}` }, sessionLabel(s));
 export const pill = (s) => el("span", { class: `pill ${s}` }, STATE_LABEL[s] ?? s);
+// 목록·그래프의 "하위 작업 N개" 배지. 실행 중인 하위 작업(서브에이전트·백그라운드 명령)이 있을 때만 보인다.
+export const subtaskPill = (s) => s.subtaskCount?.running > 0
+  ? el("span", { class: "pill subtasks-running", title: `실행 중인 하위 작업(서브에이전트·백그라운드 명령) ${s.subtaskCount.running}개 · 전체 ${s.subtaskCount.total}개` }, `하위 작업 ${s.subtaskCount.running}개`) : null;
 
 export function lifeInfo(s) {
   const n = s.compactions ?? 0;

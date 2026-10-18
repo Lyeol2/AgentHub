@@ -190,10 +190,28 @@ async function exclusive(dir, git, action) {
   finally { if (queue.get(key) === current) queue.delete(key); }
 }
 
+// GitHub가 알려 준 병합 준비 상태를 이유별 안내로 바꾼다. 병합해도 되면 빈 문자열.
+const MERGE_STATES = {
+  BEHIND: "PR 브랜치가 대상 브랜치보다 뒤처져 있어 보호 규칙상 병합할 수 없습니다. 작업 카드의 기준 반영으로 최신 변경을 합친 뒤 PR을 업데이트하세요.",
+  DIRTY: "PR 브랜치와 대상 브랜치가 같은 부분을 고쳐 충돌합니다. 기준 반영으로 충돌을 해결한 뒤 PR을 업데이트하세요.",
+  BLOCKED: "필수 검사 통과나 승인 리뷰 같은 보호 규칙을 아직 충족하지 않았습니다. GitHub의 PR 화면에서 남은 조건을 확인하세요.",
+  UNSTABLE: "실패했거나 아직 끝나지 않은 검사가 있습니다. 검사 결과를 확인하고 통과한 뒤 병합하세요.",
+  DRAFT: "초안 PR입니다. GitHub에서 리뷰 준비 완료로 바꾼 뒤 병합하세요.",
+  UNKNOWN: "GitHub가 아직 병합 가능 여부를 계산하고 있습니다. 잠시 뒤 다시 시도하세요.",
+};
+export function mergeBlockedMessage({ mergeStateStatus, reviewDecision } = {}) {
+  if (reviewDecision === "CHANGES_REQUESTED") return "리뷰어가 변경을 요청했습니다. 요청한 내용을 반영하고 다시 승인받은 뒤 병합하세요.";
+  if (reviewDecision === "REVIEW_REQUIRED") return "승인 리뷰가 필요합니다. 리뷰어의 승인을 받은 뒤 병합하세요.";
+  if (["CLEAN", "HAS_HOOKS"].includes(mergeStateStatus)) return "";
+  return MERGE_STATES[mergeStateStatus] ?? `GitHub가 병합할 수 없는 상태(${mergeStateStatus || "알 수 없음"})라고 알렸습니다. PR 화면에서 병합 조건을 확인하세요.`;
+}
+
 export class GitHubPulls {
-  constructor({ locate = () => locateCli("gh", ""), run = runGitHubCommand } = {}) {
+  // wait는 병합 가능 여부를 다시 묻기 전 쉬는 함수다. 테스트에서 바꿔 끼운다.
+  constructor({ locate = () => locateCli("gh", ""), run = runGitHubCommand, wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
     this.locate = locate;
     this.run = run;
+    this.wait = wait;
   }
 
   // PR 조회도 다른 Git 화면과 동시에 실행되므로 선택적 index 갱신을 하지 않는다.
@@ -403,14 +421,18 @@ export class GitHubPulls {
       if (info[key] === false) throw new GitHubError("이 저장소에서 허용하지 않는 병합 방식입니다.");
       // REST may let repository admins bypass protection. Fail closed when GitHub
       // reports blocked, behind, unknown, conflicts, or unavailable merge readiness.
+      // 막 푸시한 PR은 GitHub가 병합 가능 여부를 계산하는 동안 UNKNOWN을 돌려준다. 잠깐씩 기다리며 몇 번 더 묻는다.
       let readiness;
-      try {
-        readiness = JSON.parse(await this.run(target.file, ["pr", "view", number, "--repo", "github.com/" + target.repo, "--json", "headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup"], { cwd: dir }));
-      } catch (error) { throw this.failure(error); }
-      if (readiness.headRefOid !== body.sha) throw new GitHubError("PR에 새 커밋이 있습니다. 내용을 다시 확인하세요.", "stale-head", 409);
-      if (!["CLEAN", "HAS_HOOKS"].includes(readiness.mergeStateStatus) || readiness.reviewDecision === "REVIEW_REQUIRED" || readiness.reviewDecision === "CHANGES_REQUESTED") {
-        throw new GitHubError("검사·리뷰·최신 브랜치 반영 등 병합 조건을 먼저 충족하세요. GitHub의 보호 규칙을 우회하지 않습니다.", "pull-blocked", 409);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          readiness = JSON.parse(await this.run(target.file, ["pr", "view", number, "--repo", "github.com/" + target.repo, "--json", "headRefOid,mergeStateStatus,reviewDecision,statusCheckRollup"], { cwd: dir }));
+        } catch (error) { throw this.failure(error); }
+        if (readiness.mergeStateStatus !== "UNKNOWN" || attempt >= 3) break;
+        await this.wait(1500 * (attempt + 1));
       }
+      if (readiness.headRefOid !== body.sha) throw new GitHubError("PR에 새 커밋이 있습니다. 내용을 다시 확인하세요.", "stale-head", 409);
+      const blocked = mergeBlockedMessage(readiness);
+      if (blocked) throw new GitHubError(blocked + " GitHub의 보호 규칙은 우회하지 않습니다.", "pull-blocked", 409);
       const result = await this.api(target, "PUT", "repos/" + target.repo + "/pulls/" + number + "/merge", { merge_method: body.method, sha: body.sha }, { write: true });
       if (!result.merged) throw new GitHubError(cleanError(result.message) || "PR을 병합하지 못했습니다.", "pull-state", 409);
       return { ok: true, pull: normalizePull({ ...raw, merged: true, state: "closed" }, target.repo), result: cleanError(result.message) };
@@ -464,7 +486,13 @@ export class GitHubPulls {
         const result = await this.git(dir, [...githubCredentialArgs(), "-c", "remote." + target.name + ".mirror=false", "push", "--porcelain", "--no-follow-tags", "--recurse-submodules=no",
           "--", pushes[0], local.headSha + ":refs/heads/" + local.branch], { timeout: 60_000 });
         return { ok: true, result: cleanError(result) || "현재 브랜치를 GitHub에 푸시했습니다." };
-      } catch (error) { throw this.failure(error, true); }
+      } catch (error) {
+        // 원격에 받지 않은 커밋이 있어 거절된 푸시는 아무것도 쓰지 않았으므로 결과가 불확실하지 않다.
+        const text = String(error.stderr || error.stdout || error.message || "");
+        if (!error.timedOut && /\[rejected\]|non-fast-forward|\(fetch first\)/.test(text) && !gitAuthFailure(text))
+          throw Object.assign(new GitHubError("원격 브랜치에 아직 받지 않은 커밋이 있어 푸시가 거절됐습니다.", "git-push-rejected", 409), { raw: cleanError(text) });
+        throw this.failure(error, true);
+      }
     });
   }
 }

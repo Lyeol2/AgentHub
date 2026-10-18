@@ -1,8 +1,10 @@
-import { AGENTS } from "../runner.mjs";
+import { AGENTS, KEEP_ALIVE_DEFAULTS } from "../runner.mjs";
 import { locateCli, cliVersion, cliAuth, openLogin, refreshPath, normalizeCliPath, isCliFile } from "../cli.mjs";
 import { CONDITION_LABELS } from "../chain.mjs";
 import { TOOLS } from "../setup.mjs";
 import { HttpError } from "./errors.mjs";
+
+const keepAliveSettings = (config) => ({ ...KEEP_ALIVE_DEFAULTS, ...config.cliKeepAlive });
 
 export function createSystemService({ config, setup, cliPaths, saveConfig, version, getUpdater, limits }) {
   function agentStatus(agent, cliPath, version) {
@@ -27,6 +29,7 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
       },
       cliOverrides: config.cli,
       cliAutoUpdate: config.cliAutoUpdate !== false,
+      cliKeepAlive: keepAliveSettings(config),
       projects: config.projects,
       linkConditions: Object.entries(CONDITION_LABELS).map(([id, label]) => ({ id, label })),
     };
@@ -88,6 +91,21 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
     catch (error) { throw new HttpError(409, error.message); }
   }
 
+  // CLI 띄워 두기: 쉬는 시간(분, 0~1440. 0이면 백그라운드 작업이 없을 때 바로 닫음)과 동시 유지 수(1~64)
+  function checkKeepAlive(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw new HttpError(400, "CLI 띄워 두기 설정이 올바르지 않습니다.");
+    const result = {};
+    if (value.idleMinutes !== undefined) {
+      if (!Number.isInteger(value.idleMinutes) || value.idleMinutes < 0 || value.idleMinutes > 1440) throw new HttpError(400, "CLI를 띄워 두는 시간은 0~1440분 사이의 정수여야 합니다.");
+      result.idleMinutes = value.idleMinutes;
+    }
+    if (value.maxProcesses !== undefined) {
+      if (!Number.isInteger(value.maxProcesses) || value.maxProcesses < 1 || value.maxProcesses > 64) throw new HttpError(400, "동시에 띄워 두는 CLI 수는 1~64 사이의 정수여야 합니다.");
+      result.maxProcesses = value.maxProcesses;
+    }
+    return result;
+  }
+
   function settings(body) {
     if (body.cliAutoUpdate !== undefined && typeof body.cliAutoUpdate !== "boolean") throw new HttpError(400, "CLI 자동 업데이트 설정은 참 또는 거짓이어야 합니다.");
     const next = {};
@@ -98,8 +116,10 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
         next[agent] = value;
       }
     }
+    const keepAlive = body.cliKeepAlive === undefined ? null : checkKeepAlive(body.cliKeepAlive);
     Object.assign(config.cli, next);
     if (body.cliAutoUpdate !== undefined) config.cliAutoUpdate = body.cliAutoUpdate;
+    if (keepAlive) config.cliKeepAlive = { ...keepAliveSettings(config), ...keepAlive };
     refreshPath();
     saveConfig(config);
     return { ok: true };

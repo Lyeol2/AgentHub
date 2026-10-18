@@ -105,7 +105,7 @@ test("browser: session attachments, clipboard races, draft isolation, export, pe
         } else if (parts[4] === "attachments") { res.setHeader("Content-Type", uploads.get(parts[5]).mimeType); res.end(uploadData.get(parts[5])); return; }
         else if (parts[4] === "messages") {
           if (mode.messageError) { mode.messageError = false; throw Error("fixture message failure"); }
-          const attachments = body.attachments.map((id) => uploads.get(id));
+          const attachments = (body.attachments ?? []).map((id) => uploads.get(id));
           if (body.mode === "queue") { s.queue.push({ id: "q" + s.queue.length, text: body.prompt, user: true, attachments }); emit("queue", { sessionId: s.id }); value = { queued: true }; }
           else { const event = { seq: s.events.length, kind: "user", text: body.prompt, attachments }; s.events.push(event); emit("event", { sessionId: s.id, event }); value = { queued: false }; }
         } else if (parts[4] === "export") { if (mode.exportError) { mode.exportError = false; throw Error("fixture export failure"); } value = { path: "C:/fixture/docs/agenthub/first.md", relativePath: "docs/agenthub/first.md", format: "markdown" }; }

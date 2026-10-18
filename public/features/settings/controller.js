@@ -182,6 +182,8 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
       renderCliField(agent);
     }
     $("cli-auto-update").checked = data.status.cliAutoUpdate !== false;
+    $("cli-keep-idle").value = data.status.cliKeepAlive?.idleMinutes ?? 15;
+    $("cli-keep-max").value = data.status.cliKeepAlive?.maxProcesses ?? 8;
     $("settings-error").textContent = "";
     $("settings-dialog").showModal();
     $("project-path").focus();
@@ -229,7 +231,8 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
     try {
       const cli = {};
       for (const agent of ["claude", "codex"]) cli[agent] = cliManual[agent] ? $(`cli-${agent}`).value : "";
-      await api("PUT", "/api/settings", { cli, cliAutoUpdate: $("cli-auto-update").checked });
+      const cliKeepAlive = { idleMinutes: Number($("cli-keep-idle").value), maxProcesses: Number($("cli-keep-max").value) };
+      await api("PUT", "/api/settings", { cli, cliAutoUpdate: $("cli-auto-update").checked, cliKeepAlive });
       $("settings-dialog").close();
       await loadStatus(true);
       await Promise.all([loadAuth(true), loadSetup(true)]);

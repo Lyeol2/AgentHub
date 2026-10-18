@@ -11,6 +11,8 @@ function element() {
     removeAttribute(key) { delete this[key]; },
     append(...children) { this.children.push(...children); },
     before() {},
+    querySelector() { return null; },
+    querySelectorAll() { return []; },
     replaceChildren(...children) { this.children = children; },
     showModal() { this.open = true; },
     close() { this.open = false; },

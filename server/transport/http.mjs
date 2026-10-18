@@ -2,6 +2,7 @@ import fs from "node:fs";
 import http from "node:http";
 import path from "node:path";
 import { HttpError } from "../application/errors.mjs";
+import { hintFor } from "../application/error-hints.mjs";
 
 export function send(res, status, body) {
   res.writeHead(status, {
@@ -117,7 +118,8 @@ export function createHttpServer({ getPort, publicDir, handleApi, handleMcp, rec
         error: err.message,
         reason: err.reason,
         ...(err.outcomeUnknown !== undefined ? { outcomeUnknown: err.outcomeUnknown } : {}),
-        ...(typeof err.hint === "string" && err.hint ? { hint: err.hint } : {}),
+        // 만든 곳에서 해결 방법을 주지 않았으면 사유별 기본 해결 방법을 덧붙인다.
+        ...(typeof err.hint === "string" && err.hint ? { hint: err.hint } : hintFor(err.reason) ? { hint: hintFor(err.reason) } : {}),
         ...(typeof err.raw === "string" && err.raw ? { raw: err.raw } : {}),
         ...(typeof err.recoveryId === "string" && /^[0-9]{13}-[0-9a-f-]{36}$/.test(err.recoveryId) ? { recoveryId: err.recoveryId } : {}),
       });

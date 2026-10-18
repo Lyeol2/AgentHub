@@ -70,6 +70,7 @@ export function fixture(t, { develop = true, main = "main", developBranch = "dev
       state.writes.push("push");
       assert.equal(git(dir, "rev-parse", "HEAD"), body.expectedHead);
       git(dir, "push", "-q", remote, `${body.expectedHead}:refs/heads/${body.branch}`);
+      state.afterPush?.(body);
       for (const pull of state.pulls.filter((pull) => pull.head.ref === body.branch && pull.state === "open")) pull.head.sha = body.expectedHead;
       if (state.timeout === "push") throw new GitHubError("timeout", "github-timeout", 504, true);
       return { ok: true };

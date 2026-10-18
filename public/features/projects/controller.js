@@ -1,6 +1,16 @@
 import { createProjectsView } from "./view.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
+import { showError } from "../../shared/error-report.js";
+import { permissionLabel } from "../../shared/permissions.js";
+
+const FALLBACK_PERMISSIONS = { claude: ["default", "plan", "acceptEdits", "bypassPermissions"], codex: ["read-only", "workspace-write", "auto-review", "danger-full-access"] };
+// 유니티 사용: 세션에 주는 도구 권한으로만 통제한다(지침 문구를 넣지 않는다).
+const UNITY_HINT = {
+  ask: "AI가 유니티를 열거나 조작하려 하면(unity 명령, Unity MCP 도구) 권한이 자동 허용이어도 권한 카드로 먼저 묻습니다.",
+  allow: "유니티 실행·조작을 따로 막거나 묻지 않습니다. 세션 권한 설정을 그대로 따릅니다.",
+  off: "유니티 명령과 Unity MCP 도구, unity-cli 스킬을 쓰지 못하게 합니다. Codex는 Unity MCP 서버를 끄고 실행합니다.",
+};
 
 export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation }) {
   const ui = {
@@ -127,7 +137,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     try {
       const result = await api("DELETE", `/api/projects?${query}`);
       $("project-remove-dialog").close();
-      if (result.worktreeErrors.length) alert(`제거했지만 지우지 못한 작업 폴더가 있습니다(커밋하지 않은 변경이 있을 수 있음):\n\n${result.worktreeErrors.join("\n")}`);
+      if (result.worktreeErrors.length) showError({ message: "프로젝트는 제거했지만 지우지 못한 작업 폴더가 있습니다.", hint: "폴더에 커밋하지 않은 변경이 있는지 확인한 뒤 필요 없으면 직접 지우세요. 그 폴더를 연 프로그램이 있으면 닫으세요.", raw: result.worktreeErrors.join("\n") }, { action: "작업 폴더 삭제" });
       if (navigation.view === "project" && samePath(navigation.project, p.path)) goDashboard();
       await Promise.all([loadProjects(), loadSessions(), loadLinks()]);
     } catch (err) {
@@ -177,7 +187,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
       try {
         await api("POST", "/api/projects/hide", { agentSessionId: f.agentSessionId, hidden });
       } catch (err) {
-        return alert(err.message);
+        return showError(err, { action: hidden ? "기록 숨기기" : "기록 다시 보이기" });
       }
       renderFound(p);
     };
@@ -219,11 +229,65 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
       await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 가져오면서 등록된다.
       if (current()) await selectSession(created.id);
     } catch (err) {
-      if (current()) alert(err.message);
+      if (current()) showError(err, { action: "세션 가져오기" });
       button.disabled = false;
       button.textContent = "가져오기";
     }
   }
+
+  // ── 프로젝트 설정(새 세션·작업 기본값, 유니티 사용) ──────────────
+  function fillProjectSettings(settings) {
+    const d = settings?.defaults ?? {};
+    for (const agent of ["claude", "codex"]) {
+      const modes = data.status?.agents?.[agent]?.permissions ?? FALLBACK_PERMISSIONS[agent];
+      const select = $(`project-settings-permission-${agent}`);
+      select.replaceChildren(el("option", { value: "" }, "지정 안 함"), ...modes.map((m) => el("option", { value: m }, permissionLabel(m))));
+      select.value = modes.includes(d.permission?.[agent]) ? d.permission[agent] : "";
+    }
+    $("project-settings-agent").value = d.agent ?? "";
+    $("project-settings-isolate").value = d.isolate == null ? "" : String(d.isolate);
+    $("project-settings-unity").value = settings?.unity ?? "ask";
+    $("project-settings-unity-hint").textContent = UNITY_HINT[$("project-settings-unity").value] ?? "";
+  }
+
+  $("p-settings").addEventListener("click", async () => {
+    const path = navigation.project;
+    if (!path) return;
+    $("project-settings-name").textContent = currentProject()?.name ?? "";
+    $("project-settings-error").textContent = "";
+    fillProjectSettings(currentProject()?.settings);
+    $("project-settings-dialog").showModal();
+    try {
+      const settings = await api("GET", `/api/projects/settings?path=${encodeURIComponent(path)}`);
+      if ($("project-settings-dialog").open && samePath(path, navigation.project)) fillProjectSettings(settings);
+    } catch (err) {
+      $("project-settings-error").textContent = err.message;
+    }
+  });
+  $("project-settings-unity").addEventListener("change", () => {
+    $("project-settings-unity-hint").textContent = UNITY_HINT[$("project-settings-unity").value] ?? "";
+  });
+  $("project-settings-form").addEventListener("submit", async (e) => {
+    if (e.submitter?.value !== "ok") return;
+    e.preventDefault();
+    const path = navigation.project;
+    const isolate = $("project-settings-isolate").value;
+    const body = {
+      defaults: {
+        agent: $("project-settings-agent").value || null,
+        permission: Object.fromEntries(["claude", "codex"].map((agent) => [agent, $(`project-settings-permission-${agent}`).value]).filter(([, mode]) => mode)),
+        isolate: isolate === "" ? null : isolate === "true",
+      },
+      unity: $("project-settings-unity").value,
+    };
+    try {
+      await api("PUT", `/api/projects/settings?path=${encodeURIComponent(path)}`, body);
+      $("project-settings-dialog").close();
+      await loadProjects();
+    } catch (err) {
+      $("project-settings-error").textContent = err.message;
+    }
+  });
 
   $("p-rescan").addEventListener("click", async () => {
     await loadProjects();
