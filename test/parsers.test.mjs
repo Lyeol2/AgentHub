@@ -12,10 +12,13 @@ test("claude: init 이벤트에서 세션 ID를 꺼낸다", () => {
 test("claude: 텍스트와 도구 호출, 도구 결과를 구분한다", () => {
   const assistant = claude.parseLine(JSON.stringify({
     type: "assistant",
-    message: { content: [{ type: "text", text: "안녕" }, { type: "tool_use", name: "Bash", input: { command: "ls" } }] },
+    message: { content: [{ type: "text", text: "안녕" }, { type: "tool_use", id: "toolu_9", name: "Bash", input: { command: "ls" } }] },
   }));
   assert.deepEqual(assistant.map((e) => e.kind), ["text", "tool"]);
   assert.equal(assistant[1].text, "Bash: ls");
+  // 하위 작업과 잇도록 도구 호출 ID를 남긴다. ID가 없으면 필드도 없다.
+  assert.equal(assistant[1].toolUseId, "toolu_9");
+  assert.equal("toolUseId" in claude.parseLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: {} }] } }))[0], false);
 
   const [result] = claude.parseLine(JSON.stringify({
     type: "user",

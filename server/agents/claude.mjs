@@ -272,7 +272,8 @@ export function parseLine(line) {
         else if (block.type === "thinking" && block.thinking) events.push({ kind: "thinking", text: block.thinking });
         else if (block.type === "tool_use") {
           const label = claudeToolLabel(block.name, block.input);
-          events.push({ kind: "tool", text: toolSummary(block.name, block.input), ...(label ? { label } : {}), detail: truncate(block.input) });
+          // toolUseId: 이 호출이 띄운 하위 작업(subtasks의 toolUseId)과 화면에서 잇는다.
+          events.push({ kind: "tool", text: toolSummary(block.name, block.input), ...(label ? { label } : {}), detail: truncate(block.input), ...(block.id ? { toolUseId: block.id } : {}) });
         }
       }
       // 이번 호출에 넣은 토큰이 지금 컨텍스트 크기다. 하위 에이전트 호출은 따로 센다.
