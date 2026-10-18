@@ -169,9 +169,10 @@
           <div class="card tasks-card">
             <div class="card-head">
               <div><h3>작업</h3><p class="hint">작업마다 브랜치와 폴더를 만들고, 마무리하면 Pull Request로 연결합니다.</p></div>
-              <div class="actions"><button type="button" class="ghost sm" id="tasks-settings">GitFlow 설정</button><button type="button" class="ghost sm" id="tasks-refresh">최신 상태 확인</button><button type="button" class="primary sm" id="tasks-new">새 작업</button></div>
+              <div class="actions"><button type="button" class="ghost sm" id="tasks-settings">GitFlow 설정</button><button type="button" class="ghost sm" id="tasks-workspace" title="작업 폴더 재사용과 유니티 Library 복사">작업 폴더 설정</button><button type="button" class="ghost sm" id="tasks-refresh">최신 상태 확인</button><button type="button" class="primary sm" id="tasks-new">새 작업</button></div>
             </div>
             <div id="tasks-context" class="tasks-context" role="status"></div>
+            <div id="tasks-preview" class="tasks-preview" role="status" hidden></div>
             <div class="issue-boxes tasks-filter" id="tasks-filter" role="group" aria-label="작업 상태로 보기">
               <button type="button" data-task-filter="all" aria-pressed="true">전체 <span class="tab-count" data-task-count="all"></span></button>
               <button type="button" data-task-filter="active" aria-pressed="false" title="진행 중이거나 검토를 기다리는 작업">진행 중 <span class="tab-count" data-task-count="active"></span></button>
@@ -957,6 +958,8 @@
       <label>작업 담당 AI <select id="task-agent"><option value="codex">Codex</option><option value="claude">Claude Code</option></select></label>
       <label id="task-worktree-row">작업할 폴더 <select id="task-worktree"><option value="none">원본 폴더에서 작업</option><option value="create">워크트리 만들기 (별도 작업 폴더)</option></select></label>
       <p class="hint task-worktree-hint" id="task-worktree-hint" aria-live="polite"></p>
+      <label class="check" id="task-library-row" hidden><input type="checkbox" id="task-copy-library" checked> <span id="task-library-label">원본의 Library 폴더 복사</span></label>
+      <p class="hint" id="task-library-hint" hidden></p>
       <details id="task-create-advanced" class="task-create-advanced"><summary>세부 설정 · 브랜치, 작업 폴더 이름, 모델, 권한</summary>
       <label>작업 브랜치 <select id="task-workbranch-mode"><option value="new">새 작업 브랜치 만들기</option><option value="existing">기존 작업 브랜치 선택</option></select></label>
       <div id="task-workbranch-row" hidden>
@@ -1000,6 +1003,20 @@
       <p class="hint" id="task-settings-status" role="status"></p>
       <p class="error" id="task-settings-error" role="alert" hidden></p>
       <menu><button type="button" class="ghost" id="task-settings-cancel">취소</button><button type="submit" class="primary" id="task-settings-save">저장</button></menu>
+    </form>
+  </dialog>
+
+  <dialog id="task-workspace-dialog" class="task-dialog" aria-labelledby="task-workspace-heading">
+    <form method="dialog" class="dialog-form">
+      <h3 id="task-workspace-heading">작업 폴더 설정</h3>
+      <p class="hint" id="task-workspace-unity"></p>
+      <label class="check"><input type="checkbox" id="task-workspace-reuse"> 정리한 작업 폴더를 지우지 않고 재사용 대기 폴더로 남기기</label>
+      <p class="hint">새 워크트리 작업을 만들 때 재사용 대기 폴더가 있으면 그 폴더에 새 작업 브랜치를 만들어 씁니다. Git이 무시하는 파일(유니티 Library 등)이 남아 다시 임포트하는 시간이 줄어듭니다. 커밋하지 않은 변경이 있는 폴더는 쓰지 않습니다.</p>
+      <label class="check" id="task-workspace-copy-row"><input type="checkbox" id="task-workspace-copy"> 새 워크트리를 만들 때 원본의 Library 폴더 복사(기본값)</label>
+      <h4>재사용 대기 폴더</h4>
+      <ul id="task-workspace-pool" class="task-workspace-pool"></ul>
+      <p class="error" id="task-workspace-error" role="alert"></p>
+      <menu><button type="button" class="ghost" id="task-workspace-close">닫기</button></menu>
     </form>
   </dialog>
 

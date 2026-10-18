@@ -197,3 +197,15 @@
 .tasks-filter { margin-bottom: 12px; }
 .tasks-filter button[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); font-weight: 600; }
 .task-abandon { margin-left: auto; }
+/* 원본 폴더에서 작업 결과를 확인하는 중 표시 */
+.tasks-preview { display: grid; gap: 6px; padding: 12px 14px; margin-bottom: 16px; border: 1px solid var(--accent, #8fa6ff); border-radius: 8px; background: var(--accent-soft); font-size: 12px; }
+.tasks-preview-title { font-size: 13px; overflow-wrap: anywhere; }
+.tasks-preview-back { color: var(--muted, #9ca3af); }
+.tasks-preview-note { margin: 0; color: var(--muted, #9ca3af); }
+.tasks-preview-note[data-warn="true"] { color: var(--warn); }
+.task-preview-badge { display: inline-block; margin: 6px 0 0; padding: 2px 9px; border: 1px solid var(--accent, #8fa6ff); border-radius: 20px; color: var(--accent, #8fa6ff); font-size: 11px; }
+.task-library-copy progress { display: block; width: 100%; margin-top: 4px; }
+.task-workspace-pool { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.task-workspace-folder { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.task-workspace-folder .task-folder-path { flex: 1; min-width: 0; overflow-wrap: anywhere; font-family: var(--mono); }
+.tasks-preview .error { margin: 0; white-space: pre-line; }
