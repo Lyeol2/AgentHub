@@ -74,11 +74,13 @@ async function mainChangesMissing(dir, mainSha, developSha) {
 // 같은 저장소·원격의 fetch를 잠깐 기억한다. 화면을 열 때·작업을 만들 때처럼 연달아 부르는 조회만 maxAge로 다시 쓰고,
 // 사용자가 최신 상태 확인을 누르거나 Git에 쓰기 전 확인은 maxAge 없이 항상 새로 받는다.
 export const GITFLOW_FETCH_REUSE_MS = 20_000;
-const recentFetches = new Map(); // 저장소|원격 → { at, promise }
+const recentFetches = new Map(); // 저장소|원격|주소 → { at, promise }
 export function clearGitflowFetchCache() { recentFetches.clear(); }
 
-function fetchRemote(dir, remote, maxAge) {
-  const id = `${path.resolve(dir).toLowerCase()}|${remote}`;
+// 원격 주소가 바뀌었으면 다른 원격으로 보고 새로 받는다.
+async function fetchRemote(dir, remote, maxAge) {
+  const url = String(await taskGit(dir, ["remote", "get-url", "--", remote]).catch(() => "")).trim();
+  const id = `${path.resolve(dir).toLowerCase()}|${remote}|${url}`;
   const cached = recentFetches.get(id);
   if (maxAge > 0 && cached && Date.now() - cached.at < maxAge) return cached.promise;
   const started = performance.now();
