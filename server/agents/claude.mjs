@@ -5,6 +5,7 @@ import fs from "node:fs";
 import { randomUUID } from "node:crypto";
 import { isImageAttachment } from "../attachments.mjs";
 import { attachmentInputText } from "../attachment-input.mjs";
+import { claudeToolLabel } from "../tool-labels.mjs";
 
 // default: 허락이 필요한 도구(수정, 명령)를 쓸 때마다 화면에서 허용·거절을 묻는다.
 export const PERMISSION_MODES = ["default", "plan", "acceptEdits", "bypassPermissions"];
@@ -179,7 +180,8 @@ export function parseLine(line) {
         }
         else if (block.type === "thinking" && block.thinking) events.push({ kind: "thinking", text: block.thinking });
         else if (block.type === "tool_use") {
-          events.push({ kind: "tool", text: toolSummary(block.name, block.input), detail: truncate(block.input) });
+          const label = claudeToolLabel(block.name, block.input);
+          events.push({ kind: "tool", text: toolSummary(block.name, block.input), ...(label ? { label } : {}), detail: truncate(block.input) });
         }
       }
       // 이번 호출에 넣은 토큰이 지금 컨텍스트 크기다. 하위 에이전트 호출은 따로 센다.

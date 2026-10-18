@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import * as codex from "./agents/codex.mjs";
 import { isImageAttachment } from "./attachments.mjs";
 import { attachmentInputText } from "./attachment-input.mjs";
+import { codexToolLabel } from "./tool-labels.mjs";
 
 const ACTIVE_WRITER = /\bthread\b[^\r\n]*\balready has an active writer\b/i;
 const MISSING_THREAD = /no (?:conversation|thread|rollout)(?: found)?|thread[^\r\n]*(?:not found|does not exist)|unable to (?:find|load)[^\r\n]*(?:thread|rollout)/i;
@@ -166,26 +167,30 @@ export class CodexAppServer extends EventEmitter {
   item(completed, item) {
     if (item.id) this.items.set(item.id, item);
     const event = (kind, text, extra = {}) => this.emit("event", { kind, text, ...extra });
+    // 도구 줄에는 한국어 동작 이름을 붙인다(결과 줄에는 붙이지 않는다).
+    const label = codexToolLabel(item);
+    const tool = (text) => event("tool", text, label ? { label } : {});
     switch (item.type) {
       case "agentMessage": if (completed && item.text) event("text", item.text); break;
       case "reasoning": if (completed && item.summary?.length) event("thinking", item.summary.join("\n")); break;
       case "commandExecution":
-        if (!completed) event("tool", "$ " + (item.command ?? ""));
+        if (!completed) tool("$ " + (item.command ?? ""));
         else event("tool_result", snippet((item.aggregatedOutput ?? "") + "\n(종료 코드 " + (item.exitCode ?? "?") + ")"), { isError: item.status === "failed" || item.status === "declined" || (item.exitCode != null && item.exitCode !== 0) });
         break;
       case "fileChange":
         if (completed) {
           const failed = item.status === "declined" || item.status === "failed";
-          const label = item.status === "declined" ? "파일 변경 거절: " : failed ? "파일 변경 실패: " : "파일 변경: ";
-          event(failed ? "tool_result" : "tool", label + (item.changes ?? []).map((change) => (change.kind?.type ?? change.kind) + " " + change.path).join(", "), failed ? { isError: true } : {});
+          const prefix = item.status === "declined" ? "파일 변경 거절: " : failed ? "파일 변경 실패: " : "파일 변경: ";
+          const summary = prefix + (item.changes ?? []).map((change) => (change.kind?.type ?? change.kind) + " " + change.path).join(", ");
+          if (failed) event("tool_result", summary, { isError: true }); else tool(summary);
         }
         break;
       case "mcpToolCall":
-        if (!completed) event("tool", "MCP " + item.server + "." + item.tool);
+        if (!completed) tool("MCP " + item.server + "." + item.tool);
         else event("tool_result", snippet(item.error?.message ?? item.error ?? (item.result?.content ?? []).map((content) => content.type === "text" ? content.text : "[" + content.type + "]").join("\n")), { isError: !!item.error });
         break;
-      case "webSearch": if (!completed) event("tool", "웹 검색: " + (item.query ?? "")); break;
-      case "imageView": if (!completed) event("tool", "이미지 보기: " + item.path); break;
+      case "webSearch": if (!completed) tool("웹 검색: " + (item.query ?? "")); break;
+      case "imageView": if (!completed) tool("이미지 보기: " + item.path); break;
       case "contextCompaction": if (completed) event("status", "컨텍스트를 압축했습니다.", { compact: true }); break;
       case "plan": if (completed && item.text) event("text", item.text); break;
     }

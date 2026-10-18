@@ -199,10 +199,10 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     const body = el("div", { class: "tool-body" });
     if (ev.detail) body.append(el("div", { class: "tool-label" }, "입력"), el("pre", { class: "tool-input" }, ev.detail));
     const details = el("details", {},
-      el("summary", {}, el("span", { class: "tool-name" }, ev.text ?? ""), el("span", { class: "tool-state" })),
+      el("summary", {}, ev.label ? el("span", { class: "tool-kind" }, ev.label) : null, el("span", { class: "tool-name" }, ev.text ?? ""), el("span", { class: "tool-state" })),
       body);
     details.open = expandTools();
-    return el("li", { class: `${cls} pending`, title: ev.text ?? "" }, details);
+    return el("li", { class: `${cls} pending`, title: ev.label ? `${ev.label} · ${ev.text ?? ""}` : ev.text ?? "" }, details);
   }
 
   // 같은 실행에서 아직 결과를 받지 않은 도구에만 출력을 붙인다.
