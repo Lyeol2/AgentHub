@@ -271,11 +271,13 @@ if (POPUP) {
 } else if (navigation.viewRevision === bootView && sessionSelectionRevision === bootSelection) goDashboard();
 
 const stream = connectLiveUpdates({
-  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved
+  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved,
+  refreshSessionMeta: sessions.refreshSessionMeta, applyActivity: sessions.applyActivity, markOutput: sessions.markOutput, sessionStateChanged: sessions.sessionStateChanged,
+  updateEvent: sessions.updateEvent, appendDraft: sessions.appendDraft, taskProgress: tasks.taskProgress,
 });
 loadAuth();
 loadSetup();
-const refreshTimers = () => refreshElapsedTimes(data, commands.commandNodeFoot);
+const refreshTimers = () => { refreshElapsedTimes(data, commands.commandNodeFoot); sessions.renderRunActivity(); };
 const timers = [
   setInterval(loadAuth, 5 * 60_000),
   setInterval(loadProjects, 120_000),

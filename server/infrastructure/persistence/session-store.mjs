@@ -71,6 +71,8 @@ export class SessionStore {
       const staleTimer = session.runningStartedAt != null;
       if (interrupted) session.state = "interrupted";
       if (interrupted || staleTimer) session.runningStartedAt = null;
+      // 실행 중 진행 표시(시작 단계·마지막 출력 시각)는 남은 실행이 없으므로 지운다.
+      if (interrupted || staleTimer) { delete session.runPhase; delete session.lastOutputAt; }
       const migrated = useProjectFolder(session);
       this.sessions.set(session.id, session);
       if (migrated || interrupted || staleTimer) this.flush(session.id);

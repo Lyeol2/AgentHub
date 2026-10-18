@@ -147,11 +147,14 @@ export function moveSkill(projectPath, name, to, { home } = {}) {
 // 세션에 이은 스킬 안내. 새 대화의 첫 요청과, 이은 스킬이 바뀐 직후(압축 뒤 포함) 요청에 붙인다.
 // Claude는 .claude/skills(프로젝트·개인)를 Skill 도구로 불러올 수 있고, AgentHub 전용 스킬은 파일로 읽는다.
 // Codex는 자체 스킬도 SKILL.md를 파일로 읽는 방식이라 경로만 준다.
-export function withSkills(session, input, skills = listSkills(session.projectPath)) {
+// 스킬 목록(디스크 읽기)은 실제로 안내를 붙여야 할 때만 읽는다.
+export function withSkills(session, input, skills = null) {
   const changed = session.skillsChanged;
   delete session.skillsChanged;
   if (session.agentSessionId && !changed) return input;
-  const attached = (session.skills ?? []).map((name) => skills.find((s) => s.name === name)).filter(Boolean);
+  const names = session.skills ?? [];
+  if (names.length) skills ??= listSkills(session.projectPath);
+  const attached = names.map((name) => skills.find((s) => s.name === name)).filter(Boolean);
   if (!attached.length) return changed ? `[이 세션에 이은 스킬이 모두 해제되었다]\n\n${input}` : input;
   const lines = attached.map((s) => {
     const native = session.agent === "claude" && (s.scope === "claude" || s.scope === "personal");

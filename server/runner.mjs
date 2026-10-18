@@ -5,6 +5,7 @@ import * as codex from "./agents/codex.mjs";
 import { spawnCli, killProcessTree, missingFolder } from "./cli.mjs";
 import { CodexAppServer } from "./codex-app-server.mjs";
 import { unityControl, isUnityCommand } from "./unity-control.mjs";
+import { stopwatch } from "./timing.mjs";
 
 const publicMeta = (meta) => ({ ...meta, ...(meta.attachments ? { attachments: meta.attachments.map(({ id, name, mimeType, size, url }) => ({ id, name, mimeType, size, url })) } : {}) });
 
@@ -13,6 +14,13 @@ export const AGENTS = { claude, codex };
 const MISSING_CONVERSATION = /No conversation found with session ID/i;
 const INJECT_GRACE_MS = 4000;
 const INTERRUPT_GRACE_MS = 10000;
+// 마지막 출력 시각은 출력마다 알리지 않고 이 간격에 한 번만 화면에 알린다(화면은 실시간 이벤트의 시각도 함께 쓴다).
+export const ACTIVITY_NOTIFY_MS = 3000;
+// 답을 쓰는 중인 글자 조각은 모아서 이 간격으로 보낸다.
+const DRAFT_FLUSH_MS = 120;
+// 이 종류의 이벤트가 기록에 남으면 쓰는 중이던 글은 끝난 것이다.
+const DRAFT_END = new Set(["text", "thinking", "tool", "result", "error"]);
+const inputClosed = (child) => !!(child.stdin?.writableEnded || child.stdin?.destroyed);
 
 // 세션 하나에 한 번에 한 턴만 실행한다. 다른 세션은 동시에 실행할 수 있다.
 export class Runner extends EventEmitter {
@@ -30,6 +38,70 @@ export class Runner extends EventEmitter {
     this.mcpNotes = new Map(); // 세션 ID → 마지막으로 알린 꺼진 MCP 목록
     // 세션 프로젝트의 "유니티 사용" 설정(session → "ask" | "allow" | "off"). 서버가 정한다.
     this.unityMode = () => "allow";
+    this.activitySent = new Map(); // 세션 ID → 진행 상태를 마지막으로 알린 시각
+    this.draftSeq = 0;
+  }
+
+  // ── 진행 상태 ───────────────────────────────────────────────────
+  // runPhase: starting(CLI를 띄우고 첫 출력을 기다림) | working(출력이 오기 시작함). lastOutputAt: CLI의 마지막 출력 시각.
+  // waiting: 권한·질문 답을 기다림(출력이 없어도 멈춘 것이 아니다).
+  activity(session, now = Date.now()) {
+    this.activitySent.set(session.id, now);
+    this.emit("activity", session.id, { runPhase: session.runPhase ?? null, lastOutputAt: session.lastOutputAt ?? null, waiting: !!session.waiting });
+  }
+
+  markOutput(session, clock = null) {
+    const now = Date.now();
+    session.lastOutputAt = new Date(now).toISOString();
+    const first = session.runPhase === "starting";
+    if (first) {
+      session.runPhase = "working";
+      clock?.step("첫 출력까지");
+    }
+    if (first || now - (this.activitySent.get(session.id) ?? 0) >= ACTIVITY_NOTIFY_MS) this.activity(session, now);
+  }
+
+  // 이미 남긴 이벤트의 일부를 바꾸고 화면에 알린다(추가 요청의 반영 상태 등).
+  updateEvent(session, event, patch) {
+    Object.assign(event, patch);
+    this.store.touch(session);
+    this.emit("eventUpdate", session.id, event.seq, patch);
+  }
+
+  // 답을 쓰는 중인 글(Claude stream_event). 기록에는 남기지 않고 모아서 화면에만 보낸다.
+  draft(session, child, event) {
+    if (event.reset || !child.draft) {
+      clearTimeout(child.draft?.timer);
+      child.draft = { id: `${session.id}-${++this.draftSeq}`, pending: "", timer: null };
+    }
+    if (!event.text) return;
+    child.draft.pending += event.text;
+    if (child.draft.timer) return;
+    const draft = child.draft;
+    draft.timer = setTimeout(() => {
+      draft.timer = null;
+      if (child.draft !== draft || !draft.pending) return;
+      this.emit("draft", session.id, { draftId: draft.id, text: draft.pending });
+      draft.pending = "";
+    }, DRAFT_FLUSH_MS);
+  }
+
+  endDraft(child) {
+    clearTimeout(child.draft?.timer);
+    child.draft = null;
+  }
+
+  // 지금 작업에 반영하지 못한 추가 요청. 사용자가 중지한 경우가 아니면 대기열 앞으로 되돌려 지금 작업이 끝난 뒤 보낸다.
+  returnInjected(session, records, reason) {
+    if (!records.length) return;
+    const dropped = session.stopRequested && !session.paused;
+    for (const record of records) this.updateEvent(session, record.event, { delivery: dropped ? "dropped" : "requeued" });
+    if (dropped) {
+      this.append(session, { kind: "status", text: `중지해서 지금 작업에 반영하지 못한 추가 요청 ${records.length}개는 보내지 않았습니다.` });
+      return;
+    }
+    this.append(session, { kind: "status", text: `${reason} 반영하지 못한 추가 요청 ${records.length}개를 대기열로 되돌렸습니다. 지금 작업이 끝나면 차례로 보냅니다.` });
+    this.emit("requeue", session, records.map(({ text, meta }) => ({ text, meta })));
   }
 
   // ── 실행 중 질문·권한 요청 ──────────────────────────────────────
@@ -57,6 +129,7 @@ export class Runner extends EventEmitter {
     session.waiting = true;
     const full = this.append(session, event);
     this.prompts.set(id, { session, child, agent, control, event: full });
+    this.activity(session);
   }
 
   // 저장한 허용 규칙(agent.ruleMatches가 있는 CLI)과 유니티 통제로 화면에 묻지 않고 답할 결정. 없으면 null.
@@ -90,9 +163,10 @@ export class Runner extends EventEmitter {
   }
 
   // 실행 중인 턴에 요청을 붙인다. CLI가 같은 작업에 반영할 수 있을 때만 허용한다.
+  // 입력을 이미 닫은 CLI(턴을 마치고 끝나는 중)에는 붙일 수 없다. 써도 CLI가 읽지 못해 요청이 사라진다.
   canInject(session) {
     const child = this.running.get(session.id);
-    return !!child && (child.appServer ? child.appServer.canInject() : !!AGENTS[session.agent].interactive);
+    return !!child && (child.appServer ? child.appServer.canInject() : !!AGENTS[session.agent].interactive && !inputClosed(child));
   }
 
   // meta: 요청 이벤트에 덧붙일 값(보낸 세션 등)
@@ -102,11 +176,30 @@ export class Runner extends EventEmitter {
     const agent = AGENTS[session.agent];
     if (!child) throw new Error("실행 중이 아닙니다.");
     if (!agent.interactive && !child.appServer) throw new Error(`${session.agent}는 실행 중인 작업에 요청을 붙일 수 없습니다. 대기열에 넣으세요.`);
-    if (child.appServer) child.appServer.inject(input, meta.attachments);
-    else child.stdin.write(`${agent.userLine(input, meta.attachments)}\n`);
+    if (!child.appServer && inputClosed(child)) throw new Error("지금 작업이 끝나는 중이라 붙일 수 없습니다. 대기열에 넣으세요.");
+    const reply = child.appServer ? child.appServer.inject(input, meta.attachments) : null;
+    if (!child.appServer) child.stdin.write(`${agent.userLine(input, meta.attachments)}\n`);
     child.injected = (child.injected ?? 0) + 1;
     child.emit?.("injected");
-    this.append(session, { kind: "user", text, ...publicMeta(meta), injected: true });
+    // delivery: sent(CLI에 보냄) → applied(CLI가 받아 반영함) | requeued(반영하지 못해 대기열로 되돌림) | dropped(중지해서 보내지 않음)
+    const event = this.append(session, { kind: "user", text, ...publicMeta(meta), injected: true, delivery: "sent" });
+    const record = { event, text, meta, input };
+    // Claude는 CLI가 요청을 돌려주면(--replay-user-messages) 반영한 것으로 본다. Codex는 turn/steer 응답으로 안다.
+    if (!child.appServer) (child.pendingInputs ??= []).push(record);
+    else reply?.then?.((result) => {
+      if (result?.applied) this.updateEvent(session, event, { delivery: "applied" });
+      else this.returnInjected(session, [record], `Codex가 지금 작업에 받지 않아(${result?.error ?? "응답 없음"})`);
+    });
+  }
+
+  // CLI가 돌려준 사용자 요청을 보낸 요청과 맞춘다. 처음 보낸 요청(event 없음)도 같은 목록에 있다.
+  confirmInput(session, child, text) {
+    child.sawReplay = true;
+    const pending = child.pendingInputs ?? [];
+    const index = pending.findIndex((record) => record.input === text);
+    if (index < 0) return;
+    const [record] = pending.splice(index, 1);
+    if (record.event?.delivery === "sent") this.updateEvent(session, record.event, { delivery: "applied" });
   }
 
   hasPrompt(id, sessionId) {
@@ -134,6 +227,7 @@ export class Runner extends EventEmitter {
     }
     session.waiting = this.waitingFor(session.id);
     this.store.touch(session);
+    this.activity(session);
     return event;
   }
 
@@ -149,7 +243,11 @@ export class Runner extends EventEmitter {
       this.prompts.delete(id);
     }
     const session = this.store.get(sessionId);
-    if (session) session.waiting = this.waitingFor(sessionId);
+    if (!session) return;
+    const waiting = this.waitingFor(sessionId);
+    const changed = !!session.waiting !== waiting;
+    session.waiting = waiting;
+    if (changed) this.activity(session);
   }
 
   append(session, event) {
@@ -168,6 +266,9 @@ export class Runner extends EventEmitter {
       }
     } else {
       session.runningStartedAt = null;
+      // 진행 표시는 실행 중에만 쓴다.
+      if ("runPhase" in session) delete session.runPhase;
+      if ("lastOutputAt" in session) delete session.lastOutputAt;
     }
     session.state = state;
     this.store.touch(session);
@@ -183,7 +284,10 @@ export class Runner extends EventEmitter {
   send(session, prompt, cliPath, input = prompt, meta = {}, retry = false) {
     if (this.running.has(session.id)) throw new Error("이 세션은 이미 실행 중입니다.");
     if (this.isUpdating(session.agent)) throw new Error(`${session.agent} CLI 업데이트 중입니다. 완료한 뒤 다시 시도하세요.`);
+    // 단계별 소요 시간(AGENTHUB_DEBUG=timing일 때만 로그에 남는다)
+    const clock = stopwatch("session.send", `${session.agent} ${session.id}`);
     assertSessionGitContext(session);
+    clock.step("Git 작업 폴더 확인");
     if (!cliPath) throw new Error(`${session.agent} CLI를 찾지 못했습니다. 설정에서 경로를 지정하세요.`);
 
     const agent = AGENTS[session.agent];
@@ -209,6 +313,10 @@ export class Runner extends EventEmitter {
       }
     }
     this.setState(session, "running");
+    session.runPhase = "starting";
+    session.lastOutputAt = null;
+    this.activity(session);
+    clock.step("요청 준비");
 
     const child = this.spawn(cliPath, args, {
       cwd: session.cwd,
@@ -219,6 +327,7 @@ export class Runner extends EventEmitter {
     });
     this.running.set(session.id, child);
     if (agent.transport === "app-server") child.appServer = new CodexAppServer(child, session);
+    clock.step("CLI 띄우기");
 
     const stderrTail = [];
     const resuming = !!session.agentSessionId;
@@ -252,8 +361,15 @@ export class Runner extends EventEmitter {
         if (msg?.type === "control_request") return this.ask(session, child, agent, msg);
         if (msg?.type === "control_cancel_request") return this.dropPrompts(session.id, msg.request_id);
         if (msg?.type === "control_response") return; // initialize 응답
+        const echoed = agent.replayedUserText?.(msg);
+        if (echoed != null) this.confirmInput(session, child, echoed);
       }
       for (const event of agent.parseLine(line)) {
+        if (event.kind === "delta") {
+          this.draft(session, child, event);
+          continue;
+        }
+        if (DRAFT_END.has(event.kind)) this.endDraft(child);
         // 사용자가 멈춰서 CLI가 오류로 끝낸 턴은 오류로 보이지 않게 로그로만 남긴다.
         if (session.stopRequested && event.final && event.kind === "error") event.kind = "log";
         if (event.agentSessionId) {
@@ -317,6 +433,7 @@ export class Runner extends EventEmitter {
     let buffer = "";
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
+      this.markOutput(session, clock);
       buffer += chunk;
       let index;
       while ((index = buffer.indexOf("\n")) >= 0) {
@@ -339,10 +456,14 @@ export class Runner extends EventEmitter {
     child.on("close", (code, signal) => {
       if (buffer) handleLine(buffer);
       cancelEndTimer();
+      this.endDraft(child);
       child.removeListener("injected", cancelEndTimer);
       child.appServer?.close();
       this.running.delete(session.id);
       this.dropPrompts(session.id);
+      clock.total("턴 전체");
+      // CLI가 받았다고 돌려주지 않은 추가 요청은 턴 종료와 겹쳐 반영되지 못한 것이다. 돌려주는 CLI일 때만 판단한다.
+      if (child.sawReplay) this.returnInjected(session, (child.pendingInputs ?? []).filter((record) => record.event?.delivery === "sent"), "작업이 끝나며");
       // 첫 턴이 끝까지 가지 못했으면 CLI 쪽에 이어 갈 대화가 없을 수 있으므로 다음 턴은 새로 시작한다.
       // 단, 대화가 시작된 뒤(init) 사용자가 멈춘 턴은 기록이 남아 있으므로 이어 간다(일시중지 후 재개).
       if (!resuming && !completedTurn && !(startedConversation && session.stopRequested)) session.agentSessionId = null;
@@ -386,6 +507,7 @@ export class Runner extends EventEmitter {
     if (child.appServer) {
       child.appServer.start(input, meta.attachments);
     } else if (agent.interactive) {
+      child.pendingInputs = [{ event: null, input }];
       child.stdin.write(`${agent.initLine()}\n${userInput}\n`);
     } else {
       child.stdin.end(input);

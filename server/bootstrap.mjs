@@ -184,13 +184,19 @@ export function createHub(options = {}) {
   runner.unityMode = (session) => projectUnityMode(config, session.projectPath);
 
   // Resolve the MCP URL lazily, after an ephemeral port has been assigned.
+  // 설정 파일은 내용이 바뀌었거나 지워졌을 때만 다시 쓴다(요청마다 디스크에 쓰지 않는다).
+  const mcpWritten = new Map(); // 설정 파일 → 마지막으로 쓴 내용
   runner.mcp = (session) => {
     const url = `http://127.0.0.1:${port}/mcp/${mcpTokens.token(session.id)}`;
     const configFile = path.join(mcpDir, `${session.id}.json`);
-    fs.mkdirSync(mcpDir, { recursive: true });
-    fs.writeFileSync(configFile, JSON.stringify({
+    const content = JSON.stringify({
       mcpServers: { agenthub: { type: "http", url } },
-    }, null, 2));
+    }, null, 2);
+    if (mcpWritten.get(configFile) !== content || !fs.existsSync(configFile)) {
+      fs.mkdirSync(mcpDir, { recursive: true });
+      fs.writeFileSync(configFile, content);
+      mcpWritten.set(configFile, content);
+    }
     return { url, configFile };
   };
   const tools = createMessagingTools({ mailbox, board, notify });
@@ -221,6 +227,12 @@ export function createHub(options = {}) {
   listen(runner, "state", (sessionId, state, runningStartedAt) => {
     notify("state", { sessionId, state, runningStartedAt });
   });
+  // 실행 중 진행 표시(시작 단계·마지막 출력 시각·답 대기), 쓰는 중인 글, 이미 남긴 이벤트의 상태 변경
+  listen(runner, "activity", (sessionId, activity) => notify("activity", { sessionId, ...activity }));
+  listen(runner, "draft", (sessionId, draft) => notify("draft", { sessionId, ...draft }));
+  listen(runner, "eventUpdate", (sessionId, seq, patch) => notify("event-update", { sessionId, seq, patch }));
+  // 지금 작업에 반영하지 못한 추가 요청을 대기열 앞으로 되돌린다. 사용자가 쓴 요청은 보낼 때 다시 /스킬·@참조를 풀어 쓴다.
+  listen(runner, "requeue", (session, items) => chain.requeue?.(session, items.map(({ text, meta }) => ({ text, meta: meta?.from ? meta : { user: true, ...meta } }))));
   listen(setup, "change", (jobs) => notify("setup", jobs));
   listen(setup, "finished", (tool, job) => {
     notify("cli", {});

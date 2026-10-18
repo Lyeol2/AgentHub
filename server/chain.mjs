@@ -752,6 +752,24 @@ export class Chain {
     return item;
   }
 
+  // 턴 종료와 겹쳐 지금 작업에 반영하지 못한 추가 요청을 대기열 앞에 되돌린다.
+  // 턴을 마무리하는 중(상태가 아직 실행 중)이면 턴이 끝난 뒤의 flush가 차례로 보낸다. 이미 끝났으면(Codex의 늦은 응답) 바로 보낸다.
+  requeue(target, items) {
+    if (this.disposed || !items.length) return [];
+    const queue = this.queue.get(target.id) ?? [];
+    const depth = target.chainDepth ?? 0;
+    const added = items.map(({ text, meta }) => {
+      const { flow: inheritedFlow, ...publicMeta } = meta ?? {};
+      const flow = inheritedFlow ?? this.newFlow();
+      return { id: randomBytes(4).toString("hex"), text, meta: publicMeta, depth, flow, historyStepId: this.controls.queue(target, flow, text, { meta: publicMeta, depth }) };
+    });
+    queue.unshift(...added);
+    this.queue.set(target.id, queue);
+    if (target.state !== "running") this.flush(target);
+    this.notify("queue", target.id);
+    return added;
+  }
+
   // 화면에 보여 줄 대기열
   list(sessionId) {
     return (this.queue.get(sessionId) ?? []).map(({ id, text, meta }) => ({ id, text, user: !!meta.user, fromTitle: meta.fromTitle ?? null, ...(meta.attachments?.length ? { attachments: meta.attachments.map(({ id, name, mimeType, size, url }) => ({ id, name, mimeType, size, url })) } : {}) }));

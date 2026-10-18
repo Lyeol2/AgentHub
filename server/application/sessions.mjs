@@ -395,6 +395,12 @@ export function createSessionService({
     return { ...settleState(session), ...(graphTabs && !session.chat ? { tabId: graphTabs.tabFor(session) } : {}), queue: chain.list(session.id), canInject: !!AGENTS[session.agent].interactive || AGENTS[session.agent].transport === "app-server" };
   }
 
+  // 기록(events) 없이 세션 정보만. 실행 중 화면은 머리글만 다시 그린다.
+  function detailMeta(id) {
+    const { events, handover, ...rest } = detail(id);
+    return { ...rest, eventCount: events.length, handoverPending: !!handover };
+  }
+
   function sendMessage(id, body) {
     const session = getSession(id);
     const files = attachments.resolveAll(id, body.attachments);
@@ -858,7 +864,7 @@ export function createSessionService({
   }
 
   return {
-    list: () => store.list().map((s) => summary(settleState(s))), detail,
+    list: () => store.list().map((s) => summary(settleState(s))), detail, detailMeta,
     create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, artifact, artifactContent, artifactPreview, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
     stop, pause, resume, restart, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,

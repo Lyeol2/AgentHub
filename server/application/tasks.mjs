@@ -9,12 +9,13 @@ import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
 import { hintFor } from "./error-hints.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
-import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
+import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, GITFLOW_FETCH_REUSE_MS, assertTaskWorktree, readTaskBranch,
   taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle, taskBranchSlug, removeWorktreeDir, worktreeRegistered } from "../tasks.mjs";
 import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey, gitflowBranches } from "../gitflow-settings.mjs";
 import { reviewSnapshot, commitReviewedFiles, assertReviewed } from "../task-review.mjs";
 import { fileDiff, parseStatus } from "../gitpanel.mjs";
 import { runGitNode } from "../git-nodes.mjs";
+import { stopwatch } from "../timing.mjs";
 
 // 설정한 배포·개발 브랜치인지(대소문자를 구분한다)
 const isGitflowBase = (flow, branch) => branch === flow.main || branch === flow.develop;
@@ -293,13 +294,14 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       return summary(session);
     });
   }
-  async function context(projectPath) {
+  // refresh: 사용자가 최신 상태 확인을 눌렀다. 그때는 방금 받은 fetch도 다시 쓰지 않는다.
+  async function context(projectPath, { refresh = false } = {}) {
     if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
     let valueSettings = projectGitflowSettings(config, projectPath);
     try {
       const repo = await taskRepo(projectPath);
       valueSettings = projectGitflowSettings(config, repo.top);
-      const value = await gitflowContext(repo.top, undefined, valueSettings);
+      const value = await gitflowContext(repo.top, undefined, valueSettings, { maxAge: refresh ? 0 : GITFLOW_FETCH_REUSE_MS });
       return { ...value, settings: valueSettings, finishMode: finishModeFor(repo.top), mainInDevelop: !value.mainMissing, freshness: { state: value.state, checkedAt: value.checkedAt } };
     } catch (error) {
       return { state: "error", checkedAt: now(), mainSha: null, developSha: null, warnings: [error.message],
@@ -428,6 +430,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const project = projectService().ensureProject(body.projectPath);
     graphTabs?.resolve(project.path, body.tabId, body.connectFrom ?? body.createdBy);
     const repo = await taskRepo(project.path);
+    // 작업 만들기 단계를 화면에 알리고, 단계별 소요 시간을 디버그 로그로 남긴다.
+    const clock = stopwatch("task.create", project.path);
+    let stage = "입력 확인";
+    const progress = (step) => { clock.step(stage); stage = step; notify("task-progress", { projectPath: project.path, ...(requestId ? { requestId } : {}), step }); };
     return locked(repo.common, async () => {
       const previous = requestId && [...records.values()].find((task) => task.requestId === requestId && sameTaskPath(task.projectPath, project.path));
       if (previous) {
@@ -437,7 +443,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
           ...(previous.initialStart?.state !== "sent" && body.start ? { startError: previous.initialStart?.error || "작업은 이미 생성됐습니다. 세션 기록을 확인한 뒤 이어서 요청하세요." } : {}) };
       }
       const gitflow = projectGitflowSettings(config, repo.top);
-      const current = await gitflowContext(project.path, undefined, gitflow);
+      progress("원격 최신 상태 확인 중");
+      // 작업 탭을 열 때 받은 fetch가 방금 것이면 다시 쓴다.
+      const current = await gitflowContext(project.path, undefined, gitflow, { maxAge: GITFLOW_FETCH_REUSE_MS });
+      progress("작업 브랜치 정하는 중");
       if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, `새 작업을 만들기 전에 ${gitflow.main}의 변경을 ${gitflow.develop}에 반영하세요.`, "gitflow-develop-behind",
         { hint: developBehindHint({ gitflow }).replace("작업 카드의 최신 상태 확인을 누르면", "다시 만들면") });
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
@@ -512,9 +521,11 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         delete task.provisioning;
         save(task);
         if (body.session === false) return { task: clone(task) };
+        progress("세션 준비 중");
         try { return await attachAndStart(task, body); }
         catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
       }
+      progress(selected ? "작업 폴더 확인 중" : "작업 폴더 만드는 중");
       const createdRoot = !fs.existsSync(location.root);
       fs.mkdirSync(location.root, { recursive: true });
       try { if (!selected) await addWorktree(task, false); }
@@ -531,9 +542,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       delete task.provisioning;
       save(task);
       if (body.session === false) return { task: clone(task) };
+      progress("세션 준비 중");
       try { return await attachAndStart(task, body); }
       catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
-    });
+    }).finally(() => { clock.step(stage); clock.total(); });
   }
   async function attachAndStart(task, body) {
     let result;
