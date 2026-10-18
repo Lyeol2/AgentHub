@@ -181,13 +181,19 @@ export function createHub(options = {}) {
   runner.unreachableMcp = () => mcpProbe.unreachable();
 
   // Resolve the MCP URL lazily, after an ephemeral port has been assigned.
+  // 설정 파일은 내용이 바뀌었거나 지워졌을 때만 다시 쓴다(요청마다 디스크에 쓰지 않는다).
+  const mcpWritten = new Map(); // 설정 파일 → 마지막으로 쓴 내용
   runner.mcp = (session) => {
     const url = `http://127.0.0.1:${port}/mcp/${mcpTokens.token(session.id)}`;
     const configFile = path.join(mcpDir, `${session.id}.json`);
-    fs.mkdirSync(mcpDir, { recursive: true });
-    fs.writeFileSync(configFile, JSON.stringify({
+    const content = JSON.stringify({
       mcpServers: { agenthub: { type: "http", url } },
-    }, null, 2));
+    }, null, 2);
+    if (mcpWritten.get(configFile) !== content || !fs.existsSync(configFile)) {
+      fs.mkdirSync(mcpDir, { recursive: true });
+      fs.writeFileSync(configFile, content);
+      mcpWritten.set(configFile, content);
+    }
     return { url, configFile };
   };
   const tools = createMessagingTools({ mailbox, board, notify });

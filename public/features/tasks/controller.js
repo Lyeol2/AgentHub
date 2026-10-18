@@ -617,7 +617,8 @@ export function createTasksController({
     renderTasks();
     renderContext();
     const requests = [api('GET', `/api/tasks?path=${encodeURIComponent(path)}`)];
-    if (!options.localOnly) requests.push(api('GET', `/api/tasks/context?path=${encodeURIComponent(path)}`));
+    // 최신 상태 확인을 누르면 서버가 방금 받은 fetch를 다시 쓰지 않고 새로 받는다.
+    if (!options.localOnly) requests.push(api('GET', `/api/tasks/context?path=${encodeURIComponent(path)}${options.manual ? '&refresh=1' : ''}`));
     const results = await Promise.allSettled(requests);
     if (request !== generation || !sameProject(path)) return;
     const [taskResult, contextResult] = results;

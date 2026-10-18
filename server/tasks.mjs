@@ -4,6 +4,7 @@ import { githubCredentialArgs, runGitHubCommand } from "./github.mjs";
 import { gitErrorDetails } from "./git-errors.mjs";
 import { HttpError } from "./application/errors.mjs";
 import { normalizeGitflowSettings } from "./gitflow-settings.mjs";
+import { logTiming } from "./timing.mjs";
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const clean = (value) => String(value ?? "").replace(/https?:\/\/[^/\s@]+@/g, "https://[credentials]@").slice(0, 1600);
@@ -70,12 +71,32 @@ async function mainChangesMissing(dir, mainSha, developSha) {
   } catch (error) { if (error.reason === "git-timeout") throw error; return true; }
 }
 
-export async function gitflowContext(dir, selected, value) {
+// 같은 저장소·원격의 fetch를 잠깐 기억한다. 화면을 열 때·작업을 만들 때처럼 연달아 부르는 조회만 maxAge로 다시 쓰고,
+// 사용자가 최신 상태 확인을 누르거나 Git에 쓰기 전 확인은 maxAge 없이 항상 새로 받는다.
+export const GITFLOW_FETCH_REUSE_MS = 20_000;
+const recentFetches = new Map(); // 저장소|원격 → { at, promise }
+export function clearGitflowFetchCache() { recentFetches.clear(); }
+
+function fetchRemote(dir, remote, maxAge) {
+  const id = `${path.resolve(dir).toLowerCase()}|${remote}`;
+  const cached = recentFetches.get(id);
+  if (maxAge > 0 && cached && Date.now() - cached.at < maxAge) return cached.promise;
+  const started = performance.now();
+  // Explicit refspec ignores narrow fetch configuration; prune removes deleted remote branches.
+  const promise = taskGit(dir, [...githubCredentialArgs(), "fetch", "--prune", "--no-tags", "--", remote, `+refs/heads/*:refs/remotes/${remote}/*`])
+    .finally(() => logTiming("gitflow", "fetch", performance.now() - started, remote));
+  const entry = { at: Date.now(), promise };
+  recentFetches.set(id, entry);
+  // 실패한 fetch는 다시 쓰지 않는다.
+  promise.catch(() => { if (recentFetches.get(id) === entry) recentFetches.delete(id); });
+  return promise;
+}
+
+export async function gitflowContext(dir, selected, value, { maxAge = 0 } = {}) {
   const settings = normalizeGitflowSettings(value);
   const { main, develop } = settings;
   const remote = await taskRemote(dir, selected, main);
-  // Explicit refspec ignores narrow fetch configuration; prune removes deleted remote branches.
-  await taskGit(dir, [...githubCredentialArgs(), "fetch", "--prune", "--no-tags", "--", remote, `+refs/heads/*:refs/remotes/${remote}/*`]);
+  await fetchRemote(dir, remote, maxAge);
   // rev-parse can resolve the wrong case on Windows filesystems. Enumerate refs
   // and compare their literal names so Main/Develop settings stay exact.
   const refs = new Map((await taskGit(dir, ["for-each-ref", "--format=%(refname) %(objectname)", `refs/remotes/${remote}/`]))

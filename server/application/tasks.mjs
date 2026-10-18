@@ -8,12 +8,13 @@ import { summary } from "../store.mjs";
 import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
-import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
+import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, GITFLOW_FETCH_REUSE_MS, assertTaskWorktree, readTaskBranch,
   taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle, taskBranchSlug, removeWorktreeDir, worktreeRegistered } from "../tasks.mjs";
 import { normalizeGitflowSettings, projectGitflowSettings, gitflowSettingsKey, gitflowBranches } from "../gitflow-settings.mjs";
 import { reviewSnapshot, commitReviewedFiles, assertReviewed } from "../task-review.mjs";
 import { fileDiff, parseStatus } from "../gitpanel.mjs";
 import { runGitNode } from "../git-nodes.mjs";
+import { stopwatch } from "../timing.mjs";
 
 // 설정한 배포·개발 브랜치인지(대소문자를 구분한다)
 const isGitflowBase = (flow, branch) => branch === flow.main || branch === flow.develop;
@@ -287,13 +288,14 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       return summary(session);
     });
   }
-  async function context(projectPath) {
+  // refresh: 사용자가 최신 상태 확인을 눌렀다. 그때는 방금 받은 fetch도 다시 쓰지 않는다.
+  async function context(projectPath, { refresh = false } = {}) {
     if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
     let valueSettings = projectGitflowSettings(config, projectPath);
     try {
       const repo = await taskRepo(projectPath);
       valueSettings = projectGitflowSettings(config, repo.top);
-      const value = await gitflowContext(repo.top, undefined, valueSettings);
+      const value = await gitflowContext(repo.top, undefined, valueSettings, { maxAge: refresh ? 0 : GITFLOW_FETCH_REUSE_MS });
       return { ...value, settings: valueSettings, finishMode: finishModeFor(repo.top), mainInDevelop: !value.mainMissing, freshness: { state: value.state, checkedAt: value.checkedAt } };
     } catch (error) {
       return { state: "error", checkedAt: now(), mainSha: null, developSha: null, warnings: [error.message],
