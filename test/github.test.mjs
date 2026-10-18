@@ -30,18 +30,18 @@ function fixture() {
   fs.cpSync(seed.dir, dir, { recursive: true });
   const git = (...args) => execFileSync("git", args, { cwd: dir, encoding: "utf8", windowsHide: true });
   const sha = seed.sha;
-  const state = { sha, remoteSha: sha, existing: [], calls: [], auth: true, fail: null, push: null, readiness: "CLEAN",
+  const state = { sha, remoteSha: sha, existing: [], calls: [], auth: true, fail: null, push: null, readiness: "CLEAN", review: "APPROVED", waits: [],
     info: { default_branch: "main", permissions: { push: true }, allow_merge_commit: true, allow_squash_merge: true, allow_rebase_merge: false },
     pull: { number: 7, title: "기능", body: "내용", state: "open", draft: false, user: { login: "coder" }, head: { ref: "feature", sha }, base: { ref: "main" },
       additions: 2, deletions: 1, changed_files: 1, mergeable: true, mergeable_state: "clean", html_url: "javascript:alert(1)" } };
-  const client = new GitHubPulls({ locate: () => "fake-gh", run: async (file, args, options) => {
+  const client = new GitHubPulls({ locate: () => "fake-gh", wait: async (ms) => { state.waits.push(ms); }, run: async (file, args, options) => {
     state.calls.push({ file, args, options });
     if (file === "git") {
       if (args.includes("push")) return state.push ? state.push(args, options) : "published"; // No test can send a real push.
       return runGitHubCommand(file, args, options);
     }
     if (args[0] === "auth") { if (!state.auth) throw new Error("bad token"); return "logged in"; }
-    if (args[0] === "pr") return JSON.stringify({ headRefOid: sha, mergeStateStatus: state.readiness, reviewDecision: "APPROVED",
+    if (args[0] === "pr") return JSON.stringify({ headRefOid: sha, mergeStateStatus: Array.isArray(state.readiness) ? state.readiness.shift() ?? "CLEAN" : state.readiness, reviewDecision: state.review,
       statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }, { state: "PENDING" }, { status: "COMPLETED", conclusion: "FAILURE" }] });
     const endpoint = args.find((arg) => arg.startsWith("repos/"));
     const method = args[args.indexOf("--method") + 1];
@@ -215,6 +215,33 @@ test("github: 병합 SHA·방식·보호 조건을 확인하고 관리자 우회
   assert.equal(result.pull.state, "MERGED");
   assert.deepEqual(JSON.parse(writes(f.state)[0].options.input), { merge_method: "squash", sha: f.sha });
   assert.equal(f.state.calls.some((call) => call.args.includes("--admin") || call.args.includes("--auto") || call.args.includes("--delete-branch")), false);
+});
+
+test("github: 병합 가능 여부를 계산 중(UNKNOWN)이면 잠깐 기다려 다시 묻고, 막힌 이유는 상태별로 알린다", async () => {
+  const f = fixture();
+  f.state.readiness = ["UNKNOWN", "UNKNOWN", "CLEAN"];
+  assert.equal((await f.client.merge(f.dir, 7, { ...f.body, method: "squash", sha: f.sha })).pull.state, "MERGED");
+  assert.equal(f.state.waits.length, 2);
+  const g = fixture();
+  g.state.readiness = "UNKNOWN";
+  await assert.rejects(g.client.merge(g.dir, 7, { ...g.body, method: "squash", sha: g.sha }), (error) => error.reason === "pull-blocked" && /계산하고 있습니다/.test(error.message));
+  assert.equal(g.state.waits.length, 3, "UNKNOWN은 정해진 횟수만 다시 묻는다");
+  for (const [status, text] of [["BEHIND", /뒤처져/], ["DIRTY", /충돌/], ["BLOCKED", /보호 규칙/], ["UNSTABLE", /검사/], ["DRAFT", /초안/]]) {
+    g.state.readiness = status;
+    await assert.rejects(g.client.merge(g.dir, 7, { ...g.body, method: "squash", sha: g.sha }), (error) => error.reason === "pull-blocked" && text.test(error.message), status);
+  }
+  g.state.readiness = "CLEAN";
+  for (const [review, text] of [["REVIEW_REQUIRED", /승인 리뷰가 필요/], ["CHANGES_REQUESTED", /변경을 요청/]]) {
+    g.state.review = review;
+    await assert.rejects(g.client.merge(g.dir, 7, { ...g.body, method: "squash", sha: g.sha }), (error) => text.test(error.message), review);
+  }
+  assert.equal(writes(g.state).length, 0);
+});
+
+test("github: 원격에 받지 않은 커밋이 있어 거절된 푸시는 결과 불확실로 남기지 않는다", async () => {
+  const f = fixture();
+  f.state.push = () => { throw Object.assign(Error("push failed"), { stderr: " ! [rejected]        feature -> feature (fetch first)\nerror: failed to push some refs" }); };
+  await assert.rejects(f.client.push(f.dir, f.body), (error) => error.reason === "git-push-rejected" && !error.outcomeUnknown && error.status === 409);
 });
 
 test("github: 닫기는 PR 상태만 바꾸고 이미 닫힌 PR은 재요청하지 않는다", async () => {
