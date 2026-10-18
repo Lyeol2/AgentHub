@@ -7,6 +7,7 @@ import { buildTaskPipeline } from '../../shared/task-stage.js';
 import { renderTaskPipeline, relativeTime } from './pipeline.js';
 import { confirmAction } from '../../shared/confirm-dialog.js';
 import { errorPanel, showError as showErrorToast } from '../../shared/error-report.js';
+import { createTaskWorkspace } from './workspace.js';
 
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
 const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
@@ -174,6 +175,10 @@ export function createTasksController({
     return Boolean(epoch === projectEpoch && path && path === projectPath && path === getProjectPath());
   }
 
+  // 원본 폴더 확인·재사용 폴더·Library 복사·폴더 열기
+  const workspace = createTaskWorkspace({ api, node, getProjectPath: () => projectPath, requestError: error => requestError(error),
+    taskNote: (id, value) => { taskErrors.set(id, value); renderTasks(); },
+    onChange: ({ cardsOnly } = {}) => { if (cardsOnly) renderTasks(); else if (projectPath) void loadTasks(projectPath, { localOnly: true }); } });
   function isTasksVisible() {
     const panel = $('tab-tasks');
     return Boolean(panel && !panel.hidden && panel.getClientRects().length);
@@ -371,6 +376,7 @@ export function createTasksController({
       if (updated) meta.append(node('span', 'task-updated', updated));
       card.append(meta);
       card.append(folderLine(task, status));
+      workspace.decorate(card, task);
       if (task.issue) card.append(issueLine(task.issue));
       card.append(renderTaskPipeline(pipeline));
       // 상태 조회가 지금 HEAD로 다시 따진 결과가 있으면 저장된 결과보다 그것을 보여 준다.
@@ -423,6 +429,7 @@ export function createTasksController({
         if (task.state === 'review') secondary.append(actionButton('PR 업데이트', 'finish', task, { disabled: blocked }));
       }
       if (task.state !== 'cleaned') secondary.append(actionButton('최신 상태 확인', 'refresh', task));
+      secondary.append(...workspace.menu(task, actionButton));
       if (task.state === 'merged') {
         const unpushed = task.completion?.kind === 'local' && (task.completion.publishState !== 'done' || (task.completion.developHead && task.completion.developPublishState !== 'done'));
         if (unpushed) secondary.append(actionButton('대상 브랜치 푸시', 'push-target', task, { disabled: blocked }));
@@ -450,6 +457,8 @@ export function createTasksController({
         ? `원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌렸습니다. 작업과 PR 기록은 보관됩니다.`
         : task.worktreePreserved
         ? '작업 기록을 정리했습니다. 선택했던 기존 작업 폴더와 브랜치는 보존됩니다.'
+        : task.parkedWorktree
+        ? '작업 폴더를 재사용 대기 폴더로 남기고 로컬 브랜치를 정리했습니다. 다음 새 작업이 이 폴더를 씁니다.'
         : task.localBranchRemoved === false
           ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
           : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
@@ -610,6 +619,7 @@ export function createTasksController({
     if (createDialog?.open) createDialog.close();
     if (finishDialog?.open) finishDialog.close();
     if (issueDialog?.open) issueDialog.close();
+    workspace.reset();
     updateToolbar();
   }
 
@@ -697,7 +707,7 @@ export function createTasksController({
     renderTasks();
     renderContext();
     updateCreatePreview();
-    if (taskResult.status === 'fulfilled') void loadStatuses();
+    if (taskResult.status === 'fulfilled') { void loadStatuses(); void workspace.load(path); }
   }
 
   function resetSettings() {
@@ -852,6 +862,7 @@ export function createTasksController({
       ? selected ? `브랜치 ${selected.name} 이어서 사용` : '기존 작업 브랜치를 세부 설정에서 고르세요'
       : `브랜치 ${taskBranchFullName(type, $('task-version')?.value.trim(), settings, $('task-branch-name')?.value.trim(), $('task-title')?.value || '')} · 세부 설정에서 바꿀 수 있습니다`;
     if ($('task-gitflow-summary')) $('task-gitflow-summary').textContent = `기준: ${settings.main} / ${settings.develop}`;
+    workspace.updateCreate({ existing, inPlace });
     if ($('task-create-hint')) $('task-create-hint').textContent = inPlace
       ? `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 원본 폴더를 새 작업 브랜치로 바꾸고 세션을 연결합니다. 원본 폴더에 커밋하지 않은 변경이 없어야 하며, 정리하면 원래 브랜치로 돌아갑니다.`
       : `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.`;
@@ -946,6 +957,8 @@ export function createTasksController({
     workbranchPicker.reset();
     showError('task-create-error');
     applyCreatePrefs();
+    workspace.resetCreate();
+    void workspace.prepareCreate(path);
     taskAssistant.open();
     if ($('task-create-heading')) $('task-create-heading').textContent = createIssue ? `새 작업 · 이슈 #${createIssue.number}` : '새 작업';
     if (prefill) {
@@ -1010,6 +1023,7 @@ export function createTasksController({
     if ($('task-model')?.value.trim()) payload.model = $('task-model').value.trim();
     if ($('task-effort')?.value) payload.effort = $('task-effort').value;
     if ($('task-role')?.value.trim()) payload.role = $('task-role').value.trim();
+    Object.assign(payload, workspace.createPayload(payload));
     createBusy = true;
     taskAssistant.setCreating(true);
     showError('task-create-error');
@@ -1106,7 +1120,7 @@ export function createTasksController({
       const changes = [], keeps = ['작업·대화 기록', `원격 브랜치 ${task.remote || 'origin'}/${task.branch}`, task.pull?.number ? `PR #${task.pull.number}` : ''];
       if (task.inPlace) changes.push(`원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌립니다.`);
       else if (task.ownsWorktree === false) keeps.push(`기존 작업 폴더 ${task.cwd}`);
-      else changes.push(`작업 폴더를 삭제합니다: ${task.cwd}`);
+      else changes.push(workspace.reuseOn() ? `작업 폴더를 지우지 않고 재사용 대기 폴더로 남깁니다(자리가 없거나 옮길 수 없으면 삭제): ${task.cwd}` : `작업 폴더를 삭제합니다: ${task.cwd}`);
       if (task.ownsBranch === false) keeps.push(`기존 로컬 브랜치 ${task.branch}`);
       else changes.push(`로컬 브랜치 ${task.branch}를 삭제합니다.`);
       return (await confirmAction({ title: '작업 폴더 정리', subject: task.title, changes, keeps,
@@ -1197,7 +1211,7 @@ export function createTasksController({
     if (task.state === 'cleaned') keeps.push('이미 정리한 작업이라 폴더는 없습니다.');
     else if (task.inPlace) keeps.push('원본 폴더 (원본 폴더에서 한 작업)');
     else if (task.ownsWorktree === false) keeps.push(`선택했던 기존 작업 폴더 ${task.cwd}`);
-    else changes.push(`작업 폴더를 지웁니다: ${task.cwd}`);
+    else changes.push(workspace.reuseOn() ? `작업 폴더에 변경이 없으면 재사용 대기 폴더로 남기고, 아니면 지웁니다: ${task.cwd}` : `작업 폴더를 지웁니다: ${task.cwd}`);
     return { changes, keeps };
   }
 
@@ -1391,6 +1405,7 @@ export function createTasksController({
     if (action === 'link-issue') { openIssue(task); return; }
     if (action === 'unlink-issue') { void unlinkIssue(task); return; }
     if (action === 'resolve-conflict') { void askConflict(task, button.dataset.sessionId); return; }
+    if (workspace.handles(action)) { taskErrors.delete(task.id); void workspace.run(action, task, { setError: value => { taskErrors.set(task.id, value); renderTasks(); }, setPending: on => { if (on) pendingTasks.add(task.id); else pendingTasks.delete(task.id); renderTasks(); } }); return; }
     if (['refresh', 'sync', 'backup', 'cleanup', 'push-target', 'develop', 'abort'].includes(action)) void runTaskAction(action, task);
   });
   $('tasks-filter')?.addEventListener('click', event => {

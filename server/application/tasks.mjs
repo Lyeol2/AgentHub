@@ -16,6 +16,7 @@ import { reviewSnapshot, commitReviewedFiles, assertReviewed } from "../task-rev
 import { fileDiff, parseStatus } from "../gitpanel.mjs";
 import { runGitNode } from "../git-nodes.mjs";
 import { stopwatch } from "../timing.mjs";
+import { createTaskWorkspace } from "./task-workspace.mjs";
 
 // 설정한 배포·개발 브랜치인지(대소문자를 구분한다)
 const isGitflowBase = (flow, branch) => branch === flow.main || branch === flow.develop;
@@ -71,7 +72,7 @@ const issueSummary = (issue) => ({ repo: issue.repo, number: issue.number, title
   stateReason: issue.stateReason ?? null, checkedAt: new Date().toISOString() });
 
 export function createTaskService({ dataDir, store, runner, sessions, projects, graphTabs, notify = () => {}, github = githubPulls,
-  issues = github === githubPulls ? githubIssues : new GitHubIssues({ pulls: github }), config = {}, saveConfig = () => {} }) {
+  issues = github === githubPulls ? githubIssues : new GitHubIssues({ pulls: github }), config = {}, saveConfig = () => {}, workspaceTools = {} }) {
   const directory = path.join(dataDir, "tasks");
   fs.mkdirSync(directory, { recursive: true });
   const records = new Map();
@@ -105,6 +106,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     try { return await current; }
     finally { if (queue.get(key) === current) queue.delete(key); }
   }
+  // 원본 폴더에서 결과 확인, 작업 폴더 재사용, 유니티 Library 복사, 폴더 열기
+  const workspace = createTaskWorkspace({ dataDir, config, saveConfig, store, runner, records, get, save, locked, notify, tools: workspaceTools });
   function taskSessions(task) {
     return store.list().filter((session) => (task.id && session.taskId === task.id) || insideTaskPath(session.cwd, task.cwd));
   }
@@ -117,6 +120,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const cwd = path.resolve(repo.top);
     const other = [...records.values()].find((task) => task.inPlace && task.state !== "cleaned" && sameTaskPath(task.gitCommonDir, repo.common));
     if (other) throw new HttpError(409, `원본 폴더는 이미 "${other.title}" 작업에서 쓰고 있습니다. 그 작업을 정리하거나 워크트리를 만들어 진행하세요.`, "task-in-place");
+    const preview = workspace.previewActive(repo.common);
+    if (preview) throw new HttpError(409, `원본 폴더에서 "${preview.title}" 작업 결과를 확인하고 있습니다. 확인을 끝낸 뒤 진행하거나 워크트리를 만들어 진행하세요.`, "task-in-place");
     // 저장소 하위 폴더를 프로젝트로 등록한 세션도 원본 폴더에서 일하는 세션이다.
     if (store.list().some((session) => runner.isRunning(session.id) && insideTaskPath(session.cwd, cwd)))
       throw new HttpError(409, "이 작업 폴더에서 실행 중인 세션을 먼저 중지하세요.", "running");
@@ -424,6 +429,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if ((branchName || worktreeName) && selectedBranch !== undefined) throw new HttpError(400, "기존 작업 브랜치를 선택하면 브랜치와 작업 폴더 이름을 바꿀 수 없습니다.");
     if (branchName.length > 200) throw new HttpError(400, "브랜치 이름이 너무 깁니다.", "task-branch-name");
     if (worktreeName && inPlace) throw new HttpError(400, "원본 폴더에서 작업할 때는 작업 폴더 이름을 정할 수 없습니다.");
+    if (body.copyLibrary !== undefined && typeof body.copyLibrary !== "boolean") throw new HttpError(400, "Library 복사 여부는 true 또는 false여야 합니다.");
     if (worktreeName && !validTaskWorktreeName(worktreeName))
       throw new HttpError(400, "작업 폴더 이름은 80자 이내의 영문·한글·숫자와 . _ - 만 쓸 수 있습니다.", "task-worktree-name");
     sessionService().checkSessionOptions?.({ ...body, agent: body.agent ?? "claude" });
@@ -528,7 +534,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       progress(selected ? "작업 폴더 확인 중" : "작업 폴더 만드는 중");
       const createdRoot = !fs.existsSync(location.root);
       fs.mkdirSync(location.root, { recursive: true });
-      try { if (!selected) await addWorktree(task, false); }
+      // 재사용 대기 폴더가 있으면 그 폴더에 새 작업 브랜치를 만들고, 없으면 새로 만든다(유니티면 Library 복사를 시작한다).
+      try { if (!selected) await workspace.provision(task, repo, location, () => addWorktree(task, false), { copyLibrary: body.copyLibrary }); }
       catch (error) {
         const reported = worktreeFailure(error);
         if (error.outcomeUnknown || !await discardFailedWorktree(task, createdRoot && location.root)) {
@@ -1344,7 +1351,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         : (!moved && fs.existsSync(task.cwd)) || (moved && !offBranch(task)) || await taskRef(task.projectPath, `refs/heads/${task.branch}`) !== head)
         throw new HttpError(409, "정리 확인 중 작업 폴더가 변경됐습니다. 다시 확인하세요.", "task-stale-head");
       if (task.inPlace) { if (present) await leaveInPlaceBranch(task); }
-      else if (ownsWorktree) await removeTaskWorktree(task);
+      else if (ownsWorktree) { if (!await workspace.park(task)) await removeTaskWorktree(task); }
       else task.worktreePreserved = true;
       task.localBranchRemoved = false;
       // Compare-and-delete permits squash merges without using a destructive force flag.
@@ -1364,6 +1371,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   // Windows에서는 편집기·탐색기·백신·남은 개발 서버가 파일을 잡고 있으면 git이 폴더를 다 지우지 못한다.
   // 잠시 기다리며 다시 시도하고, git 기록은 빠졌는데 폴더만 남았으면 정리는 끝내고 남은 폴더를 기록해 다시 지울 수 있게 한다.
   async function removeTaskWorktree(task) {
+    await workspace.stopCopy(task.id);
     const result = await removeWorktreeDir(task.projectPath, task.folderLeft ?? task.cwd);
     if (result.registered) throw new HttpError(409, `작업 폴더를 지우지 못했습니다. 그 폴더를 연 편집기·탐색기·터미널을 닫고 다시 정리하세요.\n${result.error?.message ?? ""}`.trim(), "task-worktree-locked");
     if (result.removed) { delete task.folderLeft; return; }
@@ -1386,24 +1394,28 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         const live = task.state !== "cleaned";
         const ownsFolder = live && !task.inPlace && task.ownsWorktree !== false;
         const removeFolder = ownsFolder && fs.existsSync(task.cwd);
+        let dirty = null, parked = false;
         if (removeFolder) {
           const expected = taskWorktreeLocation({ common: task.gitCommonDir, top: task.projectPath }, task.id, task.worktreeName);
           const expectedRoot = task.selectedWorkBranch ? task.worktreeRoot : expected.root;
           if ((!task.selectedWorkBranch && !sameTaskPath(expected.cwd, task.cwd)) || !sameTaskPath(path.dirname(task.cwd), expectedRoot))
             throw new HttpError(409, "AgentHub가 생성한 작업 폴더인지 확인할 수 없어 지우지 않았습니다.", "task-worktree");
           // 반쯤 지워져 Git 작업 폴더가 아니게 된 폴더는 변경 여부를 읽을 수 없으므로, 세션을 지우기 전에 강제 삭제 확인을 받는다.
-          const dirty = await taskDirty(task).then((value) => value ? "작업 폴더에 커밋하지 않은 변경이나 새 파일이 있습니다." : null,
+          dirty = await taskDirty(task).then((value) => value ? "작업 폴더에 커밋하지 않은 변경이나 새 파일이 있습니다." : null,
             () => "작업 폴더가 손상되어 커밋하지 않은 변경이 있는지 확인할 수 없습니다. 남은 파일을 확인한 뒤 강제로 지우세요.");
           if (!force && dirty) throw new HttpError(409, dirty, "task-dirty");
         }
         for (const session of owned) await sessionService().remove(session.id, { force: true });
         let warning;
-        if (removeFolder) {
+        await workspace.stopCopy(id);
+        // 깨끗한 작업 폴더는 설정에 따라 지우지 않고 재사용 대기 폴더로 남긴다.
+        if (removeFolder && !dirty) parked = await workspace.park(task).catch(() => false);
+        if (removeFolder && !parked) {
           // 막 멈춘 세션 프로세스가 파일을 잡고 있을 수 있어 잠시 기다리며 다시 시도한다.
           const result = await removeWorktreeDir(task.projectPath, task.cwd, { force });
           if (result.registered) throw new HttpError(409, `세션은 지웠지만 작업 폴더를 지우지 못했습니다. 그 폴더를 연 프로그램을 닫고 다시 삭제하세요.\n${result.error?.message ?? ""}`.trim(), "task-worktree-locked");
           if (!result.removed) warning = `작업 폴더 일부가 남았습니다. 파일을 잡고 있는 프로그램을 닫은 뒤 직접 지우세요: ${task.cwd}`;
-        } else if (ownsFolder || task.folderLeft) {
+        } else if (!parked && (ownsFolder || task.folderLeft)) {
           // 이미 사라진 폴더의 기록을 정리하고, 정리 뒤 남았던 폴더가 있으면 마저 지운다.
           const result = await removeWorktreeDir(task.projectPath, task.folderLeft ?? task.cwd, { force: true });
           if (!result.removed) warning = `작업 폴더 일부가 남았습니다. 직접 지우세요: ${task.folderLeft ?? task.cwd}`;
@@ -1423,7 +1435,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         fs.rmSync(path.join(directory, `${id}.json`), { force: true });
         records.delete(id);
         notify("tasks", { projectPath: task.projectPath, taskId: id });
-        return { ok: true, sessionIds: owned.map((session) => session.id), worktreeRemoved: removeFolder, branchRemoved, ...(warning ? { warning } : {}) };
+        return { ok: true, sessionIds: owned.map((session) => session.id), worktreeRemoved: removeFolder, branchRemoved, ...(parked ? { parked: task.parkedWorktree } : {}), ...(warning ? { warning } : {}) };
       } finally { busy.delete(id); }
     });
   }
@@ -1512,5 +1524,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   }
   return { list, get: (id) => clone(get(id)), adoptSession, context, inPlaceStatus, settings, updateSettings, create, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, backup, refresh, recheck, sync, cleanup, remove, abandon, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
     mergeDevelop, linkIssue, unlinkIssue, abortOperation,
+    workspace: (projectPath, options) => workspace.info(projectPath, options), updateWorkspace: (projectPath, body) => workspace.updateSettings(projectPath, body),
+    removeReuse: (projectPath, name) => workspace.removeReuse(projectPath, name), previewStatus: (projectPath) => workspace.previewStatus(projectPath),
+    startPreview: (id) => workspace.startPreview(id), endPreview: (projectPath) => workspace.endPreview(projectPath), openTask: (id, target) => workspace.open(id, target),
     addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
 }

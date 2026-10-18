@@ -81,12 +81,17 @@
   await until(() => card('task-1'));
   check(card('task-1').textContent.includes('feature/task-1') && card('task-1').textContent.includes('develop'), 'created task shows GitFlow branch and target');
   check(action('task-1', 'open-session'), 'task links its session');
-  const more = card('task-1').querySelector('.task-more');
-  more.open = true;
-  await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  // 상태 확인 응답이 늦게 와서 카드를 다시 그리면 열었던 메뉴가 사라지므로, 열린 채로 남을 때까지 다시 연다.
+  let more;
+  for (let tries = 0; tries < 10 && !more?.isConnected; tries++) {
+    more = card('task-1').querySelector('.task-more');
+    more.open = true;
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+  }
   const menuRect = more.querySelector('.task-more-menu').getBoundingClientRect();
   const lastItem = [...more.querySelectorAll('.task-more-menu button')].at(-1).getBoundingClientRect();
   check(more.querySelector('.task-more-menu').contains(document.elementFromPoint(lastItem.left + 8, lastItem.top + lastItem.height / 2)) && menuRect.height > lastItem.height, 'task more menu is not clipped by its card');
+  check(action('task-1', 'ws-open-folder') && action('task-1', 'ws-preview') && !action('task-1', 'ws-open-unity'), 'worktree task menu offers opening its folder and previewing it in the original folder, without Unity for non-Unity projects');
   more.open = false;
   action('task-1', 'open-session').click();
   await until(() => !$('view-session').hidden && $('s-title').textContent === '로그인 버튼 수정');
