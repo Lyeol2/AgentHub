@@ -83,6 +83,7 @@ export function createTasksController({
   const pendingTasks = new Set();
   const REVIEW_CHECK_MS = 3 * 60_000;
   const reviewChecks = new Map(); // 작업 ID → 마지막으로 PR 병합을 자동 확인한 시각
+  const freshChecks = new Map(); // 작업 ID → 마지막으로 오래된 최신 확인 결과를 자동으로 다시 확인한 시각
   const mergedNotice = new Set(); // 자동 확인으로 병합을 알게 된 작업
   // 카드 단계 표시용 로컬 Git 상태. 작업 ID → GET /api/tasks/:id/status 결과
   const statuses = new Map();
@@ -281,11 +282,28 @@ export function createTasksController({
           const result = await api('GET', `/api/tasks/${encodeURIComponent(id)}/status`);
           if (!sameProject(path, epoch)) return;
           if (result && typeof result === 'object') statuses.set(id, result);
+          if (result?.freshness?.stale) void recheckFreshness(id);
         } catch { if (!sameProject(path, epoch)) return; statuses.delete(id); }
         if (request === statusGeneration || ids.length === 1) renderTasks();
       }
     };
     await Promise.all([worker(), worker(), worker()]);
+  }
+
+  // 저장된 최신 확인 결과가 오래됐거나 그 뒤로 작업 브랜치가 바뀌었으면 조용히 다시 확인한다.
+  // 같은 작업은 몇 분에 한 번만 묻고, 실패하면 이전 결과를 그대로 둔다.
+  async function recheckFreshness(id) {
+    const task = getTask(id);
+    if (!task || pendingTasks.has(id) || uncertainTasks.has(id) || task.pendingAction || !['working', 'review'].includes(task.state)) return;
+    if (Date.now() - (freshChecks.get(id) || 0) < REVIEW_CHECK_MS) return;
+    freshChecks.set(id, Date.now());
+    const path = projectPath, epoch = projectEpoch;
+    try {
+      const result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/freshness`, {});
+      if (!sameProject(path, epoch) || !result?.checked || pendingTasks.has(id)) return;
+      replaceTask(result.task);
+      void loadStatuses([id]);
+    } catch { /* 자동 확인 실패는 카드 오류로 남기지 않는다. 최신 상태 확인을 누르면 사유를 볼 수 있다. */ }
   }
 
   function renderTasks() {
@@ -328,7 +346,16 @@ export function createTasksController({
       if (task.issue?.number) heading.append(node('span', 'task-number', `#${task.issue.number}`));
       const state = node('span', 'task-state', pipeline.stateLabel);
       state.dataset.state = task.state;
-      header.append(heading, state);
+      // 푸시 안 된 커밋·원본 폴더 브랜치 이탈처럼 놓치기 쉬운 상태는 제목 옆 배지로 알린다.
+      const badges = node('div', 'task-badges');
+      for (const item of pipeline.badges) {
+        const badge = node('span', 'task-badge', item.label);
+        badge.dataset.badge = item.id;
+        badge.title = item.title || '';
+        badges.append(badge);
+      }
+      badges.append(state);
+      header.append(heading, badges);
       card.append(header);
       const meta = node('div', 'task-meta');
       meta.append(node('span', 'task-branch', `${task.branch || '브랜치 준비 중'} → ${pipeline.target}`));
@@ -341,12 +368,20 @@ export function createTasksController({
       card.append(folderLine(task, status));
       if (task.issue) card.append(issueLine(task.issue));
       card.append(renderTaskPipeline(pipeline));
-      if (task.state !== 'cleaned' && task.freshness?.state && !['current', 'up-to-date'].includes(task.freshness.state)) {
-        const freshness = node('div', 'task-freshness', describeTaskFreshness(task.freshness));
-        freshness.dataset.state = task.freshness.state;
-        const checked = timestamp(task.freshness?.checkedAt);
+      // 상태 조회가 지금 HEAD로 다시 따진 결과가 있으면 저장된 결과보다 그것을 보여 준다.
+      const fresh = status?.freshness || task.freshness;
+      if (task.state !== 'cleaned' && fresh?.state && !['current', 'up-to-date'].includes(fresh.state)) {
+        const freshness = node('div', 'task-freshness', describeTaskFreshness(fresh));
+        freshness.dataset.state = fresh.state;
+        const checked = timestamp(fresh.checkedAt);
         if (checked) freshness.append(node('span', '', ` · ${checked} 확인`));
         card.append(freshness);
+      }
+      // 버튼으로 풀 수 없는 상태는 해야 할 일을 글로 안내한다.
+      if (pipeline.notice) {
+        const notice = node('p', 'task-notice', pipeline.notice);
+        notice.setAttribute('role', 'status');
+        card.append(notice);
       }
       // 단계별 다음 동작. 할 수 없는 동작은 꺼 두고 이유를 바로 아래에 보여 준다.
       const actions = node('div', 'task-actions');
@@ -1060,6 +1095,11 @@ export function createTasksController({
         completion.developHead && completion.developPublishState !== 'done' ? `${develop} → ${task.remote}/${develop} (${completion.developHead.slice(0, 7)})` : ''];
       return (await confirmAction({ title: '대상 브랜치 푸시', subject: task.title, changes, keeps: ['강제 푸시는 하지 않습니다. 원격이 앞서 있으면 거절됩니다.'], confirmLabel: '푸시' })).ok;
     }
+    if (action === 'backup') {
+      return (await confirmAction({ title: '원격에 백업', subject: task.title,
+        changes: [`작업 브랜치 ${task.branch} → ${task.remote || 'origin'}/${task.branch}`],
+        keeps: [`대상 브랜치 ${task.targetBranch}와 PR (만들거나 바꾸지 않습니다)`, '강제 푸시는 하지 않습니다. 원격이 앞서 있으면 거절됩니다.'], confirmLabel: '푸시' })).ok;
+    }
     if (action === 'abort') {
       return (await confirmAction({ title: '진행 중인 Git 작업 취소', subject: task.title,
         changes: [`작업 폴더에서 멈춘 병합·리베이스를 취소하고 시작 전 커밋으로 되돌립니다: ${task.cwd}`],
@@ -1118,7 +1158,7 @@ export function createTasksController({
       if (sameProject(path, epoch)) void loadStatuses([id]);
     } catch (error) {
       if (error.outcomeUnknown && action !== 'refresh') uncertainTasks.set(id, action);
-      const label = action === 'abort' ? '진행 중인 Git 작업 취소' : action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : '최신 확인';
+      const label = action === 'abort' ? '진행 중인 Git 작업 취소' : action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : action === 'backup' ? '원격에 백업' : '최신 확인';
       taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, conflicts: error.conflicts });
     } finally {
       pendingTasks.delete(id);
@@ -1328,7 +1368,7 @@ export function createTasksController({
     if (action === 'link-issue') { openIssue(task); return; }
     if (action === 'unlink-issue') { void unlinkIssue(task); return; }
     if (action === 'resolve-conflict') { void askConflict(task, button.dataset.sessionId); return; }
-    if (['refresh', 'sync', 'cleanup', 'push-target', 'develop', 'abort'].includes(action)) void runTaskAction(action, task);
+    if (['refresh', 'sync', 'backup', 'cleanup', 'push-target', 'develop', 'abort'].includes(action)) void runTaskAction(action, task);
   });
   $('tasks-filter')?.addEventListener('click', event => {
     const button = event.target.closest('[data-task-filter]');
