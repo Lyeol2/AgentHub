@@ -17,7 +17,7 @@ const RULES = [
     hint: "보호된 브랜치에는 직접 푸시하지 말고 작업 브랜치에서 Pull Request로 반영하세요." },
   { reason: "git-push-rejected", test: /\[rejected\]|non-fast-forward|\(fetch first\)|Updates were rejected|failed to push some refs/i,
     message: "원격 브랜치에 아직 받지 않은 커밋이 있어 푸시가 거절됐습니다.",
-    hint: "Fetch(최신 확인)로 원격 변경을 가져와 반영(Pull 또는 기준 반영)한 뒤 다시 푸시하세요." },
+    hint: "Pull로 원격 변경을 받아 합친 뒤 다시 푸시하세요. 작업 카드에서는 '원격 변경 합치기'(기준 반영)가 원격 작업 브랜치의 새 커밋을 먼저 합칩니다." },
   { reason: "git-diverged", test: /Not possible to fast-forward|Diverging branches can't be fast-forwarded|have diverged/i,
     message: "로컬과 원격이 서로 다른 커밋을 가지고 있어 앞으로 감기만으로 받을 수 없습니다.",
     hint: "병합(Merge)이나 리베이스(Rebase)로 두 기록을 합쳐야 합니다." },
