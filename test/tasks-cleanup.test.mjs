@@ -59,12 +59,21 @@ test("tasks: hotfix cleanup waits for propagation from main to develop", async (
   assert.equal((await f.service.cleanup(task.id)).task.state, "cleaned");
 });
 
-test("tasks: one running session owns the task and switching the worktree branch blocks execution", async (t) => {
+test("tasks: two sessions of one task can run together, Git task actions wait for both, and switching the branch blocks execution", async (t) => {
   const f = fixture(t);
   const { task, session } = await f.create();
+  f.state.running.add(session.id);
+  // 실행 중인 세션이 있어도 세션을 더하고 함께 실행할 수 있다.
   const second = await f.service.addSession(task.id, { agent: "claude" });
   f.state.running.add(second.session.id);
-  assert.throws(() => f.service.assertSession(f.stored.get(session.id)), (error) => error.reason === "running");
+  assert.doesNotThrow(() => f.service.assertSession(f.stored.get(session.id)));
+  assert.doesNotThrow(() => f.service.assertSession(f.stored.get(second.session.id)));
+  assert.equal(f.service.concurrentSessions(f.stored.get(session.id)), 1);
+  f.change(task.cwd);
+  await assert.rejects(f.service.finish(task.id), (error) => error.reason === "running");
+  f.state.running.delete(session.id);
+  await assert.rejects(f.service.finish(task.id), (error) => error.reason === "running", "한 세션이라도 실행 중이면 마무리하지 않는다");
+  assert.equal(f.service.concurrentSessions(f.stored.get(second.session.id)), 0);
   f.state.running.clear(); f.git(task.cwd, "checkout", "--detach", "-q");
   assert.throws(() => f.service.assertSession(f.stored.get(session.id)), (error) => error.reason === "task-worktree");
 });

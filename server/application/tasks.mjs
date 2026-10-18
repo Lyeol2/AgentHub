@@ -165,7 +165,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (session.worktree) {
         if (!sameTaskPath(session.cwd, session.worktree.dir) || readTaskBranch(session.cwd) !== session.worktree.branch)
           throw new HttpError(409, "선택한 작업 브랜치의 폴더 또는 브랜치가 바뀌었습니다.", "workbranch-changed");
-        assertIdle({ cwd: session.cwd }, session.id);
       }
       return;
     }
@@ -175,7 +174,14 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if (!task.sessionIds.includes(session.id) || !sameTaskPath(task.cwd, session.cwd) || !sameTaskPath(task.cwd, session.worktree?.dir)
       || readTaskBranch(task.cwd) !== task.branch)
       throw new HttpError(409, "작업 폴더 또는 브랜치가 바뀌었습니다. 작업 탭에서 확인하세요.", "task-worktree");
-    assertIdle(task, session.id);
+    // 같은 작업의 다른 세션이 실행 중이어도 함께 실행한다. Git을 바꾸는 작업 동작(마무리·정리 등)만 모두 멈춘 뒤 한다.
+  }
+  // 이 세션과 같은 작업 폴더에서 실행 중인 다른 세션 수. 함께 실행하면 같은 파일을 고칠 수 있어 화면에 알린다.
+  function concurrentSessions(session) {
+    if (session.chat) return 0;
+    const task = session.taskId ? records.get(session.taskId) : null;
+    const scope = task && task.state !== "cleaned" ? task : session.worktree ? { cwd: session.cwd } : null;
+    return scope ? taskSessions(scope).filter((other) => other.id !== session.id && runner.isRunning(other.id)).length : 0;
   }
   async function assertGitOperation(cwd, action) {
     for (const task of records.values()) {
@@ -303,7 +309,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       const owner = branchOwner(repo.common, body.workBranch);
       if (owner) {
         assertActive(owner);
-        assertIdle(owner);
         if (busy.has(owner.id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
         return (await attach(owner, body)).session;
       }
@@ -1449,5 +1454,16 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   }
   return { list, get: (id) => clone(get(id)), adoptSession, context, inPlaceStatus, settings, updateSettings, create, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, refresh, sync, cleanup, remove, abandon, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
     mergeDevelop, linkIssue, unlinkIssue, abortOperation,
-    addSession: (id, body = {}) => mutate(id, (task) => attach(task, body)) };
+    concurrentSessions,
+    // 다른 세션이 실행 중이어도 세션을 더할 수 있다. 작업의 Git 처리 중에는 기다리지 않고 거절한다.
+    addSession: (id, body = {}) => {
+      const task = get(id);
+      return locked(task.gitCommonDir, async () => {
+        if (busy.has(id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
+        busy.add(id);
+        try { return await attach(task, body); }
+        catch (error) { recordError(task, error); save(task); throw failure(error); }
+        finally { busy.delete(id); }
+      });
+    } };
 }

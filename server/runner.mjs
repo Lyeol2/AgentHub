@@ -10,8 +10,18 @@ const publicMeta = (meta) => ({ ...meta, ...(meta.attachments ? { attachments: m
 export const AGENTS = { claude, codex };
 
 const MISSING_CONVERSATION = /No conversation found with session ID/i;
+// CLI가 실행할 때마다 stderr에 남기는 경고. 종료 원인이 아니므로 오류 본문에 붙이지 않는다.
+const STDERR_NOISE = [
+  /unrecognized configuration setting/i,
+  /^\s*user \(.*config\.toml\): .* is ignored\.?\s*$/i,
+  /rmcp::transport::worker: worker quit/i,
+];
+// stderr에서 알려진 경고 줄을 뺀 끝부분
+export function stderrSummary(text, lines = 15) {
+  return String(text ?? "").split(/\r?\n/).filter((line) => line.trim() && !STDERR_NOISE.some((noise) => noise.test(line))).slice(-lines).join("\n");
+}
 const INJECT_GRACE_MS = 4000;
-const INTERRUPT_GRACE_MS = 10000;
+export const INTERRUPT_GRACE_MS = 10000;
 // 중지·일시중지는 오래 기다리지 않는다. 턴이 정상으로 끝나기를 잠깐 기다린 뒤 강제로 멈춘다.
 export const STOP_GRACE_MS = 1500; // Codex 중지: turn/interrupt의 응답을 기다리는 시간
 export const PAUSE_GRACE_MS = 4000; // 일시중지: 대화 기록이 온전히 남도록 턴이 끝나기를 기다리는 시간
@@ -272,7 +282,7 @@ export class Runner extends EventEmitter {
       child.appServer.on("event", (event) => handleLine(JSON.stringify({ type: "agenthub_event", event }), true));
       child.appServer.on("control", (msg) => this.ask(session, child, agent, msg));
       child.appServer.on("cancel", (id) => { this.dropPrompts(session.id, id); this.store.touch(session); });
-      child.appServer.on("shutdown", () => this.killLater(session, child, session.stopRequested ? EXIT_GRACE_MS : INTERRUPT_GRACE_MS));
+      child.appServer.on("shutdown", () => this.killLater(session, child, session.stopRequested ? EXIT_GRACE_MS : INTERRUPT_GRACE_MS, "shutdown"));
     }
 
     let buffer = "";
@@ -338,13 +348,20 @@ export class Runner extends EventEmitter {
         sawError = true;
         this.append(session, { kind: "error", text: "Codex 연결이 턴을 완료하기 전에 끝났습니다." });
       }
-      if (code !== 0 && !sawError) {
-        const tail = stderrTail.join("").trim().split(/\r?\n/).slice(-15).join("\n");
-        this.append(session, { kind: "error", text: `CLI가 종료 코드 ${code ?? signal}로 끝났습니다.\n${tail}` });
+      // Codex가 턴을 마쳤다고 알린 뒤의 종료 코드는 결과를 바꾸지 않는다. 입력을 닫은 뒤 제때 끝나지 않아 AgentHub가 닫은 경우도 같다.
+      const finishedBeforeExit = !!child.appServer && completedTurn && !sawError;
+      if (code !== 0 && finishedBeforeExit) {
+        this.append(session, { kind: "log", text: child.killedBy === "shutdown"
+          ? `턴은 끝났지만 Codex가 ${INTERRUPT_GRACE_MS / 1000}초 안에 종료하지 않아 AgentHub가 닫았습니다. Codex가 실행한 개발 서버·백그라운드 명령이나 MCP 서버가 남아 있었을 수 있습니다.`
+          : `턴을 마친 뒤 Codex가 종료 코드 ${code ?? signal}로 끝났습니다.${stderrSummary(stderrTail.join("")) ? `\n${stderrSummary(stderrTail.join(""))}` : ""}` });
+      } else if (code !== 0 && !sawError) {
+        const tail = stderrSummary(stderrTail.join(""));
+        const cause = child.killedBy === "shutdown" ? `\n턴을 마치기 전에 Codex가 ${INTERRUPT_GRACE_MS / 1000}초 동안 응답하지 않아 AgentHub가 닫았습니다.` : "";
+        this.append(session, { kind: "error", text: `CLI가 종료 코드 ${code ?? signal}로 끝났습니다.${cause}${tail ? `\n${tail}` : ""}` });
       } else if (stderrTail.length) {
         this.append(session, { kind: "log", text: stderrTail.join("").trim().slice(-4000) });
       }
-      const ok = code === 0 && !sawError;
+      const ok = (code === 0 || finishedBeforeExit) && !sawError;
       this.setState(session, ok ? "idle" : "error");
       this.emit("turnEnd", session, ok);
     });
@@ -399,9 +416,13 @@ export class Runner extends EventEmitter {
     return true;
   }
 
-  // ms 뒤에도 같은 프로세스가 실행 중이면 강제로 멈춘다.
-  killLater(session, child, ms) {
-    const timer = setTimeout(() => { if (this.running.get(session.id) === child) this.kill(child); }, ms);
+  // ms 뒤에도 같은 프로세스가 실행 중이면 강제로 멈춘다. reason은 종료 안내에 쓴다.
+  killLater(session, child, ms, reason = "stop") {
+    const timer = setTimeout(() => {
+      if (this.running.get(session.id) !== child) return;
+      child.killedBy = reason;
+      this.kill(child);
+    }, ms);
     timer.unref?.();
   }
 

@@ -307,6 +307,8 @@ export function createSessionService({
     try {
       chain.beginSession?.(session, prompt, { meta, depth, cwd: session.cwd });
       runner.send(session, prompt, cliPaths()[session.agent], composeInput(session, input, { expand, keepMode }), meta);
+      const others = tasks?.()?.concurrentSessions?.(session) ?? 0;
+      if (others) runner.append(session, { kind: "status", text: `같은 작업 폴더에서 다른 세션 ${others}개가 함께 실행 중입니다. 같은 파일을 고치면 서로의 변경을 덮어쓸 수 있습니다. 마무리·커밋·기준 반영은 모든 세션이 멈춘 뒤에 할 수 있습니다.` });
     } catch (err) {
       chain.controls?.fail(session, chain.flowFor?.(session), err);
       chain.workflow?.settle();
