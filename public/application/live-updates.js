@@ -1,7 +1,7 @@
 import { connectEventStream } from "../shared/stream.js";
 import { applySessionState, samePath } from "../shared/store.js";
 
-export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved, refreshSessionMeta, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, taskProgress }) {
+export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved, refreshSessionMeta, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, taskProgress, applySubtasks }) {
   const source = connectEventStream({ handlers: {
   event: (e) => {
     const { sessionId, event } = JSON.parse(e.data);
@@ -40,6 +40,14 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     if (s.events[seq]?.seq === seq) Object.assign(s.events[seq], patch);
     else Object.assign(s.events.find((event) => event.seq === seq) ?? {}, patch);
     updateEvent?.(eventsList(), seq, patch);
+  },
+  // 하위 작업(서브에이전트·백그라운드 명령)이 바뀌었다. 보고 있는 세션은 패널만 고치고, 개수가 바뀌면 목록·그래프 배지를 다시 그린다.
+  subtasks: (e) => {
+    if (!applySubtasks?.(JSON.parse(e.data))) return;
+    renderSessionList();
+    renderProjectNav();
+    if (navigation.view === "dashboard") renderDashboard();
+    if (navigation.view === "project") renderProjectSessions();
   },
   // 작업 만들기 진행 단계(원격 확인 → 작업 폴더 → 세션)
   "task-progress": (e) => taskProgress?.(JSON.parse(e.data)),

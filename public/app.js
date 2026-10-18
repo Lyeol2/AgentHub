@@ -273,7 +273,7 @@ if (POPUP) {
 const stream = connectLiveUpdates({
   data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved,
   refreshSessionMeta: sessions.refreshSessionMeta, applyActivity: sessions.applyActivity, markOutput: sessions.markOutput, sessionStateChanged: sessions.sessionStateChanged,
-  updateEvent: sessions.updateEvent, appendDraft: sessions.appendDraft, taskProgress: tasks.taskProgress,
+  updateEvent: sessions.updateEvent, appendDraft: sessions.appendDraft, taskProgress: tasks.taskProgress, applySubtasks: sessions.applySubtasks,
 });
 loadAuth();
 loadSetup();

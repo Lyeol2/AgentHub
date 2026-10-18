@@ -5,9 +5,10 @@ import { renderMarkdown } from "../../markdown.js";
 import { renderAttachmentLinks } from "./image-composer.js";
 import { createReportView } from "./report-view.js";
 import { showError } from "../../shared/error-report.js";
+import { SUBTASK_STATUS } from "../../shared/subtasks.js";
 
 /** Render conversation history; user decisions are commands supplied by the controller. */
-export function createConversationView({ api, getSession, sessionById, selectSession, onTaskReference, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision }) {
+export function createConversationView({ api, getSession, sessionById, selectSession, onTaskReference, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision, onSubtaskFocus }) {
   const reports = createReportView({ api, getSession, sessionById, selectSession, onTaskReference });
   const PLAN_STATUS = { pending: "승인 대기", applied: "실행함", rejected: "거절함", invalid: "형식 오류" };
 
@@ -203,7 +204,32 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       el("summary", {}, ev.label ? el("span", { class: "tool-kind" }, ev.label) : null, el("span", { class: "tool-name" }, ev.text ?? ""), el("span", { class: "tool-state" })),
       body);
     details.open = expandTools();
-    return el("li", { class: `${cls} pending`, title: ev.label ? `${ev.label} · ${ev.text ?? ""}` : ev.text ?? "" }, details);
+    const node = el("li", { class: `${cls} pending`, title: ev.label ? `${ev.label} · ${ev.text ?? ""}` : ev.text ?? "", ...(ev.toolUseId ? { "data-tool-use-id": ev.toolUseId } : {}) }, details);
+    renderSubtaskBadge(node);
+    return node;
+  }
+
+  // ── 하위 작업 연결 ──────────────────────────────────────────────
+  // 하위 작업을 띄운 도구 호출(Agent·Task·백그라운드 명령) 줄에 그 작업의 상태를 붙인다. 누르면 하위 작업 패널의 카드로 간다.
+  function renderSubtaskBadge(node) {
+    const id = node.dataset.toolUseId;
+    const task = id ? (getSession()?.subtasks ?? []).find((item) => item.toolUseId === id && !item.ambient) : null;
+    const old = node.querySelector(":scope > details > summary > .subtask-link");
+    if (!task) return old?.remove();
+    const text = `하위 작업 · ${SUBTASK_STATUS[task.status] ?? task.status}`;
+    if (old?.dataset.taskId === task.id && old.textContent === text) return;
+    const badge = el("button", { type: "button", class: `subtask-link ${task.status}`, "data-task-id": task.id, title: `${task.description || "하위 작업"} · 하위 작업 패널에서 보기`, onclick: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      onSubtaskFocus?.(task.id);
+    } }, text);
+    if (old) old.replaceWith(badge);
+    else node.querySelector(":scope > details > summary > .tool-state").before(badge);
+  }
+
+  // 하위 작업 목록이 바뀌었다. 이미 그린 도구 호출 줄의 상태 표시만 고친다.
+  function updateSubtaskLinks(list) {
+    for (const node of list.querySelectorAll("li.ev.tool[data-tool-use-id]")) renderSubtaskBadge(node);
   }
 
   // 같은 실행에서 아직 결과를 받지 않은 도구에만 출력을 붙인다.
@@ -412,5 +438,5 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     return node;
   }
 
-  return { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft, clearDraft };
+  return { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft, clearDraft, updateSubtaskLinks };
 }

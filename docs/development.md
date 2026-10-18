@@ -79,6 +79,8 @@ Claude CLI는 입력(stdin)이 닫히면 백그라운드 작업(서브에이전�
 - SSE `subtasks` `{ sessionId, tasks: [작업 전체 객체], removed: [작업 id] }`: 바뀐 작업만 보낸다. 화면은 `id`로 합치고 `removed`는 지운다.
 - `POST /api/sessions/:id/subtasks/:taskId/stop`: 작업 하나만 멈춘다(Claude `stop_task`). CLI가 받으면 `{ ok: true, confirmed: true }`, 10초 안에 답이 없으면 `{ ok: true, confirmed: false }`. 이미 끝났거나 CLI가 없으면 409. 멈춘 결과는 SSE `subtasks`로 온다.
 - 설정: `GET /api/status`의 `cliKeepAlive: { idleMinutes, maxProcesses }`, `PUT /api/settings`의 `cliKeepAlive`(0~1440분, 1~64개).
+- 본 기록의 Claude 도구 호출 이벤트(`kind: "tool"`)에는 CLI의 `tool_use` ID가 `toolUseId`로 있다. 화면은 이것으로 Agent 도구 호출 줄과 하위 작업을 잇는다.
+- 화면: 세션 화면 대화 아래 "하위 작업" 패널(`public/features/sessions/subtasks-view.js`, 계산은 `public/shared/subtasks.js`)이 실행 중 작업이 있으면 펼쳐지고 모두 끝나면 요약 한 줄로 접힌다. SSE `subtasks`는 패널과 도구 호출 줄의 상태 배지만 고치고 대화는 다시 그리지 않는다. 목록·프로젝트 표·그래프 노드는 `subtaskCount.running`으로 "하위 작업 N개" 배지를, `background` 상태는 속이 빈 점·점선 테두리로 보인다.
 
 ### 작성창 명령과 세션 파일
 

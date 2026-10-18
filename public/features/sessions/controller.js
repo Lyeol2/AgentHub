@@ -10,13 +10,16 @@ import { createCompletion } from "./completion.js";
 import { createAttachmentComposer, uploadAttachments, renderAttachmentLinks } from "./image-composer.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 import { showError } from "../../shared/error-report.js";
+import { createSubtasksView } from "./subtasks-view.js";
+import { mergeSubtasks, countSubtasks } from "../../shared/subtasks.js";
 
 export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
   const ui = {
     "chatDraft": null
   };
-  const { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft } = createConversationView({
-    api, getSession: () => data.current, sessionById, selectSession, onTaskReference,
+  const subtasksView = createSubtasksView({ api, getSession: () => data.current });
+  const { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft, updateSubtaskLinks } = createConversationView({
+    api, getSession: () => data.current, sessionById, selectSession, onTaskReference, onSubtaskFocus: (id) => subtasksView.focus(id),
     onPlanDecision: (id, plan, body) => api("POST", `/api/sessions/${id}/plans/${plan}`, body),
     onPlanError: (id, error) => api("POST", `/api/sessions/${id}/messages`, { prompt: `[계획 오류] ${error}\n계획 블록을 고쳐 다시 제안하라.` }),
     onQuestionAnswer: (id, question, answers) => api("POST", `/api/sessions/${id}/questions/${question}`, { answers }),
@@ -63,6 +66,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     completion?.close();
     renderExportResult(s);
     renderState();
+    renderSubtasks();
 
     const meta = [
       s.chat ? "도구 없이 대화만" : s.worktree ? `작업 폴더 ${s.cwd} (브랜치 ${s.worktree.branch})` : `원본 폴더 ${s.cwd}${s.branch ? ` (브랜치 ${s.branch})` : ""}`,
@@ -102,6 +106,44 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     } else if (navigation.view === "session") renderSessionHeader();
   }
 
+  // ── 하위 작업 ───────────────────────────────────────────────────
+  // 패널과 대화의 도구 호출 줄 상태만 다시 그린다. 목록의 개수도 상세에 맞춘다.
+  function renderSubtasks() {
+    const s = data.current;
+    if (!s) return;
+    const summary = sessionById(s.id);
+    if (summary && s.subtasks) setSubtaskCount(summary, countSubtasks(s.subtasks));
+    if (navigation.view !== "session") return;
+    subtasksView.render();
+    updateSubtaskLinks($("s-events"));
+  }
+
+  const setSubtaskCount = (item, count) => { if (count) item.subtaskCount = count; else delete item.subtaskCount; };
+  const seenSubtasks = new Map(); // 세션 → 작업 id → 마지막으로 받은 상태(보고 있지 않은 세션의 목록을 다시 받을지 정한다)
+  let reloadTimer = null;
+
+  // SSE subtasks: 보고 있는 세션이면 패널만 고친다. 목록 개수가 바뀌었으면 true(목록을 다시 그린다).
+  // 보고 있지 않은 세션은 목록에 개수만 있으므로, 처음 보는 작업이나 상태가 바뀐 작업이 오면 목록을 다시 받는다.
+  function applySubtasks({ sessionId, tasks = [], removed = [] }) {
+    const summary = sessionById(sessionId);
+    const before = JSON.stringify(summary?.subtaskCount ?? null);
+    const seen = seenSubtasks.get(sessionId) ?? new Map();
+    seenSubtasks.set(sessionId, seen);
+    let reload = removed.length > 0;
+    for (const task of tasks) {
+      if (seen.get(task.id) !== task.status) reload = true;
+      seen.set(task.id, task.status);
+    }
+    if (data.current?.id === sessionId) {
+      data.current.subtasks = mergeSubtasks(data.current.subtasks, tasks, removed);
+      renderSubtasks();
+    } else if (summary && reload) {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => loadSessions().catch(() => {}), 1000);
+    }
+    return JSON.stringify(summary?.subtaskCount ?? null) !== before;
+  }
+
   // ── 실행 중 진행 표시 ───────────────────────────────────────────
   // 멈춘 것 같을 때의 다시 시도: 일시중지로 지금 턴을 멈추고, 멈추면 재개해 멈춘 곳부터 이어 간다.
   const retrying = new Set();
@@ -122,6 +164,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     const s = data.current;
     const prefix = navigation.view === "chat" ? "c" : navigation.view === "session" ? "s" : null;
     if (!prefix) return;
+    if (prefix === "s") subtasksView.tick(now);
     renderActivity(prefix, s, {
       now,
       onStop: () => s && api("POST", `/api/sessions/${s.id}/stop`).catch((e) => showError(e, { action: "세션 중지" })),
@@ -898,5 +941,5 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   $("c-popout").addEventListener("click", () => openWindow(`chat=${data.current?.id ?? "new"}`));
 
   return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, toggleSessionLock, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom,
-    refreshSessionMeta, renderRunActivity, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft };
+    refreshSessionMeta, renderRunActivity, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, applySubtasks };
 }

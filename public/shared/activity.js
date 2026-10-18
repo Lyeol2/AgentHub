@@ -5,7 +5,8 @@ import { $, el } from "./dom.js";
 export const QUIET_AFTER_S = 10;
 export const STALL_AFTER_S = 60;
 
-const seconds = (total) => total < 60 ? `${total}초` : total < 3600 ? `${Math.floor(total / 60)}분 ${total % 60}초` : `${Math.floor(total / 3600)}시간 ${Math.floor(total % 3600 / 60)}분`;
+// 초를 "N초"·"N분 N초"·"N시간 N분"으로 쓴다(하위 작업 경과·진행 없음 표시도 같이 쓴다).
+export const seconds = (total) => total < 60 ? `${total}초` : total < 3600 ? `${Math.floor(total / 60)}분 ${total % 60}초` : `${Math.floor(total / 3600)}시간 ${Math.floor(total % 3600 / 60)}분`;
 
 // { tone: "start" | "quiet" | "stall" | "wait", text } 또는 표시할 것이 없으면 null
 export function runActivity(session, now = Date.now()) {
