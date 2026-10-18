@@ -194,7 +194,9 @@ export class CodexAppServer extends EventEmitter {
   serverRequest(msg) {
     if (this.closed || this.child.stdin.writableEnded || this.child.stdin.destroyed) return;
     const params = msg.params ?? {};
-    if (!APPROVALS.has(msg.method)) {
+    // MCP 도구 승인(elicitation)은 권한 카드로 묻는다. 그 밖의 elicitation은 지원하지 않아 거절한다.
+    const mcpApproval = codex.isMcpApproval(msg.method, params);
+    if (!APPROVALS.has(msg.method) && !mcpApproval) {
       // 지원하지 않는 승인을 빈 성공으로 처리하지 않는다.
       const response = msg.method === "mcpServer/elicitation/request"
         ? { id: msg.id, result: { action: "decline", content: null } }
@@ -203,7 +205,8 @@ export class CodexAppServer extends EventEmitter {
       this.emit("event", { kind: "status", text: "지원하지 않는 Codex 요청을 거절했습니다: " + msg.method });
       return;
     }
-    if (this.stopping || !this.threadId || params.threadId !== this.threadId || !this.turnId || params.turnId !== this.turnId) {
+    // elicitation은 턴 ID를 모를 수 있어(null) 같은 대화인지만 본다.
+    if (this.stopping || !this.threadId || params.threadId !== this.threadId || !this.turnId || (params.turnId !== this.turnId && !(mcpApproval && params.turnId == null))) {
       this.write({ id: msg.id, result: this.denial(msg.method) });
       return;
     }
@@ -220,7 +223,8 @@ export class CodexAppServer extends EventEmitter {
   }
 
   denial(method) {
-    return method === "item/permissions/requestApproval" ? { permissions: {}, scope: "turn" }
+    return method === codex.MCP_APPROVAL ? { action: "decline", content: null }
+      : method === "item/permissions/requestApproval" ? { permissions: {}, scope: "turn" }
       : method === "item/tool/requestUserInput" ? { answers: {} } : { decision: "cancel" };
   }
 

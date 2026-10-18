@@ -3,6 +3,7 @@ import path from "node:path";
 import { discoverProjects, discoverSessions } from "../discover.mjs";
 import { removeWorktree } from "../git.mjs";
 import { HttpError } from "./errors.mjs";
+import { projectSettings, projectSettingsKey, checkProjectSettings } from "../project-settings.mjs";
 export const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
 export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks, nodeGroups, graphTabs }) {
@@ -91,11 +92,11 @@ export function createProjectService({ config, store, runner, links, commands, c
     const detected = discoverProjects();
     const merged = config.projects.map((p) => {
       const d = detected.find((x) => samePath(x.path, p.path));
-      return { name: p.name, path: p.path, registered: true, claude: d?.claude ?? 0, codex: d?.codex ?? 0, lastActive: d?.lastActive ?? null };
+      return { name: p.name, path: p.path, registered: true, claude: d?.claude ?? 0, codex: d?.codex ?? 0, lastActive: d?.lastActive ?? null, settings: projectSettings(config, p.path) };
     });
     for (const d of detected) {
       if (merged.some((p) => samePath(p.path, d.path)) || config.hiddenProjects.some((h) => samePath(h, d.path))) continue;
-      merged.push({ ...d, registered: false });
+      merged.push({ ...d, registered: false, settings: projectSettings(config, d.path) });
     }
     return merged;
   }
@@ -125,5 +126,20 @@ export function createProjectService({ config, store, runner, links, commands, c
     return config.projects;
   }
 
-  return { add, remove, all, discover, hide, unregister, ensureProject, projectSessions };
+  // 프로젝트별 기본값(AI·권한·워크트리)과 유니티 사용. 보내지 않은 부분은 그대로 둔다.
+  function settings(projectPath) {
+    return projectSettings(config, projectPath);
+  }
+
+  function updateSettings(projectPath, body = {}) {
+    const key = projectSettingsKey(projectPath);
+    const current = projectSettings(config, projectPath);
+    const next = checkProjectSettings({ defaults: body.defaults === undefined ? current.defaults : body.defaults, unity: body.unity ?? current.unity });
+    config.projectSettings = { ...config.projectSettings, [key]: next };
+    saveConfig(config);
+    broadcast("projects", {});
+    return next;
+  }
+
+  return { add, remove, all, discover, hide, unregister, ensureProject, projectSessions, settings, updateSettings };
 }

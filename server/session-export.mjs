@@ -138,7 +138,7 @@ function eventMarkdown(event, attachmentLinks, kinds) {
   if (event.kind === "question") return "## 질문" + inline(suffix) + "\n\n" + questionBody(event);
   if (event.kind === "plan") return "## 계획" + inline(suffix) + "\n\n" + planBody(event);
   if (event.kind === "permission") {
-    const status = event.decision === "always" ? "항상 허용함" : STATUS[event.status] || event.status || "미정";
+    const status = event.decision === "always" ? (event.rememberLabel ? `${event.rememberLabel}함` : "항상 허용함") : STATUS[event.status] || event.status || "미정";
     const body = ["상태: " + inline(status), event.text && fence(event.text), event.reason && html(event.reason), event.detail && details("자세히", fence(event.detail)), event.message && html(event.message)].filter(Boolean).join("\n\n");
     return "## 권한 요청" + inline(suffix) + "\n\n" + body;
   }

@@ -12,6 +12,7 @@ import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
 import { HttpError } from "./errors.mjs";
+import { projectSettings } from "../project-settings.mjs";
 import { assertSessionGitContext } from "../git-context.mjs";
 import { AttachmentStore, isImageAttachment, publicAttachment } from "../attachments.mjs";
 import { unsupportedChatAttachment } from "../attachment-input.mjs";
@@ -191,7 +192,9 @@ export function createSessionService({
     chat = !!chat;
     const resolvedTabId = !chat && graphTabs ? graphTabs.resolve(project.path, tabId, connectFrom ?? createdBy) : null;
     if (chat && orchestrator) throw new HttpError(400, "일반 채팅은 오케스트레이터로 만들 수 없습니다.");
-    const { agent, model, effort, permission } = checkSessionOptions({ ...options, chat });
+    // 권한을 정하지 않고 만들면(다른 세션·흐름에서 만들 때 등) 프로젝트 설정의 기본 권한을 쓴다.
+    const projectPermission = !chat && project?.path && options.permission == null ? projectSettings(config, project.path).defaults.permission[options.agent] : undefined;
+    const { agent, model, effort, permission } = checkSessionOptions({ ...options, ...(projectPermission ? { permission: projectPermission } : {}), chat });
     if (isolate === true && chat) throw new HttpError(400, "일반 채팅은 워크트리를 사용할 수 없습니다.");
     let name;
     if (isolate === true) {
@@ -630,7 +633,20 @@ export function createSessionService({
     if (body.effort !== undefined) session.effort = checkEffort(session.agent, body.effort);
     if (body.permission !== undefined && !session.chat) {
       if (!AGENTS[session.agent].PERMISSION_MODES.includes(body.permission)) throw new HttpError(400, "권한 모드가 올바르지 않습니다.");
+      const changed = body.permission !== session.permission;
       session.permission = body.permission;
+      // 실행 중이면 Claude는 CLI에 바로 적용하고, Codex는 실행 중인 작업에 바꿀 수 없어 다음 요청부터 적용한다.
+      if (changed && runner.isRunning(session.id)) {
+        const now = runner.setPermissionMode?.(session);
+        runner.append(session, { kind: "status", text: now
+          ? `권한을 ${session.permission}(으)로 바꿨습니다. 실행 중인 작업에 바로 적용했습니다.`
+          : `권한을 ${session.permission}(으)로 바꿨습니다. ${AGENT_NAME[session.agent] ?? session.agent}는 실행 중인 작업에는 적용할 수 없어 다음 요청부터 적용합니다.` });
+      }
+    }
+    // 세션 설정에서 지운 "이 세션에서 계속 허용" 규칙. 다음 실행부터 다시 묻는다.
+    if (body.removeAllowRules !== undefined) {
+      const keys = new Set((Array.isArray(body.removeAllowRules) ? body.removeAllowRules : [body.removeAllowRules]).map(String));
+      session.allowRules = (session.allowRules ?? []).filter((rule) => !keys.has(rule.key));
     }
     if (body.role !== undefined) {
       const role = String(body.role).trim().slice(0, ROLE_MAX);

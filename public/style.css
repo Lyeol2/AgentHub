@@ -798,6 +798,10 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 
 /* ── AI 바꾸기 ───────────────────────────────────────────── */
 .config-switch { display: grid; gap: 4px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: 6px; }
+.config-rules { display: grid; gap: 4px; }
+.config-rules-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; max-height: 160px; overflow: auto; }
+.config-rules-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; }
+.config-rules-list li .mono { overflow-wrap: anywhere; font-size: 12px; }
 
 /* ── 프로젝트 제거 ───────────────────────────────────────── */
 button.primary.danger { background: var(--danger); border-color: var(--danger); color: var(--bg); }

@@ -107,6 +107,7 @@
         </div>
         <div class="actions">
           <button class="ghost danger" id="p-remove" title="AgentHub 목록에서 이 프로젝트를 뺍니다. 프로젝트 폴더와 파일은 그대로 둡니다.">프로젝트 제거</button>
+          <button class="ghost" id="p-settings" title="이 프로젝트의 새 세션·새 작업 기본값과 유니티 사용을 정합니다">프로젝트 설정</button>
           <button class="ghost" id="p-rescan">다시 찾기</button>
           <button class="primary" id="p-new">새 세션</button>
         </div>
@@ -494,6 +495,9 @@
       <label class="check for-project"><input type="checkbox" name="orchestrator" id="new-orchestrator">
         오케스트레이터 세션 (코드를 고치지 않고 다른 세션을 만들어 지휘)
       </label>
+      <label class="check for-project" title="다음에 이 프로젝트에서 새 세션을 열면 지금 고른 AI·권한·워크트리 사용이 먼저 선택됩니다. 프로젝트 설정에서 바꿀 수 있습니다."><input type="checkbox" name="saveDefaults" id="new-save-defaults">
+        이 프로젝트 기본값으로 저장 (AI·권한·워크트리 사용)
+      </label>
       <p class="hint for-chat" hidden>프로젝트 없이 대화만 합니다. 파일 수정이나 명령 실행은 하지 않으며, 설치된 CLI의 로그인(구독)을 그대로 씁니다.</p>
       <p class="error" id="new-error"></p>
       <menu>
@@ -816,8 +820,37 @@
       </div>
       <datalist id="config-models"></datalist>
       <label id="config-permission-row">권한 <select id="config-permission"></select></label>
-      <p class="hint">모델·추론 강도·권한은 다음 요청부터 적용되고, 같은 AI면 대화는 그대로 이어집니다.</p>
+      <p class="hint" id="config-apply-hint">모델·추론 강도는 다음 요청부터 적용되고, 같은 AI면 대화는 그대로 이어집니다. 권한은 실행 중이면 Claude는 바로 적용하고, Codex는 다음 요청부터 적용합니다.</p>
+      <div id="config-rules-row" class="config-rules" hidden>
+        <span>이 세션에서 계속 허용한 요청</span>
+        <ul id="config-rules" class="config-rules-list"></ul>
+        <p class="hint">지우면 다음 요청부터 다시 묻습니다. 지금 실행 중인 작업에는 끝날 때까지 남아 있을 수 있습니다.</p>
+      </div>
       <p class="error" id="config-error"></p>
+      <menu>
+        <button value="cancel" formnovalidate class="ghost">취소</button>
+        <button value="ok" class="primary">저장</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="project-settings-dialog">
+    <form method="dialog" id="project-settings-form" class="dialog-form">
+      <h3>프로젝트 설정 <small id="project-settings-name"></small></h3>
+      <p class="hint">새 세션·새 작업 창을 열 때 먼저 고를 값입니다. 지정하지 않으면 그 창에서 마지막으로 고른 값을 씁니다.</p>
+      <label>기본 AI <select id="project-settings-agent"><option value="">지정 안 함</option><option value="claude">Claude Code</option><option value="codex">Codex</option></select></label>
+      <div class="two">
+        <label>Claude 기본 권한 <select id="project-settings-permission-claude"></select></label>
+        <label>Codex 기본 권한 <select id="project-settings-permission-codex"></select></label>
+      </div>
+      <label>워크트리 사용 <select id="project-settings-isolate"><option value="">지정 안 함</option><option value="false">사용 안 함 (원본 폴더에서 작업)</option><option value="true">사용 (별도 작업 폴더에서 작업)</option></select></label>
+      <label>유니티 사용 <select id="project-settings-unity">
+        <option value="ask">실행 전 확인 (기본)</option>
+        <option value="allow">허용</option>
+        <option value="off">끔</option>
+      </select></label>
+      <p class="hint" id="project-settings-unity-hint"></p>
+      <p class="error" id="project-settings-error"></p>
       <menu>
         <button value="cancel" formnovalidate class="ghost">취소</button>
         <button value="ok" class="primary">저장</button>

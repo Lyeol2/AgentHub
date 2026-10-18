@@ -166,8 +166,8 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       ev.detail ? el("details", {}, el("summary", {}, "자세히"), el("pre", { class: "perm-detail" }, ev.detail)) : null);
     if (ev.status === "pending") {
       node.append(el("div", { class: "plan-actions" },
-        el("button", { class: "primary sm", onclick: (e) => decide("allow", e.currentTarget) }, "허용"),
-        ev.canRemember ? el("button", { class: "ghost sm", title: ev.rememberDescription ?? "이 프로젝트에서 같은 종류의 요청은 다시 묻지 않습니다", onclick: (e) => decide("always", e.currentTarget) }, ev.rememberLabel ?? "항상 허용") : null,
+        el("button", { class: "primary sm", title: "이 요청만 허용합니다. 같은 요청이 다시 오면 또 묻습니다.", onclick: (e) => decide("allow", e.currentTarget) }, "이번만 허용"),
+        ev.canRemember ? el("button", { class: "ghost sm", title: ev.rememberDescription ?? "이 세션에서는 같은 요청을 다시 묻지 않습니다. 세션 설정에서 지울 수 있습니다.", onclick: (e) => decide("always", e.currentTarget) }, ev.rememberLabel ?? "이 세션에서 계속 허용") : null,
         el("button", { class: "ghost sm danger", onclick: (e) => decide("deny", e.currentTarget) }, "거절")));
     }
     return node;

@@ -140,8 +140,13 @@ test("app-server: native questions, network context and available approval decis
   assert.deepEqual(f.sent.at(-1).result, { answers: { choice: { answers: ["폴더", "이름"] } } });
   f.approve("item/commandExecution/requestApproval", { networkApprovalContext: { host: "example.com", protocol: "https" }, availableDecisions: ["accept", "decline"] });
   const network = codex.parseControl(f.controls[1]);
-  assert.match(network.text, /example.com/); assert.deepEqual(network.suggestions, []);
-  assert.throws(() => codex.permissionResponse(network, "always"), /지원하지 않는/);
+  // 세션 범위 허용이 없어도 AgentHub가 규칙을 기억하므로 "이 세션에서 계속 허용"은 이번 요청을 그냥 허용한다.
+  assert.match(network.text, /example.com/); assert.deepEqual(network.suggestions, ["session"]);
+  assert.deepEqual(codex.permissionResponse(network, "always"), { decision: "accept" });
+  assert.deepEqual(codex.rememberedRules(network).rules.map((rule) => rule.key), ["network:example.com"]);
+  const declineOnly = { ...network, input: { ...network.input, availableDecisions: ["decline"] } };
+  assert.deepEqual(codex.parseControl({ request: { method: network.method, params: declineOnly.input } }).suggestions, []);
+  assert.throws(() => codex.permissionResponse(declineOnly, "allow"), /지원하지 않는/);
   assert.throws(() => codex.permissionResponse(network, "arbitrary"), /올바른/);
   f.protocol.close();
 });
@@ -264,7 +269,7 @@ test("runner app-server integration: complete a native image turn and persist it
 test("runner app-server integration: approval answer, pause and shutdown remove pending requests", async () => {
   const f = runnerFixture(); const ended = new Promise((resolve) => f.runner.once("turnEnd", (...args) => resolve(args)));
   f.runner.send(f.session, "작업", "fake-codex"); await tick(); const child = f.children[0]; child.approve();
-  const first = f.session.events.at(-1); assert.equal(first.kind, "permission"); assert.equal(first.rememberLabel, "이번 실행에서 허용");
+  const first = f.session.events.at(-1); assert.equal(first.kind, "permission"); assert.equal(first.rememberLabel, "이 세션에서 계속 허용");
   f.runner.answer(first.requestId, { decision: "allow" });
   assert.equal(first.status, "allowed"); assert.deepEqual(child.messages.at(-1).result, { decision: "accept" });
   child.approve("second"); const second = f.session.events.at(-1); f.session.paused = true;

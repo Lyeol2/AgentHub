@@ -28,11 +28,25 @@ const CHAT_PROMPT = "You are Claude, a helpful AI assistant having a conversatio
   "Answer directly and conversationally, using Markdown where it helps. Reply in the language the user writes in.";
 
 // mcp: AgentHub MCP 서버(세션끼리 소통하는 도구). 설정 파일로 넘기고 도구는 묻지 않고 쓰게 한다.
-export function buildArgs(session, { mcp = null } = {}) {
+// unity: 프로젝트 설정의 유니티 통제({ mode, ask, deny }, server/unity-control.mjs). null이면 바꾸지 않는다.
+export function buildArgs(session, { mcp = null, unity = null } = {}) {
   const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio"];
   if (mcp) args.push("--mcp-config", mcp.configFile, "--allowedTools", "mcp__agenthub");
   // /plan 요청은 그 턴만 계획 모드로 실행한다(파일 수정·명령 없이 계획을 세우고 ExitPlanMode로 승인을 묻는다).
   args.push("--permission-mode", session.planTurn ? "plan" : session.permission ?? "acceptEdits");
+  // "이 세션에서 계속 허용"한 규칙과 유니티 통제는 이 실행에만 쓰는 설정으로 넘긴다(사용자·프로젝트 설정 파일은 고치지 않는다).
+  // ask 규칙은 권한 모드가 bypassPermissions여도 묻고, deny 규칙은 allow보다 앞선다.
+  if (!session.chat) {
+    const remembered = (session.allowRules ?? []).filter((rule) => rule.agent === "claude");
+    const permissions = {};
+    const allow = remembered.filter((rule) => rule.kind === "rule").map((rule) => rule.rule);
+    if (allow.length) permissions.allow = allow;
+    if (unity?.ask?.length) permissions.ask = unity.ask;
+    if (unity?.deny?.length) permissions.deny = unity.deny;
+    if (Object.keys(permissions).length) args.push("--settings", JSON.stringify({ permissions }));
+    if (unity?.deny?.length) args.push("--disallowedTools", unity.deny.join(","));
+    for (const dir of remembered.filter((rule) => rule.kind === "dir").map((rule) => rule.dir)) if (!session.addDirs?.includes(dir)) args.push("--add-dir", dir);
+  }
   if (session.model) args.push("--model", session.model);
   if (session.effort) args.push("--effort", session.effort);
   if (session.chat) {
@@ -54,6 +68,9 @@ export const interactive = true;
 
 // 지금 턴을 멈춘다(Claude Code에서 Esc를 누른 것과 같다). CLI는 턴을 끝내고 대화 기록을 남긴다.
 export const interruptLine = () => JSON.stringify({ type: "control_request", request_id: `interrupt-${randomUUID()}`, request: { subtype: "interrupt" } });
+
+// 실행 중인 CLI의 권한 모드를 바로 바꾼다(Agent SDK의 setPermissionMode와 같은 요청).
+export const permissionModeLine = (mode) => JSON.stringify({ type: "control_request", request_id: `mode-${randomUUID()}`, request: { subtype: "set_permission_mode", mode } });
 
 export const initLine = () => JSON.stringify({ type: "control_request", request_id: `init-${randomUUID()}`, request: { subtype: "initialize" } });
 
@@ -102,7 +119,30 @@ export function parseControl(msg, session = {}) {
     reason: req.decision_reason ?? null,
     input,
     suggestions: req.permission_suggestions ?? [],
+    rememberLabel: REMEMBER_LABEL,
+    rememberDescription: "이 AgentHub 세션에서는 같은 요청을 다시 묻지 않습니다. 다음 요청에서 CLI를 다시 실행해도 유지되며, 세션 설정에서 지울 수 있습니다.",
   };
+}
+
+export const REMEMBER_LABEL = "이 세션에서 계속 허용";
+
+// "이 세션에서 계속 허용"으로 받은 CLI 제안을 세션에 남길 규칙으로 바꾼다. 다음 실행 때 buildArgs가 다시 넘긴다.
+// rules: [{ key, kind: "rule" | "dir", label, ... }] / mode: 제안에 권한 모드 변경(setMode)이 있으면 그 모드
+export function rememberedRules(control) {
+  const rules = [];
+  let mode = null;
+  for (const suggestion of control.suggestions ?? []) {
+    if (["addRules", "replaceRules"].includes(suggestion?.type) && (suggestion.behavior ?? "allow") === "allow") {
+      for (const r of suggestion.rules ?? []) {
+        if (!r?.toolName) continue;
+        const rule = r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName;
+        rules.push({ key: `rule:${rule}`, kind: "rule", rule, label: rule });
+      }
+    } else if (suggestion?.type === "addDirectories") {
+      for (const dir of suggestion.directories ?? []) if (typeof dir === "string" && dir) rules.push({ key: `dir:${dir}`, kind: "dir", dir, label: `폴더 접근: ${dir}` });
+    } else if (suggestion?.type === "setMode" && typeof suggestion.mode === "string") mode = suggestion.mode;
+  }
+  return { rules, mode };
 }
 
 // 사용자의 답을 AskUserQuestion 결과로 바꾼다. 키는 질문 문장, 값은 고른 선택지(여러 개면 ", "로 잇는다).
@@ -121,7 +161,8 @@ export function permissionResponse(pending, decision, message) {
   if (decision === "deny") return { behavior: "deny", message: message || "사용자가 거절했습니다." };
   const response = { behavior: "allow", updatedInput: pending.input };
   if (pending.planApproval) response.updatedPermissions = [{ type: "setMode", mode: pending.mode, destination: "session" }];
-  if (decision === "always" && pending.suggestions?.length) response.updatedPermissions = pending.suggestions;
+  // 이번 CLI 실행에도 바로 적용한다. 사용자·프로젝트 설정 파일에 쓰지 않도록 범위는 session으로 둔다(다음 실행은 AgentHub가 다시 넘긴다).
+  if (decision === "always" && pending.suggestions?.length) response.updatedPermissions = pending.suggestions.map((s) => (s && typeof s === "object" && "destination" in s ? { ...s, destination: "session" } : s));
   return response;
 }
 
