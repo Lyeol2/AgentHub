@@ -1,4 +1,5 @@
 import { $, el } from "../../shared/dom.js";
+import { showError } from "../../shared/error-report.js";
 
 // GitHub 계정 연결. 로그인은 gh CLI의 브라우저 로그인을 그대로 쓰고, 진행은 CLI 설치·로그인 창에서 보여 준다.
 export function createAccountController({ api, openSetup, onChange = () => {} }) {
@@ -28,7 +29,7 @@ export function createAccountController({ api, openSetup, onChange = () => {} })
       onChange(account);
     } catch (err) {
       if (err.reason === "gh-missing") openSetup("gh", "install");
-      else alert(err.message);
+      else showError(err, { action: "GitHub 계정 연결" });
     }
   }
 
@@ -37,7 +38,7 @@ export function createAccountController({ api, openSetup, onChange = () => {} })
     try {
       account = await api("POST", "/api/account/disconnect", { logout });
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "GitHub 계정 연결 해제" });
     }
     render();
     onChange(account);

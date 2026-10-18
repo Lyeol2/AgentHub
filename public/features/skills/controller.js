@@ -1,5 +1,6 @@
 import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
+import { showError } from "../../shared/error-report.js";
 
 export function createSkillsController({ api, loadSessions, sessionById, renderGraph, highlightSessions, data, navigation }) {
   const ui = {
@@ -98,7 +99,7 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
     try {
       await api("DELETE", `/api/skills/${skill.name}?path=${encodeURIComponent(projectPath)}`);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "스킬 삭제" });
     }
     await Promise.all([loadSkills(), loadSessions()]);
   }
@@ -112,7 +113,7 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
     try {
       await api("POST", `/api/skills/${skill.name}/move`, { projectPath: navigation.project, to });
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "스킬 옮기기" });
     }
     await Promise.all([loadSkills(), loadSessions()]);
   }
@@ -125,7 +126,7 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
     try {
       await api("PUT", `/api/sessions/${sessionId}`, { skills: next });
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "스킬 장착 변경" });
     }
     await loadSessions();
     if (navigation.view === "project") renderGraph();
@@ -155,7 +156,7 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
     try {
       skills = await api("GET", `/api/skills?path=${encodeURIComponent(s.projectPath)}`);
     } catch (err) {
-      if (mine === request) alert(err.message);
+      if (mine === request) showError(err, { action: "스킬 목록 불러오기" });
       return;
     }
     if (mine !== request) return;

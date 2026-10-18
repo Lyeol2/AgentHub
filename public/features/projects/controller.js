@@ -1,6 +1,7 @@
 import { createProjectsView } from "./view.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
+import { showError } from "../../shared/error-report.js";
 
 export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation }) {
   const ui = {
@@ -127,7 +128,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     try {
       const result = await api("DELETE", `/api/projects?${query}`);
       $("project-remove-dialog").close();
-      if (result.worktreeErrors.length) alert(`제거했지만 지우지 못한 작업 폴더가 있습니다(커밋하지 않은 변경이 있을 수 있음):\n\n${result.worktreeErrors.join("\n")}`);
+      if (result.worktreeErrors.length) showError({ message: "프로젝트는 제거했지만 지우지 못한 작업 폴더가 있습니다.", hint: "폴더에 커밋하지 않은 변경이 있는지 확인한 뒤 필요 없으면 직접 지우세요. 그 폴더를 연 프로그램이 있으면 닫으세요.", raw: result.worktreeErrors.join("\n") }, { action: "작업 폴더 삭제" });
       if (navigation.view === "project" && samePath(navigation.project, p.path)) goDashboard();
       await Promise.all([loadProjects(), loadSessions(), loadLinks()]);
     } catch (err) {
@@ -177,7 +178,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
       try {
         await api("POST", "/api/projects/hide", { agentSessionId: f.agentSessionId, hidden });
       } catch (err) {
-        return alert(err.message);
+        return showError(err, { action: hidden ? "기록 숨기기" : "기록 다시 보이기" });
       }
       renderFound(p);
     };
@@ -219,7 +220,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
       await Promise.all([loadSessions(), loadProjects()]); // 감지된 프로젝트는 가져오면서 등록된다.
       if (current()) await selectSession(created.id);
     } catch (err) {
-      if (current()) alert(err.message);
+      if (current()) showError(err, { action: "세션 가져오기" });
       button.disabled = false;
       button.textContent = "가져오기";
     }

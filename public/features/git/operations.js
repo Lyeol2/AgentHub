@@ -2,6 +2,7 @@ import { $, el, renderDiff } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { icon } from "../../shared/icons.js";
 import { gitflowBranches, DEFAULT_GITFLOW } from "../../shared/gitflow.js";
+import { errorPanel } from "../../shared/error-report.js";
 
 const LABELS = { merge: "브랜치 병합", push: "현재 브랜치 푸시", revert: "변경 되돌리기", uncommit: "커밋 취소 · 파일 유지", reset: "이 커밋으로 복귀", drop: "선택 커밋 제거" };
 const NOTES = {
@@ -15,7 +16,7 @@ const NOTES = {
 const displayRemote = (address) => String(address ?? "").replace(/^(https?:\/\/)[^/\s@]+@/i, "$1[인증정보]@");
 
 /** All writes capture the project/worktree and are explicitly reviewed before submission. */
-export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorkspace, reload, controls }) {
+export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorkspace, reload, controls, sessionFor = () => null }) {
   let requestVersion = 0, dialogModel = null, writing = false;
   const toolbar = el("div", { id: "g-operations", class: "git-operations" });
   const workspace = button("작업 폴더", () => worktrees(), "g-workspaces");
@@ -43,7 +44,7 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
 
   const title = el("h3", { id: "g-operation-title" });
   const content = el("div", { id: "g-operation-content", class: "git-operation-content" });
-  const error = el("p", { id: "g-operation-error", class: "error", role: "alert" });
+  const error = el("div", { id: "g-operation-error", class: "error", role: "alert" });
   const closeButton = button("닫기", close, "g-operation-close");
   const dialog = el("dialog", { id: "g-operation-dialog", class: "git-operation-dialog", "aria-labelledby": title.id },
     el("div", { class: "git-operation-head" }, title, closeButton), content, error);
@@ -78,10 +79,9 @@ export function createGitOperations({ api, getModel, isCurrent, isBusy, setWorks
   }
   function fail(errorValue, m, version) {
     if (!valid(m, version)) return;
-    error.textContent = errorValue.message
-      + (errorValue.hint ? "\n해결 방법: " + errorValue.hint : "")
-      + (errorValue.outcomeUnknown ? "\n완료 여부가 불확실합니다. 현재 상태를 확인하기 전에는 다시 실행하지 마세요." : "")
-      + (errorValue.recoveryId ? "\n복구 기록: " + errorValue.recoveryId + "\n이 창을 닫고 ‘복구 기록’에서 확인하세요." : "");
+    // 동작 · 원인 · 해결 방법 · Git 원문을 함께 보여 주고, 세션이 쓰는 작업 폴더면 그 세션에 해결을 요청할 수 있게 한다.
+    error.replaceChildren(errorPanel({ message: errorValue.message, hint: errorValue.hint, raw: errorValue.raw, reason: errorValue.reason, outcomeUnknown: errorValue.outcomeUnknown,
+      recoveryId: errorValue.recoveryId ? errorValue.recoveryId + " · 이 창을 닫고 ‘복구 기록’에서 확인하세요." : "" }, { action: title.textContent, sessionId: sessionFor(m), rawLabel: "Git 원문 보기" }));
     const loading = content.querySelector("[data-git-operation-loading]");
     if (loading) loading.textContent = "작업을 준비하지 못했습니다. 내용을 확인한 뒤 다시 열어 주세요.";
   }

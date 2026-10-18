@@ -8,6 +8,7 @@ import { composerAction, builtinCommand } from "../../composer.js";
 import { createCompletion } from "./completion.js";
 import { createAttachmentComposer, uploadAttachments, renderAttachmentLinks } from "./image-composer.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
+import { showError } from "../../shared/error-report.js";
 
 export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
   const ui = {
@@ -184,7 +185,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         if (action === "delete") await api("DELETE", `/api/sessions/${s.id}/queue/${item.id}`);
         else await api("POST", `/api/sessions/${s.id}/queue/${item.id}`, { action });
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: action === "delete" ? "대기열에서 지우기" : action === "steer" ? "대기 요청 붙이기" : "대기 요청 보내기" });
       }
       refreshQueue(s.id);
     };
@@ -279,7 +280,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       completion.sync();
       if (result.queued) refreshQueue(s.id);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "요청 보내기" });
     } finally {
       composerBusy.delete("s");
       if (navigation.view === "session") renderComposer("s", data.current);
@@ -332,7 +333,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     }
   });
 
-  $("s-stop").addEventListener("click", () => api("POST", `/api/sessions/${data.current.id}/stop`).catch((e) => alert(e.message)));
+  $("s-stop").addEventListener("click", () => api("POST", `/api/sessions/${data.current.id}/stop`).catch((e) => showError(e, { action: "세션 중지" })));
 
   // 일시중지·재개. 일시중지는 대화를 그대로 두고 멈추며, 재개하면 멈춘 곳부터 이어서 진행한다.
   async function togglePause() {
@@ -356,7 +357,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         delete data.current.pausedMidTurn;
       }
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "세션 일시중지·재개" });
     } finally {
       composerBusy.delete(prefix);
       if (data.current?.id === s.id) renderState();
@@ -372,7 +373,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     try {
       await api("POST", `/api/sessions/${s.id}/restart`);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "세션 다시 시작" });
     }
   }
   $("s-restart").addEventListener("click", () => restartSession());
@@ -404,7 +405,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       }
       await loadSessions();
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "세션 잠금 변경" });
     } finally {
       lockRequests.delete(s.id);
     }
@@ -473,7 +474,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       await Promise.all([loadSessions(), loadLinks()]);
       if (data.current?.id === s.id) await selectSession(created.id);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "세션 재생성", sessionId: s.chat ? null : s.id });
     }
   }
 
@@ -514,7 +515,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     if (force) query.set("force", "1");
     try {
       const { records } = await api("DELETE", `/api/sessions/${s.id}?${query}`);
-      if (records?.errors.length) alert(`세션은 지웠지만 일부 기록 파일을 지우지 못했습니다(목록에서는 숨겼습니다).\n\n${records.errors.join("\n")}`);
+      if (records?.errors.length) showError({ message: "세션은 지웠지만 일부 기록 파일을 지우지 못했습니다(목록에서는 숨겼습니다).", hint: "그 파일을 연 프로그램을 닫은 뒤 원문에 적힌 파일을 직접 지워도 됩니다.", raw: records.errors.join("\n") }, { action: "CLI 기록 파일 삭제" });
       return true;
     } catch (err) {
       if (err.reason === "running" && confirm("실행 중인 세션입니다. 실행을 멈추고 삭제할까요?")) {
@@ -523,7 +524,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       if (err.reason === "worktree" && confirm(`${err.message}\n\n작업 폴더는 남겨 두고 세션만 삭제할까요?`)) {
         return deleteSession(s, { deleteRecords, force });
       }
-      if (!["running", "worktree"].includes(err.reason)) alert(err.message);
+      if (!["running", "worktree"].includes(err.reason)) showError(err, { action: s.chat ? "채팅 삭제" : "세션 삭제" });
       return false;
     }
   }
@@ -539,7 +540,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       $("diff-body").replaceChildren(...renderDiff(diffData.diff || "(커밋된 파일의 변경 없음)"));
       $("diff-dialog").showModal();
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "변경 보기", sessionId: data.current?.id });
     }
   });
 
@@ -714,7 +715,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       Object.assign(s, { model: updated.model, effort: updated.effort });
       saveChatPrefs(s);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "채팅 설정 변경" });
     }
     renderChatPick();
     loadSessions();
@@ -769,7 +770,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         if (!data.current && navigation.view === "chat" && navigation.viewRevision === viewRevision) await selectSession(s.id);
       }
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "메시지 보내기" });
     } finally {
       composerBusy.delete("c");
       if (navigation.view === "chat") renderChatState();
@@ -788,7 +789,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       renderChat();
       loadSessions();
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "채팅 이름 바꾸기" });
     }
   });
 

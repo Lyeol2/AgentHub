@@ -96,7 +96,7 @@ async function gitBrowserChecks() {
   const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
   const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
   const until = async (predicate) => { const end = Date.now() + 8000; while (!predicate()) { if (Date.now() > end) throw Error("Timed out: " + predicate); await tick(); } };
-  window.alert = (message) => alerts.push(message);
+  window.alert = (message) => alerts.push(message); new MutationObserver((records) => { for (const record of records) for (const added of record.addedNodes) if (added.classList?.contains("error-toast")) alerts.push(added.querySelector(".error-report-message")?.textContent ?? added.textContent); }).observe(document.body, { childList: true, subtree: true });
   const project = "C:/fixture";
   const gitUse = { id: "cmd-use", kind: "git", gitAction: "use", title: "작업 브랜치", branch: "feature/login", projectPath: project, state: "idle", pos: { x: 20, y: 20 } };
   const gitMerge = { id: "cmd-merge", kind: "git", gitAction: "merge", title: "통합", branch: "feature/login", targetBranch: "develop", projectPath: project, state: "idle", pos: { x: 20, y: 180 } };

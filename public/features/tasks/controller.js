@@ -6,6 +6,7 @@ import { DEFAULT_GITFLOW, gitflowBranches } from '../../shared/gitflow.js';
 import { buildTaskPipeline } from '../../shared/task-stage.js';
 import { renderTaskPipeline, relativeTime } from './pipeline.js';
 import { confirmAction } from '../../shared/confirm-dialog.js';
+import { errorPanel, showError as showErrorToast } from '../../shared/error-report.js';
 
 const TASK_TYPES = { feature: '기능 개발·일반 수정', hotfix: '긴급 수정', release: '배포 준비' };
 const GITFLOW_FIELDS = Object.keys(DEFAULT_GITFLOW);
@@ -159,6 +160,16 @@ export function createTasksController({
     if (message) appendLogin(el, reason);
   }
 
+  // 창 안의 오류 칸에 동작 · 원인 · 해결 방법 · 원문을 함께 보여 준다.
+  function showErrorDetail(id, error, action) {
+    const el = $(id);
+    if (!el) return;
+    const box = errorPanel(error, { action, rawLabel: 'Git 원문 보기' });
+    appendLogin(box.querySelector('.error-report-actions') || box, error?.reason);
+    el.replaceChildren(box);
+    el.hidden = false;
+  }
+
   function sameProject(path, epoch = projectEpoch) {
     return Boolean(epoch === projectEpoch && path && path === projectPath && path === getProjectPath());
   }
@@ -257,17 +268,11 @@ export function createTasksController({
     return line;
   }
 
-  function errorBlock(message, { reason, hint, raw } = {}) {
-    const box = node('div', 'task-inline-error');
-    box.setAttribute('role', 'alert');
-    box.append(node('p', 'task-error-message', message));
-    if (hint) box.append(node('p', 'task-error-hint', hint));
-    if (raw && raw !== message) {
-      const details = node('details', 'task-error-raw');
-      details.append(node('summary', '', 'Git 원문 보기'), node('pre', '', raw));
-      box.append(details);
-    }
-    appendLogin(box, reason);
+  // 공용 오류 표시로 동작 · 원인 · 해결 방법 · Git 원문을 보여 준다. 작업의 마지막 세션이 있으면 그 세션에 해결을 요청할 수 있다.
+  function errorBlock(message, { reason, hint, raw, action } = {}, { sessionId = null, onClose = null } = {}) {
+    const box = errorPanel({ message, reason, hint, raw }, { action, title: '작업 오류', sessionId, onClose, rawLabel: 'Git 원문 보기' });
+    box.classList.add('task-inline-error');
+    appendLogin(box.querySelector('.error-report-actions') || box, reason);
     return box;
   }
 
@@ -457,8 +462,11 @@ export function createTasksController({
       const localMessage = typeof local === 'string' ? local : local?.message;
       const fromServer = !local || local === task.error;
       const detail = local && typeof local === 'object' ? local : fromServer ? { reason: task.errorReason, hint: task.errorHint } : {};
-      const error = localMessage || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
-      if (error) card.append(errorBlock(error, detail));
+      // 오류가 아닌 안내(예: 충돌 해결 요청을 보냄)는 일반 안내 줄로 보여 준다.
+      if (local?.notice) card.append(node('p', 'task-note', local.message));
+      const error = local?.notice ? '' : localMessage || task.error?.message || (typeof task.error === 'string' ? task.error : '') || (task.pendingAction ? '이전 요청의 결과를 확인하고 있습니다. 최신 확인으로 작업 상태를 확인해 주세요.' : '');
+      // 화면에서만 생긴 오류는 닫을 수 있다. 서버에 남은 오류는 다음 작업이나 최신 확인으로 지워진다.
+      if (error) card.append(errorBlock(error, detail, { sessionId, onClose: localMessage && !fromServer ? () => { taskErrors.delete(task.id); renderTasks(); } : null }));
       // 시간 초과 등으로 병합·리베이스가 중간에 멈춰 작업이 막혔으면 되돌릴 수 있게 한다.
       if (error && ['task-git-operation', 'task-recovery-required'].includes(detail.reason) && task.state !== 'cleaned')
         card.append(actionButton('진행 중인 Git 작업 취소', 'abort', task, { disabled: running > 0, reason: running > 0 ? '세션이 작업 중입니다.' : '' }));
@@ -583,7 +591,7 @@ export function createTasksController({
       const result = await api('DELETE', `/api/tasks/${encodeURIComponent(id)}/issue`);
       if (sameProject(path, epoch)) replaceTask(result.task);
     } catch (error) {
-      taskErrors.set(id, { message: requestError(error), reason: error.reason });
+      taskErrors.set(id, { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '이슈 연결 해제' });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();
@@ -668,7 +676,7 @@ export function createTasksController({
             replaceTask(result.value.task);
             if (!result.value.task?.pendingAction) uncertainTasks.delete(id);
             taskErrors.delete(id);
-          } else taskErrors.set(id, { message: requestError(result.reason), reason: result.reason?.reason });
+          } else taskErrors.set(id, { message: requestError(result.reason), reason: result.reason?.reason, hint: result.reason?.hint, raw: result.reason?.raw, action: '최신 확인' });
         }
       }
       if (options.manual && uncertainCreates.has(path)) {
@@ -1038,7 +1046,7 @@ export function createTasksController({
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainCreates.add(path);
-      if (sameProject(path, epoch)) showError('task-create-error', error.outcomeUnknown ? unknownMessage('작업 생성') : [requestError(error), error.hint].filter(Boolean).join(' '), error.reason);
+      if (sameProject(path, epoch)) showErrorDetail('task-create-error', error.outcomeUnknown ? { message: unknownMessage('작업 생성') } : error, '작업 생성');
     } finally {
       createBusy = false;
       taskAssistant.setCreating(false);
@@ -1127,8 +1135,8 @@ export function createTasksController({
     if (!confirm(`작업 세션에 다음 요청을 보낼까요?\n\n${prompt}`)) return;
     try {
       await api('POST', `/api/sessions/${encodeURIComponent(sessionId)}/messages`, { prompt });
-      taskErrors.set(task.id, { message: '세션에 충돌 해결을 요청했습니다. 세션이 병합을 마치면 최신 상태 확인을 눌러 주세요.' });
-    } catch (error) { taskErrors.set(task.id, { message: requestError(error), reason: error.reason }); }
+      taskErrors.set(task.id, { notice: true, message: '세션에 충돌 해결을 요청했습니다. 세션이 병합을 마치면 최신 상태 확인을 눌러 주세요.' });
+    } catch (error) { taskErrors.set(task.id, { message: requestError(error), reason: error.reason, hint: error.hint, action: '세션에 충돌 해결 요청' }); }
     renderTasks();
   }
 
@@ -1159,7 +1167,7 @@ export function createTasksController({
     } catch (error) {
       if (error.outcomeUnknown && action !== 'refresh') uncertainTasks.set(id, action);
       const label = action === 'abort' ? '진행 중인 Git 작업 취소' : action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : action === 'backup' ? '원격에 백업' : '최신 확인';
-      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label) } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, conflicts: error.conflicts });
+      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label), action: label } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, conflicts: error.conflicts, action: label });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();
@@ -1217,9 +1225,9 @@ export function createTasksController({
       uncertainTasks.delete(id);
       if (sameProject(path, epoch)) tasks = tasks.filter(item => item.id !== id);
       await reloadSessions();
-      if (result?.warning) alert(result.warning);
+      if (result?.warning) showErrorToast({ message: result.warning }, { action: '작업 삭제 마무리' });
     } catch (error) {
-      taskErrors.set(id, { message: requestError(error), reason: error.reason });
+      taskErrors.set(id, { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '작업 삭제' });
     } finally {
       pendingTasks.delete(id);
       if (sameProject(path, epoch)) renderTasks();
@@ -1273,9 +1281,9 @@ export function createTasksController({
       uncertainTasks.delete(id);
       if (sameProject(path, epoch)) tasks = tasks.filter(item => item.id !== id);
       await reloadSessions();
-      if (result?.warning) alert(result.warning);
+      if (result?.warning) showErrorToast({ message: result.warning }, { action: '작업 그만두기 마무리' });
     } catch (error) {
-      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage('작업 그만두기') } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw });
+      taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage('작업 그만두기'), action: '작업 그만두기' } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '작업 그만두기' });
       if (sameProject(path, epoch)) void loadTasks(path, { localOnly: true });
     } finally {
       pendingTasks.delete(id);
@@ -1309,7 +1317,7 @@ export function createTasksController({
       }
     } catch (error) {
       if (error.outcomeUnknown) uncertainTasks.set(task.id, 'session');
-      taskErrors.set(task.id, error.outcomeUnknown ? { message: unknownMessage('세션 생성') } : { message: requestError(error), reason: error.reason });
+      taskErrors.set(task.id, error.outcomeUnknown ? { message: unknownMessage('세션 생성'), action: '세션 추가' } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '세션 추가' });
     } finally {
       pendingTasks.delete(task.id);
       if (sameProject(path, epoch)) renderTasks();

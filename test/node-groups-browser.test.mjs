@@ -101,7 +101,7 @@ async function nodeGroupBrowserChecks() {
   const tick = () => new Promise((resolve) => setTimeout(resolve, 30));
   const until = async (predicate) => { const end = Date.now() + 7000; while (!predicate()) { if (Date.now() > end) throw Error("Timed out: " + predicate); await tick(); } };
   const clone = (value) => JSON.parse(JSON.stringify(value));
-  window.alert = (text) => alerts.push(text); window.confirm = () => true;
+  window.alert = (text) => alerts.push(text); window.confirm = () => true; new MutationObserver((records) => { for (const record of records) for (const added of record.addedNodes) if (added.classList?.contains("error-toast")) alerts.push(added.querySelector(".error-report-message")?.textContent ?? added.textContent); }).observe(document.body, { childList: true, subtree: true });
   const project = "C:/fixture";
   const makeSession = (id, title, x, y) => ({ id, title, agent: "codex", state: "idle", projectPath: project, createdAt: "2026-01-01", updatedAt: new Date().toISOString(), graphPos: { x, y } });
   const inside = makeSession("inside", "개발 세션", 400, 120); inside.waiting = true;

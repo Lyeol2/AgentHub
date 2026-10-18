@@ -1,5 +1,6 @@
 import { $, el, renderDiff, fmtDate } from "../../shared/dom.js";
 import { layoutGitGraph, gitWorkRows } from "../../gitgraph.js";
+import { showError } from "../../shared/error-report.js";
 
 // 화면에 보일 짧은 브랜치 이름: 마지막 / 앞의 접두어와 AgentHub 작업 ID(mv…-xxxxxxxx-)를 뺀다. 남는 글자가 없으면 전체 이름을 쓴다.
 export function branchShortName(name) {
@@ -176,9 +177,9 @@ export function createGitView({ getModel, selectSession, showSessionChanges, sel
     if (local.some((b) => b.current)) return;
     const target = local.find((b) => !b.checkedOutAt);
     if (target) return checkoutGitBranch(target);
-    alert(local.length
-      ? "이 커밋의 브랜치는 다른 작업 폴더에서 쓰고 있어 체크아웃할 수 없습니다.\n" + local[0].checkedOutAt
-      : "이 커밋을 가리키는 로컬 브랜치가 없습니다. 브랜치 끝 커밋을 두 번 누르면 그 브랜치로 체크아웃합니다.");
+    showError(local.length
+      ? { message: "이 커밋의 브랜치는 다른 작업 폴더에서 쓰고 있어 체크아웃할 수 없습니다.", hint: `작업 폴더 버튼에서 ${local[0].checkedOutAt} 폴더를 선택해 작업하세요.` }
+      : { message: "이 커밋을 가리키는 로컬 브랜치가 없습니다.", hint: "브랜치 끝 커밋을 두 번 누르면 그 브랜치로 체크아웃합니다." }, { action: "브랜치 체크아웃" });
   }
 
   function setGitActive(hash) {

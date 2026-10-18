@@ -99,7 +99,7 @@ async function executionBrowserChecks() {
   const check = (value, name) => { if (!value) throw Error(name); checks.push(name); };
   const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
   const until = async (predicate) => { const deadline = Date.now() + 8000; while (!predicate()) { if (Date.now() > deadline) throw Error('Timed out: ' + predicate); await tick(); } };
-  window.alert = (text) => alerts.push(text);
+  window.alert = (text) => alerts.push(text); new MutationObserver((records) => { for (const record of records) for (const added of record.addedNodes) if (added.classList?.contains("error-toast")) alerts.push(added.querySelector(".error-report-message")?.textContent ?? added.textContent); }).observe(document.body, { childList: true, subtree: true });
   localStorage.removeItem('agenthub.flowNotifications');
   let permissionRequests = 0;
   class NotificationMock {

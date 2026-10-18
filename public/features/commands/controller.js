@@ -4,6 +4,7 @@ import { samePath, firstLine } from "../../shared/store.js";
 import { renderMarkdown } from "../../markdown.js";
 import { createFlowNodeForms, FLOW_KINDS, KIND_LABEL, kindOf, hasBranchPorts, TASK_TYPE_LABEL, isScheduleArmed, KIND_HINT as FLOW_HINT } from "./flow-nodes.js";
 import { commandBody } from "../graph/history.js";
+import { showError } from "../../shared/error-report.js";
 
 export function createCommandsController({ api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation, history, nodeSnapshot, recordNodesRemoved }) {
   const ui = {
@@ -127,7 +128,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     if (kindOf(c) === "watch" && c.state === "watching") return stopCommand(c);
     if (kindOf(c) === "markdown") return openCommandOutput(c);
     if (pendingRuns.has(c.id) || (["button", "git", "task"].includes(kindOf(c)) && c.state === "running")) return;
-    if (kindOf(c) === "group" && !groupProgress(c).ready) return alert("묶은 세션 중 진행 중인 노드가 있어 아직 넘길 수 없습니다.");
+    if (kindOf(c) === "group" && !groupProgress(c).ready) return showError({ message: "묶은 세션 중 진행 중인 노드가 있어 아직 넘길 수 없습니다.", hint: "묶은 세션이 모두 끝난 뒤 다시 넘기세요." }, { action: "그룹 넘기기" });
     const values = kindOf(c) === "input" ? await flowForms.collect(c) : undefined;
     if (kindOf(c) === "input" && values === null) return;
     pendingRuns.add(c.id);
@@ -136,7 +137,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     try {
       await api("POST", `/api/commands/${c.id}/run`, values === undefined ? undefined : { values });
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: `${c.title || "노드"} 실행` });
     } finally {
       pendingRuns.delete(c.id);
       await Promise.all([loadCommands(), ...(["button", "group"].includes(kindOf(c)) ? [loadLinks()] : [])]);
@@ -150,7 +151,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     if (navigation.view === "project") renderGraph();
     renderCommandRun();
     try { await api("POST", `/api/commands/${c.id}/stop`); }
-    catch (err) { alert(err.message); }
+    catch (err) { showError(err, { action: `${c.title || "노드"} 중지` }); }
     finally { pendingRuns.delete(c.id); await loadCommands(); renderCommandRun(); }
   }
 
@@ -162,7 +163,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       await api("DELETE", `/api/commands/${c.id}`);
       if (snapshot) recordNodesRemoved(c.projectPath, [snapshot], tabId);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: `${c.title || "노드"} 삭제` });
     }
     await Promise.all([loadCommands(), loadLinks()]);
   }
