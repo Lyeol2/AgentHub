@@ -2,6 +2,7 @@ import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { defaultPermission, permissionLabel } from "../../shared/permissions.js";
 import { createWorkbranchPicker } from "../../shared/workbranches.js";
+import { showError } from "../../shared/error-report.js";
 
 export function createCreationController({ api, loadStatus, loadSessions, loadProjects, sortedProjects, connectCreatedGraphNode, fillModels, fillEfforts, openChat, openSettings, data, navigation }) {
   const ui = {
@@ -102,7 +103,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       await loadStatus();
     } catch (err) {
       if (ui.newSessionContext === context) ui.newSessionContext = null;
-      alert(err.message);
+      showError(err, { action: "AI CLI 상태 확인" });
       return;
     }
     if (ui.newSessionContext !== context || context.cancelled) return;

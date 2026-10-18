@@ -33,7 +33,7 @@
 .tasks-context { gap: 6px 8px; }
 .tasks-context-status { margin-left: 4px; }
 .tasks-context-detail { flex-basis: 100%; }
-.tasks-context[data-state="error"], .task-inline-error {
+.tasks-context[data-state="error"] {
   color: var(--danger, #f87171);
 }
 .tasks-context[data-state="stale"] { color: var(--warn); }
@@ -126,12 +126,10 @@
 .task-issue[data-state="closed"] .task-pull-link { color: var(--muted, #9ca3af); }
 .task-issue-error { color: var(--danger); }
 .task-issue > .task-login { margin-left: 8px; }
-.task-inline-error { margin: 10px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.task-inline-error p { margin: 0; }
+/* 작업 카드의 오류는 공용 오류 표시(error-report)를 쓰고 카드 안에서 조금 작게 보인다. */
+.task-inline-error { margin: 10px 0 0; font-size: 12px; }
 .task-error-hint { display: block; color: var(--text); opacity: .85; }
 .task-error-hint::before { content: "해결 방법: "; color: var(--muted); }
-.task-error-raw summary { cursor: pointer; color: var(--muted); }
-.task-error-raw pre { margin: 6px 0 0; padding: 8px; max-height: 160px; overflow: auto; background: var(--code-bg); color: var(--code-text); border-radius: 6px; font-size: 11px; white-space: pre-wrap; }
 .task-card > .task-login { margin-top: 8px; }
 .error > .task-login { margin-left: 8px; }
 .workbranch-status { overflow-wrap: anywhere; }

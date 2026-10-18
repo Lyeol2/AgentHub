@@ -4,6 +4,7 @@ import { linkLabel } from "../../shared/flow.js";
 import { renderMarkdown } from "../../markdown.js";
 import { renderAttachmentLinks } from "./image-composer.js";
 import { createReportView } from "./report-view.js";
+import { showError } from "../../shared/error-report.js";
 
 /** Render conversation history; user decisions are commands supplied by the controller. */
 export function createConversationView({ api, getSession, sessionById, selectSession, onTaskReference, onPlanDecision, onPlanError, onQuestionAnswer, onPermissionDecision }) {
@@ -37,7 +38,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       try {
         await onPlanDecision(s.id, ev.planId, { action, reason });
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: action === "approve" ? "계획 승인" : "계획 거절", sessionId: action === "approve" ? s.id : null });
       }
     };
     if (ev.status === "pending") {
@@ -49,7 +50,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
         } }, "거절")));
     } else if (ev.status === "invalid") {
       node.append(el("div", { class: "plan-actions" },
-        el("button", { class: "ghost sm", onclick: () => onPlanError(s.id, ev.error).catch((err) => alert(err.message)) }, "오케스트레이터에게 오류 알리기")));
+        el("button", { class: "ghost sm", onclick: () => onPlanError(s.id, ev.error).catch((err) => showError(err, { action: "오케스트레이터에게 오류 알리기" })) }, "오케스트레이터에게 오류 알리기")));
     } else if (ev.result) {
       node.append(el("div", { class: "plan-result" }, ev.result));
     }
@@ -89,12 +90,12 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     const texts = [];
     const submit = async (button) => {
       const answers = ev.questions.map((_, i) => ({ selected: [...picks[i]], text: texts[i].value.trim() }));
-      if (!answers.some((a) => a.selected.length || a.text)) return alert("답을 고르거나 적으세요.");
+      if (!answers.some((a) => a.selected.length || a.text)) return showError("답을 고르거나 적으세요.", { action: "질문에 답하기" });
       button.disabled = true;
       try {
         await onQuestionAnswer(s.id, ev.questionId, answers);
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: "질문에 답하기" });
         button.disabled = false;
       }
     };
@@ -152,7 +153,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       try {
         await onPermissionDecision(s.id, ev.requestId, { decision, message });
       } catch (err) {
-        alert(err.message);
+        showError(err, { action: ev.planApproval ? "계획 승인 응답" : "권한 요청 응답" });
         for (const b of button.parentElement.children) b.disabled = false;
       }
     };

@@ -1,6 +1,7 @@
 import { $, el, timeAgo } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { renderMarkdown } from "../../markdown.js";
+import { showError } from "../../shared/error-report.js";
 
 const INBOX_INTERVAL = 3 * 60_000;
 const DETAIL_INTERVAL = 15_000;
@@ -566,7 +567,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
       const draft = await api("GET", "/api/issues/draft?" + new URLSearchParams({ session: session.id }));
       await openSend(draft.projectPath, draft);
     } catch (err) {
-      alert(err.message);
+      showError(err, { action: "팀원에게 넘기기" });
     }
   }
 

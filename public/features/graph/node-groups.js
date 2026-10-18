@@ -2,6 +2,7 @@ import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { nodeSize } from "./model.js";
 import { inGraphTab } from "./tabs.js";
+import { showError } from "../../shared/error-report.js";
 import { KIND_LABEL, hasBranchPorts, resultOnlyOutputs, isSourceOnly, isScheduleArmed } from "../commands/flow-nodes.js";
 
 // A group is a canvas container. Links continue to point to its real member nodes.
@@ -58,7 +59,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
       if (!samePath(projectPath, navigation.project)) return false;
       await load(projectPath);
       return true;
-    } catch (error) { if (samePath(projectPath, navigation.project)) { alert(error.message); await load(projectPath); } return false; }
+    } catch (error) { if (samePath(projectPath, navigation.project)) { showError(error, { action: "그룹 변경" }); await load(projectPath); } return false; }
     finally { ui.graphSaving--; }
   }
 
@@ -78,7 +79,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
       if (!samePath(projectPath, navigation.project)) return;
       ui.graphSelected.delete(group.id);
       await load(projectPath);
-    } catch (error) { if (samePath(projectPath, navigation.project)) alert(error.message); }
+    } catch (error) { if (samePath(projectPath, navigation.project)) showError(error, { action: "그룹 해제" }); }
   }
 
   function bounds(ids) {
@@ -93,7 +94,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
     const projectPath = navigation.project;
     const tabId = navigation.graphTabId;
     const members = selected.filter((id) => node(id) && !owner(id));
-    if (!members.length) return alert("그룹에 넣을 노드를 먼저 선택하세요. 이미 그룹에 속한 노드는 꺼낸 뒤 선택할 수 있습니다.");
+    if (!members.length) return showError({ message: "그룹에 넣을 노드가 선택되지 않았습니다.", hint: "그룹에 넣을 노드를 먼저 선택하세요. 이미 그룹에 속한 노드는 꺼낸 뒤 선택할 수 있습니다." }, { action: "그룹 만들기" });
     ui.graphSaving = (ui.graphSaving ?? 0) + 1;
     try {
       const result = await api("POST", "/api/node-groups", { projectPath, ...(tabId ? { tabId } : {}), title: "노드 그룹", members, rect: bounds(members), collapsed: false, ports: [] });
@@ -107,7 +108,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
       if (!samePath(projectPath, navigation.project) || tabId !== navigation.graphTabId) return;
       ui.graphSelected = new Set(group.id ? [group.id] : []);
       await load(projectPath);
-    } catch (error) { if (samePath(projectPath, navigation.project)) alert(error.message); }
+    } catch (error) { if (samePath(projectPath, navigation.project)) showError(error, { action: "그룹 만들기" }); }
     finally { ui.graphSaving--; }
   }
 
