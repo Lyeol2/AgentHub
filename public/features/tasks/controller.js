@@ -863,15 +863,27 @@ export function createTasksController({
     return Boolean($('task-agent')?.value);
   }
 
+  // 프로젝트 설정의 새 작업 기본값(AI·권한·워크트리 사용). 프로젝트 목록에 함께 온다.
+  function projectDefaults(path = getProjectPath()) {
+    const norm = value => String(value ?? '').replace(/\//g, '\\').replace(/\\+$/, '').toLowerCase();
+    return data?.projects?.find(project => norm(project.path) === norm(path))?.settings?.defaults ?? {};
+  }
+
+  // 프로젝트 기본값 → 지난번 선택 → 기존 기본값 순으로 고른다.
   function applyCreatePrefs() {
     const prefs = loadCreatePrefs();
+    const defaults = projectDefaults();
     fillAgentOptions();
-    // 지난번 선택을 기억하지 않고 매번 원본 폴더를 기본으로 둔다. 원본 폴더를 쓰는 중이면 만들 때 워크트리로 진행할지 묻는다.
-    if ($('task-worktree')) $('task-worktree').value = 'none';
+    // 워크트리 사용도 기억한다. 원본 폴더를 골랐는데 이미 쓰고 있으면 만들 때 워크트리로 진행할지 묻는다.
+    const worktree = defaults.isolate != null ? (defaults.isolate ? 'create' : 'none') : prefs.worktree === 'create' ? 'create' : 'none';
+    if ($('task-worktree')) $('task-worktree').value = worktree;
     if (prefs.type !== 'release') selectIfPresent('task-type', prefs.type);
     selectIfPresent('task-agent', prefs.agent);
+    selectIfPresent('task-agent', defaults.agent);
     updateAgentControls();
-    selectIfPresent('task-permission', prefs.permission);
+    const agent = $('task-agent')?.value;
+    if (prefs.agent === agent) selectIfPresent('task-permission', prefs.permission);
+    selectIfPresent('task-permission', defaults.permission?.[agent]);
     if ($('task-model') && typeof prefs.model === 'string') $('task-model').value = prefs.model;
     if ($('task-effort')) {
       fillEfforts('task-effort', $('task-agent')?.value || 'codex', $('task-model')?.value);
@@ -948,6 +960,7 @@ export function createTasksController({
     if (existing) payload.workBranch = workbranchPicker.selected().name;
     else if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
     if (!existing && $('task-worktree')?.value === 'none') payload.worktree = false;
+    const chosenWorktree = payload.worktree === false ? 'none' : 'create';
     if (!existing && $('task-branch-name')?.value.trim()) payload.branchName = $('task-branch-name').value.trim();
     if (!existing && payload.worktree !== false && $('task-worktree-name')?.value.trim()) payload.worktreeName = $('task-worktree-name').value.trim();
     if ($('task-model')?.value.trim()) payload.model = $('task-model').value.trim();
@@ -977,7 +990,8 @@ export function createTasksController({
       const result = await api('POST', '/api/tasks', payload);
       saveCreatePrefs({
         ...loadCreatePrefs(),
-        ...(existing ? {} : { worktree: payload.worktree === false ? 'none' : 'create', type: payload.type }),
+        // 원본 폴더를 이미 써서 이번만 워크트리로 바꿨어도 사용자가 고른 값을 기억한다.
+        ...(existing ? {} : { worktree: chosenWorktree, type: payload.type }),
         agent: payload.agent, permission: payload.permission, model: payload.model || '', effort: payload.effort || '',
       });
       // 팀 작업에서 시작했으면 그 이슈를 작업에 연결한다. 연결에 실패해도 작업은 남기고 카드에 알린다.

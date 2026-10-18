@@ -287,7 +287,8 @@
     await submitNewSession("Separate workspace");
 
     await openNewSession();
-    check($("new-isolate").value === "false" && $("new-worktree-name").value === "" && $("new-worktree-mode").value === "new", "successful creation resets workspace selection on reopen");
+    // 마지막에 고른 워크트리 사용은 다시 고르고, 이름은 새로 받는다.
+    check($("new-isolate").value === "true" && $("new-worktree-name").value === "" && $("new-worktree-name").required && $("new-worktree-mode").value === "new", "successful creation restores the last worktree choice without the old name");
     setWorktree(true); setWorktreeName("stale-worktree"); setWorktree(false);
     check($("new-worktree-name").disabled && !$("new-worktree-name").required && $("new-worktree-row").hidden, "turning worktrees off removes the name requirement");
     await submitNewSession("Worktree disabled");
