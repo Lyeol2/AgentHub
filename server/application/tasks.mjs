@@ -7,6 +7,7 @@ import { GitHubIssues, githubIssues, normalizeIssue } from "../issues.mjs";
 import { summary } from "../store.mjs";
 import { listWorkbranches, resolveWorkbranch } from "../workbranches.mjs";
 import { HttpError } from "./errors.mjs";
+import { hintFor } from "./error-hints.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, taskAncestor, gitflowContext, assertTaskWorktree, readTaskBranch,
   taskDirty, taskWorktreeLocation, validTaskWorktreeName, sameTaskPath, insideTaskPath, assertTaskGitIdle, taskBranchSlug, removeWorktreeDir, worktreeRegistered } from "../tasks.mjs";
@@ -39,7 +40,8 @@ const failure = (error) => error instanceof HttpError ? error : new HttpError(er
 // 카드에 남기는 오류. 해결 방법(hint)이 있으면 함께 보관한다.
 const recordError = (task, error) => {
   task.error = error.message; task.errorReason = error.reason;
-  if (typeof error.hint === "string" && error.hint) task.errorHint = error.hint; else delete task.errorHint;
+  const hint = typeof error.hint === "string" && error.hint ? error.hint : hintFor(error.reason);
+  if (hint) task.errorHint = hint; else delete task.errorHint;
 };
 
 const emptyDir = (dir) => { try { return fs.statSync(dir).isDirectory() && !fs.readdirSync(dir).length; } catch { return false; } };
