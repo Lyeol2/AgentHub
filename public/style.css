@@ -1307,3 +1307,13 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
   .member-row { flex-wrap: wrap; }
   .member-name-input { width: 100%; }
 }
+
+/* ── 하위 작업(서브에이전트·백그라운드 명령) ───────────────── */
+/* 백그라운드 작업 중: 실행 중(채운 점)과 달리 테두리만 있는 점·점선 테두리 */
+.dot.background { background: transparent; border: 2px solid var(--accent); width: 9px; height: 9px; box-sizing: border-box; }
+.gcard.background { border-color: rgb(76 141 255 / .55); border-style: dashed; }
+.pill.subtasks-running { color: var(--accent); border-color: rgb(76 141 255 / .4); border-style: dashed; }
+.session-item .pill.subtasks-running { font-size: 10px; padding: 0 6px; margin-left: auto; }
+.session-item .pill.q-pending + .pill.subtasks-running, .session-item .pill.subtasks-running + .pill.life { margin-left: 4px; }
+td .pill.subtasks-running { margin-left: 4px; }
+.gcard-top .pill.subtasks-running { font-size: 10px; padding: 0 6px; }

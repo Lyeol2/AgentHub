@@ -1,4 +1,4 @@
-import { $, el, table, lifePill, timeAgo, sessionLabel, sessionBadge, pill, AGENT_LABEL } from "../../shared/dom.js";
+import { $, el, table, lifePill, timeAgo, sessionLabel, sessionBadge, pill, subtaskPill, AGENT_LABEL } from "../../shared/dom.js";
 import { samePath, firstLine } from "../../shared/store.js";
 import { openContextMenu } from "../../shared/context-menu.js";
 import { sessionLockButton } from "../../shared/session-lock.js";
@@ -9,6 +9,8 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
     $("project-nav").replaceChildren(
       ...projects.map((p) => {
         const running = hubSessions(p).some((s) => s.state === "running");
+        // 턴은 끝났지만 하위 작업이 도는 세션은 실행 중과 다른 점으로 보인다.
+        const background = !running && hubSessions(p).some((s) => s.state === "background");
         const total = p.claude + p.codex;
         return el("button", {
           class: `nav-item${navigation.view === "project" && samePath(navigation.project, p.path) ? " active" : ""}`,
@@ -21,7 +23,7 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
             ["프로젝트 제거", () => openRemoveProject(p), { danger: true }],
           ]),
         },
-        el("span", { class: `dot${running ? " running" : ""}` }),
+        el("span", { class: `dot${running ? " running" : background ? " background" : ""}` }),
         el("span", { class: "nav-name" }, p.name),
         el("span", { class: "count" }, String(total + hubSessions(p).length)));
       }),
@@ -44,6 +46,7 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
       el("span", { class: `dot ${s.state}` }),
       el("span", { class: "name" }, s.title),
       s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : null,
+      subtaskPill(s),
       s.compactions ? lifePill(s) : null),
     el("span", { class: "sub" }, sub)), sessionLockButton(s, toggleSessionLock));
     const chats = items.filter((s) => s.chat);
@@ -64,7 +67,7 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
         hint && el("div", { class: "hint" }, hint));
     $("kpis").replaceChildren(
       kpi("전체 세션", sessions.length, "", `Claude ${sessions.filter((s) => s.agent === "claude").length} · Codex ${sessions.filter((s) => s.agent === "codex").length}`),
-      kpi("실행 중", count("running"), count("running") ? "accent" : ""),
+      kpi("실행 중", count("running"), count("running") ? "accent" : "", count("background") ? `백그라운드 작업 ${count("background")}` : ""),
       kpi("오류·중단", count("error") + count("interrupted"), count("error") ? "danger" : ""),
       kpi("프로젝트", projects.length, "", `감지 ${projects.filter((p) => !p.registered).length} · 등록 ${projects.filter((p) => p.registered).length}`),
     );
@@ -92,7 +95,7 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
       el("td", { class: "title-cell", title: s.title }, s.title, sessionLockButton(s, toggleSessionLock)),
       el("td", {}, sessionBadge(s)),
       withProject ? el("td", {}, s.projectName) : el("td", { class: "path" }, s.worktree ? "작업 폴더" : "원본"),
-      el("td", {}, pill(s.state)),
+      el("td", {}, pill(s.state), subtaskPill(s)),
       el("td", { class: "num" }, timeAgo(s.updatedAt)));
   }
 
@@ -112,7 +115,7 @@ export function createProjectsView({ data, navigation, getFilter, sortedProjects
     el("td", {}, sessionBadge(s), s.model ? el("span", { class: "muted" }, ` ${s.model}`) : null),
     el("td", { class: "role-cell", title: s.role ?? "" }, [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ") || "—"),
     el("td", { class: "path", title: s.cwd }, s.worktree ? s.worktree.branch : s.branch ? `원본 · ${s.branch}` : "원본"),
-    el("td", {}, s.waiting ? el("span", { class: "pill q-pending" }, "답 대기") : pill(s.state)),
+    el("td", {}, s.waiting ? el("span", { class: "pill q-pending" }, "답 대기") : pill(s.state), subtaskPill(s)),
     el("td", { class: "num" }, timeAgo(s.updatedAt))));
     table("p-sessions", [["세션"], ["AI"], ["역할"], ["작업 폴더"], ["상태"], ["업데이트", "num"]], rows,
       q ? "검색 결과가 없습니다." : "이 프로젝트에서 만든 세션이 없습니다. 새 세션을 만들거나 아래에서 기존 세션을 가져오세요.");
