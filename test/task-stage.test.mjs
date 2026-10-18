@@ -99,3 +99,49 @@ test("단계 판정: 작업 폴더가 사라지면 경고하고 작업을 진행
   assert.equal(p.nodes.find((n) => n.key === "folder").state, "warn");
   assert.match(action(p, "finish", "마무리").reason, /작업 폴더가 없습니다/);
 });
+
+test("단계 판정: main 변경이 develop에 없으면 기준 반영 대신 해야 할 일을 안내한다", () => {
+  let p = buildTaskPipeline(task({ freshness: { state: "needs-update", mainMissing: true } }), status({ commits: 1 }), {});
+  assert.equal(p.mainMissing, true);
+  assert.equal(action(p, "sync"), undefined);
+  assert.equal(action(p, "refresh").primary, true);
+  assert.match(action(p, "finish", "마무리").reason, /main의 변경을 develop에 먼저/);
+  assert.match(p.notice, /Git 탭에서 main을 develop에 병합/);
+  assert.equal(p.nodes[0].sub, "main 미반영");
+  // 상태 조회가 지금 다시 따진 결과가 저장된 결과보다 우선한다.
+  p = buildTaskPipeline(task({ freshness: { state: "needs-update", mainMissing: true } }), status({ commits: 1, freshness: { state: "current", mainMissing: false } }), {});
+  assert.equal(p.mainMissing, false); assert.equal(p.behind, false); assert.equal(p.notice, "");
+  assert.equal(action(p, "finish", "마무리").primary, true);
+  // 긴급 수정은 main에서 출발하므로 안내하지 않는다.
+  p = buildTaskPipeline(task({ type: "hotfix", branch: "hotfix/x", baseBranch: "main", targetBranch: "main", freshness: { state: "current", mainMissing: true } }), status({ commits: 1 }), {});
+  assert.equal(p.mainMissing, false);
+});
+
+test("단계 판정: 원격 작업 브랜치가 앞서면 원격 변경 합치기를 먼저 권한다", () => {
+  let p = buildTaskPipeline(task(), status({ commits: 1, remoteAhead: true }), {});
+  assert.equal(action(p, "sync", "원격 변경 합치기").primary, true);
+  assert.equal(action(p, "finish", "마무리"), undefined);
+  p = buildTaskPipeline(task({ state: "review", pull: { number: 2, state: "OPEN" } }), status({ commits: 1, remoteAhead: true }), {});
+  assert.match(action(p, "merge").reason, /원격 작업 브랜치의 새 커밋/);
+});
+
+test("단계 판정: 푸시 안 된 커밋은 배지와 원격에 백업으로 알린다", () => {
+  let p = buildTaskPipeline(task(), status({ commits: 2, unpushed: 2 }), {});
+  assert.deepEqual(p.badges.map((b) => b.label), ["푸시 안 됨 2개"]);
+  assert.equal(action(p, "backup").disabled, false);
+  p = buildTaskPipeline(task(), status({ commits: 2, unpushed: 0 }), {});
+  assert.equal(p.badges.length, 0); assert.equal(action(p, "backup"), undefined);
+});
+
+test("단계 판정: 원본 폴더가 작업 브랜치를 벗어나면 경고하고 정리 경로를 안내한다", () => {
+  let p = buildTaskPipeline(task({ inPlace: true }), status({ offBranch: true, currentBranch: "develop", unpushed: 3 }), {});
+  assert.equal(p.nodes.find((n) => n.key === "folder").state, "warn");
+  assert.equal(p.nodes.find((n) => n.key === "folder").sub, "다른 브랜치");
+  assert.match(p.notice, /Git 작업은 막지 않습니다/);
+  assert.deepEqual(p.badges.map((b) => b.id), ["off-branch"]);
+  assert.match(action(p, "finish", "마무리").reason, /작업 브랜치에 있지 않습니다/);
+  p = buildTaskPipeline(task({ inPlace: true }), status({ offBranch: true, branchMissing: true, currentBranch: "develop" }), {});
+  assert.equal(action(p, "delete", "기록만 정리").primary, true);
+  assert.match(p.notice, /기록만 정리/);
+  assert.equal(p.nodes.find((n) => n.key === "branch").state, "warn");
+});
