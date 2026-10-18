@@ -412,6 +412,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const project = projectService().ensureProject(body.projectPath);
     graphTabs?.resolve(project.path, body.tabId, body.connectFrom ?? body.createdBy);
     const repo = await taskRepo(project.path);
+    // 작업 만들기 단계를 화면에 알리고, 단계별 소요 시간을 디버그 로그로 남긴다.
+    const clock = stopwatch("task.create", project.path);
+    let stage = "입력 확인";
+    const progress = (step) => { clock.step(stage); stage = step; notify("task-progress", { projectPath: project.path, ...(requestId ? { requestId } : {}), step }); };
     return locked(repo.common, async () => {
       const previous = requestId && [...records.values()].find((task) => task.requestId === requestId && sameTaskPath(task.projectPath, project.path));
       if (previous) {
@@ -421,7 +425,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
           ...(previous.initialStart?.state !== "sent" && body.start ? { startError: previous.initialStart?.error || "작업은 이미 생성됐습니다. 세션 기록을 확인한 뒤 이어서 요청하세요." } : {}) };
       }
       const gitflow = projectGitflowSettings(config, repo.top);
-      const current = await gitflowContext(project.path, undefined, gitflow);
+      progress("원격 최신 상태 확인 중");
+      // 작업 탭을 열 때 받은 fetch가 방금 것이면 다시 쓴다.
+      const current = await gitflowContext(project.path, undefined, gitflow, { maxAge: GITFLOW_FETCH_REUSE_MS });
+      progress("작업 브랜치 정하는 중");
       if (type !== "hotfix" && current.mainMissing) throw new HttpError(409, `새 작업을 만들기 전에 ${gitflow.main}의 변경을 ${gitflow.develop}에 반영하세요.`, "gitflow-develop-behind");
       const id = `${Date.now().toString(36)}-${randomBytes(4).toString("hex")}`;
       const flowBranches = gitflowBranches(type, gitflow);
@@ -495,9 +502,11 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         delete task.provisioning;
         save(task);
         if (body.session === false) return { task: clone(task) };
+        progress("세션 준비 중");
         try { return await attachAndStart(task, body); }
         catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
       }
+      progress(selected ? "작업 폴더 확인 중" : "작업 폴더 만드는 중");
       const createdRoot = !fs.existsSync(location.root);
       fs.mkdirSync(location.root, { recursive: true });
       try { if (!selected) await addWorktree(task, false); }
@@ -514,9 +523,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       delete task.provisioning;
       save(task);
       if (body.session === false) return { task: clone(task) };
+      progress("세션 준비 중");
       try { return await attachAndStart(task, body); }
       catch (error) { task.error = `작업은 생성됐지만 세션을 만들지 못했습니다: ${error.message}`; save(task); throw failure(error); }
-    });
+    }).finally(() => { clock.step(stage); clock.total(); });
   }
   async function attachAndStart(task, body) {
     let result;

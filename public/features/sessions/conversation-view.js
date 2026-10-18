@@ -284,7 +284,46 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     }
   }
 
+  // 실행 중에 붙인 요청의 반영 상태. 예전 기록(delivery 없음)은 표시하지 않는다.
+  const DELIVERY = { sent: "전달됨 · 반영 확인 중", applied: "반영됨", requeued: "반영 못 함 · 대기열로 되돌림", dropped: "반영 못 함 · 중지해서 보내지 않음" };
+  const deliveryBadge = (ev) => ev.injected && DELIVERY[ev.delivery] ? el("span", { class: `delivery ${ev.delivery}` }, DELIVERY[ev.delivery]) : null;
+
+  // 이미 그린 이벤트의 일부가 바뀌었다(추가 요청의 반영 상태). 그 줄만 고친다.
+  function updateEvent(list, seq, patch) {
+    const ev = histories.get(list)?.events.find((item) => item.seq === seq);
+    if (ev) Object.assign(ev, patch);
+    const node = list.querySelector(`li.ev.user[data-seq="${seq}"]`);
+    if (!node || !("delivery" in patch)) return;
+    node.querySelector(".delivery")?.remove();
+    const badge = deliveryBadge({ injected: true, ...patch });
+    if (badge) node.append(badge);
+  }
+
+  // ── 답을 쓰는 중인 글 ───────────────────────────────────────────
+  // 기록에 남지 않는 글자 조각을 목록 끝 한 줄에 이어 붙인다. 최종 답변·도구 호출이 오거나 턴이 끝나면 지운다.
+  const DRAFT_END = new Set(["text", "thinking", "tool", "result", "error", "user"]);
+  const drafts = new WeakMap(); // 목록 → { id, sessionId, text, node }
+
+  function appendDraft(list, draftId, text) {
+    if (isSettled()) return clearDraft(list);
+    let draft = drafts.get(list);
+    if (!draft || draft.id !== draftId) {
+      draft?.node.remove();
+      draft = { id: draftId, sessionId: getSession()?.id, text: "", node: el("li", { class: "ev text draft", "aria-live": "off" }) };
+      drafts.set(list, draft);
+    }
+    draft.text += text;
+    draft.node.textContent = draft.text;
+    if (draft.node !== list.lastElementChild) list.append(draft.node);
+  }
+
+  function clearDraft(list) {
+    drafts.get(list)?.node.remove();
+    drafts.delete(list);
+  }
+
   function appendEvent(list, ev) {
+    if (DRAFT_END.has(ev.kind)) clearDraft(list);
     const history = histories.get(list);
     if (!history) return renderEvents(list, [ev]);
     history.events.push(ev);
@@ -297,6 +336,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
   }
 
   function renderEvents(list, events) {
+    const draft = drafts.get(list);
     const history = { events: [...events], pendingTools: [], settled: isSettled(), sessionId: getSession()?.id };
     const groups = turns(history.events, history.settled);
     history.complete = groups.at(-1)?.complete ?? false;
@@ -306,10 +346,14 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       history.pendingTools = [];
       renderTurn(list, turn, history.pendingTools);
     }
+    // 다시 그려도 같은 세션의 쓰는 중인 글은 끝에 남긴다.
+    if (draft && !history.settled && draft.sessionId === history.sessionId) list.append(draft.node);
+    else clearDraft(list);
   }
 
   // 실패·중단은 result가 없으므로 실제 실행 상태가 끝났을 때 마지막 과정도 접는다.
   function settleEvents(list) {
+    if (isSettled()) clearDraft(list);
     const history = histories.get(list);
     if (history && history.sessionId === getSession()?.id && !history.settled && isSettled()) renderEvents(list, history.events);
   }
@@ -357,13 +401,15 @@ export function createConversationView({ api, getSession, sessionById, selectSes
             ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
           el("div", { class: "handoff-body" }, ev.text)));
     }
-    const node = el("li", { class: cls });
+    const node = el("li", { class: cls, ...(ev.kind === "user" && Number.isInteger(ev.seq) ? { "data-seq": ev.seq } : {}) });
     if (ev.kind === "user") reports.renderUser(node, ev.text ?? "", ev.references);
     else node.append(ev.text ?? "");
     if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
+    const delivery = deliveryBadge(ev);
+    if (delivery) node.append(delivery);
     if (ev.detail) node.title = ev.detail;
     return node;
   }
 
-  return { renderEvents, appendEvent, settleEvents };
+  return { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft, clearDraft };
 }

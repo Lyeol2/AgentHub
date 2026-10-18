@@ -1,6 +1,7 @@
 import { createConversationView } from "./conversation-view.js";
 import { $, AGENT_LABEL, STATE_LABEL, el, badge, sessionLabel, pill, renderLife, renderDiff } from "../../shared/dom.js";
 import { renderSessionElapsed } from "../../shared/elapsed.js";
+import { renderActivity } from "../../shared/activity.js";
 import { linkLabel } from "../../shared/flow.js";
 import { firstLine, samePath } from "../../shared/store.js";
 import { closeContextMenu, openContextMenu } from "../../shared/context-menu.js";
@@ -13,7 +14,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   const ui = {
     "chatDraft": null
   };
-  const { renderEvents, appendEvent, settleEvents } = createConversationView({
+  const { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft } = createConversationView({
     api, getSession: () => data.current, sessionById, selectSession, onTaskReference,
     onPlanDecision: (id, plan, body) => api("POST", `/api/sessions/${id}/plans/${plan}`, body),
     onPlanError: (id, error) => api("POST", `/api/sessions/${id}/messages`, { prompt: `[계획 오류] ${error}\n계획 블록을 고쳐 다시 제안하라.` }),
@@ -42,8 +43,15 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   }
 
   function renderSession() {
+    if (!renderSessionHeader()) return;
+    renderEvents($("s-events"), data.current.events);
+    scrollToBottom();
+  }
+
+  // 기록(events)을 빼고 머리글·상태만 그린다. 실행 중 상태·결과 알림은 이것만 다시 그린다.
+  function renderSessionHeader() {
     const s = data.current;
-    if (!s) return;
+    if (!s) return false;
     $("s-crumb-project").textContent = s.chat ? "대시보드" : s.projectName;
     $("s-crumb").textContent = ` / ${s.chat ? "일반 채팅" : "세션"}${s.imported ? " · 가져옴" : ""}`;
     $("s-agent").className = `badge ${s.agent}${s.chat ? " chat" : ""}`;
@@ -72,9 +80,69 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("s-popout").hidden = !!POPUP;
     if (POPUP) document.title = `${s.title} · AgentHub`;
     renderFlow();
+    return true;
+  }
 
-    renderEvents($("s-events"), s.events);
-    scrollToBottom();
+  // 상태·결과 이벤트 뒤에 세션 정보(CLI 세션 ID, 사용량 등)만 다시 받아 머리글을 고친다.
+  // 놓친 이벤트가 있거나 받지 못하면 전체를 다시 받는다.
+  async function refreshSessionMeta(id) {
+    const s = data.current;
+    if (s?.id !== id) return;
+    let meta;
+    try { meta = await api("GET", `/api/sessions/${id}?meta=1`); }
+    catch { return data.current === s ? selectSession(id) : undefined; }
+    if (data.current !== s) return;
+    if (meta.locked || meta.eventCount > s.events.length) return selectSession(id);
+    const { eventCount, handoverPending, ...rest } = meta;
+    Object.assign(s, rest);
+    if (navigation.view === "chat") {
+      $("c-title").textContent = s.title;
+      renderChatState();
+    } else if (navigation.view === "session") renderSessionHeader();
+  }
+
+  // ── 실행 중 진행 표시 ───────────────────────────────────────────
+  // 멈춘 것 같을 때의 다시 시도: 일시중지로 지금 턴을 멈추고, 멈추면 재개해 멈춘 곳부터 이어 간다.
+  const retrying = new Set();
+  async function retrySession(id) {
+    if (retrying.has(id)) return;
+    retrying.add(id);
+    try { await api("POST", `/api/sessions/${id}/pause`); }
+    catch (err) { retrying.delete(id); alert(err.message); }
+  }
+
+  function sessionStateChanged(id, state) {
+    if (!retrying.has(id) || state === "running") return;
+    retrying.delete(id);
+    if (state === "paused") api("POST", `/api/sessions/${id}/resume`).catch((err) => alert(err.message));
+  }
+
+  function renderRunActivity(now = Date.now()) {
+    const s = data.current;
+    const prefix = navigation.view === "chat" ? "c" : navigation.view === "session" ? "s" : null;
+    if (!prefix) return;
+    renderActivity(prefix, s, {
+      now,
+      onStop: () => s && api("POST", `/api/sessions/${s.id}/stop`).catch((e) => alert(e.message)),
+      onRetry: () => s && retrySession(s.id),
+    });
+  }
+
+  // 실시간 진행 알림(activity)과 출력 이벤트를 세션에 반영한다.
+  function applyActivity(id, activity) {
+    for (const item of new Set([sessionById(id), data.current?.id === id ? data.current : null])) {
+      if (!item) continue;
+      if (Object.hasOwn(activity, "runPhase")) item.runPhase = activity.runPhase;
+      if (Object.hasOwn(activity, "lastOutputAt")) item.lastOutputAt = activity.lastOutputAt;
+      if (Object.hasOwn(activity, "waiting")) item.waiting = activity.waiting;
+    }
+    if (data.current?.id === id) renderRunActivity();
+  }
+
+  // 화면에 출력이 왔다. 서버의 진행 알림은 몇 초마다 오므로 그 사이는 화면이 받은 시각을 쓴다.
+  function markOutput(id) {
+    if (data.current?.id !== id || data.current.state !== "running") return;
+    applyActivity(id, { runPhase: "working", lastOutputAt: new Date().toISOString() });
   }
 
   function renderState() {
@@ -92,6 +160,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("s-restart").disabled = running || !s.agentSessionId;
     renderLife("s-life", s);
     renderComposer("s", s);
+    renderRunActivity();
   }
 
   // ── 실행 중에 보내기 ────────────────────────────────────────────
@@ -698,6 +767,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("c-events").classList.toggle("running", running);
     settleEvents($("c-events"));
     if (running) $("c-empty").hidden = true;
+    renderRunActivity();
   }
 
   // 새 채팅이면 초안만 바꾸고, 진행 중인 채팅이면 다음 메시지부터 적용되도록 저장한다.
@@ -805,5 +875,6 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
 
   $("c-popout").addEventListener("click", () => openWindow(`chat=${data.current?.id ?? "new"}`));
 
-  return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, toggleSessionLock, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom };
+  return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, toggleSessionLock, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom,
+    refreshSessionMeta, renderRunActivity, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft };
 }

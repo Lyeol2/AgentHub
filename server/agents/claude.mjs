@@ -29,8 +29,10 @@ const CHAT_PROMPT = "You are Claude, a helpful AI assistant having a conversatio
   "Answer directly and conversationally, using Markdown where it helps. Reply in the language the user writes in.";
 
 // mcp: AgentHub MCP 서버(세션끼리 소통하는 도구). 설정 파일로 넘기고 도구는 묻지 않고 쓰게 한다.
+// --include-partial-messages: 답을 쓰는 동안 글자 조각(stream_event)을 받아 화면에 바로 보여 준다.
+// --replay-user-messages: 보낸 요청을 CLI가 받으면 다시 돌려준다. 실행 중에 붙인 요청이 실제로 반영됐는지 확인한다.
 export function buildArgs(session, { mcp = null } = {}) {
-  const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--permission-prompt-tool", "stdio"];
+  const args = ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--replay-user-messages", "--permission-prompt-tool", "stdio"];
   if (mcp) args.push("--mcp-config", mcp.configFile, "--allowedTools", "mcp__agenthub");
   // /plan 요청은 그 턴만 계획 모드로 실행한다(파일 수정·명령 없이 계획을 세우고 ExitPlanMode로 승인을 묻는다).
   args.push("--permission-mode", session.planTurn ? "plan" : session.permission ?? "acceptEdits");
@@ -144,6 +146,15 @@ function resultText(content) {
   return JSON.stringify(content);
 }
 
+// --replay-user-messages로 CLI가 돌려준 사용자 요청의 글. 도구 결과(tool_result)는 요청이 아니므로 null.
+export function replayedUserText(msg) {
+  if (msg?.type !== "user" || msg.parent_tool_use_id) return null;
+  const content = msg.message?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content) || content.some((block) => block?.type === "tool_result")) return null;
+  return content.find((block) => block?.type === "text")?.text ?? null;
+}
+
 // stream-json 한 줄을 공통 이벤트 목록으로 바꾼다.
 export function parseLine(line) {
   let msg;
@@ -200,6 +211,15 @@ export function parseLine(line) {
         }
       }
       return events;
+    }
+    case "stream_event": {
+      // 답을 쓰는 중인 글자 조각. 기록에는 남기지 않고 화면에만 잠깐 보여 준다(최종 답변이 오면 지운다).
+      // 하위 에이전트의 출력은 본 대화가 아니므로 보이지 않는다.
+      if (msg.parent_tool_use_id) return [];
+      const event = msg.event ?? {};
+      if (event.type === "message_start") return [{ kind: "delta", reset: true }];
+      if (event.type === "content_block_delta" && event.delta?.type === "text_delta" && event.delta.text) return [{ kind: "delta", text: event.delta.text }];
+      return [];
     }
     case "rate_limit_event":
       // 화면에 남기지 않고 사용 한도 표시에만 쓴다.

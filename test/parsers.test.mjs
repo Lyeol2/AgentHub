@@ -51,6 +51,33 @@ test("claude: 재개할 때는 --resume, 처음에는 --session-id를 쓴다", (
   assert.deepEqual(next.slice(next.indexOf("--resume"), next.indexOf("--resume") + 2), ["--resume", "abc"]);
 });
 
+test("claude: 쓰는 중인 글(stream_event)은 글자 조각으로만 넘기고 최종 답변과 겹치지 않는다", () => {
+  const args = claude.buildArgs({ permission: "acceptEdits" });
+  assert.ok(args.includes("--include-partial-messages"));
+  assert.ok(args.includes("--replay-user-messages"));
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "stream_event", event: { type: "message_start", message: { content: [] } } })), [{ kind: "delta", reset: true }]);
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "stream_event", event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "안" } } })), [{ kind: "delta", text: "안" }]);
+  // 생각·도구 입력 조각, 블록 경계, 하위 에이전트의 출력은 보이지 않는다.
+  for (const event of [{ type: "content_block_delta", delta: { type: "thinking_delta", thinking: "음" } }, { type: "content_block_delta", delta: { type: "input_json_delta", partial_json: "{" } },
+    { type: "content_block_start", content_block: { type: "text", text: "" } }, { type: "message_stop" }]) {
+    assert.deepEqual(claude.parseLine(JSON.stringify({ type: "stream_event", event })), []);
+  }
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "stream_event", parent_tool_use_id: "t1", event: { type: "content_block_delta", delta: { type: "text_delta", text: "x" } } })), []);
+  // 최종 답변은 그대로 한 번만 기록에 남는다.
+  assert.deepEqual(claude.parseLine(JSON.stringify({ type: "assistant", message: { content: [{ type: "text", text: "안녕" }] } })), [{ kind: "text", text: "안녕" }]);
+});
+
+test("claude: CLI가 돌려준 사용자 요청과 도구 결과를 구분하고, 도구 줄에 동작 이름을 붙인다", () => {
+  assert.equal(claude.replayedUserText({ type: "user", message: { role: "user", content: [{ type: "text", text: "추가 조건" }, { type: "image", source: {} }] } }), "추가 조건");
+  assert.equal(claude.replayedUserText({ type: "user", message: { role: "user", content: "문자열 요청" } }), "문자열 요청");
+  assert.equal(claude.replayedUserText({ type: "user", message: { content: [{ type: "tool_result", content: "출력" }] } }), null);
+  assert.equal(claude.replayedUserText({ type: "user", parent_tool_use_id: "t1", message: { content: [{ type: "text", text: "하위" }] } }), null);
+  assert.equal(claude.replayedUserText({ type: "assistant", message: { content: [{ type: "text", text: "답" }] } }), null);
+  const [read, edit, unity] = claude.parseLine(JSON.stringify({ type: "assistant", message: { content: [
+    { type: "tool_use", name: "Read", input: { file_path: "a.js" } }, { type: "tool_use", name: "Edit", input: { file_path: "a.js" } }, { type: "tool_use", name: "mcp__unityMCP__manage_scene", input: {} }] } }));
+  assert.deepEqual([read.label, edit.label, unity.label], ["파일 읽기", "파일 수정", "유니티 조작"]);
+});
+
 test("codex: thread.started와 명령 실행 이벤트를 변환한다", () => {
   const [start] = codex.parseLine(JSON.stringify({ type: "thread.started", thread_id: "t1" }));
   assert.equal(start.agentSessionId, "t1");

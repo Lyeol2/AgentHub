@@ -581,6 +581,22 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .queue-item button { flex: none; }
 .ev.user.injected { border-style: dashed; }
 .ev.user.injected::before { content: "작업 중에 붙임 · "; font-size: 11px; color: var(--faint); }
+/* 실행 중에 붙인 요청의 반영 상태(전달됨 → 반영됨 / 대기열로 되돌림) */
+.ev.user .delivery { display: inline-block; margin-left: 8px; font-size: 11px; color: var(--faint); }
+.ev.user .delivery.applied { color: var(--accent); }
+.ev.user .delivery.requeued, .ev.user .delivery.dropped { color: var(--warn); }
+/* 실행 중 진행 표시(AI 시작 중 · N초째 응답 없음 · 멈춘 것 같음 · 답 대기) */
+.run-activity { display: flex; align-items: center; gap: 8px; padding: 6px 24px; font-size: 12.5px; color: var(--muted); border-top: 1px solid var(--line); background: var(--bg); }
+.run-activity[hidden] { display: none; }
+.run-activity .run-activity-text { flex: 1; min-width: 0; }
+.run-activity.start .run-activity-text, .run-activity.wait .run-activity-text { color: var(--accent); }
+.run-activity.stall { color: var(--warn); }
+.chat-activity { width: 100%; max-width: 860px; margin: 0 auto; border-top: 0; background: transparent; }
+/* 답을 쓰는 중인 글. 최종 답변이 오면 사라진다. */
+.ev.text.draft { opacity: .75; white-space: pre-wrap; }
+.ev.text.draft::after { content: "▍"; color: var(--accent); animation: tool-blink 1.2s ease-in-out infinite; }
+/* 도구 줄 앞의 동작 이름 */
+.ev.tool .tool-kind { flex: none; font-size: 11px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--muted); }
 .table tr.hidden-found td { opacity: .5; }
 
 /* ── 세션 우클릭 메뉴 ─────────────────────────────────────── */

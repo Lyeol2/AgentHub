@@ -1341,8 +1341,17 @@ export function createTasksController({
   $('task-issue-mode')?.addEventListener('change', updateIssueForm);
   updateToolbar();
 
+  // 작업 만들기 진행 단계(원격 확인 → 작업 폴더 → 세션). 만드는 중인 같은 프로젝트의 버튼 글자로 보여 준다.
+  function taskProgress({ projectPath: path, requestId, step } = {}) {
+    const submit = $('task-create-submit');
+    const key = value => String(value ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+    if (!createBusy || !submit || !step || key(path) !== key(createProject)) return;
+    if (requestId && taskAssistant.creationId() && requestId !== taskAssistant.creationId()) return;
+    submit.textContent = `${step}…`;
+  }
+
   return {
-    loadTasks, invalidateProject, renderTasks, cancelCreation, startFromIssue,
+    loadTasks, invalidateProject, renderTasks, cancelCreation, startFromIssue, taskProgress,
     async openReference(id, path = getProjectPath()) {
       await loadTasks(path, { localOnly: true });
       if (!sameProject(path)) return;

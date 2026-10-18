@@ -11,7 +11,8 @@ export function sessionRoutes(s) {
     ["POST", "sessions/import", ({ body }) => s.importSession(body)],
     ["GET", "records", ({ query }) => s.listRecords({ projectPath: query.get("path"), sessionId: query.get("session") ?? undefined })],
     ["POST", "sessions/import-record", ({ body }) => s.importRecord(body), { maxBodyBytes: RECORD_BODY_LIMIT }],
-    ["GET", "sessions/:id", ({ params }) => s.detail(params.id)],
+    // meta=1: 기록(events) 없이 세션 정보만 돌려준다. 실행 중 화면의 머리글만 갱신할 때 쓴다.
+    ["GET", "sessions/:id", ({ params, query }) => query.get("meta") === "1" ? s.detailMeta(params.id) : s.detail(params.id)],
     ["PUT", "sessions/:id", ({ params, body }) => s.update(params.id, body)],
     ["DELETE", "sessions/:id", ({ params, query }) => s.remove(params.id, {
       force: query.get("force") === "1",

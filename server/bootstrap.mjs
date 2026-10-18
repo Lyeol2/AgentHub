@@ -224,6 +224,12 @@ export function createHub(options = {}) {
   listen(runner, "state", (sessionId, state, runningStartedAt) => {
     notify("state", { sessionId, state, runningStartedAt });
   });
+  // 실행 중 진행 표시(시작 단계·마지막 출력 시각·답 대기), 쓰는 중인 글, 이미 남긴 이벤트의 상태 변경
+  listen(runner, "activity", (sessionId, activity) => notify("activity", { sessionId, ...activity }));
+  listen(runner, "draft", (sessionId, draft) => notify("draft", { sessionId, ...draft }));
+  listen(runner, "eventUpdate", (sessionId, seq, patch) => notify("event-update", { sessionId, seq, patch }));
+  // 지금 작업에 반영하지 못한 추가 요청을 대기열 앞으로 되돌린다. 사용자가 쓴 요청은 보낼 때 다시 /스킬·@참조를 풀어 쓴다.
+  listen(runner, "requeue", (session, items) => chain.requeue?.(session, items.map(({ text, meta }) => ({ text, meta: meta?.from ? meta : { user: true, ...meta } }))));
   listen(setup, "change", (jobs) => notify("setup", jobs));
   listen(setup, "finished", (tool, job) => {
     notify("cli", {});

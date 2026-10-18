@@ -245,10 +245,12 @@ export class CodexAppServer extends EventEmitter {
   }
 
   canInject() { return !!this.turnId && !this.stopping && !this.closed; }
+  // turn/steer 응답으로 실제 반영 여부를 알린다. { applied: true } 또는 { applied: false, error }로 끝나며 거부하지 않는다.
+  // 반영하지 못한 요청은 Runner가 대기열로 되돌린다.
   inject(text, attachments = []) {
     if (!this.canInject()) throw new Error("Codex가 요청을 준비 중이거나 이미 턴을 마쳤습니다. 대기열에 넣으세요.");
-    this.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: codexInput(text, attachments) })
-      .catch((err) => { if (!this.closed && !this.stopping) this.emit("event", { kind: "error", text: "추가 요청 전달 실패: " + err.message }); });
+    return this.request("turn/steer", { threadId: this.threadId, expectedTurnId: this.turnId, input: codexInput(text, attachments) })
+      .then(() => ({ applied: true }), (err) => ({ applied: false, error: err.message }));
   }
 
   interrupt() {
