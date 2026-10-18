@@ -56,18 +56,55 @@ export async function taskRemote(dir, selected, main = "main") {
   return remote;
 }
 
-async function mainChangesMissing(dir, mainSha, developSha) {
-  if (await taskAncestor(dir, mainSha, developSha)) return false;
-  // GitFlow can merge the same hotfix/release into both branches with different
-  // merge SHAs. A virtual merge checks whether main would add any content, without
-  // touching either branch, worktree, or index. Conflicts are conservatively pending.
-  try {
-    const [merged, tree] = await Promise.all([
-      taskGit(dir, ["merge-tree", "--write-tree", developSha, mainSha]),
-      taskGit(dir, ["rev-parse", `${developSha}^{tree}`]),
-    ]);
-    return merged.trim().split(/\r?\n/)[0] !== tree.trim();
-  } catch (error) { if (error.reason === "git-timeout") throw error; return true; }
+// main에만 있는 변경 중 develop에 실제로 없는 것이 있는지 본다. 브랜치·작업 폴더·index는 건드리지 않는다.
+// GitFlow는 같은 hotfix·release를 두 브랜치에 다른 SHA로 병합하므로 조상 관계만으로는 판단하지 않는다.
+// 1) 가상 병합 결과가 develop 트리와 같으면 반영됨. 충돌하거나 git이 merge-tree --write-tree(2.38+)를 모르면 다음 단계로 간다.
+// 2) main 쪽 커밋 중 develop에 patch-id가 같은 커밋이 있으면 반영됨(cherry-pick한 hotfix, develop에서 반영 뒤 되돌린 경우 포함).
+// 3) 남은 커밋은 그 커밋이 바꾼 파일 내용이 develop에 있거나 develop 기록에 한 번이라도 들어갔는지,
+//    develop 위에 다시 적용해도 바뀌는 것이 없는지 본다. 하나라도 확인되지 않으면 미반영이다.
+export async function mainChangesMissing(dir, mainSha, developSha, git = taskGit) {
+  const soft = (error) => { if (error.reason === "git-timeout") throw error; return null; };
+  let cwd = dir;
+  const read = (args) => git(cwd, args).then((out) => out.trim(), soft);
+  if (await git(dir, ["merge-base", "--is-ancestor", mainSha, developSha]).then(() => true, (error) => soft(error) ?? false)) return false;
+  // 하위 폴더를 프로젝트로 등록해도 파일 경로를 저장소 최상위 기준으로 맞춘다.
+  cwd = await read(["rev-parse", "--show-toplevel"]) || dir;
+  const developTree = await read(["rev-parse", `${developSha}^{tree}`]);
+  const merged = await read(["merge-tree", "--write-tree", developSha, mainSha]);
+  if (merged && merged.split(/\r?\n/)[0] === developTree) return false;
+  const pending = await read(["rev-list", "--cherry-pick", "--right-only", "--no-merges", `${developSha}...${mainSha}`]);
+  if (pending === null) return true;
+  const commits = pending.split(/\r?\n/).filter(Boolean);
+  if (commits.length > 200) return true;
+  const blobs = async (rev, paths) => new Map((await read(["--literal-pathspecs", "ls-tree", "-z", rev, "--", ...paths]) ?? "")
+    .split("\0").filter(Boolean).map((line) => { const [meta, name] = line.split("\t"); return [name, meta.split(" ")[2]]; }));
+  // develop 기록(main에 없는 쪽)에서 각 파일이 거쳐 간 내용. 병합 커밋도 부모별로 본다.
+  const history = async (paths) => {
+    const seen = new Set();
+    for (const line of (await read(["-c", "core.quotePath=false", "--literal-pathspecs", "log", "-m", "--raw", "--no-abbrev", "--no-renames", "--format=", `${mainSha}..${developSha}`, "--", ...paths]) ?? "").split(/\r?\n/)) {
+      const match = line.match(/^:\d+ \d+ [0-9a-f]+ ([0-9a-f]+) (\w)\d*\t(.*)$/);
+      if (match) seen.add(match[2] === "D" ? `D\t${match[3]}` : match[1]);
+    }
+    return seen;
+  };
+  for (const commit of commits) {
+    const paths = (await read(["diff-tree", "-r", "--root", "--no-renames", "--no-commit-id", "--name-only", "-z", commit]) ?? "").split("\0").filter(Boolean);
+    if (!paths.length) continue;
+    const few = paths.length <= 500;
+    const [wanted, current] = few ? await Promise.all([blobs(commit, paths), blobs(developSha, paths)]) : [null, null];
+    const rest = few ? paths.filter((name) => wanted.get(name) !== current.get(name)) : paths;
+    if (!rest.length) continue;
+    // develop 위에 이 커밋만 다시 적용(가상 cherry-pick)해도 develop 트리가 그대로면 이미 들어 있는 변경이다.
+    const parent = await read(["rev-parse", "--verify", "--quiet", `${commit}^`]);
+    const picked = parent && await read(["merge-tree", "--write-tree", "--merge-base", parent, developSha, commit]);
+    if (picked && picked.split(/\r?\n/)[0] === developTree) continue;
+    if (few) {
+      const seen = await history(rest);
+      if (rest.every((name) => wanted.has(name) ? seen.has(wanted.get(name)) : seen.has(`D\t${name}`))) continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 export async function gitflowContext(dir, selected, value) {
