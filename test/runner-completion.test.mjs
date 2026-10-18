@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { Runner, PAUSE_GRACE_MS, STOP_GRACE_MS } from "../server/runner.mjs";
+import { Runner, PAUSE_GRACE_MS, STOP_GRACE_MS, INTERRUPT_GRACE_MS, stderrSummary } from "../server/runner.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const GRACE_MS = 4000;
@@ -186,4 +186,39 @@ test("runner completion: a stopped CLI whose pipes stay open still ends the turn
   await tick(); await tick();
   assert.equal(f.runner.isRunning(f.session.id), false);
   assert.equal(f.session.state, "idle");
+});
+
+test("runner completion: a Codex turn that finished is not an error when Codex must be closed after it", async (t) => {
+  const f = fixture(t, "codex");
+  await tick();
+  f.child.stdin.removeAllListeners("finish");
+  f.child.stderr.write("2026-10-18T13:27:29Z ERROR codex_app_server: Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings.\n  user (C:/Users/u/.codex/config.toml): `features.rmcp_client` is ignored.\n");
+  f.runner.kill = (child) => queueMicrotask(() => child.emit("close", 1, null));
+  f.notify("item/completed", { item: { type: "agentMessage", id: "a", text: "완료" } });
+  f.notify("turn/completed", { turn: { id: "turn", status: "completed" } });
+  await tick();
+  assert.equal(f.child.stdin.writableEnded, true);
+  t.mock.timers.tick(INTERRUPT_GRACE_MS);
+  await tick(); await tick();
+  assert.equal(f.session.state, "idle");
+  assert.deepEqual(f.ended, [[f.session.id, true]]);
+  assert.equal(f.session.events.some((event) => event.kind === "error"), false);
+  assert.match(f.session.events.at(-1).text, /종료하지 않아 AgentHub가 닫았습니다/);
+});
+
+test("runner completion: a Codex exit before the turn finished is still an error without the config warning", async (t) => {
+  const f = fixture(t, "codex");
+  await tick();
+  f.child.stderr.write("ERROR codex_app_server: Codex is ignoring 1 unrecognized configuration setting.\n  user (C:/Users/u/.codex/config.toml): `features.rmcp_client` is ignored.\nthread panicked: boom\n");
+  await tick();
+  f.child.emit("close", 1, null);
+  await tick();
+  assert.equal(f.session.state, "error");
+  const errors = f.session.events.filter((event) => event.kind === "error").map((event) => event.text).join("\n");
+  assert.doesNotMatch(errors, /unrecognized configuration|is ignored/);
+});
+
+test("runner completion: stderr summaries drop known CLI warnings", () => {
+  assert.equal(stderrSummary("x ERROR codex_app_server: Codex is ignoring 2 unrecognized configuration settings.\n  user (C:/a/config.toml): `a.b` is ignored.\nreal failure\n"), "real failure");
+  assert.equal(stderrSummary("  user (C:/a/config.toml): `a.b` is ignored."), "");
 });

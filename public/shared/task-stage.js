@@ -90,7 +90,8 @@ export function buildTaskPipeline(task, status = null, ctx = {}) {
 
   // 다음 동작. 할 수 없는 동작은 꺼 두고 이유를 함께 돌려준다.
   const waitReason = blocked ? '이전 요청의 결과를 모릅니다. 최신 상태 확인을 먼저 눌러 주세요.' : pending ? '요청을 처리하고 있습니다.' : '';
-  const runReason = running > 0 ? '세션이 작업 중입니다. 끝난 뒤 진행하세요.' : '';
+  // 같은 작업의 세션 여러 개가 함께 실행될 수 있다. Git을 바꾸는 동작은 모두 끝난 뒤 한다.
+  const runReason = running > 1 ? `세션 ${running}개가 작업 중입니다. 모두 끝난 뒤 진행하세요.` : running > 0 ? '세션이 작업 중입니다. 끝난 뒤 진행하세요.' : '';
   const actions = [];
   const add = (id, label, options = {}) => {
     const reason = options.reason || '';
