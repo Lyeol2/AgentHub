@@ -74,6 +74,18 @@
 .task-state[data-state="working"] { color: var(--accent, #8fa6ff); background: var(--accent-soft); }
 .task-state[data-state="review"] { color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, transparent); }
 .task-state[data-state="merged"] { color: var(--ok); background: color-mix(in srgb, var(--ok) 12%, transparent); }
+.task-badges { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: 6px; flex-shrink: 0; }
+.task-badge {
+  padding: 2px 9px;
+  border: 1px solid currentColor;
+  border-radius: 20px;
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: help;
+}
+.task-notice { margin: 8px 0 0; padding: 8px 10px; border-left: 3px solid var(--warn); border-radius: 4px; background: color-mix(in srgb, var(--warn) 8%, transparent); font-size: 12px; line-height: 1.6; }
 /* GitFlow 단계 노선 */
 .task-pipeline-wrap { margin: 12px 0; padding: 14px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow-x: auto; }
 .task-pipeline { display: flex; align-items: center; margin: 0; padding: 0; list-style: none; min-width: max-content; }

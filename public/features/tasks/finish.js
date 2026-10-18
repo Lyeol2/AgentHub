@@ -1,4 +1,5 @@
 import { confirmAction } from '../../shared/confirm-dialog.js';
+import { DEFAULT_GITFLOW } from '../../shared/gitflow.js';
 // One review dialog owns the next step: commit → integrate → verify → publish/merge.
 export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, onUnknown, decorateError = () => {} }) {
   const $ = id => document.getElementById(id);
@@ -11,6 +12,9 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
   const selected = () => [...($('task-finish-files')?.querySelectorAll('input:checked') || [])].map(input => input.value);
   const behind = () => review?.task?.freshness?.behind || (mode() === 'local' && review?.localBehind);
   const blockedBase = () => task?.type !== 'hotfix' && review?.task?.freshness?.mainMissing;
+  // main→develop 미반영은 작업 브랜치에서 풀 수 없으므로 실제로 해야 할 일을 알린다.
+  const developGuide = () => { const { main, develop } = { ...DEFAULT_GITFLOW, ...task?.gitflow };
+    return `${main}의 변경이 ${develop}에 아직 없습니다. Git 탭에서 ${main}을 ${develop}에 병합해 푸시하거나 ${main} → ${develop} PR을 병합한 뒤 다시 확인을 누르세요. 현재 변경은 아래에서 커밋할 수 있습니다.`; };
   function message(text = '', reason, hint = '') {
     const el = $('task-finish-error');
     el.textContent = text; el.hidden = !text;
@@ -44,7 +48,7 @@ export function createTaskFinisher({ api, isCurrent, onTask, onBusy, onError, on
       steps.append(step);
     }
     const hint = loading ? '작업 폴더와 기준 브랜치를 확인하고 있습니다…' : !review ? '변경 목록을 확인한 뒤 진행할 수 있습니다.'
-      : blockedBase() ? '배포 브랜치 변경을 개발 브랜치에 먼저 반영하세요. 현재 변경은 아래에서 커밋할 수 있습니다.'
+      : blockedBase() ? developGuide()
       : dirty ? `${review.files.length}개 변경 중 선택한 파일만 커밋합니다. 나머지 변경이 남으면 반영을 진행하지 않습니다.`
       : needsSync ? '기준 브랜치의 새 변경을 먼저 반영합니다. 반영 후 검증 결과를 다시 확인하세요.'
       : merging ? `PR #${task.pull?.number}을 ${task.targetBranch}에 병합합니다. GitHub의 검사와 리뷰 조건을 확인합니다.`
