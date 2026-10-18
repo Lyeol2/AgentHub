@@ -289,7 +289,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     const current = projectDefaults(projectPath);
     const defaults = { agent: body.agent, permission: { ...current.permission, ...(body.permission ? { [body.agent]: body.permission } : {}) }, isolate: !!isolate };
     try { await api("PUT", `/api/projects/settings?path=${encodeURIComponent(projectPath)}`, { defaults }); }
-    catch (err) { alert(`세션은 만들었지만 프로젝트 기본값을 저장하지 못했습니다: ${err.message}`); }
+    catch (err) { showError(err, { action: "프로젝트 기본값 저장", title: "세션은 만들었지만 프로젝트 기본값을 저장하지 못했습니다." }); }
   }
 
   function cancelCreation() {

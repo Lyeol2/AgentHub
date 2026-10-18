@@ -109,13 +109,13 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     if (retrying.has(id)) return;
     retrying.add(id);
     try { await api("POST", `/api/sessions/${id}/pause`); }
-    catch (err) { retrying.delete(id); alert(err.message); }
+    catch (err) { retrying.delete(id); showError(err, { action: "다시 시도", sessionId: id }); }
   }
 
   function sessionStateChanged(id, state) {
     if (!retrying.has(id) || state === "running") return;
     retrying.delete(id);
-    if (state === "paused") api("POST", `/api/sessions/${id}/resume`).catch((err) => alert(err.message));
+    if (state === "paused") api("POST", `/api/sessions/${id}/resume`).catch((err) => showError(err, { action: "세션 재개", sessionId: id }));
   }
 
   function renderRunActivity(now = Date.now()) {
@@ -124,7 +124,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     if (!prefix) return;
     renderActivity(prefix, s, {
       now,
-      onStop: () => s && api("POST", `/api/sessions/${s.id}/stop`).catch((e) => alert(e.message)),
+      onStop: () => s && api("POST", `/api/sessions/${s.id}/stop`).catch((e) => showError(e, { action: "세션 중지" })),
       onRetry: () => s && retrySession(s.id),
     });
   }
