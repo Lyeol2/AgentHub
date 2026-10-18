@@ -1,5 +1,5 @@
 import { permissionLabel } from '../../shared/permissions.js';
-import { createWorkbranchPicker, workBranchType } from '../../shared/workbranches.js';
+import { createWorkbranchPicker, createWorktreePicker, workBranchType } from '../../shared/workbranches.js';
 import { createTaskAssistant } from './assistant.js';
 import { createTaskFinisher } from './finish.js';
 import { DEFAULT_GITFLOW, gitflowBranches } from '../../shared/gitflow.js';
@@ -121,6 +121,14 @@ export function createTasksController({
       updateCreateSubmit();
     },
   });
+  // 작업할 폴더에서 기존 워크트리를 고르면 그 폴더를 새 작업 브랜치로 바꿔 작업한다.
+  const reusing = () => $('task-workbranch-mode')?.value !== 'existing' && $('task-worktree')?.value === 'reuse';
+  const worktreePicker = createWorktreePicker({
+    api, select: $('task-reuse-worktree'), status: $('task-reuse-status'), refresh: $('task-reuse-refresh'),
+    getPath: () => createProject,
+    isActive: () => Boolean(createDialog?.open && sameProject(createProject) && reusing()),
+    onChange: () => { updateCreatePreview(); updateCreateSubmit(); },
+  });
   const finisher = createTaskFinisher({ api, isCurrent: path => sameProject(path),
     onTask: task => { replaceTask(task); renderTasks(); },
     onBusy: (value, id) => { finishBusy = value; if (value) pendingTasks.add(id); else pendingTasks.delete(id); renderTasks(); },
@@ -239,7 +247,7 @@ export function createTasksController({
   // 오류 설명과 해결 방법, 펼쳐 볼 수 있는 git 원문을 함께 보여 준다.
   // 이 작업이 어느 폴더에서 일하는지(워크트리인지 원본 폴더인지)와 폴더가 실제로 있는지 보여 준다.
   function folderLine(task, status) {
-    const kind = task.inPlace ? '원본 폴더' : task.ownsWorktree === false ? '기존 작업 폴더' : '워크트리';
+    const kind = task.inPlace ? '원본 폴더' : task.reusedWorktree ? '기존 워크트리' : task.ownsWorktree === false ? '기존 작업 폴더' : '워크트리';
     const cleaned = task.state === 'cleaned';
     const where = task.inPlace ? task.projectPath : task.cwd;
     const line = node('p', 'task-folder');
@@ -408,6 +416,8 @@ export function createTasksController({
       }
       if (task.state === 'cleaned') card.append(node('p', 'task-note', task.inPlace
         ? `원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌렸습니다. 작업과 PR 기록은 보관됩니다.`
+        : task.reusedWorktree
+        ? `작업 폴더는 남기고 ${task.previousBranch ? `${task.previousBranch} 브랜치로 되돌렸습니다` : '마지막 커밋에 그대로 두었습니다'}. 작업과 PR 기록은 보관됩니다.`
         : task.worktreePreserved
         ? '작업 기록을 정리했습니다. 선택했던 기존 작업 폴더와 브랜치는 보존됩니다.'
         : task.localBranchRemoved === false
@@ -574,6 +584,7 @@ export function createTasksController({
     createProject = null;
     createTabId = null;
     workbranchPicker.reset();
+    worktreePicker.reset();
     if (createDialog?.open) createDialog.close();
   }
 
@@ -776,6 +787,10 @@ export function createTasksController({
     // 기존 작업 브랜치는 그 브랜치의 작업 폴더를 쓰므로 워크트리 여부를 고르지 않는다.
     if ($('task-worktree-row')) $('task-worktree-row').hidden = existing;
     const inPlace = !existing && $('task-worktree')?.value === 'none';
+    const reuse = reusing();
+    const reused = worktreePicker.selected();
+    if ($('task-reuse-row')) $('task-reuse-row').hidden = !reuse;
+    if ($('task-reuse-worktree')) $('task-reuse-worktree').required = reuse;
     const type = $('task-type')?.value || 'feature';
     // 어느 폴더에서 일하게 되는지 세부 설정을 펼치지 않아도 보이게 한다.
     if ($('task-worktree-hint')) {
@@ -783,6 +798,8 @@ export function createTasksController({
       const folder = $('task-worktree-name')?.value.trim() || 'task-<작업ID>';
       $('task-worktree-hint').textContent = existing
         ? (selected?.cwd ? `선택한 브랜치의 작업 폴더에서 이어 작업합니다: ${selected.cwd}` : '선택한 브랜치의 작업 폴더를 새로 열어 작업합니다.')
+        : reuse
+          ? reused ? `${reused.cwd}를 새 작업 브랜치로 바꿔 작업합니다. 폴더에 설치된 파일은 그대로 쓰고, 정리할 때 폴더는 남깁니다.` : '이미 있는 워크트리를 골라 그 폴더에 새 작업 브랜치를 만듭니다. 커밋하지 않은 변경이 없어야 합니다.'
         : inPlace
           ? `원본 폴더(${project})를 새 작업 브랜치로 바꿔 작업합니다. 이 폴더를 쓰는 다른 세션도 바뀐 브랜치를 보게 됩니다. 원본 폴더를 이미 쓰고 있으면 워크트리를 만들지 묻습니다.`
           : `별도 폴더 ${project ? project.replace(/[\\/]+$/, '') + '.agenthub' : '<프로젝트>.agenthub'}${project.includes('\\') ? '\\' : '/'}${folder}에서 작업합니다. 원본 폴더와 브랜치는 그대로입니다.`;
@@ -791,8 +808,8 @@ export function createTasksController({
     if ($('task-branch-name-row')) $('task-branch-name-row').hidden = existing;
     if ($('task-branch-name')) $('task-branch-name').disabled = existing;
     if ($('task-branch-prefix')) $('task-branch-prefix').textContent = settings[`${type}Prefix`] ?? `${type}/`;
-    if ($('task-worktree-name-row')) $('task-worktree-name-row').hidden = existing || inPlace;
-    if ($('task-worktree-name')) $('task-worktree-name').disabled = existing || inPlace;
+    if ($('task-worktree-name-row')) $('task-worktree-name-row').hidden = existing || inPlace || reuse;
+    if ($('task-worktree-name')) $('task-worktree-name').disabled = existing || inPlace || reuse;
     const isRelease = type === 'release' && !existing;
     const versionField = $('task-version-row') || $('task-version')?.closest('label');
     if (versionField) versionField.hidden = !isRelease;
@@ -810,12 +827,14 @@ export function createTasksController({
     if ($('task-gitflow-summary')) $('task-gitflow-summary').textContent = `기준: ${settings.main} / ${settings.develop}`;
     if ($('task-create-hint')) $('task-create-hint').textContent = inPlace
       ? `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 원본 폴더를 새 작업 브랜치로 바꾸고 세션을 연결합니다. 원본 폴더에 커밋하지 않은 변경이 없어야 하며, 정리하면 원래 브랜치로 돌아갑니다.`
-      : `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.`;
+      : reuse
+        ? `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 고른 워크트리를 새 작업 브랜치로 바꾸고 세션을 연결합니다. 정리하면 폴더는 남기고 작업 브랜치만 지웁니다.`
+        : `원격 ${settings.main}과 기준 브랜치를 확인한 뒤 작업 브랜치·폴더·세션을 연결합니다.`;
   }
 
   function updateCreateSubmit() {
     const existing = $('task-workbranch-mode')?.value === 'existing';
-    if ($('task-create-submit')) $('task-create-submit').disabled = createBusy || settingsBusy || taskAssistant.busy() || !taskAssistant.ready() || uncertainCreates.has(createProject) || (existing && !workbranchPicker.ready()) || !hasAgent();
+    if ($('task-create-submit')) $('task-create-submit').disabled = createBusy || settingsBusy || taskAssistant.busy() || !taskAssistant.ready() || uncertainCreates.has(createProject) || (existing && !workbranchPicker.ready()) || (reusing() && !worktreePicker.ready()) || !hasAgent();
   }
 
   function updateAgentControls() {
@@ -888,6 +907,7 @@ export function createTasksController({
     createIssue = prefill?.issue ?? null;
     createForm?.reset();
     workbranchPicker.reset();
+    worktreePicker.reset();
     showError('task-create-error');
     applyCreatePrefs();
     taskAssistant.open();
@@ -926,6 +946,11 @@ export function createTasksController({
       showError('task-create-error', workbranchPicker.validationError());
       return;
     }
+    const reuse = !existing && reusing();
+    if (reuse && !worktreePicker.ready()) {
+      showError('task-create-error', worktreePicker.validationError());
+      return;
+    }
     if (!hasAgent()) return;
     if (createForm && !createForm.checkValidity()) {
       if ($('task-create-advanced')) $('task-create-advanced').open = true;
@@ -949,7 +974,8 @@ export function createTasksController({
     else if (payload.type === 'release') payload.version = $('task-version')?.value.trim();
     if (!existing && $('task-worktree')?.value === 'none') payload.worktree = false;
     if (!existing && $('task-branch-name')?.value.trim()) payload.branchName = $('task-branch-name').value.trim();
-    if (!existing && payload.worktree !== false && $('task-worktree-name')?.value.trim()) payload.worktreeName = $('task-worktree-name').value.trim();
+    if (reuse) payload.worktreePath = worktreePicker.selected().cwd;
+    else if (!existing && payload.worktree !== false && $('task-worktree-name')?.value.trim()) payload.worktreeName = $('task-worktree-name').value.trim();
     if ($('task-model')?.value.trim()) payload.model = $('task-model').value.trim();
     if ($('task-effort')?.value) payload.effort = $('task-effort').value;
     if ($('task-role')?.value.trim()) payload.role = $('task-role').value.trim();
@@ -1047,7 +1073,10 @@ export function createTasksController({
     if (action === 'cleanup') {
       const changes = [], keeps = ['작업·대화 기록', `원격 브랜치 ${task.remote || 'origin'}/${task.branch}`, task.pull?.number ? `PR #${task.pull.number}` : ''];
       if (task.inPlace) changes.push(`원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌립니다.`);
-      else if (task.ownsWorktree === false) keeps.push(`기존 작업 폴더 ${task.cwd}`);
+      else if (task.reusedWorktree) {
+        keeps.push(`기존 워크트리 ${task.cwd}`);
+        changes.push(task.previousBranch ? `작업 폴더를 ${task.previousBranch} 브랜치로 되돌립니다.` : '작업 폴더를 마지막 커밋에 그대로 두고 브랜치에서 분리합니다.');
+      } else if (task.ownsWorktree === false) keeps.push(`기존 작업 폴더 ${task.cwd}`);
       else changes.push(`작업 폴더를 삭제합니다: ${task.cwd}`);
       if (task.ownsBranch === false) keeps.push(`기존 로컬 브랜치 ${task.branch}`);
       else changes.push(`로컬 브랜치 ${task.branch}를 삭제합니다.`);
@@ -1133,6 +1162,7 @@ export function createTasksController({
     changes.push('작업 카드와 작업 기록을 지웁니다.');
     if (task.state === 'cleaned') keeps.push('이미 정리한 작업이라 폴더는 없습니다.');
     else if (task.inPlace) keeps.push('원본 폴더 (원본 폴더에서 한 작업)');
+    else if (task.reusedWorktree) keeps.push(`이어받은 워크트리 ${task.cwd}`);
     else if (task.ownsWorktree === false) keeps.push(`선택했던 기존 작업 폴더 ${task.cwd}`);
     else changes.push(`작업 폴더를 지웁니다: ${task.cwd}`);
     return { changes, keeps };
@@ -1191,6 +1221,7 @@ export function createTasksController({
     const changes = [], keeps = [];
     if (sessionCount) changes.push(`연결된 세션 ${sessionCount}개를 멈추고 삭제합니다.`);
     if (task.inPlace) changes.push(`원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌립니다.`);
+    else if (task.reusedWorktree) keeps.push(`이어받은 워크트리 ${task.cwd}`);
     else if (task.ownsWorktree === false) keeps.push(`선택했던 기존 작업 폴더 ${task.cwd}`);
     else changes.push(`작업 폴더를 지웁니다: ${task.cwd}`);
     if (task.ownsBranch === false) keeps.push(`기존 브랜치 ${task.branch} (로컬·원격)`);
@@ -1287,11 +1318,18 @@ export function createTasksController({
   $('task-workbranch-mode')?.addEventListener('change', () => {
     if ($('task-workbranch-mode').value === 'existing') void workbranchPicker.load();
     else workbranchPicker.reset();
+    if (reusing()) void worktreePicker.load();
+    else worktreePicker.reset();
     updateCreatePreview();
     updateCreateSubmit();
   });
   $('task-version')?.addEventListener('input', updateCreatePreview);
-  $('task-worktree')?.addEventListener('change', updateCreatePreview);
+  $('task-worktree')?.addEventListener('change', () => {
+    if (reusing()) void worktreePicker.load();
+    else worktreePicker.reset();
+    updateCreatePreview();
+    updateCreateSubmit();
+  });
   $('task-worktree-name')?.addEventListener('input', updateCreatePreview);
   $('task-branch-name')?.addEventListener('input', updateCreatePreview);
   $('task-title')?.addEventListener('input', updateCreatePreview);
@@ -1304,7 +1342,7 @@ export function createTasksController({
   }, true);
   finishForm?.addEventListener('submit', finishTask);
   createDialog?.addEventListener('cancel', event => { if (createBusy) event.preventDefault(); });
-  createDialog?.addEventListener('close', () => { workbranchPicker.reset(); taskAssistant.close(); if (!createBusy) createIssue = null; });
+  createDialog?.addEventListener('close', () => { workbranchPicker.reset(); worktreePicker.reset(); taskAssistant.close(); if (!createBusy) createIssue = null; });
   finishDialog?.addEventListener('cancel', event => { if (finishBusy) event.preventDefault(); });
   $('task-create-cancel')?.addEventListener('click', () => { if (!createBusy) createDialog?.close(); });
   $('task-finish-cancel')?.addEventListener('click', () => { if (!finishBusy) finishDialog?.close(); });

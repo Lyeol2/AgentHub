@@ -59,6 +59,12 @@ test("codex: thread.started와 명령 실행 이벤트를 변환한다", () => {
     type: "item.started", item: { id: "i", type: "command_execution", command: "git status" },
   }));
   assert.equal(cmd.text, "$ git status");
+  assert.equal(cmd.detail, undefined, "짧은 명령은 펼칠 내용이 없다");
+  const script = "node -e \"\nconsole.log(1)\n\"";
+  assert.deepEqual(codex.commandEvent(script), { kind: "tool", text: "$ node -e \" …", detail: script });
+  const long = codex.commandEvent("x".repeat(200));
+  assert.equal(long.text, `$ ${"x".repeat(120)} …`);
+  assert.equal(long.detail, "x".repeat(200));
 
   const [done] = codex.parseLine(JSON.stringify({
     type: "item.completed",

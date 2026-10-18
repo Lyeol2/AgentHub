@@ -163,6 +163,15 @@
   history.state = "idle";
   conversation.settleEvents(list);
   check(list.querySelector(".work > details") && !list.querySelector(".work > details").open, "stop without a completion event still collapses its work");
+  const longPrompt = Array.from({ length: 20 }, (_, i) => `요청 ${i + 1}번째 줄`).join("\n");
+  conversation.renderEvents(list, [{ kind: "user", text: "짧은 요청" }, { kind: "user", text: longPrompt }]);
+  const [shortUser, longUser] = list.querySelectorAll(":scope > .user");
+  check(!shortUser.querySelector(".ev-fold") && longUser.classList.contains("folded") && longUser.textContent === longPrompt, "long prompts start folded without changing their text");
+  document.body.append(list);
+  check(longUser.querySelector(".user-text").clientHeight < longUser.querySelector(".user-text").scrollHeight, "folded prompts show only their first lines");
+  list.remove();
+  longUser.querySelector(".ev-fold").click();
+  check(!longUser.classList.contains("folded") && longUser.querySelector(".ev-fold").getAttribute("aria-expanded") === "true" && longUser.querySelector(".ev-fold").dataset.label === "접기", "more expands the prompt and offers to fold it again");
   $("s-expand-tools").checked = false;
   $("s-expand-tools").dispatchEvent(new Event("change"));
   const note = new File(["fixture attachment content"], "notes.txt", { type: "text/plain" });

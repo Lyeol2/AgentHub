@@ -151,6 +151,9 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
         { name: 'feature/selected', cwd: 'C:/fixture.agenthub/selected', selectable: true, selectableForTask: !tasks.some((task) => task.branch === 'feature/selected'), selectableForSession: true },
         { name: 'feature/locked', cwd: 'C:/fixture.agenthub/locked', selectable: false, locked: true, reason: '잠긴 작업 폴더' },
         ...tasks.filter((task) => task.branch !== 'feature/selected').map((task) => ({ name: task.branch, cwd: task.cwd, selectable: true, selectableForTask: false, selectableForSession: true, taskId: task.id })),
+      ], worktrees: [
+        { cwd: 'C:/fixture.agenthub/finished', branch: 'feature/finished', original: false, selectableForTask: true, taskId: 'task-old', taskState: 'merged', taskTitle: '끝난 작업' },
+        { cwd: 'C:/fixture.agenthub/dirty', branch: 'feature/dirty', original: false, selectableForTask: false, reason: '커밋하지 않은 변경이 있습니다.' },
       ] };
       else if (url.pathname === "/api/tasks") {
         if (req.method === "POST") {

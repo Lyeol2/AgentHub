@@ -82,4 +82,6 @@ test("@자동 완성: 이름이 맞는 파일을 앞에 둔다", async (t) => {
   assert.ok(files.includes("src/app.js") && files.includes("src/lib/"));
   assert.deepEqual(rankFiles(["docs/app-notes.md", "src/app.js", "src/lib/mapper.js", "src/"], "app"), ["src/app.js", "docs/app-notes.md", "src/lib/mapper.js"]);
   assert.deepEqual(rankFiles(["a/b/c.js", "x.js"], "", 1), ["x.js"]);
+  assert.deepEqual(rankFiles(["docs/my notes.md", "src/notes/my-list.js", "src/other.js"], "my notes"), ["docs/my notes.md", "src/notes/my-list.js"]);
+  assert.deepEqual(rankFiles(["src/task-view.js", "test/view.js"], "task view "), ["src/task-view.js"]);
 });

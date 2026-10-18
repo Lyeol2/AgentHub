@@ -170,7 +170,7 @@ export class CodexAppServer extends EventEmitter {
       case "agentMessage": if (completed && item.text) event("text", item.text); break;
       case "reasoning": if (completed && item.summary?.length) event("thinking", item.summary.join("\n")); break;
       case "commandExecution":
-        if (!completed) event("tool", "$ " + (item.command ?? ""));
+        if (!completed) { const { text, detail } = codex.commandEvent(item.command); event("tool", text, detail ? { detail } : {}); }
         else event("tool_result", snippet((item.aggregatedOutput ?? "") + "\n(종료 코드 " + (item.exitCode ?? "?") + ")"), { isError: item.status === "failed" || item.status === "declined" || (item.exitCode != null && item.exitCode !== 0) });
         break;
       case "fileChange":
