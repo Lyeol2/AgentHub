@@ -63,7 +63,8 @@ async function inspectWorktree(repo, entry, original, { forTarget = false, readG
       if (actual.status === "rejected") throw actual.reason;
       if (!samePath(actual.value.common, repo.common) || !samePath(actual.value.top, entry.cwd))
         result.reason = "작업 폴더가 다른 Git 저장소에 연결되어 있습니다.";
-      else {
+      // 브랜치에서 분리된 작업 폴더는 브랜치 목록에 나오지 않고, 새 작업이 이어받을 폴더로만 쓴다.
+      else if (entry.branch) {
         if (head.status === "rejected") throw head.reason;
         if (head.value.trim() !== `refs/heads/${entry.branch}`) result.reason = "작업 폴더의 브랜치가 변경됐습니다. 목록을 다시 확인하세요.";
       }
@@ -103,13 +104,15 @@ async function snapshot(projectPath, knownRepo, options = {}) {
     branch.selectable = !branch.reason;
     return branch;
   });
-  return { branches, currentBranch, repo, original: entries[0].cwd };
+  return { branches, worktrees, currentBranch, repo, original: entries[0].cwd };
 }
 
 export async function listWorkbranches(projectPath, options = {}) {
   if (!projectPath || typeof projectPath !== "string") throw new HttpError(400, "프로젝트를 선택하세요.");
-  const { branches, currentBranch } = await snapshot(projectPath, undefined, options);
-  return { branches, currentBranch };
+  const { branches, worktrees, currentBranch } = await snapshot(projectPath, undefined, options);
+  // 등록된 작업 폴더 목록. 새 작업이 기존 워크트리를 골라 그 안에서 새 브랜치를 만들 때 쓴다.
+  return { branches, currentBranch, worktrees: worktrees.map(({ cwd, branch, head, original, locked, missing, bare, prunable, reason }) =>
+    ({ cwd, branch: branch ?? null, head: head ?? null, original, locked, missing, bare, prunable, ...(reason ? { reason } : {}) })) };
 }
 
 // Stable hashed locations support any legal branch name without putting its slashes in a path.

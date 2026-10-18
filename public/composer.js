@@ -22,12 +22,14 @@ export function composerAction(session, text = "", attachmentCount = 0) {
 // ── 작성창 자동 완성 ─────────────────────────────────────────────
 // 요청 맨 앞의 "/이름"은 명령(스킬·기본 명령), 줄 처음이나 공백 뒤의 "@경로"는 파일 참조다.
 // 커서 앞이 그런 자리면 { type, query, start, end }를, 아니면 null을 돌려준다.
+// "@" 뒤 검색어에는 띄어쓰기가 들어갈 수 있다(같은 줄, 80자까지). 결과가 없으면 작성창이 닫는다.
+export const COMPLETION_QUERY_MAX = 80;
 export function completionTrigger(text, caret = text.length) {
   const before = String(text ?? "").slice(0, caret);
   const slash = before.match(/^\/([a-z0-9-]*)$/i);
   if (slash) return { type: "command", query: slash[1].toLowerCase(), start: 0, end: caret };
-  const at = before.match(/(^|\s)@("?)([^\s"]*)$/);
-  if (at) return { type: "file", query: at[3], start: caret - at[3].length - at[2].length - 1, end: caret };
+  const at = before.match(new RegExp(`(^|\\s)@("?)((?:[^\\s"@][^"@\\r\\n]{0,${COMPLETION_QUERY_MAX - 1}})?)$`));
+  if (at) return { type: "file", query: at[2] ? at[3] : at[3].trimEnd(), start: caret - at[3].length - at[2].length - 1, end: caret };
   return null;
 }
 

@@ -28,6 +28,10 @@ const DRAFT_FLUSH_MS = 120;
 // 이 종류의 이벤트가 기록에 남으면 쓰는 중이던 글은 끝난 것이다.
 const DRAFT_END = new Set(["text", "thinking", "tool", "result", "error"]);
 const inputClosed = (child) => !!(child.stdin?.writableEnded || child.stdin?.destroyed);
+// 중지·일시중지는 오래 기다리지 않는다. 턴이 정상으로 끝나기를 잠깐 기다린 뒤 강제로 멈춘다.
+export const STOP_GRACE_MS = 1500; // Codex 중지: turn/interrupt의 응답을 기다리는 시간
+export const PAUSE_GRACE_MS = 4000; // 일시중지: 대화 기록이 온전히 남도록 턴이 끝나기를 기다리는 시간
+export const EXIT_GRACE_MS = 1000; // 멈춘 턴이 끝난 뒤 CLI가 스스로 종료하기를 기다리는 시간
 
 // 세션 하나에 한 번에 한 턴만 실행한다. 다른 세션은 동시에 실행할 수 있다.
 // 세션 상태: idle | running | background(턴은 끝났고 하위 작업이 CLI에서 도는 중. 새 요청은 같은 CLI에 바로 쓴다) | paused | error | interrupted
@@ -413,10 +417,7 @@ export class Runner extends EventEmitter {
       child.appServer.on("event", (event) => this.handleLine(session, child, agent, JSON.stringify({ type: "agenthub_event", event }), true));
       child.appServer.on("control", (msg) => this.ask(session, child, agent, msg));
       child.appServer.on("cancel", (id) => { this.dropPrompts(session.id, id); this.store.touch(session); });
-      child.appServer.on("shutdown", () => {
-        const timer = setTimeout(() => { if (this.running.get(session.id) === child) this.kill(child); }, INTERRUPT_GRACE_MS);
-        timer.unref?.();
-      });
+      child.appServer.on("shutdown", () => this.killLater(session, child, session.stopRequested ? EXIT_GRACE_MS : INTERRUPT_GRACE_MS));
     }
 
     let buffer = "";
@@ -441,6 +442,13 @@ export class Runner extends EventEmitter {
       if (child.retired) return;
       if (child.turn) child.turn.sawError = true;
       this.append(session, { kind: "error", text: `실행 실패: ${missingFolder(err, session.cwd) ?? err.message}` });
+    });
+
+    // 멈춘 CLI가 남긴 하위 프로세스가 출력 파이프를 잡고 있으면 close가 오지 않는다. 종료 뒤 잠시 기다려 파이프를 닫는다.
+    child.on("exit", () => {
+      if (!session.stopRequested) return;
+      const timer = setTimeout(() => { child.stdout?.destroy?.(); child.stderr?.destroy?.(); }, 500);
+      timer.unref?.();
     });
 
     child.on("close", (code, signal) => {
@@ -562,7 +570,8 @@ export class Runner extends EventEmitter {
     if (!turn) return;
     clearTimeout(turn.endTimer);
     const done = () => agent.keepAlive ? this.endTurn(session, child) : child.stdin.end();
-    if (!child.injected) return done();
+    // 중지·일시중지로 끝난 턴은 이어서 처리할 것이 없으므로 추가 요청을 기다리지 않고 바로 마친다.
+    if (!child.injected || session.stopRequested) return done();
     turn.endTimer = setTimeout(() => {
       turn.endTimer = null;
       if (child.turn === turn && !child.retired) done();
@@ -808,9 +817,10 @@ export class Runner extends EventEmitter {
     session.stopRequested = true;
     child.stdin.write(`${agent.interruptLine()}\n`);
     const turn = child.turn;
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       if (this.running.get(session.id) === child && child.turn === turn) this.kill(child);
-    }, INTERRUPT_GRACE_MS);
+    }, PAUSE_GRACE_MS);
+    timer.unref?.();
     return true;
   }
 
@@ -825,11 +835,17 @@ export class Runner extends EventEmitter {
     session.stopRequested = true;
     this.dropPrompts(session.id);
     if (child.appServer) {
+      // 일시중지는 재개할 수 있게 조금 더 기다리고, 중지는 응답이 늦으면 바로 멈춘다.
       child.appServer.interrupt();
-      const timer = setTimeout(() => { if (this.running.get(session.id) === child) this.kill(child); }, INTERRUPT_GRACE_MS);
-      timer.unref?.();
+      this.killLater(session, child, session.paused ? PAUSE_GRACE_MS : STOP_GRACE_MS);
     } else this.kill(child);
     return true;
+  }
+
+  // ms 뒤에도 같은 프로세스가 실행 중이면 강제로 멈춘다.
+  killLater(session, child, ms) {
+    const timer = setTimeout(() => { if (this.running.get(session.id) === child) this.kill(child); }, ms);
+    timer.unref?.();
   }
 
   kill(child) {

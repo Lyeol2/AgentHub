@@ -341,6 +341,24 @@
   [...abandonBox.querySelectorAll('button')].find(button => button.textContent === '그만두기').click();
   await until(() => !card('task-4'));
   check((await requests()).some(request => request.method === 'POST' && request.path === '/api/tasks/task-4/abandon' && request.body.force === false), 'abandon is requested once without forcing');
+  $('tasks-new').click();
+  await until(() => $('new-task-dialog').open);
+  $('task-create-manual').click();
+  $('task-title').value = '끝난 작업 폴더에서 이어서';
+  check($('task-reuse-row').hidden, 'existing worktree list stays hidden until chosen');
+  $('task-worktree').value = 'reuse'; $('task-worktree').dispatchEvent(new Event('change'));
+  await until(() => [...$('task-reuse-worktree').options].some(option => option.value === 'C:/fixture.agenthub/finished'));
+  check(!$('task-reuse-row').hidden && !$('task-reuse-row').closest('details'), 'existing worktree picker appears next to the folder choice');
+  check([...$('task-reuse-worktree').options].find(option => option.value === 'C:/fixture.agenthub/dirty')?.disabled, 'worktree picker blocks a worktree with uncommitted changes');
+  check($('task-create-submit').disabled && $('task-worktree-name-row').hidden, 'creation waits for a worktree and hides the folder name');
+  $('task-reuse-worktree').value = 'C:/fixture.agenthub/finished'; $('task-reuse-worktree').dispatchEvent(new Event('change'));
+  await until(() => !$('task-create-submit').disabled);
+  check(/C:\/fixture.agenthub\/finished를 새 작업 브랜치로/.test($('task-worktree-hint').textContent) && /끝난 작업/.test($('task-reuse-status').textContent), 'chosen worktree explains that its folder switches to the new branch');
+  $('new-task-form').requestSubmit($('task-create-submit'));
+  await until(() => !$('new-task-dialog').open);
+  const reusedPost = (await requests()).filter(request => request.path === '/api/tasks' && request.method === 'POST').at(-1).body;
+  check(reusedPost.worktreePath === 'C:/fixture.agenthub/finished' && !('worktreeName' in reusedPost) && !('workBranch' in reusedPost) && reusedPost.worktree === undefined, 'task sends the chosen worktree instead of creating a folder');
+  await returnToTasks();
   await until(() => !$('tasks-settings').disabled); await openSettings();
   return checks;
 })()

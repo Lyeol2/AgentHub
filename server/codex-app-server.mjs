@@ -174,7 +174,8 @@ export class CodexAppServer extends EventEmitter {
       case "agentMessage": if (completed && item.text) event("text", item.text); break;
       case "reasoning": if (completed && item.summary?.length) event("thinking", item.summary.join("\n")); break;
       case "commandExecution":
-        if (!completed) tool("$ " + (item.command ?? ""));
+        // 긴 명령은 첫 줄만 보이고 전체는 펼쳐 볼 수 있게 한다. 앞에는 한국어 동작 이름을 붙인다.
+        if (!completed) { const { text, detail } = codex.commandEvent(item.command); event("tool", text, { ...(label ? { label } : {}), ...(detail ? { detail } : {}) }); }
         else event("tool_result", snippet((item.aggregatedOutput ?? "") + "\n(종료 코드 " + (item.exitCode ?? "?") + ")"), { isError: item.status === "failed" || item.status === "declined" || (item.exitCode != null && item.exitCode !== 0) });
         break;
       case "fileChange":

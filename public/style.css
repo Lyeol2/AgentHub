@@ -298,6 +298,18 @@ main { display: flex; min-width: 0; min-height: 0; height: 100%; overflow: hidde
   align-self: flex-end; background: var(--user-bg); border: 1px solid var(--user-line);
   padding: 9px 13px; border-radius: 10px 10px 2px 10px; max-width: 75%;
 }
+/* 긴 요청은 처음 몇 줄만 보이고 "더 보기"로 펼친다. */
+.ev.user.folded .user-text {
+  max-height: calc(8 * 1.5em); overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 60%, transparent);
+  mask-image: linear-gradient(to bottom, #000 60%, transparent);
+}
+.ev-fold {
+  display: block; margin: 6px 0 0 auto; padding: 0; border: 0; background: none;
+  color: var(--accent); font-size: 12px; cursor: pointer;
+}
+.ev-fold::before { content: attr(data-label); }
+.ev-fold:hover { text-decoration: underline; }
 .ev.text { padding: 2px 0; line-height: 1.65; }
 .ev.thinking { color: var(--faint); font-style: italic; font-size: 12.5px; border-left: 2px solid var(--line-strong); padding-left: 10px; }
 .ev.tool { font-family: var(--mono); font-size: 12px; color: var(--muted); }

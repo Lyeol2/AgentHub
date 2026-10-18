@@ -198,7 +198,12 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     renderSessionElapsed("s", s);
     const running = s.state === "running";
     // 백그라운드 작업 중에도 중지하면 남은 하위 작업과 CLI를 함께 멈춘다.
-    $("s-stop").disabled = !running && s.state !== "paused" && s.state !== "background";
+    // 중지를 누른 뒤 CLI가 끝날 때까지는 다시 누를 수 없게 하고 멈추는 중임을 보여 준다.
+    const active = running || s.state === "background";
+    if (!active) stopping.delete(s.id);
+    const halting = active && stopping.has(s.id);
+    $("s-stop").disabled = halting || (!active && s.state !== "paused");
+    $("s-stop").textContent = halting ? "중지하는 중…" : "중지";
     // 도구 호출의 "실행 중" 표시는 턴이 도는 동안에만 보인다.
     $("s-events").classList.toggle("running", running);
     settleEvents($("s-events"));
@@ -216,6 +221,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   }
 
   const composerBusy = new Set();
+  const stopping = new Set(); // 중지를 눌러 CLI가 끝나기를 기다리는 세션 ID
   let completion = null;
   const imageComposers = Object.fromEntries(["s", "c"].map((prefix) => [prefix, createAttachmentComposer({ prefix, onChange: () => renderComposerAction(prefix, data.current) })]));
   let newChatDraft = 0;
@@ -446,7 +452,14 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     }
   });
 
-  $("s-stop").addEventListener("click", () => api("POST", `/api/sessions/${data.current.id}/stop`).catch((e) => showError(e, { action: "세션 중지" })));
+  $("s-stop").addEventListener("click", () => {
+    const s = data.current;
+    if (!s) return;
+    if (s.state === "running" || s.state === "background") { stopping.add(s.id); renderState(); }
+    api("POST", `/api/sessions/${s.id}/stop`).then((result) => {
+      if (!result?.stopped) stopping.delete(s.id);
+    }, (e) => { stopping.delete(s.id); showError(e, { action: "세션 중지" }); }).finally(() => { if (data.current?.id === s.id) renderState(); });
+  });
 
   // 일시중지·재개. 일시중지는 대화를 그대로 두고 멈추며, 재개하면 멈춘 곳부터 이어서 진행한다.
   async function togglePause() {

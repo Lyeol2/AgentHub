@@ -257,6 +257,15 @@ export function questionResponse(input, answers) {
   return { answers: Object.fromEntries((input.questions ?? []).map((q, i) => [q.id, { answers: [...(answers?.[i]?.selected ?? []), String(answers?.[i]?.text ?? "").trim()].filter(Boolean) }])) };
 }
 
+// 셸 명령 도구 이벤트. 긴 명령이나 여러 줄 명령은 한 줄 요약만 보이고, 펼치면 전체 명령을 본다.
+export const COMMAND_SUMMARY_MAX = 120;
+export function commandEvent(command) {
+  const full = String(command ?? "");
+  const first = full.split(/\r?\n/)[0];
+  const long = full.length > COMMAND_SUMMARY_MAX || first !== full;
+  return { kind: "tool", text: `$ ${long ? `${first.slice(0, COMMAND_SUMMARY_MAX)} …` : full}`, ...(long ? { detail: truncate(full) } : {}) };
+}
+
 function truncate(text, max = 4000) {
   if (typeof text !== "string") text = JSON.stringify(text);
   return text.length > max ? `${text.slice(0, max)}\n… (${text.length - max}자 생략)` : text;
@@ -269,7 +278,7 @@ function itemEvents(phase, item) {
     case "reasoning":
       return phase === "completed" && item.text ? [{ kind: "thinking", text: item.text }] : [];
     case "command_execution":
-      if (phase === "started") return [{ kind: "tool", text: `$ ${item.command}` }];
+      if (phase === "started") return [commandEvent(item.command)];
       if (phase === "completed") {
         const code = item.exit_code ?? "?";
         return [{

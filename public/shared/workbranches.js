@@ -119,3 +119,103 @@ export function createWorkbranchPicker({ api, select, status, refresh, owner, ge
   refresh?.addEventListener('click', () => { void load(); });
   return { load, reset, selected, validationError, ready: () => Boolean(selected()) };
 }
+
+const folderName = cwd => String(cwd || '').replace(/[\/]+$/, '').split(/[\/]/).pop() || cwd;
+
+// 새 작업이 이어받을 기존 워크트리를 고른다. 고른 폴더는 새 작업 브랜치로 바뀌며, 서버가 다시 확인한다.
+export function createWorktreePicker({ api, select, status, refresh, getPath, isActive, onChange = () => {} }) {
+  let request = 0;
+  let path = null;
+  let worktrees = [];
+  let loaded = false;
+  let loading = false;
+  let error = '';
+
+  function selected() {
+    if (!loaded || loading || error || path !== getPath()) return null;
+    return worktrees.find(item => item.cwd === select.value && item.selectableForTask) || null;
+  }
+
+  function validationError() {
+    if (loading) return '워크트리 목록을 불러오는 중입니다.';
+    if (error) return error;
+    if (!loaded || path !== getPath()) return '워크트리 목록을 먼저 확인해 주세요.';
+    if (!selected()) return '작업할 워크트리를 선택해 주세요.';
+    return '';
+  }
+
+  function updateStatus() {
+    const item = selected();
+    const available = worktrees.some(entry => entry.selectableForTask);
+    if (status) {
+      status.textContent = loading ? '워크트리를 불러오고 있습니다…'
+        : error ? error
+        : item ? `${item.cwd}${item.branch ? ` · 지금 브랜치 ${item.branch}` : ''}${item.taskTitle ? ` · 병합한 작업 "${item.taskTitle}"의 폴더를 이어받습니다` : ''}`
+        : loaded && !available ? '고를 수 있는 워크트리가 없습니다. 워크트리 만들기를 선택해 주세요.'
+        : loaded ? '작업할 워크트리를 선택해 주세요.' : '';
+      status.dataset.state = error ? 'error' : 'idle';
+    }
+    if (refresh) refresh.disabled = loading;
+    select.disabled = loading || !loaded || Boolean(error);
+    select.setCustomValidity(isActive() ? validationError() : '');
+    onChange(item);
+  }
+
+  function render(preferred = '') {
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = loading ? '불러오는 중…' : '워크트리 선택';
+    select.replaceChildren(placeholder, ...worktrees.map(item => {
+      const option = document.createElement('option');
+      option.value = item.cwd;
+      option.disabled = !item.selectableForTask;
+      option.textContent = `${folderName(item.cwd)} · ${item.branch || '브랜치 없음'}${item.selectableForTask ? '' : ` · ${item.reason || '선택할 수 없음'}`}`;
+      option.title = item.cwd;
+      return option;
+    }));
+    select.value = worktrees.some(item => item.cwd === preferred && item.selectableForTask) ? preferred : '';
+    updateStatus();
+  }
+
+  function reset() {
+    request++;
+    path = null;
+    worktrees = [];
+    loaded = false;
+    loading = false;
+    error = '';
+    render();
+    select.setCustomValidity('');
+  }
+
+  async function load() {
+    const projectPath = getPath();
+    if (!projectPath || !isActive()) return;
+    const token = ++request;
+    const preferred = path === projectPath ? select.value : '';
+    path = projectPath;
+    loaded = false;
+    loading = true;
+    error = '';
+    worktrees = [];
+    render();
+    try {
+      const result = await api('GET', `/api/workbranches?path=${encodeURIComponent(projectPath)}`);
+      if (token !== request || projectPath !== getPath() || !isActive()) return;
+      worktrees = Array.isArray(result?.worktrees) ? result.worktrees : [];
+      loaded = true;
+    } catch (failure) {
+      if (token !== request || projectPath !== getPath() || !isActive()) return;
+      error = failure?.message || '워크트리를 불러오지 못했습니다. 목록 새로고침을 눌러 주세요.';
+    } finally {
+      if (token === request && projectPath === getPath() && isActive()) {
+        loading = false;
+        render(preferred);
+      }
+    }
+  }
+
+  select.addEventListener('change', updateStatus);
+  refresh?.addEventListener('click', () => { void load(); });
+  return { load, reset, selected, validationError, ready: () => Boolean(selected()) };
+}

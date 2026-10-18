@@ -3,6 +3,13 @@ import { firstLine } from "../../shared/store.js";
 import { linkLabel } from "../../shared/flow.js";
 import { renderMarkdown } from "../../markdown.js";
 import { renderAttachmentLinks } from "./image-composer.js";
+
+// 접어서 보여 줄 만큼 긴 요청인지. 줄 수나 글자 수가 많으면 접는다.
+export const USER_FOLD_LINES = 8;
+export const USER_FOLD_CHARS = 600;
+export function longUserText(text = "") {
+  return text.length > USER_FOLD_CHARS || text.split("\n").length > USER_FOLD_LINES;
+}
 import { createReportView } from "./report-view.js";
 import { showError } from "../../shared/error-report.js";
 import { SUBTASK_STATUS } from "../../shared/subtasks.js";
@@ -197,6 +204,25 @@ export function createConversationView({ api, getSession, sessionById, selectSes
   const EXPAND_TOOLS_KEY = "agenthub-expand-tools";
   const expandTools = () => localStorage.getItem(EXPAND_TOOLS_KEY) === "1";
 
+  // 긴 요청은 처음 몇 줄만 보이게 접고 "더 보기"로 펼친다. 버튼 글자는 CSS로 그려 메시지 글자에 섞이지 않게 한다.
+  function renderUserText(node, ev) {
+    const text = ev.text ?? "";
+    if (!longUserText(text)) return reports.renderUser(node, text, ev.references);
+    const body = el("div", { class: "user-text" });
+    reports.renderUser(body, text, ev.references);
+    const toggle = el("button", { type: "button", class: "ev-fold", "aria-expanded": "false" });
+    const set = (open) => {
+      node.classList.toggle("folded", !open);
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.dataset.label = open ? "접기" : "더 보기";
+      toggle.setAttribute("aria-label", open ? "요청 접기" : "요청 더 보기");
+    };
+    toggle.addEventListener("click", () => set(node.classList.contains("folded")));
+    node.classList.add("foldable");
+    node.append(body, toggle);
+    set(false);
+  }
+
   function renderTool(ev, cls) {
     const body = el("div", { class: "tool-body" });
     if (ev.detail) body.append(el("div", { class: "tool-label" }, "입력"), el("pre", { class: "tool-input" }, ev.detail));
@@ -204,7 +230,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       el("summary", {}, ev.label ? el("span", { class: "tool-kind" }, ev.label) : null, el("span", { class: "tool-name" }, ev.text ?? ""), el("span", { class: "tool-state" })),
       body);
     details.open = expandTools();
-    const node = el("li", { class: `${cls} pending`, title: ev.label ? `${ev.label} · ${ev.text ?? ""}` : ev.text ?? "", ...(ev.toolUseId ? { "data-tool-use-id": ev.toolUseId } : {}) }, details);
+    const node = el("li", { class: `${cls} pending`, title: ev.label ? `${ev.label} · ${ev.detail || ev.text || ""}` : ev.detail || ev.text || "", ...(ev.toolUseId ? { "data-tool-use-id": ev.toolUseId } : {}) }, details);
     renderSubtaskBadge(node);
     return node;
   }
@@ -429,7 +455,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
           el("div", { class: "handoff-body" }, ev.text)));
     }
     const node = el("li", { class: cls, ...(ev.kind === "user" && Number.isInteger(ev.seq) ? { "data-seq": ev.seq } : {}) });
-    if (ev.kind === "user") reports.renderUser(node, ev.text ?? "", ev.references);
+    if (ev.kind === "user") renderUserText(node, ev);
     else node.append(ev.text ?? "");
     if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
     const delivery = deliveryBadge(ev);

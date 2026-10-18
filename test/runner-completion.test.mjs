@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { Runner } from "../server/runner.mjs";
+import { Runner, PAUSE_GRACE_MS, STOP_GRACE_MS } from "../server/runner.mjs";
 
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 const GRACE_MS = 4000;
@@ -146,4 +146,44 @@ test("runner completion: injection during grace keeps stdin open before any next
   f.complete();
   t.mock.timers.tick(GRACE_MS);
   await assertEnded(f);
+});
+
+test("runner completion: pausing a turn with injected work ends the turn as soon as it finishes", async (t) => {
+  const f = fixture(t);
+  f.runner.inject(f.session, "추가 조건");
+  f.session.paused = true;
+  assert.equal(f.runner.interrupt(f.session), true);
+  f.complete();
+  // 추가 요청을 기다리는 시간(INJECT_GRACE) 없이 바로 일시중지 상태가 된다. CLI는 백그라운드 작업을 위해 띄워 둘 수 있다.
+  await tick();
+  assert.equal(f.session.state, "paused", "a stopped turn must not wait for injected work");
+  assert.equal(f.runner.running.has(f.session.id), false);
+});
+
+test("runner completion: pause and Codex stop force the CLI to end after a short wait", async (t) => {
+  for (const [agent, act, wait] of [["claude", "interrupt", PAUSE_GRACE_MS], ["codex", "stop", STOP_GRACE_MS]]) {
+    await t.test(agent, async (st) => {
+      const f = fixture(st, agent);
+      await tick();
+      const killed = [];
+      f.runner.kill = (child) => killed.push(child);
+      assert.equal(f.runner[act](f.session), true);
+      st.mock.timers.tick(wait - 1);
+      assert.deepEqual(killed, []);
+      st.mock.timers.tick(1);
+      assert.deepEqual(killed, [f.child]);
+    });
+  }
+});
+
+test("runner completion: a stopped CLI whose pipes stay open still ends the turn", async (t) => {
+  const f = fixture(t);
+  f.runner.kill = () => {};
+  f.runner.stop(f.session);
+  f.child.stdout.on("close", () => f.child.emit("close", 1, null));
+  f.child.emit("exit", 1, null);
+  t.mock.timers.tick(500);
+  await tick(); await tick();
+  assert.equal(f.runner.isRunning(f.session.id), false);
+  assert.equal(f.session.state, "idle");
 });
