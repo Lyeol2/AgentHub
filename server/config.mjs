@@ -22,6 +22,8 @@ const DEFAULTS = {
   skillLayout: {},
   // Git 저장소 경로(소문자) → GitFlow 브랜치 이름과 작업 브랜치 접두어.
   gitflow: {},
+  // 프로젝트 경로(소문자) → 새 세션·작업 기본값과 유니티 사용(server/project-settings.mjs).
+  projectSettings: {},
 };
 
 export function loadConfig(dataDir = DATA_DIR) {

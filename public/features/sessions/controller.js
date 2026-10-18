@@ -555,9 +555,29 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("config-model").value = s.model ?? "";
     fillConfigAgent(s.agent, s.effort ?? "", s.permission);
     $("config-permission-row").hidden = !!s.chat;
+    renderConfigRules(s);
     $("config-error").textContent = "";
     $("config-dialog").showModal();
   });
+
+  // "이 세션에서 계속 허용"으로 남긴 규칙. 지우면 다음 요청부터 다시 묻는다.
+  function renderConfigRules(s) {
+    const rules = (s.allowRules ?? []).filter((rule) => rule.agent === s.agent);
+    $("config-rules-row").hidden = !!s.chat || !rules.length;
+    $("config-rules").replaceChildren(...rules.map((rule) => el("li", {},
+      el("span", { class: "mono" }, rule.label ?? rule.key),
+      el("button", { type: "button", class: "ghost sm", title: "이 규칙을 지웁니다", onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          const updated = await api("PUT", `/api/sessions/${s.id}`, { removeAllowRules: [rule.key] });
+          s.allowRules = updated.allowRules ?? [];
+          renderConfigRules(s);
+        } catch (err) {
+          $("config-error").textContent = err.message;
+          e.currentTarget.disabled = false;
+        }
+      } }, "지우기"))));
+  }
 
   // 고른 AI에 맞춰 모델 후보·추론 강도·권한 목록을 채운다. AI를 바꾸면 이어받기 선택을 보인다.
   // 권한은 비슷한 것으로 옮긴다. 서버의 handover.mjs와 같다.
@@ -605,7 +625,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       // AI를 바꾸면 기록에 상태 줄이 붙고 CLI 대화 ID도 바뀌므로 세션을 통째로 다시 받는다.
       if (updated.agent !== s.agent) await selectSession(s.id);
       else {
-        Object.assign(data.current, { title: updated.title, model: updated.model, effort: updated.effort, permission: updated.permission });
+        Object.assign(data.current, { title: updated.title, model: updated.model, effort: updated.effort, permission: updated.permission, allowRules: updated.allowRules });
         renderSession();
       }
       loadSessions();

@@ -4,6 +4,7 @@ import * as claude from "./agents/claude.mjs";
 import * as codex from "./agents/codex.mjs";
 import { spawnCli, killProcessTree, missingFolder } from "./cli.mjs";
 import { CodexAppServer } from "./codex-app-server.mjs";
+import { unityControl, isUnityCommand } from "./unity-control.mjs";
 
 const publicMeta = (meta) => ({ ...meta, ...(meta.attachments ? { attachments: meta.attachments.map(({ id, name, mimeType, size, url }) => ({ id, name, mimeType, size, url })) } : {}) });
 
@@ -27,6 +28,8 @@ export class Runner extends EventEmitter {
     // 지금 연결할 수 없는 사용자 Codex MCP 서버 이름(() → string[]). 서버가 정한다.
     this.unreachableMcp = () => [];
     this.mcpNotes = new Map(); // 세션 ID → 마지막으로 알린 꺼진 MCP 목록
+    // 세션 프로젝트의 "유니티 사용" 설정(session → "ask" | "allow" | "off"). 서버가 정한다.
+    this.unityMode = () => "allow";
   }
 
   // ── 실행 중 질문·권한 요청 ──────────────────────────────────────
@@ -38,6 +41,15 @@ export class Runner extends EventEmitter {
       child.stdin.write(`${agent.controlResponse(msg.request_id, {})}\n`);
       return;
     }
+    // 이 세션에서 계속 허용한 요청은 묻지 않고 허용하고, 유니티를 끈 프로젝트의 유니티 명령은 거절한다.
+    const auto = this.autoDecision(session, agent, control);
+    if (auto) {
+      const response = agent.permissionResponse(control, auto, auto === "deny" ? "프로젝트 설정에서 유니티 사용을 꺼 두었습니다." : undefined);
+      if (child.appServer) child.appServer.respond(msg.request_id, response);
+      else child.stdin.write(`${agent.controlResponse(msg.request_id, response)}\n`);
+      this.append(session, { kind: "status", text: auto === "deny" ? `유니티 사용을 끈 프로젝트라 거절했습니다: ${control.text}` : `이 세션에서 계속 허용한 요청이라 허용했습니다: ${control.text}` });
+      return;
+    }
     const id = msg.request_id;
     const event = control.kind === "question"
       ? { kind: "question", questionId: id, status: "pending", text: "질문", questions: control.questions, live: true }
@@ -45,6 +57,36 @@ export class Runner extends EventEmitter {
     session.waiting = true;
     const full = this.append(session, event);
     this.prompts.set(id, { session, child, agent, control, event: full });
+  }
+
+  // 저장한 허용 규칙(agent.ruleMatches가 있는 CLI)과 유니티 통제로 화면에 묻지 않고 답할 결정. 없으면 null.
+  // Claude는 규칙을 실행 설정(--settings)으로 넘겨 CLI가 직접 판단하므로 여기서는 Codex만 해당한다.
+  autoDecision(session, agent, control) {
+    if (control.kind !== "permission" || !agent.ruleMatches) return null;
+    const unity = session.chat ? "allow" : this.unityMode(session);
+    // 실행 전 확인이면 저장한 규칙이 있어도 유니티 명령은 매번 묻는다.
+    if (unity !== "allow" && isUnityCommand(control.input?.command)) return unity === "off" ? "deny" : null;
+    return (session.allowRules ?? []).some((rule) => rule.agent === session.agent && agent.ruleMatches(rule, control)) ? "allow" : null;
+  }
+
+  // "이 세션에서 계속 허용"한 결정을 세션에 남긴다. 다음 실행에서 CLI를 새로 띄워도 다시 적용한다.
+  remember(session, agent, control) {
+    const { rules = [], mode = null } = agent.rememberedRules?.(control) ?? {};
+    const saved = [...(session.allowRules ?? [])];
+    const createdAt = new Date().toISOString();
+    for (const rule of rules) if (!saved.some((r) => r.agent === session.agent && r.key === rule.key)) saved.push({ ...rule, agent: session.agent, createdAt });
+    if (saved.length !== (session.allowRules ?? []).length) session.allowRules = saved;
+    // 권한 모드를 바꾸자는 제안(예: 파일 수정 허용)은 세션 권한에도 남긴다.
+    if (mode && mode !== "plan" && agent.PERMISSION_MODES.includes(mode)) session.permission = mode;
+  }
+
+  // 세션 설정에서 바꾼 권한을 실행 중인 CLI에 바로 적용한다. 적용했으면 true, 다음 요청부터 적용되면 false.
+  setPermissionMode(session) {
+    const child = this.running.get(session.id);
+    const agent = AGENTS[session.agent];
+    if (!child || child.appServer || !agent.permissionModeLine || session.planTurn || child.stdin.writableEnded || child.stdin.destroyed) return false;
+    child.stdin.write(`${agent.permissionModeLine(session.permission)}\n`);
+    return true;
   }
 
   // 실행 중인 턴에 요청을 붙인다. CLI가 같은 작업에 반영할 수 있을 때만 허용한다.
@@ -88,6 +130,7 @@ export class Runner extends EventEmitter {
     } else {
       event.status = decision === "deny" ? "denied" : "allowed";
       event.decision = decision;
+      if (decision === "always") this.remember(session, agent, control);
     }
     session.waiting = this.waitingFor(session.id);
     this.store.touch(session);
@@ -145,7 +188,8 @@ export class Runner extends EventEmitter {
 
     const agent = AGENTS[session.agent];
     const disabledMcp = agent.transport === "app-server" ? this.unreachableMcp() : [];
-    const args = agent.buildArgs(session, { mcp: session.chat ? null : this.mcp(session), disabledMcp });
+    const unity = session.chat ? null : unityControl(this.unityMode(session), session);
+    const args = agent.buildArgs(session, { mcp: session.chat ? null : this.mcp(session), disabledMcp, unity });
     const userInput = agent.interactive ? agent.userLine(input, meta.attachments) : null;
     if (!retry) {
       // 답하지 않은 질문은 새 요청이 들어오면 지나간 것으로 본다.

@@ -27,6 +27,7 @@ import { discoverProjects, useDiscoverCache, flushDiscoverCache } from "./discov
 import { createLimitsService } from "./limits.mjs";
 import { createSessionService } from "./application/sessions.mjs";
 import { createProjectService } from "./application/projects.mjs";
+import { projectUnityMode } from "./project-settings.mjs";
 import { createWorkflowService } from "./application/workflows.mjs";
 import { createCommandService } from "./application/commands.mjs";
 import { createSkillService } from "./application/skills.mjs";
@@ -179,6 +180,8 @@ export function createHub(options = {}) {
   // 꺼진 사용자 Codex MCP 서버는 세션 실행에서 빼 연결 재시도·오류를 막는다.
   const mcpProbe = deps.mcpProbe ?? new CodexMcpProbe();
   runner.unreachableMcp = () => mcpProbe.unreachable();
+  // 프로젝트 설정의 "유니티 사용"(실행 전 확인·허용·끔)을 세션 실행 인자와 권한 응답에 반영한다.
+  runner.unityMode = (session) => projectUnityMode(config, session.projectPath);
 
   // Resolve the MCP URL lazily, after an ephemeral port has been assigned.
   runner.mcp = (session) => {
