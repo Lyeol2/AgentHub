@@ -70,7 +70,8 @@ function fixture(t) {
   const emit = (message) => child.stdout.write(JSON.stringify(message) + "\n");
   child.stdin.resume();
   child.stdin.once("finish", () => queueMicrotask(() => child.emit("close", 0, null)));
-  const runner = new Runner({ touch() {}, get: () => session }, { spawn: () => child });
+  // 턴이 끝나면 CLI를 바로 닫는 설정(백그라운드 작업이 없을 때)으로 종료 처리를 확인한다.
+  const runner = new Runner({ touch() {}, get: () => session }, { spawn: () => child, keepAlive: () => ({ idleMinutes: 0 }) });
   const seen = { activity: [], draft: [], updates: [], requeue: [] };
   runner.on("activity", (_, activity) => seen.activity.push(activity));
   runner.on("draft", (_, draft) => seen.draft.push(draft));

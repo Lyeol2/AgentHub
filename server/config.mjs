@@ -13,6 +13,9 @@ const DEFAULTS = {
   // CLI 경로를 직접 지정할 때만 채운다. 비워 두면 자동 탐색한다.
   cli: { claude: "", codex: "" },
   cliAutoUpdate: true,
+  // Claude CLI를 턴 사이에 띄워 두는 설정. idleMinutes: 요청 없이 쉬면 닫는 시간(0이면 백그라운드 작업이 없을 때 바로 닫음),
+  // maxProcesses: 동시에 띄워 두는 수(넘으면 가장 오래 쉰 프로세스부터 닫음. 실행 중·백그라운드 작업 중인 프로세스는 닫지 않음).
+  cliKeepAlive: { idleMinutes: 15, maxProcesses: 8 },
   projects: [],
   // 프로젝트 화면의 Claude Code·Codex 기록 목록에서 숨긴 세션 ID. 기록 파일은 지우지 않는다.
   hiddenSessions: [],
@@ -36,7 +39,7 @@ export function loadConfig(dataDir = DATA_DIR) {
     return structuredClone(DEFAULTS);
   }
   const defaults = structuredClone(DEFAULTS);
-  return { ...defaults, ...raw, cli: { ...defaults.cli, ...raw.cli } };
+  return { ...defaults, ...raw, cli: { ...defaults.cli, ...raw.cli }, cliKeepAlive: { ...defaults.cliKeepAlive, ...raw.cliKeepAlive } };
 }
 
 export function saveConfig(config, dataDir = DATA_DIR) {

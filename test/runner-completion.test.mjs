@@ -28,7 +28,8 @@ function fixture(t, agent = "claude") {
     }
   });
   child.stdin.once("finish", () => queueMicrotask(() => child.emit("close", 0, null)));
-  const runner = new Runner({ touch() {}, get: () => session }, { spawn: () => child });
+  // 턴이 끝나면 CLI를 바로 닫는 설정(백그라운드 작업이 없을 때). 띄워 두는 동작은 runner-keepalive.test.mjs에서 확인한다.
+  const runner = new Runner({ touch() {}, get: () => session }, { spawn: () => child, keepAlive: () => ({ idleMinutes: 0 }) });
   const ended = [];
   runner.on("turnEnd", (endedSession, ok) => ended.push([endedSession.id, ok]));
   t.after(() => {

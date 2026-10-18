@@ -66,8 +66,10 @@ export function buildArgs(session, { mcp = null, unity = null } = {}) {
 }
 
 // ── 실행 중 대화(control 프로토콜) ──────────────────────────────
-// stdin을 열어 둔 채 요청을 보낸다. 턴이 끝나면(result) stdin을 닫아 CLI를 끝낸다.
+// stdin을 열어 둔 채 요청을 보낸다. 턴이 끝나도(result) CLI를 닫지 않고 두었다가 다음 요청을 같은 프로세스에 쓴다.
+// 입력을 닫으면 CLI가 백그라운드 작업(서브에이전트 등)을 강제로 끝내므로, 닫는 시점은 runner가 정한다.
 export const interactive = true;
+export const keepAlive = true;
 
 // 지금 턴을 멈춘다(Claude Code에서 Esc를 누른 것과 같다). CLI는 턴을 끝내고 대화 기록을 남긴다.
 export const interruptLine = () => JSON.stringify({ type: "control_request", request_id: `interrupt-${randomUUID()}`, request: { subtype: "interrupt" } });
@@ -75,7 +77,13 @@ export const interruptLine = () => JSON.stringify({ type: "control_request", req
 // 실행 중인 CLI의 권한 모드를 바로 바꾼다(Agent SDK의 setPermissionMode와 같은 요청).
 export const permissionModeLine = (mode) => JSON.stringify({ type: "control_request", request_id: `mode-${randomUUID()}`, request: { subtype: "set_permission_mode", mode } });
 
-export const initLine = () => JSON.stringify({ type: "control_request", request_id: `init-${randomUUID()}`, request: { subtype: "initialize" } });
+// perTaskStopAffordance: 작업별 중지(stop_task)를 쓰는 화면이라고 알린다. 열린 입력에서 interrupt가 턴만 멈추고 백그라운드 작업은 살려 둔다.
+// agentProgressSummaries: 서브에이전트 진행 한 줄 요약(task_progress summary)을 받는다.
+// forwardSubagentText: 서브에이전트의 글도 parent_tool_use_id를 붙여 보낸다(작업별 최근 활동에만 쓴다).
+export const initLine = () => JSON.stringify({ type: "control_request", request_id: `init-${randomUUID()}`, request: { subtype: "initialize", perTaskStopAffordance: true, agentProgressSummaries: true, forwardSubagentText: true } });
+
+// 실행 중인 하위 작업 하나를 멈춘다.
+export const stopTaskLine = (taskId, requestId = `stop-task-${randomUUID()}`) => JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "stop_task", task_id: taskId } });
 
 export const userLine = (text, attachments = []) => JSON.stringify({
   type: "user",
@@ -196,6 +204,36 @@ export function replayedUserText(msg) {
   return content.find((block) => block?.type === "text")?.text ?? null;
 }
 
+// 하위 작업(서브에이전트·백그라운드 명령) 알림을 { kind: "subtask", phase, taskId, ... }로 바꾼다. runner가 server/subtasks.mjs로 모은다.
+const TASK_PHASES = { task_started: "started", task_progress: "progress", task_updated: "updated", task_notification: "notification" };
+function subtaskEvents(msg) {
+  const phase = TASK_PHASES[msg.subtype];
+  if (!phase || typeof msg.task_id !== "string") return [];
+  const event = { kind: "subtask", phase, taskId: msg.task_id };
+  if (msg.tool_use_id) event.toolUseId = msg.tool_use_id;
+  if (msg.description) event.description = msg.description;
+  if (phase === "started") Object.assign(event, {
+    subagentType: msg.subagent_type ?? null, taskType: msg.task_type ?? null, background: !!msg.is_backgrounded, parentId: msg.parent_task_id ?? null,
+    depth: Number.isInteger(msg.spawn_depth) ? msg.spawn_depth : null, prompt: msg.prompt ?? null, ...(msg.ambient || msg.skip_transcript ? { ambient: true } : {}),
+  });
+  if (phase === "progress") Object.assign(event, { usage: msg.usage ?? null, lastTool: msg.last_tool_name ? claudeToolLabel(msg.last_tool_name) ?? msg.last_tool_name : null, summary: msg.summary ?? null });
+  if (phase === "updated") event.patch = msg.patch ?? {};
+  if (phase === "notification") Object.assign(event, { status: msg.status, summary: msg.summary ?? null, usage: msg.usage ?? null, outputFile: msg.output_file || null, reason: msg.reason ?? null });
+  return [event];
+}
+
+// 하위 작업 안의 대화(parent_tool_use_id가 있는 메시지)는 본 기록에 넣지 않고 그 작업의 최근 활동으로만 모은다.
+function subtaskActivity(msg) {
+  const items = [];
+  if (msg.type === "assistant" && msg.error) items.push({ kind: "error", text: (msg.message?.content ?? []).map((b) => b.text).filter(Boolean).join("\n") || msg.error });
+  else for (const block of msg.message?.content ?? []) {
+    if (msg.type === "assistant" && block.type === "text" && block.text) items.push({ kind: "text", text: block.text });
+    else if (msg.type === "assistant" && block.type === "tool_use") items.push({ kind: "tool", name: block.name, label: claudeToolLabel(block.name, block.input) ?? block.name, text: toolSummary(block.name, block.input) });
+    else if (block.type === "tool_result" && block.is_error) items.push({ kind: "error", text: resultText(block.content) });
+  }
+  return items.length ? [{ kind: "subtask_activity", toolUseId: msg.parent_tool_use_id, items }] : [];
+}
+
 // stream-json 한 줄을 공통 이벤트 목록으로 바꾼다.
 export function parseLine(line) {
   let msg;
@@ -215,8 +253,9 @@ export function parseLine(line) {
         const before = msg.compact_metadata?.pre_tokens;
         return [{ kind: "status", text: `컨텍스트를 압축했습니다${before ? ` (압축 전 ${before.toLocaleString()} 토큰)` : ""}`, compact: true }];
       }
-      return [];
+      return subtaskEvents(msg);
     case "assistant": {
+      if (msg.parent_tool_use_id) return subtaskActivity(msg);
       if (msg.error) {
         // 로그인 실패 같은 API 오류는 본문을 오류 하나로만 표시한다.
         const text = (msg.message?.content ?? []).map((b) => b.text).filter(Boolean).join("\n");
@@ -245,6 +284,7 @@ export function parseLine(line) {
       return events;
     }
     case "user": {
+      if (msg.parent_tool_use_id) return subtaskActivity(msg);
       const events = [];
       for (const block of msg.message?.content ?? []) {
         if (block.type === "tool_result") {

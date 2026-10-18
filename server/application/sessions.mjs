@@ -48,6 +48,8 @@ export function createSessionService({
     return effort;
   }
 
+  // 턴 실행 중이거나 백그라운드 작업 중이다(대체 runner는 isRunning만 있을 수 있다).
+  const isBusy = (id) => runner.isBusy?.(id) ?? runner.isRunning(id);
   function getSession(id) {
     const session = store.get(id);
     if (!session) throw new HttpError(404, "세션이 없습니다.");
@@ -56,8 +58,10 @@ export function createSessionService({
 
   // 실행 중으로 남아 있는데 실제로 도는 CLI가 없으면(중간에 실행이 끊긴 경우) 중단된 것으로 고친다.
   // 그대로 두면 화면에서 중지·삭제 버튼이 막혀 지울 수 없는 세션이 된다.
+  // 백그라운드 작업 중으로 남았는데 작업을 돌리는 CLI가 없으면 대기로 고친다.
   function settleState(session) {
     if (session.state === "running" && !runner.isRunning(session.id)) runner.setState(session, "interrupted");
+    else if (session.state === "background" && !isBusy(session.id)) runner.setState(session, "idle");
     return session;
   }
 
@@ -94,6 +98,7 @@ export function createSessionService({
     const agent = String(body.agent);
     if (!AGENTS[agent]) throw new HttpError(400, "agent는 claude 또는 codex입니다.");
     if (runner.isRunning(session.id)) throw new HttpError(409, "실행 중에는 AI를 바꿀 수 없습니다. 끝나거나 일시중지한 뒤 바꾸세요.");
+    if (isBusy(session.id)) throw new HttpError(409, "백그라운드 작업이 진행 중이라 AI를 바꿀 수 없습니다. 작업이 끝나거나 중지한 뒤 바꾸세요.", "running");
     const permission = body.permission ?? mapPermission(session.permission, agent, { orchestrator: session.kind === "orchestrator" }) ?? undefined;
     const options = checkSessionOptions({ agent, model: body.model ?? "", effort: body.effort ?? "", permission, chat: session.chat });
     const carry = body.carry !== false && session.events.some((e) => e.kind === "user");
@@ -105,6 +110,8 @@ export function createSessionService({
       delete session.handover;
     }
     const from = AGENT_NAME[session.agent];
+    // 띄워 둔 이전 AI의 CLI는 닫는다.
+    runner.release?.(session);
     Object.assign(session, options);
     session.agentSessionId = null;
     session.compactions = 0;
@@ -642,8 +649,9 @@ export function createSessionService({
       const changed = body.permission !== session.permission;
       session.permission = body.permission;
       // 실행 중이면 Claude는 CLI에 바로 적용하고, Codex는 실행 중인 작업에 바꿀 수 없어 다음 요청부터 적용한다.
-      if (changed && runner.isRunning(session.id)) {
-        const now = runner.setPermissionMode?.(session);
+      // 쉬고 있는 CLI에도 바로 적용한다(다음 요청 때도 다시 맞춘다). 백그라운드 작업 중이면 작업의 권한 요청에도 적용된다.
+      const now = changed ? runner.setPermissionMode?.(session) : false;
+      if (changed && isBusy(session.id)) {
         runner.append(session, { kind: "status", text: now
           ? `권한을 ${session.permission}(으)로 바꿨습니다. 실행 중인 작업에 바로 적용했습니다.`
           : `권한을 ${session.permission}(으)로 바꿨습니다. ${AGENT_NAME[session.agent] ?? session.agent}는 실행 중인 작업에는 적용할 수 없어 다음 요청부터 적용합니다.` });
@@ -741,12 +749,25 @@ export function createSessionService({
     const session = getSession(id);
     if (session.paused && !runner.isRunning(id)) {
       clearPause(session);
+      // 일시중지 중에도 돌던 백그라운드 작업은 함께 멈춘다.
+      if (isBusy(id)) runner.stop(session);
       runner.setState(session, "idle");
       await chain.onTurnEnd(session, null);
       runner.append(session, { kind: "status", text: "일시중지를 풀고 중지했습니다." });
       return { stopped: true };
     }
     return { stopped: runner.stop(session) };
+  }
+
+  // 하위 작업 하나를 멈춘다(Claude stop_task). 세션과 다른 작업은 그대로 둔다.
+  async function stopSubtask(id, taskId) {
+    const session = getSession(id);
+    try {
+      const result = await runner.stopSubtask(session, String(taskId));
+      return { ok: true, ...result };
+    } catch (err) {
+      throw new HttpError(409, err.message);
+    }
   }
 
   function pause(id) {
@@ -784,7 +805,8 @@ export function createSessionService({
 
   async function recreateSession(id) {
     const session = getSession(id);
-    if (runner.isRunning(id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
+    if (isBusy(id)) throw new HttpError(409, "실행 중인 세션은 재생성할 수 없습니다. 먼저 중지하세요.", "running");
+    runner.release?.(session);
     if (session.gitContext) {
       try { assertSessionGitContext(session); }
       catch (error) { throw new HttpError(409, error.message, "git-context"); }
@@ -836,10 +858,12 @@ export function createSessionService({
   async function remove(id, { force = false, removeWorktree: removeFolder = false, deleteRecords = false } = {}) {
     const session = getSession(id);
     if (removeFolder && (session.taskId || session.worktree?.shared)) throw new HttpError(409, "공유하는 작업 브랜치의 폴더는 세션 삭제와 함께 지울 수 없습니다. 작업 탭에서 정리 상태를 확인하세요.", "task-worktree");
-    if (runner.isRunning(id)) {
-      if (!force) throw new HttpError(409, "실행 중인 세션입니다.", "running");
+    if (isBusy(id)) {
+      if (!force) throw new HttpError(409, runner.isRunning(id) ? "실행 중인 세션입니다." : "백그라운드 작업이 진행 중인 세션입니다.", "running");
       runner.stop(session);
     }
+    // 쉬고 있는 CLI도 닫는다. 작업 폴더를 지울 수 있게 바로 끝낸다.
+    runner.release?.(session, { kill: true });
     if (session.worktree && removeFolder) {
       try {
         await removeWorktree(session.projectPath, session.worktree.dir);
@@ -866,7 +890,7 @@ export function createSessionService({
   return {
     list: () => store.list().map((s) => summary(settleState(s))), detail, detailMeta,
     create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, artifact, artifactContent, artifactPreview, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
-    stop, pause, resume, restart, recreate, diff, remove,
+    stop, stopSubtask, pause, resume, restart, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,
     finishHandover(session) {

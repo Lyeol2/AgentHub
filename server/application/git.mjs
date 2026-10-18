@@ -10,7 +10,8 @@ export function createGitService({ sessions, projects, runner, notify, tasks, co
   const client = createGitClient({
     getSessions: allSessions,
     getTasks: () => tasks?.()?.list?.()?.tasks ?? [],
-    isRunning: id => runner.isRunning(id),
+    // 백그라운드 작업 중인 세션도 파일을 바꿀 수 있으므로 실행 중으로 본다.
+    isRunning: id => runner.isBusy?.(id) ?? runner.isRunning(id),
     assertSession: session => tasks?.()?.assertSession?.(session),
     assertTaskOperation: (cwd, action) => tasks?.()?.assertGitOperation?.(cwd, action),
   });

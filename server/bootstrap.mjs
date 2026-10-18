@@ -62,7 +62,7 @@ export function createHub(options = {}) {
   const persistConfig = deps.saveConfig ?? ((value) => saveConfig(value, dataDir));
   const store = deps.store ?? new SessionStore({ dataDir });
   let setup;
-  const runner = deps.runner ?? new Runner(store, { isUpdating: (tool) => setup?.isUpdating?.(tool) ?? false });
+  const runner = deps.runner ?? new Runner(store, { isUpdating: (tool) => setup?.isUpdating?.(tool) ?? false, keepAlive: () => config.cliKeepAlive ?? {} });
   const links = deps.links ?? new LinkStore({ dataDir });
   const commands = deps.commands ?? new CommandStore({ dataDir });
   const runHistory = deps.runHistory ?? new RunHistoryStore({ dataDir });
@@ -79,7 +79,9 @@ export function createHub(options = {}) {
     codex: locateCli("codex", config.cli.codex),
   }));
   const oneShotRuns = new Map();
-  const isCliBusy = (tool) => (runner.running?.size ?? 0) > 0
+  // 쉬고 있는 CLI는 업데이트를 막지 않도록 닫는다. 닫히는 동안(실행 파일을 잡고 있음)은 아직 사용 중으로 본다.
+  const isCliBusy = (tool) => { runner.releaseIdle?.(); return isCliInUse(tool); };
+  const isCliInUse = (tool) => (runner.running?.size ?? 0) > 0 || (runner.procs?.size ?? 0) > 0 || (runner.closing?.size ?? 0) > 0
     || store.list().some((session) => runner.isRunning(session.id))
     || [...(chain.runs?.values() ?? [])].some((run) => run.kind !== "schedule")
     || (oneShotRuns.get(tool) ?? 0) > 0;
@@ -231,6 +233,8 @@ export function createHub(options = {}) {
   listen(runner, "activity", (sessionId, activity) => notify("activity", { sessionId, ...activity }));
   listen(runner, "draft", (sessionId, draft) => notify("draft", { sessionId, ...draft }));
   listen(runner, "eventUpdate", (sessionId, seq, patch) => notify("event-update", { sessionId, seq, patch }));
+  // 하위 작업(백그라운드 서브에이전트 등) 목록의 바뀐 작업. 화면은 id로 합친다.
+  listen(runner, "subtasks", (sessionId, patch) => notify("subtasks", { sessionId, ...patch }));
   // 지금 작업에 반영하지 못한 추가 요청을 대기열 앞으로 되돌린다. 사용자가 쓴 요청은 보낼 때 다시 /스킬·@참조를 풀어 쓴다.
   listen(runner, "requeue", (session, items) => chain.requeue?.(session, items.map(({ text, meta }) => ({ text, meta: meta?.from ? meta : { user: true, ...meta } }))));
   listen(setup, "change", (jobs) => notify("setup", jobs));

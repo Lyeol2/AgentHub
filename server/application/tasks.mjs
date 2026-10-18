@@ -108,11 +108,13 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   }
   // 원본 폴더에서 결과 확인, 작업 폴더 재사용, 유니티 Library 복사, 폴더 열기
   const workspace = createTaskWorkspace({ dataDir, config, saveConfig, store, runner, records, get, save, locked, notify, tools: workspaceTools });
+  // 턴 실행 중이거나 백그라운드 작업 중이다(대체 runner는 isRunning만 있을 수 있다).
+  const isBusy = (id) => runner.isBusy?.(id) ?? runner.isRunning(id);
   function taskSessions(task) {
     return store.list().filter((session) => (task.id && session.taskId === task.id) || insideTaskPath(session.cwd, task.cwd));
   }
   function assertIdle(task, except) {
-    if (taskSessions(task).some((session) => session.id !== except && runner.isRunning(session.id)))
+    if (taskSessions(task).some((session) => session.id !== except && isBusy(session.id)))
       throw new HttpError(409, "이 작업 폴더에서 실행 중인 세션을 먼저 중지하세요.", "running");
   }
   // 원본 폴더를 새 작업 브랜치로 바꿔도 되는지 확인하고 지금 브랜치 이름을 돌려준다.
@@ -123,7 +125,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const preview = workspace.previewActive(repo.common);
     if (preview) throw new HttpError(409, `원본 폴더에서 "${preview.title}" 작업 결과를 확인하고 있습니다. 확인을 끝낸 뒤 진행하거나 워크트리를 만들어 진행하세요.`, "task-in-place");
     // 저장소 하위 폴더를 프로젝트로 등록한 세션도 원본 폴더에서 일하는 세션이다.
-    if (store.list().some((session) => runner.isRunning(session.id) && insideTaskPath(session.cwd, cwd)))
+    if (store.list().some((session) => isBusy(session.id) && insideTaskPath(session.cwd, cwd)))
       throw new HttpError(409, "이 작업 폴더에서 실행 중인 세션을 먼저 중지하세요.", "running");
     await assertTaskGitIdle({ cwd });
     if (await taskDirty({ cwd })) throw new HttpError(409, "원본 폴더에 커밋하지 않은 변경이 있습니다. 커밋하거나 워크트리를 만들어 진행하세요.", "task-dirty");
@@ -149,7 +151,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     }
     await taskGit(task.cwd, ["switch", "--detach", "HEAD"], { write: true });
   }
-  const sessionBusy = (session) => runner.isRunning(typeof session === "string" ? session : session.id);
+  const sessionBusy = (session) => isBusy(typeof session === "string" ? session : session.id);
   function assertActive(task) {
     if (["merged", "cleaned"].includes(task.state)) throw new HttpError(409, "병합이 완료된 작업입니다. 새 작업에서 이어서 진행하세요.", "task-completed");
   }
@@ -660,7 +662,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const task = get(id);
     const sessions = taskSessions(task);
     const result = { id: task.id, state: task.state, checkedAt: now(), sessions: sessions.length,
-      running: sessions.filter((session) => runner.isRunning(session.id)).length,
+      running: sessions.filter((session) => isBusy(session.id)).length,
       behind: !!task.freshness?.behind, head: null, shortHead: null, commits: null, dirty: null, pushed: null, folder: true };
     const count = async (cwd, range) => Number((await taskGit(cwd, ["rev-list", "--count", "--first-parent", "--no-merges", range])).trim());
     const finishedHead = task.mergedHead || task.completion?.sourceHead || task.publishedHead || null;
@@ -1387,7 +1389,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (records.get(id) !== task) throw new HttpError(404, "작업이 없습니다.", "task-missing");
       if (busy.has(id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
       const owned = store.list().filter((session) => session.taskId === id || task.sessionIds.includes(session.id));
-      if (!force && owned.some((session) => runner.isRunning(session.id)))
+      if (!force && owned.some((session) => isBusy(session.id)))
         throw new HttpError(409, "이 작업에서 실행 중인 세션이 있습니다.", "running");
       busy.add(id);
       try {
@@ -1448,7 +1450,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if (busy.has(id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
     if (task.pendingAction) throw new HttpError(409, "이전 요청의 결과를 먼저 확인하세요.", "task-outcome-unknown", { outcomeUnknown: true });
     const owned = store.list().filter((session) => session.taskId === id || task.sessionIds.includes(session.id));
-    if (!force && owned.some((session) => runner.isRunning(session.id))) throw new HttpError(409, "이 작업에서 실행 중인 세션이 있습니다.", "running");
+    if (!force && owned.some((session) => isBusy(session.id))) throw new HttpError(409, "이 작업에서 실행 중인 세션이 있습니다.", "running");
     if (!force && !task.inPlace && task.ownsWorktree !== false && fs.existsSync(task.cwd) && await taskDirty(task))
       throw new HttpError(409, "작업 폴더에 커밋하지 않은 변경이나 새 파일이 있습니다.", "task-dirty");
     const remote = { pullClosed: null, remoteBranchRemoved: false, issueUnassigned: false };

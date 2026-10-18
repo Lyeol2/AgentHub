@@ -32,16 +32,20 @@ export function createProjectService({ config, store, runner, links, commands, c
 
   // 일반 채팅 세션은 프로젝트 경로가 없어 어느 프로젝트에도 속하지 않는다.
   const projectSessions = (projectPath) => store.list().filter((s) => s.projectPath && samePath(s.projectPath, projectPath));
+  // 턴 실행 중이거나 백그라운드 작업 중이다(대체 runner는 isRunning만 있을 수 있다).
+  const isBusy = (id) => runner.isBusy?.(id) ?? runner.isRunning(id);
   async function removeProject(projectPath, { force = false, removeWorktrees = false } = {}) {
     const dir = path.resolve(projectPath);
     const sessions = projectSessions(dir).filter((s) => !s.chat);
-    const running = sessions.filter((s) => runner.isRunning(s.id));
+    const running = sessions.filter((s) => isBusy(s.id));
     if (running.length && !force) {
       throw new HttpError(409, `실행 중인 세션이 ${running.length}개 있습니다: ${running.map((s) => s.title).join(", ")}`, "running");
     }
     const worktreeErrors = [];
     for (const s of sessions) {
-      if (runner.isRunning(s.id)) runner.stop(s);
+      // 실행 중·백그라운드 작업 중이면 멈추고, 쉬고 있는 CLI는 닫는다.
+      if (runner.release) runner.release(s, { kill: true });
+      else if (runner.isRunning(s.id)) runner.stop(s);
       if (removeWorktrees && s.worktree && !s.taskId && !s.worktree.shared) {
         try {
           await removeWorktree(s.projectPath, s.worktree.dir);

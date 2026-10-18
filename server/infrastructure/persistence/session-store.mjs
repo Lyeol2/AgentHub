@@ -67,7 +67,11 @@ export class SessionStore {
       const session = readJsonFile(path.join(this.directory, file), { dataDir, fallback: () => null, valid: validSession });
       if (!session) continue;
       // 서버가 꺼질 때 실행 중이던 턴은 중단된 것으로 보고 타이머도 종료한다.
-      const interrupted = session.state === "running";
+      // 백그라운드 작업 중이던 세션도 CLI가 함께 끝났으므로 중단된 것이다.
+      const interrupted = session.state === "running" || session.state === "background";
+      // 서버가 꺼지며 CLI와 함께 끝난 하위 작업
+      const cut = (session.subtasks ?? []).filter((task) => task.status === "running");
+      for (const task of cut) Object.assign(task, { status: "interrupted", endedAt: task.endedAt ?? session.updatedAt ?? null });
       const staleTimer = session.runningStartedAt != null;
       if (interrupted) session.state = "interrupted";
       if (interrupted || staleTimer) session.runningStartedAt = null;
@@ -75,7 +79,7 @@ export class SessionStore {
       if (interrupted || staleTimer) { delete session.runPhase; delete session.lastOutputAt; }
       const migrated = useProjectFolder(session);
       this.sessions.set(session.id, session);
-      if (migrated || interrupted || staleTimer) this.flush(session.id);
+      if (migrated || interrupted || staleTimer || cut.length) this.flush(session.id);
     }
   }
 
@@ -131,7 +135,9 @@ function currentBranch(cwd) {
 // 목록에 쓰는 요약. 이벤트와 AI를 바꿀 때 넘길 긴 기록(handover)은 빼고, 넘길 것이 있는지만 알린다.
 // 원본 폴더에서 일하는 세션은 원본 폴더의 지금 브랜치를 함께 알려, 다른 작업이 브랜치를 바꿨는지 볼 수 있게 한다.
 export function summary(session) {
-  const { events, handover, ...rest } = session;
+  const { events, handover, subtasks, ...rest } = session;
   const branch = !session.chat && !session.worktree && session.cwd ? currentBranch(session.cwd) : null;
-  return { ...rest, locked: !!session.locked, eventCount: events.length, handoverPending: !!handover, ...(branch ? { branch } : {}) };
+  // 목록에는 하위 작업 수만 싣는다(작업 목록·최근 활동은 세션 상세에 있다).
+  const subtaskCount = subtasks?.length ? { running: subtasks.filter((task) => task.status === "running" && !task.ambient).length, total: subtasks.length } : null;
+  return { ...rest, locked: !!session.locked, eventCount: events.length, handoverPending: !!handover, ...(branch ? { branch } : {}), ...(subtaskCount ? { subtaskCount } : {}) };
 }

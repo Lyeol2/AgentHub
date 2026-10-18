@@ -66,6 +66,8 @@ export function sessionRoutes(s) {
     ["POST", "sessions/:id/plans/:plan", ({ params, body }) => s.decidePlan(params.id, params.plan, body)],
     ["POST", "sessions/:id/questions/:question", ({ params, body }) => s.answerQuestion(params.id, params.question, body)],
     ["POST", "sessions/:id/permissions/:permission", ({ params, body }) => s.answerPermission(params.id, params.permission, body)],
+    // 하위 작업(백그라운드 서브에이전트 등) 하나만 멈춘다.
+    ["POST", "sessions/:id/subtasks/:task/stop", ({ params }) => s.stopSubtask(params.id, params.task)],
     ...["stop", "pause", "resume", "restart", "recreate"].map((action) => ["POST", `sessions/:id/${action}`, ({ params }) => s[action](params.id)]),
     ["GET", "sessions/:id/diff", ({ params }) => s.diff(params.id)],
   ];

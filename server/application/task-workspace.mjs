@@ -182,7 +182,7 @@ export function createTaskWorkspace({ dataDir, config, saveConfig = () => {}, st
       const source = sourceDir(repo), key = repoKey(task.gitCommonDir);
       const other = inPlaceTask(task.gitCommonDir);
       if (other) throw new HttpError(409, `원본 폴더는 "${other.title}" 작업에서 쓰고 있습니다. 그 작업을 정리한 뒤 확인하세요.`, "task-in-place");
-      if (store.list().some((session) => runner.isRunning(session.id) && insideTaskPath(session.cwd, source)))
+      if (store.list().some((session) => (runner.isBusy?.(session.id) ?? runner.isRunning(session.id)) && insideTaskPath(session.cwd, source)))
         throw new HttpError(409, "원본 폴더에서 실행 중인 세션이 있습니다. 세션이 끝난 뒤 확인하세요.", "running");
       await assertTaskGitIdle({ cwd: source });
       const [currentHead, currentBranch] = await Promise.all([taskRef(source, "HEAD"), symbolic(source)]);
