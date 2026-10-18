@@ -14,8 +14,18 @@ const publicMeta = (meta) => ({ ...meta, ...(meta.attachments ? { attachments: m
 export const AGENTS = { claude, codex };
 
 const MISSING_CONVERSATION = /No conversation found with session ID/i;
+// CLI가 실행할 때마다 stderr에 남기는 경고. 종료 원인이 아니므로 오류 본문에 붙이지 않는다.
+const STDERR_NOISE = [
+  /unrecognized configuration setting/i,
+  /^\s*user \(.*config\.toml\): .* is ignored\.?\s*$/i,
+  /rmcp::transport::worker: worker quit/i,
+];
+// stderr에서 알려진 경고 줄을 뺀 끝부분
+export function stderrSummary(text, lines = 15) {
+  return String(text ?? "").split(/\r?\n/).filter((line) => line.trim() && !STDERR_NOISE.some((noise) => noise.test(line))).slice(-lines).join("\n");
+}
 const INJECT_GRACE_MS = 4000;
-const INTERRUPT_GRACE_MS = 10000;
+export const INTERRUPT_GRACE_MS = 10000;
 const STOP_TASK_TIMEOUT_MS = 10000;
 // 하위 작업이 모두 끝나면 CLI가 곧바로 결과를 정리하는 턴을 시작하는 경우가 많다. 그동안 대기로 깜빡이지 않게 잠시 기다린다.
 const BACKGROUND_SETTLE_MS = 2000;
@@ -417,7 +427,7 @@ export class Runner extends EventEmitter {
       child.appServer.on("event", (event) => this.handleLine(session, child, agent, JSON.stringify({ type: "agenthub_event", event }), true));
       child.appServer.on("control", (msg) => this.ask(session, child, agent, msg));
       child.appServer.on("cancel", (id) => { this.dropPrompts(session.id, id); this.store.touch(session); });
-      child.appServer.on("shutdown", () => this.killLater(session, child, session.stopRequested ? EXIT_GRACE_MS : INTERRUPT_GRACE_MS));
+      child.appServer.on("shutdown", () => this.killLater(session, child, session.stopRequested ? EXIT_GRACE_MS : INTERRUPT_GRACE_MS, "shutdown"));
     }
 
     let buffer = "";
@@ -615,19 +625,26 @@ export class Runner extends EventEmitter {
       if (!exit) this.park(session, child);
       return;
     }
+    const finishedBeforeExit = !!exit && !!child.appServer && turn.completed && !turn.sawError;
     if (exit) {
       if (child.appServer && !turn.completed && !turn.sawError) {
         turn.sawError = true;
         this.append(session, { kind: "error", text: "Codex 연결이 턴을 완료하기 전에 끝났습니다." });
       }
-      if (exit.code !== 0 && !turn.sawError) {
-        const tail = child.stderrTail.join("").trim().split(/\r?\n/).slice(-15).join("\n");
-        this.append(session, { kind: "error", text: `CLI가 종료 코드 ${exit.code ?? exit.signal}로 끝났습니다.\n${tail}` });
+      // Codex가 턴을 마쳤다고 알린 뒤의 종료 코드는 결과를 바꾸지 않는다. 입력을 닫은 뒤 제때 끝나지 않아 AgentHub가 닫은 경우도 같다.
+      const summary = stderrSummary(child.stderrTail.join(""));
+      if (exit.code !== 0 && finishedBeforeExit) {
+        this.append(session, { kind: "log", text: child.killedBy === "shutdown"
+          ? `턴은 끝났지만 Codex가 ${INTERRUPT_GRACE_MS / 1000}초 안에 종료하지 않아 AgentHub가 닫았습니다. Codex가 실행한 개발 서버·백그라운드 명령이나 MCP 서버가 남아 있었을 수 있습니다.`
+          : `턴을 마친 뒤 Codex가 종료 코드 ${exit.code ?? exit.signal}로 끝났습니다.${summary ? `\n${summary}` : ""}` });
+      } else if (exit.code !== 0 && !turn.sawError) {
+        const cause = child.killedBy === "shutdown" ? `\n턴을 마치기 전에 Codex가 ${INTERRUPT_GRACE_MS / 1000}초 동안 응답하지 않아 AgentHub가 닫았습니다.` : "";
+        this.append(session, { kind: "error", text: `CLI가 종료 코드 ${exit.code ?? exit.signal}로 끝났습니다.${cause}${summary ? `\n${summary}` : ""}` });
       } else if (child.stderrTail.length) {
         this.append(session, { kind: "log", text: child.stderrTail.join("").trim().slice(-4000) });
       }
     }
-    const ok = (!exit || exit.code === 0) && !turn.sawError;
+    const ok = (!exit || exit.code === 0 || finishedBeforeExit) && !turn.sawError;
     // 실패한 턴이라도 백그라운드 작업이 남아 있으면 그 작업이 진행 중임을 보인다(오류는 기록에 남는다).
     this.setState(session, ok || (!exit && activeSubtasks(session).length) ? "idle" : "error");
     this.emit("turnEnd", session, ok);
@@ -842,9 +859,13 @@ export class Runner extends EventEmitter {
     return true;
   }
 
-  // ms 뒤에도 같은 프로세스가 실행 중이면 강제로 멈춘다.
-  killLater(session, child, ms) {
-    const timer = setTimeout(() => { if (this.running.get(session.id) === child) this.kill(child); }, ms);
+  // ms 뒤에도 같은 프로세스가 실행 중이면 강제로 멈춘다. reason은 종료 안내에 쓴다.
+  killLater(session, child, ms, reason = "stop") {
+    const timer = setTimeout(() => {
+      if (this.running.get(session.id) !== child) return;
+      child.killedBy = reason;
+      this.kill(child);
+    }, ms);
     timer.unref?.();
   }
 
