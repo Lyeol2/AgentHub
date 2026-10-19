@@ -69,6 +69,7 @@ export function sessionRoutes(s) {
     // 하위 작업(백그라운드 서브에이전트 등) 하나만 멈춘다.
     ["POST", "sessions/:id/subtasks/:task/stop", ({ params }) => s.stopSubtask(params.id, params.task)],
     ...["stop", "pause", "resume", "restart", "recreate"].map((action) => ["POST", `sessions/:id/${action}`, ({ params }) => s[action](params.id)]),
+    ["POST", "sessions/:id/clear-error", ({ params }) => s.clearError(params.id)],
     ["GET", "sessions/:id/diff", ({ params }) => s.diff(params.id)],
   ];
 }

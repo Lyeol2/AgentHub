@@ -11,7 +11,7 @@ import { createGraphHistory, linkBody, commandBody } from "./history.js";
 import { createGraphTabs, graphScopeKey, inGraphTab, nodeTabId } from "./tabs.js";
 import { showError } from "../../shared/error-report.js";
 
-export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
+export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, clearCommandError, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, clearSessionError, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
   const ui = {
     "graph": null,
     "graphSelected": new Set(),
@@ -19,7 +19,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     "deletingGraphNodes": null,
     "editingLink": null
   };
-  const view = createGraphView({ skillChips, restartSession, toggleSessionLock, commandNode });
+  const view = createGraphView({ skillChips, restartSession, clearSessionError, toggleSessionLock, commandNode });
   // Hosts with graphTabId opt into tabs; a standalone embedded graph may omit them.
   const tabsEnabled = Object.hasOwn(navigation, "graphTabId");
   const tabViews = new Map();
@@ -298,6 +298,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
           : kind === "group" ? ["지금 넘기기", () => runCommand(cmd), { title: "모을 노드가 모두 끝났을 때 넘깁니다" }]
             : running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
         ...(kind !== "markdown" && (cmd.lastRun || cmd.live) ? [["결과 보기", () => openCommandOutput(cmd)]] : []),
+        ...(cmd.state === "error" ? [["오류 해제", () => clearCommandError(cmd), { title: "오류 표시만 지웁니다. 마지막 실행 기록은 남습니다." }]] : []),
         ["편집", () => openCommandDialog(cmd)],
         null,
         ["삭제", () => removeCommand(cmd), { danger: true }],
@@ -703,7 +704,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       return;
     }
     // 카드 안의 버튼(다시 시작, 스킬 칩, 명령 실행·중지)은 카드 선택·끌기와 따로 동작한다.
-    if (e.target.closest(".gcard-restart, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn")) return;
+    if (e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn")) return;
     e.preventDefault();
     const id = card.dataset.id;
     const start = canvasPoint(e);
@@ -951,7 +952,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const frame = e.target.closest(".node-group");
     if (frame && !e.target.closest("button, .node-group-port")) { const group = nodeGroups.byId(frame.dataset.groupId); if (group) nodeGroups.edit(group); return; }
     const card = e.target.closest(".gcard, .gcmd");
-    if (!card || e.target.closest(".gcard-restart, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
+    if (!card || e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
     const cmd = commandById(card.dataset.id);
     if (cmd) openCommandDialog(cmd);
     else if (e.ctrlKey || e.metaKey || e.shiftKey) openSessionWindow(card.dataset.id);
