@@ -203,7 +203,7 @@ test("runner completion: a Codex turn that finished is not an error when Codex m
   assert.equal(f.session.state, "idle");
   assert.deepEqual(f.ended, [[f.session.id, true]]);
   assert.equal(f.session.events.some((event) => event.kind === "error"), false);
-  assert.match(f.session.events.at(-1).text, /종료하지 않아 AgentHub가 닫았습니다/);
+  assert.equal(f.session.events.some((event) => /종료 코드|AgentHub가 닫았습니다|unrecognized configuration/.test(event.text ?? "")), false);
 });
 
 test("runner completion: a Codex exit before the turn finished is still an error without the config warning", async (t) => {

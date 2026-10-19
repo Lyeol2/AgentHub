@@ -631,12 +631,11 @@ export class Runner extends EventEmitter {
         turn.sawError = true;
         this.append(session, { kind: "error", text: "Codex 연결이 턴을 완료하기 전에 끝났습니다." });
       }
-      // Codex가 턴을 마쳤다고 알린 뒤의 종료 코드는 결과를 바꾸지 않는다. 입력을 닫은 뒤 제때 끝나지 않아 AgentHub가 닫은 경우도 같다.
+      // Codex가 턴을 마쳤다고 알린 뒤의 종료는 AgentHub가 입력을 닫아 끝낸 것이라 대화에 남기지 않는다.
+      // 제때 끝나지 않아 AgentHub가 강제로 닫아 종료 코드가 0이 아니어도 결과는 바뀌지 않는다.
       const summary = stderrSummary(child.stderrTail.join(""));
-      if (exit.code !== 0 && finishedBeforeExit) {
-        this.append(session, { kind: "log", text: child.killedBy === "shutdown"
-          ? `턴은 끝났지만 Codex가 ${INTERRUPT_GRACE_MS / 1000}초 안에 종료하지 않아 AgentHub가 닫았습니다. Codex가 실행한 개발 서버·백그라운드 명령이나 MCP 서버가 남아 있었을 수 있습니다.`
-          : `턴을 마친 뒤 Codex가 종료 코드 ${exit.code ?? exit.signal}로 끝났습니다.${summary ? `\n${summary}` : ""}` });
+      if (finishedBeforeExit) {
+        // 정상 종료로 본다.
       } else if (exit.code !== 0 && !turn.sawError) {
         const cause = child.killedBy === "shutdown" ? `\n턴을 마치기 전에 Codex가 ${INTERRUPT_GRACE_MS / 1000}초 동안 응답하지 않아 AgentHub가 닫았습니다.` : "";
         this.append(session, { kind: "error", text: `CLI가 종료 코드 ${exit.code ?? exit.signal}로 끝났습니다.${cause}${summary ? `\n${summary}` : ""}` });
