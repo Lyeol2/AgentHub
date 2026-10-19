@@ -504,6 +504,16 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   }
   $("s-restart").addEventListener("click", () => restartSession());
 
+  // 오류 표시만 지운다. 대화와 연결은 그대로 둔다. 화면은 서버가 보내는 session 이벤트로 새로 그린다.
+  async function clearSessionError(s) {
+    if (!s || s.state !== "error") return;
+    try {
+      await api("POST", `/api/sessions/${s.id}/clear-error`);
+    } catch (err) {
+      showError(err, { action: "세션 오류 해제" });
+    }
+  }
+
   $("s-delete").addEventListener("click", async () => {
     const s = data.current;
     const options = askDeleteOptions(s);
@@ -556,6 +566,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       item("열기", () => selectSession(s.id), { disabled: !!s.locked, title: s.locked ? "잠금을 해제하면 채팅을 열 수 있습니다." : "" }),
       item("새 창으로 열기", () => openSessionWindow(s.id), { disabled: !!s.locked, title: s.locked ? "잠금을 해제하면 채팅을 열 수 있습니다." : "" }),
       item(s.locked ? "🔓 세션 잠금 해제" : "🔒 세션 잠금", () => toggleSessionLock(s), { title: "채팅 열기만 잠급니다. 연결된 실행은 계속됩니다." }),
+      s.state === "error" ? item("오류 해제", () => clearSessionError(s), { title: "오류 표시만 지웁니다. 대화와 연결은 그대로 둡니다." }) : null,
       item("다시 시작", () => restartSession(s), {
         disabled: running, title: "CLI 대화만 새로 시작해 컨텍스트를 비웁니다. 화면 기록·역할·연결은 그대로 둡니다.",
       }),
@@ -953,6 +964,6 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
 
   $("c-popout").addEventListener("click", () => openWindow(`chat=${data.current?.id ?? "new"}`));
 
-  return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, toggleSessionLock, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom,
+  return { renderFlow, renderSession, renderState, renderChat, openChat, restartSession, clearSessionError, toggleSessionLock, openSessionMenu, refreshQueue, notifyQuestion, appendEvent, scrollToBottom,
     refreshSessionMeta, renderRunActivity, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, applySubtasks };
 }

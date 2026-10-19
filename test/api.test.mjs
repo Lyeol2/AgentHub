@@ -38,6 +38,12 @@ const planFixture = {
 };
 fs.mkdirSync(path.join(tmp, "data", "sessions"), { recursive: true });
 fs.writeFileSync(path.join(tmp, "data", "sessions", planSessionId + ".json"), JSON.stringify(planFixture));
+// 오류 해제를 검증할 오류 상태 세션과 실패한 명령 노드
+const errorSessionId = "error-fixture";
+fs.writeFileSync(path.join(tmp, "data", "sessions", errorSessionId + ".json"), JSON.stringify({ ...planFixture, id: errorSessionId, title: "오류 세션", kind: "worker", state: "error", events: [] }));
+const failedCommand = { id: "cmd-failed", kind: "command", title: "실패한 명령", command: "exit 1", shell: "powershell", projectPath: repo, state: "error",
+  lastRun: { ok: false, exitCode: 1, stopped: false, timedOut: false, startedAt: new Date().toISOString(), durationMs: 10, tail: "fail" } };
+fs.writeFileSync(path.join(tmp, "data", "commands.json"), JSON.stringify([failedCommand]));
 const server = await import("../server/index.mjs");
 await server.listening;
 
@@ -257,6 +263,22 @@ test("api: 세션 다시 시작은 CLI 대화와 수명만 비운다", async () 
   assert.equal(restarted.body.compactions, 0);
   assert.equal(restarted.body.title, "R");
   assert.equal((await api("DELETE", `/sessions/${s.id}`)).status, 200);
+});
+
+test("api: 세션·명령 노드의 오류 표시를 해제한다", async () => {
+  const cleared = await api("POST", `/sessions/${errorSessionId}/clear-error`);
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.state, "idle");
+  assert.equal((await api("POST", `/sessions/${errorSessionId}/clear-error`)).status, 409);
+  const command = await api("POST", `/commands/${failedCommand.id}/clear-error`);
+  assert.equal(command.status, 200);
+  assert.equal(command.body.state, "idle");
+  assert.equal(command.body.lastRun.ok, false);
+  assert.equal(command.body.lastRun.cleared, true);
+  assert.equal((await api("POST", `/commands/${failedCommand.id}/clear-error`)).status, 409);
+  assert.equal((await api("POST", "/commands/cmd-none/clear-error")).status, 404);
+  assert.equal((await api("DELETE", `/sessions/${errorSessionId}`)).status, 200);
+  assert.equal((await api("DELETE", `/commands/${failedCommand.id}`)).status, 200);
 });
 
 test("api: 오케스트레이터 세션과 계획 처리 경로", async () => {

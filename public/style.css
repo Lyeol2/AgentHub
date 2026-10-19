@@ -584,6 +584,8 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .gcard-life { display: flex; align-items: center; gap: 4px; }
 .gcard-restart { padding: 0 6px; font-size: 12px; line-height: 16px; border-radius: 999px; color: var(--muted); background: transparent; }
 .gcard-restart:hover:not(:disabled) { color: var(--text); border-color: var(--accent); }
+.gcard-clear-error { padding: 0 6px; margin-right: 4px; font-size: 11px; line-height: 16px; border-radius: 999px; color: var(--danger, #e5484d); background: transparent; }
+.gcard-clear-error:hover { color: var(--text); border-color: var(--danger, #e5484d); }
 
 /* ── 실행 중에 보내기: 대기열과 보내기 버튼 ──────────────── */
 .composer-actions { display: flex; flex: none; align-self: flex-end; }
@@ -864,7 +866,7 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 .tab-panel[hidden] { display: none; }
 #view-project > .content { display: flex; flex-direction: column; overflow: hidden; }
 #view-project > .content > .notice, #p-tabs { flex: none; }
-#view-project .tab-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; align-content: start; }
+#view-project .tab-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; align-content: start; grid-auto-rows: max-content; }
 #view-project .tab-panel[data-panel="flow"] { display: flex; overflow: hidden; }
 .flow-card { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
 .flow-card > .card-head { flex: none; }

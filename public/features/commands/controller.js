@@ -155,6 +155,14 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     finally { pendingRuns.delete(c.id); await loadCommands(); renderCommandRun(); }
   }
 
+  // 실패한 노드의 오류 표시만 지운다. 마지막 실행 기록은 남는다.
+  async function clearCommandError(c) {
+    if (!c || c.state !== "error" || pendingRuns.has(c.id)) return;
+    try { await api("POST", `/api/commands/${c.id}/clear-error`); }
+    catch (err) { showError(err, { action: `${c.title || "노드"} 오류 해제` }); }
+    finally { await loadCommands(); renderCommandRun(); }
+  }
+
   async function removeCommand(c) {
     if (!c || !confirm(`${KIND_LABEL[kindOf(c)]} 노드 "${c.title}"을(를) 삭제할까요? 이 노드에 이어진 연결도 지웁니다.`)) return;
     const snapshot = nodeSnapshot?.(c);
@@ -504,5 +512,5 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     if ($("command-result-dialog").open) $("command-result-dialog").close();
   }
 
-  return { loadCommands, commandNodeFoot, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, cancelCreation };
+  return { loadCommands, commandNodeFoot, commandNode, runCommand, stopCommand, clearCommandError, removeCommand, openCommandDialog, openCommandOutput, cancelCreation };
 }

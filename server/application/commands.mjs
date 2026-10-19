@@ -154,6 +154,18 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { stopped: chain.stopCommand(getCommand(id)) };
   }
 
+  // 실패한 노드의 오류 표시만 지운다. 마지막 실행 기록은 남기고 해제했다고 표시한다.
+  function clearError(id) {
+    const command = getCommand(id);
+    if (chain.runs.has(id)) throw new HttpError(409, "실행 중인 노드는 오류를 해제할 수 없습니다.");
+    if (command.state !== "error") throw new HttpError(409, "오류 상태인 노드가 아닙니다.");
+    if (command.lastRun?.gitResult?.recoveryRequired) throw new HttpError(409, "Git 작업이 중간에 멈춰 복구가 필요합니다. 저장소 상태를 확인하고 다시 실행하세요.");
+    commands.update(command, { state: command.scheduleEnabled ? "scheduled" : "idle",
+      lastRun: command.lastRun ? { ...command.lastRun, cleared: true, clearedAt: new Date().toISOString() } : command.lastRun });
+    broadcast("commands", {});
+    return view(command);
+  }
+
   // 바깥에서 웹훅 받기 주소로 보낸 요청. 꺼져 있거나 없는 주소는 같은 404로 답해 주소가 있는지 드러내지 않는다.
   function receiveHook(token, request) {
     const command = findHookNode(commands.list(), token);
@@ -166,5 +178,5 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { ok: true, node: command.title, runId: flow.id };
   }
 
-  return { list, gitBranches, generate, create, update, remove, run, stop, output, receiveHook };
+  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, receiveHook };
 }

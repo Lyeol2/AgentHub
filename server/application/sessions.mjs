@@ -796,6 +796,17 @@ export function createSessionService({
     return summary(session);
   }
 
+  // 오류로 끝난 세션의 오류 표시만 지운다. 대화와 CLI 대화 이어가기는 그대로 둔다.
+  function clearError(id) {
+    const session = getSession(id);
+    if (session.state !== "error") throw new HttpError(409, "오류 상태인 세션이 아닙니다.");
+    runner.append(session, { kind: "status", text: "오류 표시를 해제했습니다." });
+    runner.setState(session, "idle");
+    broadcast("sessions", {});
+    broadcast("session", { sessionId: id });
+    return summary(session);
+  }
+
   function recreate(id) {
     const session = getSession(id);
     const taskService = tasks?.();
@@ -892,7 +903,7 @@ export function createSessionService({
   return {
     list: () => store.list().map((s) => summary(settleState(s))), detail, detailMeta,
     create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, artifact, artifactContent, artifactPreview, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
-    stop, stopSubtask, pause, resume, restart, recreate, diff, remove,
+    stop, stopSubtask, pause, resume, restart, clearError, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,
     finishHandover(session) {

@@ -9,6 +9,7 @@ export function assetRoutes({ commands: c, skills: s }) {
     ["DELETE", "commands/:id", ({ params }) => c.remove(params.id)],
     ["POST", "commands/:id/run", ({ params, body }) => c.run(params.id, body)],
     ["POST", "commands/:id/stop", ({ params }) => c.stop(params.id)],
+    ["POST", "commands/:id/clear-error", ({ params }) => c.clearError(params.id)],
     ["GET", "commands/:id/output", ({ params }) => c.output(params.id)],
     ["GET", "commands/:id/output/file", ({ params, res }) => {
       const output = c.output(params.id);
