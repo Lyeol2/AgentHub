@@ -9,6 +9,29 @@ const BODY_TEMPLATE = "## 할 일\n\n\n## 기대 결과\n\n\n## 재현·확인 �
 const AGENTS = [["claude", "Claude"], ["codex", "Codex"]];
 const NAME_KEY = "agenthub-team-names";
 const NAME_MAX = 40;
+const VIEW_KEY = "agenthub.issueView";
+const BOXES = ["inbox", "shared", "sent"];
+const STATES = ["open", "closed", "all"];
+const PROGRESSES = ["all", "unassigned", "assigned"];
+
+// 팀 작업 보기(작업함·상태·진행 여부·담당자)를 이 컴퓨터에 기억한다. 담당자는 저장소마다 달라 프로젝트별로 둔다.
+function loadView() {
+  try {
+    const value = JSON.parse(localStorage.getItem(VIEW_KEY) ?? "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+function saveView(s) {
+  const view = loadView();
+  const assignees = view.assignees && typeof view.assignees === "object" ? view.assignees : {};
+  if (s.assignee) assignees[s.project] = s.assignee;
+  else delete assignees[s.project];
+  try {
+    localStorage.setItem(VIEW_KEY, JSON.stringify({ box: s.box, state: $("i-state").value, progress: s.progress, assignees }));
+  } catch { /* 보기를 기억하지 못해도 목록은 보인다. */ }
+}
 
 // 팀원 표시 이름: 이 컴퓨터에서 직접 붙인 이름이 먼저, 없으면 GitHub 프로필 이름이다.
 const githubNames = new Map(); // login(소문자) → GitHub 프로필 이름
@@ -69,7 +92,11 @@ export function createIssuesController({ api, account, connectAccount, goProject
 
   function setProject(project) {
     if (state?.project === project) return;
-    state = { project, box: state?.box ?? "inbox", progress: "all", assignee: "", context: null, issues: [], number: null, detail: null, details: new Map(), listVersion: 0, detailVersion: 0, loading: false, busy: null };
+    const view = loadView();
+    const assignee = view.assignees?.[project];
+    if (!state) $("i-state").value = STATES.includes(view.state) ? view.state : "open";
+    state = { project, box: state?.box ?? (BOXES.includes(view.box) ? view.box : "inbox"),
+      progress: PROGRESSES.includes(view.progress) ? view.progress : "all", assignee: typeof assignee === "string" ? assignee : "", context: null, issues: [], number: null, detail: null, details: new Map(), listVersion: 0, detailVersion: 0, loading: false, busy: null };
     $("i-grid").hidden = true;
     $("i-repo").textContent = "";
     $("i-repo").removeAttribute("href");
@@ -647,6 +674,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
     state.box = b.dataset.box;
     state.number = null;
     state.detail = null;
+    saveView(state);
     placeholder();
     refresh();
   });
@@ -654,16 +682,19 @@ export function createIssuesController({ api, account, connectAccount, goProject
     const b = e.target.closest("[data-progress]");
     if (!b || !state || state.progress === b.dataset.progress) return;
     state.progress = b.dataset.progress;
+    saveView(state);
     listView(state);
   });
   $("i-assignee").addEventListener("change", () => {
     if (!state) return;
     state.assignee = $("i-assignee").value;
+    saveView(state);
     listView(state);
   });
   $("i-state").addEventListener("change", () => {
     if (!state) return;
     state.number = null;
+    saveView(state);
     placeholder();
     refresh();
   });
