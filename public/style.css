@@ -864,7 +864,7 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 .tab-panel[hidden] { display: none; }
 #view-project > .content { display: flex; flex-direction: column; overflow: hidden; }
 #view-project > .content > .notice, #p-tabs { flex: none; }
-#view-project .tab-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; align-content: start; }
+#view-project .tab-panel { flex: 1; min-width: 0; min-height: 0; overflow: auto; align-content: start; grid-auto-rows: max-content; }
 #view-project .tab-panel[data-panel="flow"] { display: flex; overflow: hidden; }
 .flow-card { display: flex; flex: 1; min-width: 0; min-height: 0; flex-direction: column; }
 .flow-card > .card-head { flex: none; }
