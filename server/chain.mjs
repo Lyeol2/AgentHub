@@ -377,7 +377,7 @@ export class Chain {
     if (flow && !snapshots) return { busy: members, picked: 0 };
     if (!members.length) return { busy: [], picked: 0 };
     const ok = snapshots ? snapshots.every((result) => result.ok)
-      : members.every((node) => isCommandId(node.id) ? node.lastRun?.ok === true : node.state !== "error");
+      : members.every((node) => isCommandId(node.id) ? node.lastRun?.ok === true || !!node.lastRun?.cleared : node.state !== "error");
     const verdict = snapshots ? snapshots.map((result) => verdictLine(result.text)).join("\n")
       : members.map((node) => verdictLine(this.nodeOutput(node))).join("\n");
     const depth = Math.max(0, ...members.map((node) => node.chainDepth ?? 0));

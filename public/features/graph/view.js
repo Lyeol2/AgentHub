@@ -4,7 +4,7 @@ import { firstLine } from "../../shared/store.js";
 import { sessionLockButton } from "../../shared/session-lock.js";
 import { SVG_NS } from "./model.js";
 
-export function createGraphView({ skillChips, restartSession, commandNode, toggleSessionLock }) {
+export function createGraphView({ skillChips, restartSession, clearSessionError, commandNode, toggleSessionLock }) {
     function createCanvas(sessions, commands) {
     const canvas = el("div", { class: "graph-canvas" });
     const svg = document.createElementNS(SVG_NS, "svg");
@@ -26,6 +26,13 @@ export function createGraphView({ skillChips, restartSession, commandNode, toggl
         skillChips(s),
         el("div", { class: "gcard-foot" }, elapsedElement("session", s, true),
           el("span", { class: "gcard-life" }, lifePill(s),
+            s.state === "error" ? el("button", {
+              type: "button",
+              class: "gcard-clear-error",
+              title: "오류 해제: 오류 표시만 지웁니다. 대화와 연결은 그대로 둡니다.",
+              "aria-label": `${s.title} 오류 해제`,
+              onclick: () => clearSessionError(s),
+            }, "✕") : null,
             el("button", {
               type: "button",
               class: "gcard-restart",

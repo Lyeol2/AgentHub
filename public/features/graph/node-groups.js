@@ -116,7 +116,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
     const members = group.members.map(node).filter(Boolean);
     const running = members.filter((member) => member.state === "running").length;
     const waiting = members.filter((member) => member.waiting).length;
-    const failed = members.filter((member) => member.state === "error" || member.lastRun?.ok === false).length;
+    const failed = members.filter((member) => member.state === "error" || (member.lastRun?.ok === false && !member.lastRun.cleared)).length;
     return `${members.length}개 노드${running ? ` · 실행 ${running}` : ""}${waiting ? ` · 응답 대기 ${waiting}` : ""}${failed ? ` · 오류 ${failed}` : ""}`;
   }
 
@@ -282,8 +282,19 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
     return entries;
   }
 
+  // 그룹 안에서 오류로 끝난 세션·노드의 오류 표시를 모두 지운다.
+  async function clearErrors(group) {
+    const failed = group.members.map(node).filter((member) => member?.state === "error");
+    const commandIds = new Set((data.commands ?? []).map((command) => command.id));
+    const results = await Promise.allSettled(failed.map((member) => api("POST", `/api/${commandIds.has(member.id) ? "commands" : "sessions"}/${member.id}/clear-error`)));
+    await Promise.all([loadSessions(), loadCommands()]);
+    const rejected = results.find((result) => result.status === "rejected");
+    if (rejected) showError(rejected.reason, { action: "그룹 오류 해제" });
+  }
+
   function contextEntries(group) {
-    return [[group.collapsed ? "그룹 펼치기" : "그룹 접기", () => update(group, { collapsed: !group.collapsed })], ["이름·멤버·입출력 편집", () => edit(group)], ...(saveGroupTemplate ? [["템플릿으로 저장", () => saveGroupTemplate(group)]] : []), ...group.members.map(node).filter((item) => isSourceOnly(item)).map((button) => [`${button.title} ${button.kind === "schedule" ? isScheduleArmed(button) ? "예약 중지" : "예약 시작" : "실행"}`, () => runCommand(button), { disabled: button.state === "running" }]), null, ["그룹 해제 (내부 노드 유지)", () => dissolve(group)]];
+    const failed = group.members.map(node).some((member) => member?.state === "error");
+    return [...(failed ? [["그룹 오류 모두 해제", () => clearErrors(group), { title: "오류 표시만 지웁니다. 대화·실행 기록은 남습니다." }]] : []), [group.collapsed ? "그룹 펼치기" : "그룹 접기", () => update(group, { collapsed: !group.collapsed })], ["이름·멤버·입출력 편집", () => edit(group)], ...(saveGroupTemplate ? [["템플릿으로 저장", () => saveGroupTemplate(group)]] : []), ...group.members.map(node).filter((item) => isSourceOnly(item)).map((button) => [`${button.title} ${button.kind === "schedule" ? isScheduleArmed(button) ? "예약 중지" : "예약 시작" : "실행"}`, () => runCommand(button), { disabled: button.state === "running" }]), null, ["그룹 해제 (내부 노드 유지)", () => dissolve(group)]];
   }
 
   async function droppedMembers(ids) {

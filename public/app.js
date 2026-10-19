@@ -149,6 +149,7 @@ const loadSessions = async (...args) => {
 const commandNode = (...args) => commands.commandNode(...args);
 const runCommand = (...args) => commands.runCommand(...args);
 const stopCommand = (...args) => commands.stopCommand(...args);
+const clearCommandError = (...args) => commands.clearCommandError(...args);
 const removeCommand = (...args) => commands.removeCommand(...args);
 const openCommandDialog = (...args) => commands.openCommandDialog(...args);
 const openCommandOutput = (...args) => commands.openCommandOutput(...args);
@@ -156,6 +157,7 @@ const skillChips = (...args) => skills.skillChips(...args);
 const openSkillsManager = (...args) => skills.openSkillsManager(...args);
 const renderFlow = (...args) => sessions.renderFlow(...args);
 const restartSession = (...args) => sessions.restartSession(...args);
+const clearSessionError = (...args) => sessions.clearSessionError(...args);
 const toggleSessionLock = (...args) => sessions.toggleSessionLock(...args);
 const connectCreatedGraphNode = (...args) => graph.connectCreatedGraphNode(...args);
 const drawEdges = (...args) => graph.drawEdges(...args);
@@ -210,7 +212,7 @@ const git = createGitController({
   sessionForFolder: (cwd) => data.sessions.filter((s) => !s.chat && s.cwd && samePath(s.cwd, cwd)).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""))).at(-1)?.id ?? null,
 });
 const graph = createGraphController({
-  openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation
+  openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, clearCommandError, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, clearSessionError, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation
 });
 const commands = createCommandsController({
   api, loadLinks, renderGraph, connectCreatedGraphNode, commandById, data, navigation,
