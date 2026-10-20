@@ -133,13 +133,20 @@ test("단계 판정: 푸시 안 된 커밋은 배지와 원격에 백업으로 �
   assert.equal(p.badges.length, 0); assert.equal(action(p, "backup"), undefined);
 });
 
-test("단계 판정: 원본 폴더가 작업 브랜치를 벗어나면 경고하고 정리 경로를 안내한다", () => {
+test("단계 판정: 원본 폴더가 작업 브랜치를 벗어나면 대기로 보이고 전환·정리 경로를 안내한다", () => {
   let p = buildTaskPipeline(task({ inPlace: true }), status({ offBranch: true, currentBranch: "develop", unpushed: 3 }), {});
   assert.equal(p.nodes.find((n) => n.key === "folder").state, "warn");
   assert.equal(p.nodes.find((n) => n.key === "folder").sub, "다른 브랜치");
-  assert.match(p.notice, /Git 작업은 막지 않습니다/);
+  assert.match(p.notice, /대기 중입니다/);
   assert.deepEqual(p.badges.map((b) => b.id), ["off-branch"]);
-  assert.match(action(p, "finish", "마무리").reason, /작업 브랜치에 있지 않습니다/);
+  assert.match(p.badges[0].label, /대기 중/);
+  assert.equal(action(p, "activate", "이 작업으로 전환").primary, true);
+  assert.equal(action(p, "activate", "이 작업으로 전환").disabled, false);
+  assert.ok(!p.actions.some((a) => a.id === "finish"), "대기 중에는 마무리를 보이지 않는다");
+  assert.match(action(buildTaskPipeline(task({ inPlace: true }), status({ offBranch: true, running: 1 }), {}), "activate", "이 작업으로 전환").reason, /작업 중/);
+  p = buildTaskPipeline(task({ inPlace: true, state: "merged" }), status({ offBranch: true, currentBranch: "develop" }), {});
+  assert.match(p.notice, /Git 작업은 막지 않습니다/);
+  assert.ok(!p.actions.some((a) => a.id === "activate"), "완료한 작업은 전환하지 않는다");
   p = buildTaskPipeline(task({ inPlace: true }), status({ offBranch: true, branchMissing: true, currentBranch: "develop" }), {});
   assert.equal(action(p, "delete", "기록만 정리").primary, true);
   assert.match(p.notice, /기록만 정리/);

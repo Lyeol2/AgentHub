@@ -17,7 +17,6 @@ test("tasks: without a worktree the source folder switches to the task branch an
   assert.equal(path.resolve(task.cwd), path.resolve(f.repo)); assert.equal(session.cwd, task.cwd);
   assert.equal(f.git(f.repo, "branch", "--show-current"), task.branch);
   assert.equal(fs.existsSync(path.join(path.dirname(f.repo), "repo.agenthub")), false); // 워크트리 폴더를 만들지 않는다.
-  await assert.rejects(f.create("feature", { worktree: false }), (error) => error.reason === "task-in-place");
 
   f.change(task.cwd);
   await f.service.finish(task.id);

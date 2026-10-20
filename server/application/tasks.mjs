@@ -16,7 +16,7 @@ import { reviewSnapshot, commitReviewedFiles, assertReviewed } from "../task-rev
 import { fileDiff, parseStatus } from "../gitpanel.mjs";
 import { runGitNode } from "../git-nodes.mjs";
 import { stopwatch } from "../timing.mjs";
-import { createTaskWorkspace } from "./task-workspace.mjs";
+import { createTaskWorkspace, changedFiles } from "./task-workspace.mjs";
 
 // 설정한 배포·개발 브랜치인지(대소문자를 구분한다)
 const isGitflowBase = (flow, branch) => branch === flow.main || branch === flow.develop;
@@ -110,33 +110,51 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   const workspace = createTaskWorkspace({ dataDir, config, saveConfig, store, runner, records, get, save, locked, notify, tools: workspaceTools });
   // 턴 실행 중이거나 백그라운드 작업 중이다(대체 runner는 isRunning만 있을 수 있다).
   const isBusy = (id) => runner.isBusy?.(id) ?? runner.isRunning(id);
+  // 같은 폴더를 함께 쓰는 다른 작업(원본 폴더의 다른 작업 등)의 세션은 그 작업의 세션으로 센다.
+  const otherTaskSession = (session, task) => session.taskId !== task.id && ["working", "review", "merged"].includes(records.get(session.taskId)?.state);
   function taskSessions(task) {
-    return store.list().filter((session) => (task.id && session.taskId === task.id) || (!task.folderHandedTo && insideTaskPath(session.cwd, task.cwd)));
+    return store.list().filter((session) => (task.id && session.taskId === task.id)
+      || (!task.folderHandedTo && insideTaskPath(session.cwd, task.cwd) && !(task.id && task.inPlace && otherTaskSession(session, task))));
   }
   function assertIdle(task, except) {
     if (taskSessions(task).some((session) => session.id !== except && isBusy(session.id)))
       throw new HttpError(409, "이 작업 폴더에서 실행 중인 세션을 먼저 중지하세요.", "running");
   }
-  // 원본 폴더를 새 작업 브랜치로 바꿔도 되는지 확인하고 지금 브랜치 이름을 돌려준다.
-  async function assertInPlaceReady(repo) {
+  // 원본 폴더는 작업 여러 개가 함께 쓸 수 있다. 폴더가 지금 있는 브랜치의 작업만 진행하고 나머지는 전환을 기다린다.
+  const inPlaceTasks = (common) => [...records.values()].filter((task) => task.inPlace && task.state !== "cleaned" && sameTaskPath(task.gitCommonDir, common));
+  // 원본 폴더의 브랜치를 바꿔도 되는지 확인하고 지금 브랜치 이름을 돌려준다.
+  async function assertInPlaceReady(repo, { switching = false } = {}) {
     const cwd = path.resolve(repo.top);
-    const other = [...records.values()].find((task) => task.inPlace && task.state !== "cleaned" && sameTaskPath(task.gitCommonDir, repo.common));
-    if (other) throw new HttpError(409, `원본 폴더는 이미 "${other.title}" 작업에서 쓰고 있습니다. 그 작업을 정리하거나 워크트리를 만들어 진행하세요.`, "task-in-place");
+    for (const other of inPlaceTasks(repo.common)) {
+      if (busy.has(other.id)) throw new HttpError(409, `"${other.title}" 작업의 Git 처리가 진행 중입니다.`, "task-busy");
+      if (other.pendingAction) throw new HttpError(409, `"${other.title}" 작업에서 이전 요청의 결과를 먼저 확인하세요.`, "task-outcome-unknown");
+    }
     const preview = workspace.previewActive(repo.common);
     if (preview) throw new HttpError(409, `원본 폴더에서 "${preview.title}" 작업 결과를 확인하고 있습니다. 확인을 끝낸 뒤 진행하거나 워크트리를 만들어 진행하세요.`, "task-in-place");
     // 저장소 하위 폴더를 프로젝트로 등록한 세션도 원본 폴더에서 일하는 세션이다.
     if (store.list().some((session) => isBusy(session.id) && insideTaskPath(session.cwd, cwd)))
       throw new HttpError(409, "이 작업 폴더에서 실행 중인 세션을 먼저 중지하세요.", "running");
     await assertTaskGitIdle({ cwd });
-    if (await taskDirty({ cwd })) throw new HttpError(409, "원본 폴더에 커밋하지 않은 변경이 있습니다. 커밋하거나 워크트리를 만들어 진행하세요.", "task-dirty");
-    return (await taskGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "")).trim() || null;
+    if (await taskDirty({ cwd })) throw new HttpError(409, switching ? "원본 폴더에 커밋하지 않은 변경이 있습니다. 지금 진행 중인 작업에서 커밋한 뒤 전환하세요."
+      : "원본 폴더에 커밋하지 않은 변경이 있습니다. 커밋하거나 워크트리를 만들어 진행하세요.", "task-dirty", { hint: `바뀐 파일:\n${(await changedFiles(cwd)).join("\n")}` });
+    const current = (await taskGit(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "")).trim() || null;
+    // 지금 브랜치가 다른 작업의 것이면 그 작업이 돌아갈 브랜치를 이어받는다. 정리할 때 남의 작업 브랜치로 돌아가지 않게 한다.
+    const owner = current && branchOwner(repo.common, current);
+    return owner ? (owner.previousBranch && !branchOwner(repo.common, owner.previousBranch) ? owner.previousBranch : null) : current;
   }
+  // 원본 폴더에서 지금 진행 중인 작업(폴더가 그 작업 브랜치에 있다)
+  const activeInPlace = (common) => inPlaceTasks(common).find((task) => fs.existsSync(task.cwd) && readTaskBranch(task.cwd) === task.branch);
   // 새 작업을 원본 폴더에서 바로 시작할 수 있는지 미리 본다. 쓸 수 없으면 화면이 워크트리로 진행할지 묻는다.
-  const IN_PLACE_BUSY = ["task-in-place", "running", "task-dirty", "task-git-operation"];
+  // 다른 작업이 원본 폴더에서 진행 중이면 그 작업은 전환을 기다리게 되므로 화면에 알린다.
+  const IN_PLACE_BUSY = ["task-in-place", "running", "task-dirty", "task-git-operation", "task-busy", "task-outcome-unknown"];
   async function inPlaceStatus(projectPath) {
     if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
     const repo = await taskRepo(projectPath);
-    try { await assertInPlaceReady(repo); return { available: true }; }
+    try {
+      await assertInPlaceReady(repo);
+      const active = activeInPlace(repo.common);
+      return { available: true, ...(active ? { parks: { id: active.id, title: active.title, branch: active.branch } } : {}) };
+    }
     catch (error) {
       if (!IN_PLACE_BUSY.includes(error.reason)) throw error;
       return { available: false, reason: error.reason, message: error.reason === "running" ? "원본 폴더에서 실행 중인 세션이 있습니다." : error.message };
@@ -183,6 +201,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     const task = get(session.taskId);
     assertActive(task);
     if (busy.has(task.id)) throw new HttpError(409, "작업의 Git 처리가 진행 중입니다.", "task-busy");
+    if (offBranch(task) && task.sessionIds.includes(session.id)) {
+      const active = activeInPlace(task.gitCommonDir);
+      throw new HttpError(409, `원본 폴더가 ${active ? `"${active.title}" 작업` : `${readTaskBranch(task.cwd) || "다른"} 브랜치`}에 있어 이 작업을 진행할 수 없습니다. 작업 탭에서 이 작업으로 전환하세요.`, "task-parked");
+    }
     if (!task.sessionIds.includes(session.id) || !sameTaskPath(task.cwd, session.cwd) || !sameTaskPath(task.cwd, session.worktree?.dir)
       || readTaskBranch(task.cwd) !== task.branch)
       throw new HttpError(409, "작업 폴더 또는 브랜치가 바뀌었습니다. 작업 탭에서 확인하세요.", "task-worktree");
@@ -412,6 +434,30 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       notify("tasks", { projectPath: task.projectPath, taskId: task.id });
       return true;
     } catch { return false; }
+  }
+  // 원본 폴더를 이 작업 브랜치로 옮겨 이 작업을 진행한다. 원본 폴더에서 진행하던 작업은 전환을 기다린다.
+  // 커밋하지 않은 변경이 있거나 원본 폴더에서 실행 중인 세션·Git 처리가 있으면 옮기지 않는다.
+  async function activate(id) {
+    const task = get(id);
+    if (!task.inPlace) throw new HttpError(400, "원본 폴더에서 하는 작업만 전환할 수 있습니다.", "task-not-in-place");
+    assertActive(task);
+    return locked(task.gitCommonDir, async () => {
+      if (readTaskBranch(task.cwd) === task.branch) return { task: clone(task) };
+      if (!await taskRef(task.projectPath, `refs/heads/${task.branch}`))
+        throw new HttpError(409, `작업 브랜치 ${task.branch}가 로컬에 없어 전환할 수 없습니다.`, "task-branch-missing");
+      const repo = await taskRepo(task.projectPath);
+      if (!sameTaskPath(repo.common, task.gitCommonDir) || !sameTaskPath(repo.top, task.cwd)) throw new HttpError(409, "원본 폴더의 Git 저장소가 바뀌었습니다.", "task-worktree");
+      await assertInPlaceReady(repo, { switching: true });
+      busy.add(task.id);
+      try { await taskGit(task.cwd, ["switch", "--no-guess", task.branch], { write: true }); }
+      catch (error) { throw failure(error); }
+      finally { busy.delete(task.id); }
+      save(task);
+      // 전환을 기다리던 작업과 방금 비켜 준 작업의 카드·세션을 다시 그린다.
+      for (const other of inPlaceTasks(task.gitCommonDir)) if (other.id !== task.id) notify("tasks", { projectPath: other.projectPath, taskId: other.id });
+      notify("sessions", {});
+      return { task: clone(task) };
+    });
   }
   async function attach(task, body) {
     assertActive(task);
@@ -1580,7 +1626,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       save(task);
     }
   }
-  return { list, get: (id) => clone(get(id)), adoptSession, context, inPlaceStatus, settings, updateSettings, create, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, backup, refresh, recheck, sync, cleanup, remove, abandon, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
+  return { list, get: (id) => clone(get(id)), adoptSession, context, inPlaceStatus, settings, updateSettings, create, activate, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, backup, refresh, recheck, sync, cleanup, remove, abandon, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
     mergeDevelop, linkIssue, unlinkIssue, abortOperation,
     workspace: (projectPath, options) => workspace.info(projectPath, options), updateWorkspace: (projectPath, body) => workspace.updateSettings(projectPath, body),
     removeReuse: (projectPath, name) => workspace.removeReuse(projectPath, name), previewStatus: (projectPath) => workspace.previewStatus(projectPath),

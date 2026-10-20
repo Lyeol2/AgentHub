@@ -157,10 +157,13 @@ test("task worktree: original folder use is reported so the creator can choose a
   const { task } = await f.create({ worktree: false, title: "원본 작업" });
   assert.equal(task.inPlace, true);
   assert.equal(git(f.repo, "branch", "--show-current"), task.branch);
-  const busy = await f.service.inPlaceStatus(f.repo);
-  assert.equal(busy.available, false);
-  assert.equal(busy.reason, "task-in-place");
-  assert.match(busy.message, /원본 작업/);
+  // 원본 폴더에서 진행 중인 작업이 있어도 만들 수 있고, 그 작업이 대기하게 된다는 것을 알린다.
+  const shared = await f.service.inPlaceStatus(f.repo);
+  assert.equal(shared.available, true);
+  assert.deepEqual(shared.parks, { id: task.id, title: "원본 작업", branch: task.branch });
+  fs.writeFileSync(path.join(f.repo, "dirty.txt"), "dirty\n");
+  assert.equal((await f.service.inPlaceStatus(f.repo)).reason, "task-dirty");
+  fs.unlinkSync(path.join(f.repo, "dirty.txt"));
   // 워크트리를 고르면 원본 폴더를 쓰는 작업이 있어도 만든다.
   const { task: isolated } = await f.create();
   assertRegistered(f, isolated);

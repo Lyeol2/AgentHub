@@ -16,6 +16,7 @@ export function taskRoutes(s) {
     ["GET", "tasks/:id/status", ({ params }) => s.status(params.id)],
     ["GET", "tasks/:id/diff", ({ params, query }) => s.reviewDiff(params.id, query.get("file"))],
     ["POST", "tasks/:id/commit", ({ params, body }) => s.commitReview(params.id, body)],
+    ["POST", "tasks/:id/activate", ({ params }) => s.activate(params.id)],
     ["POST", "tasks/:id/finish", ({ params, body }) => s.finish(params.id, body)],
     ["POST", "tasks/:id/merge", ({ params, body }) => s.mergePull(params.id, body)],
     ["POST", "tasks/:id/push-target", ({ params }) => s.pushTarget(params.id)],
