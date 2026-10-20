@@ -150,6 +150,9 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
     return { sessions, tasks };
   }
   async function guard(ctx, action, { clean = false } = {}) {
+    // PR 병합은 GitHub에서만 실행하며 로컬 파일·index·브랜치를 바꾸지 않는다.
+    // 저장소·PR 커밋·보호 규칙은 GitHubPulls.merge가 검사한다.
+    if (action === "mergePull") return;
     if (ctx.entry.locked) throw error("잠긴 워크트리는 변경할 수 없습니다.", "git-locked");
     const refs = references(ctx);
     const active = refs.sessions.find(s => isRunning(s.id) || s.state === "running" || s.state === "background");
