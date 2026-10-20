@@ -1069,6 +1069,12 @@ export function createTasksController({
           delete payload.worktree;
           if ($('task-worktree')) $('task-worktree').value = 'create';
           updateCreatePreview();
+        } else if (inPlace.parks) {
+          // 원본 폴더에서 진행 중인 작업이 있으면 새 작업이 폴더를 쓰는 동안 그 작업은 대기한다.
+          const answer = await confirmAction({ title: '원본 폴더에서 진행 중인 작업이 있습니다', subject: title,
+            changes: [`원본 폴더를 새 작업 브랜치로 바꿉니다.`, `"${inPlace.parks.title}" 작업은 대기하고, 작업 카드의 '이 작업으로 전환'으로 다시 이어 갈 수 있습니다.`],
+            keeps: [`"${inPlace.parks.title}" 작업의 브랜치 ${inPlace.parks.branch}와 커밋`], confirmLabel: '원본 폴더에서 만들기' });
+          if (!answer.ok || !sameProject(path, epoch)) return;
         }
       }
       const result = await api('POST', '/api/tasks', payload);
@@ -1172,6 +1178,14 @@ export function createTasksController({
         keeps: ['이미 만든 커밋과 브랜치', 'Git 잠금 파일(index.lock)은 지우지 않습니다.'],
         warnings: ['병합 중에 직접 고친 내용은 사라집니다.'], confirmLabel: '취소하고 되돌리기', danger: true })).ok;
     }
+    if (action === 'activate') {
+      // 원본 폴더를 함께 쓰는 다른 작업 중 지금 진행 중인 작업은 대기하게 된다.
+      const waiting = tasks.filter(other => other.id !== task.id && other.inPlace && ['working', 'review'].includes(other.state) && !statuses.get(other.id)?.offBranch);
+      return (await confirmAction({ title: '이 작업으로 전환', subject: task.title,
+        changes: [`원본 폴더를 작업 브랜치 ${task.branch}로 전환합니다.`, ...waiting.map(other => `"${other.title}" 작업은 다시 전환할 때까지 대기합니다.`)],
+        keeps: ['커밋한 내용과 각 작업의 브랜치·세션 기록'],
+        warnings: ['커밋하지 않은 변경이 있거나 원본 폴더에서 세션이 실행 중이면 전환하지 않습니다.'], confirmLabel: '전환' })).ok;
+    }
     if (action === 'develop') {
       const local = task.completion?.kind === 'local';
       return (await confirmAction({ title: `${develop}에 역반영`, subject: task.title,
@@ -1220,11 +1234,12 @@ export function createTasksController({
           if (!result.task?.pendingAction) showError('task-finish-error');
         }
       }
-      if (action === 'cleanup' || action === 'refresh') await reloadSessions();
-      if (sameProject(path, epoch)) void loadStatuses([id]);
+      if (action === 'cleanup' || action === 'refresh' || action === 'activate') await reloadSessions();
+      // 전환하면 원본 폴더를 함께 쓰는 다른 작업의 상태도 바뀐다.
+      if (sameProject(path, epoch)) void loadStatuses(action === 'activate' ? undefined : [id]);
     } catch (error) {
       if (error.outcomeUnknown && action !== 'refresh') uncertainTasks.set(id, action);
-      const label = action === 'abort' ? '진행 중인 Git 작업 취소' : action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : action === 'backup' ? '원격에 백업' : '최신 확인';
+      const label = action === 'abort' ? '진행 중인 Git 작업 취소' : action === 'cleanup' ? '작업 폴더 정리' : action === 'sync' ? '기준 변경 반영' : action === 'develop' ? '개발 브랜치 반영' : action === 'push-target' ? '대상 브랜치 푸시' : action === 'backup' ? '원격에 백업' : action === 'activate' ? '이 작업으로 전환' : '최신 확인';
       taskErrors.set(id, error.outcomeUnknown ? { message: unknownMessage(label), action: label } : { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, conflicts: error.conflicts, action: label });
     } finally {
       pendingTasks.delete(id);
@@ -1444,7 +1459,7 @@ export function createTasksController({
     if (action === 'unlink-issue') { void unlinkIssue(task); return; }
     if (action === 'resolve-conflict') { void askConflict(task, button.dataset.sessionId); return; }
     if (workspace.handles(action)) { taskErrors.delete(task.id); void workspace.run(action, task, { setError: value => { taskErrors.set(task.id, value); renderTasks(); }, setPending: on => { if (on) pendingTasks.add(task.id); else pendingTasks.delete(task.id); renderTasks(); } }); return; }
-    if (['refresh', 'sync', 'backup', 'cleanup', 'push-target', 'develop', 'abort'].includes(action)) void runTaskAction(action, task);
+    if (['refresh', 'sync', 'backup', 'cleanup', 'push-target', 'develop', 'abort', 'activate'].includes(action)) void runTaskAction(action, task);
   });
   $('tasks-filter')?.addEventListener('click', event => {
     const button = event.target.closest('[data-task-filter]');

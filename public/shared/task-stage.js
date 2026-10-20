@@ -102,14 +102,16 @@ export function buildTaskPipeline(task, status = null, ctx = {}) {
   const developGuide = `${names.main}의 변경이 ${names.develop}에 아직 없습니다. 작업 브랜치에서는 풀 수 없으니 Git 탭에서 ${names.main}을 ${names.develop}에 병합해 푸시하거나 ${names.main} → ${names.develop} PR을 병합한 뒤 '반영 후 다시 확인'을 누르세요.`;
   const offGuide = branchMissing
     ? `작업 브랜치 ${task.branch}가 로컬에 없고 원본 폴더는 ${status?.currentBranch || '다른 브랜치'}에 있습니다. 원본 폴더의 Git 작업은 막지 않습니다. 더 진행할 것이 없으면 '기록만 정리'로 작업 기록을 지우세요.`
-    : `원본 폴더가 작업 브랜치(${task.branch})를 벗어나 ${status?.currentBranch || '다른 브랜치'}에 있습니다. 원본 폴더의 Git 작업은 막지 않습니다. 이 작업을 이어 하려면 Git 탭에서 ${task.branch}로 전환하세요.`;
+    : active
+      ? `원본 폴더가 ${status?.currentBranch || '다른 브랜치'}에 있어 이 작업은 대기 중입니다. 원본 폴더에서는 한 번에 한 작업만 진행합니다. 이어 하려면 '이 작업으로 전환'을 누르세요. 커밋하지 않은 변경이 있거나 세션이 실행 중이면 전환하지 않습니다.`
+      : `원본 폴더가 작업 브랜치(${task.branch})를 벗어나 ${status?.currentBranch || '다른 브랜치'}에 있습니다. 원본 폴더의 Git 작업은 막지 않습니다.`;
   const notice = offBranch ? offGuide : mainMissing ? developGuide : '';
   const syncLabel = remoteAhead && !behind ? '원격 변경 합치기' : '기준 반영';
   const dirtyReason = dirty > 0 ? '커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.' : '';
   if (offBranch) {
     if (pull?.url) actions.push({ id: 'pull-link', label: finished ? 'PR 보기' : 'PR 열기', url: pull.url, primary: false, disabled: false, reason: '' });
     if (branchMissing) add('delete', '기록만 정리', { primary: true, reason: waitReason || runReason });
-    else if (active) add('finish', '마무리', { primary: true, reason: '원본 폴더가 작업 브랜치에 있지 않습니다.' });
+    else if (active) add('activate', '이 작업으로 전환', { primary: true, reason: waitReason || runReason });
     else if (state === 'merged') add('cleanup', '작업 폴더 정리', { primary: true, reason: waitReason || runReason });
   } else if (state === 'working') {
     // 완료 여부를 모르는 PR 생성 뒤에도 연결된 PR은 바로 열어 볼 수 있다.
@@ -148,6 +150,6 @@ export function buildTaskPipeline(task, status = null, ctx = {}) {
   // 카드 머리에 붙일 짧은 경고. 이 컴퓨터에만 있는 커밋과 원본 폴더의 브랜치 이탈을 알린다.
   const badges = [];
   if (unpushed > 0) badges.push({ id: 'unpushed', label: `푸시 안 됨 ${unpushed}개`, title: '이 컴퓨터에만 있는 커밋입니다. 원격에 백업으로 작업 브랜치만 올려 둘 수 있습니다.' });
-  if (offBranch) badges.push({ id: 'off-branch', label: branchMissing ? '작업 브랜치 없음' : '원본 폴더가 작업 브랜치에서 벗어남', title: notice });
+  if (offBranch) badges.push({ id: 'off-branch', label: branchMissing ? '작업 브랜치 없음' : active ? '대기 중 · 원본 폴더는 다른 브랜치' : '원본 폴더가 작업 브랜치에서 벗어남', title: notice });
   return { current, base, target, behind, mainMissing, notice, badges, nodes, actions, stateLabel: TASK_STATE_LABELS[state] || '상태 확인 필요' };
 }

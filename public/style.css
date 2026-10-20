@@ -1178,7 +1178,9 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .account-who a { font-size: 11.5px; text-decoration: none; }
 
 /* 팀 작업(GitHub 이슈) */
-.inbox-list { flex: none; max-height: 180px; }
+/* 사이드바가 낮아 받은 작업 칸이 줄어들면 목록도 함께 줄어 스크롤한다. 아래 프로젝트 칸과 겹치지 않는다. */
+#inbox-section { min-height: 76px; overflow: hidden; }
+.inbox-list { flex: 0 1 auto; max-height: 180px; }
 .issue-boxes { display: flex; gap: 2px; }
 .issue-boxes button { border: 0; border-radius: 6px; padding: 4px 10px; background: transparent; color: var(--muted); font-size: 12px; }
 .issue-boxes button.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }

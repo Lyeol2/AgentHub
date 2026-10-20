@@ -16,7 +16,7 @@ const symbolic = (dir) => taskGit(dir, ["symbolic-ref", "--quiet", "--short", "H
   if (error.reason === "git-timeout") throw error;
   return null;
 });
-async function changedFiles(dir) {
+export async function changedFiles(dir) {
   const lines = (await taskGit(dir, ["status", "--porcelain=v1", "--untracked-files=all"])).split(/\r?\n/).filter(Boolean);
   return lines.slice(0, 10).map((line) => line.slice(3)).concat(lines.length > 10 ? [`외 ${lines.length - 10}개`] : []);
 }
