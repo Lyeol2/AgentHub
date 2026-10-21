@@ -27,6 +27,7 @@ export function stderrSummary(text, lines = 15) {
 const INJECT_GRACE_MS = 4000;
 export const INTERRUPT_GRACE_MS = 10000;
 const STOP_TASK_TIMEOUT_MS = 10000;
+const PERMISSION_MODE_TIMEOUT_MS = 10000;
 // 하위 작업이 모두 끝나면 CLI가 곧바로 결과를 정리하는 턴을 시작하는 경우가 많다. 그동안 대기로 깜빡이지 않게 잠시 기다린다.
 const BACKGROUND_SETTLE_MS = 2000;
 // 턴을 마친 CLI를 띄워 두는 기본값. 서버 설정(config.cliKeepAlive)으로 바꾼다. idleMinutes가 0이면 백그라운드 작업이 없을 때 바로 닫는다.
@@ -182,13 +183,40 @@ export class Runner extends EventEmitter {
     if (mode && mode !== "plan" && agent.PERMISSION_MODES.includes(mode)) session.permission = mode;
   }
 
-  // 세션 설정에서 바꾼 권한을 실행 중인 CLI에 바로 적용한다. 적용했으면 true, 다음 요청부터 적용되면 false.
+  // 세션 설정에서 바꾼 권한을 CLI에 요청한다. true는 전송했음을 뜻하며, 적용 결과는 CLI 응답으로 알린다.
   // 쉬고 있거나 백그라운드 작업 중인 CLI에도 적용한다(하위 작업의 권한 요청에 쓰인다).
   setPermissionMode(session) {
     const child = this.running.get(session.id) ?? this.procs.get(session.id);
     const agent = AGENTS[session.agent];
     if (!child || child.retired || child.appServer || !agent.permissionModeLine || session.planTurn || inputClosed(child)) return false;
-    child.stdin.write(`${agent.permissionModeLine(session.permission)}\n`);
+    return this.requestPermissionMode(session, child, agent, session.permission, { notifySuccess: true });
+  }
+
+  requestPermissionMode(session, child, agent, mode, { notifySuccess = false } = {}) {
+    const id = `mode-${randomUUID()}`;
+    child.permissionRequestId = id;
+    // 시작할 때 선택하지 않은 bypass는 실행 중에 켤 수 없다. 다음 실행에서 사용자가 고른 설정을 적용한다.
+    if (mode === "bypassPermissions" && !child.canBypassPermissions) {
+      child.permissionRestart = true;
+      return false;
+    }
+    const finish = (response) => {
+      clearTimeout(timer);
+      child.controls.delete(id);
+      // 더 최근의 변경이 있거나 이미 교체한 CLI의 응답은 현재 설정의 결과로 알리지 않는다.
+      if (child.retired || child.permissionRequestId !== id) return;
+      const confirmed = response?.subtype === "success";
+      child.permissionRestart = !confirmed;
+      if (confirmed) {
+        if (notifySuccess) this.append(session, { kind: "status", text: `Claude가 권한 ${mode} 적용을 확인했습니다. 이후 도구 요청부터 적용됩니다.` });
+      } else {
+        this.append(session, { kind: "status", text: `Claude 권한 ${mode} 적용을 확인하지 못했습니다: ${response?.error ?? "알 수 없는 오류"}. 현재 CLI의 권한은 변경 전 상태일 수 있습니다. 진행 중인 작업이 끝난 뒤 다음 요청에서 CLI를 다시 실행합니다.` });
+      }
+    };
+    const timer = setTimeout(() => finish({ subtype: "error", error: "CLI가 10초 안에 응답하지 않았습니다" }), PERMISSION_MODE_TIMEOUT_MS);
+    timer.unref?.();
+    child.controls.set(id, finish);
+    child.stdin.write(`${agent.permissionModeLine(mode, id)}\n`);
     return true;
   }
 
@@ -384,7 +412,11 @@ export class Runner extends EventEmitter {
     } else if (agent.interactive) {
       child.pendingInputs.push({ event: null, input });
       // 띄워 둔 CLI에는 이번 요청의 권한 모드(/plan이면 계획 모드)를 먼저 맞춘다.
-      child.stdin.write(fresh ? `${agent.initLine()}\n${userInput}\n` : `${agent.permissionModeLine(session.planTurn ? "plan" : session.permission ?? "acceptEdits")}\n${userInput}\n`);
+      if (fresh) child.stdin.write(`${agent.initLine()}\n`);
+      else if (!this.requestPermissionMode(session, child, agent, session.planTurn ? "plan" : session.permission ?? "acceptEdits")) {
+        this.append(session, { kind: "status", text: "현재 Claude CLI는 모든 권한 허용으로 전환할 수 없습니다. 백그라운드 작업을 유지하며 현재 권한으로 진행하고, 작업 종료 뒤 다음 요청에서 선택한 권한으로 다시 실행합니다." });
+      }
+      child.stdin.write(`${userInput}\n`);
     } else {
       child.stdin.end(input);
     }
@@ -395,10 +427,10 @@ export class Runner extends EventEmitter {
     const child = this.procs.get(session.id);
     if (!child) return null;
     const open = !child.retired && !inputClosed(child) && child.agentName === session.agent && !!child.conversation && child.conversation === session.agentSessionId;
-    if (open && agent.keepAlive && child.key === key && child.rules === ruleKey(session)) return child;
+    if (open && agent.keepAlive && !child.permissionRestart && child.key === key && child.rules === ruleKey(session)) return child;
     // 백그라운드 작업이 도는 중에 닫으면 작업이 함께 끝나므로 그대로 쓰고, 바뀐 설정은 작업이 끝난 뒤 다음 요청부터 적용한다.
     if (open && agent.keepAlive && activeSubtasks(session).length) {
-      this.append(session, { kind: "status", text: "백그라운드 작업이 진행 중이라 바뀐 실행 설정(모델·추론 강도·MCP·작업 폴더·허용 규칙 등)은 작업이 끝난 뒤의 요청부터 적용합니다." });
+      this.append(session, { kind: "status", text: "백그라운드 작업이 진행 중이라 다시 실행해야 하는 설정(모델·추론 강도·MCP·작업 폴더·권한·허용 규칙 등)은 작업이 끝난 뒤의 요청부터 적용합니다." });
       return child;
     }
     this.retire(child);
@@ -415,6 +447,7 @@ export class Runner extends EventEmitter {
       env: { ...process.env, NO_COLOR: "1", MCP_TOOL_TIMEOUT: "660000" },
     });
     Object.assign(child, { sessionId: session.id, agentName: session.agent, key, rules: ruleKey(session), conversation: null, turn: null, stderrTail: [], pendingInputs: [], controls: new Map(), idleTimer: null, idleSince: null });
+    child.canBypassPermissions = args.includes("--allow-dangerously-skip-permissions") || args[args.indexOf("--permission-mode") + 1] === "bypassPermissions";
     this.procs.set(session.id, child);
     if (agent.transport === "app-server") child.appServer = new CodexAppServer(child, session);
     // 새로 붙인 요청이 있으면 턴을 마치려던 대기를 취소한다.
@@ -798,7 +831,7 @@ export class Runner extends EventEmitter {
 
   controlReply(session, child, response) {
     const reply = child.controls.get(response?.request_id);
-    // 기다리는 곳이 없는 요청(권한 모드 바꾸기 등)이 거절되면 기록에만 남긴다.
+    // 기다리는 곳이 없는 요청(초기화 등)이 거절되면 기록에만 남긴다.
     if (!reply) {
       if (response?.subtype === "error" && response.error) this.append(session, { kind: "log", text: `CLI가 요청을 거절했습니다: ${response.error}` });
       return;
@@ -888,7 +921,7 @@ export class Runner extends EventEmitter {
 
 // 프로세스를 다시 띄워야 하는 실행 조건(CLI 경로·인자·작업 폴더·MCP 주소). 권한 모드는 바로 바꿀 수 있고,
 // 대화 ID와 "이 세션에서 계속 허용" 규칙은 따로 비교하므로 뺀다. 단, 모든 권한 허용(bypassPermissions)은
-// 그 모드로 띄운 CLI에서만 켤 수 있으므로 켜고 끌 때 다시 띄운다.
+// 시작할 때 사용자가 선택한 세션만 전환을 허용하므로 켜고 끌 때 다시 띄운다.
 function processKey(agent, session, cliPath, options) {
   const args = agent.buildArgs({ ...session, allowRules: [], agentSessionId: null, planTurn: false }, options);
   const skip = new Set(["--permission-mode", "--session-id", "--resume"]);

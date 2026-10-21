@@ -693,6 +693,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     $("config-model").value = s.model ?? "";
     fillConfigAgent(s.agent, s.effort ?? "", s.permission);
     $("config-permission-row").hidden = !!s.chat;
+    $("config-unity-hint").hidden = !!s.chat;
     renderConfigRules(s);
     $("config-error").textContent = "";
     $("config-dialog").showModal();

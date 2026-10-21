@@ -208,8 +208,12 @@ test("claude: 실행 중 권한 요청과 질문을 control 프로토콜로 주�
 test("/plan 턴: Claude는 계획 모드로, Codex는 읽기 전용으로 실행하고 계획 승인 뒤 원래 권한으로 돌아간다", () => {
   const plan = claude.buildArgs({ permission: "bypassPermissions", planTurn: true });
   assert.equal(plan[plan.indexOf("--permission-mode") + 1], "plan");
+  assert.equal(plan.includes("--allow-dangerously-skip-permissions"), true, "계획 승인 뒤 선택한 bypass로 돌아갈 수 있다");
   const normal = claude.buildArgs({ permission: "bypassPermissions" });
   assert.equal(normal[normal.indexOf("--permission-mode") + 1], "bypassPermissions");
+  for (const permission of ["default", "acceptEdits", "plan", undefined]) {
+    assert.equal(claude.buildArgs({ permission }).includes("--allow-dangerously-skip-permissions"), false, "선택하지 않은 bypass를 활성화하지 않는다");
+  }
   assert.deepEqual(codex.permissionSettings({ permission: "danger-full-access", planTurn: true }), { sandbox: "read-only", approvalPolicy: "never", approvalsReviewer: "user" });
 
   const exit = claude.parseControl({ type: "control_request", request_id: "p1", request: { subtype: "can_use_tool", tool_name: "ExitPlanMode", input: { plan: "1. 고친다" } } }, { permission: "acceptEdits" });

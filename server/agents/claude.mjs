@@ -37,6 +37,8 @@ export function buildArgs(session, { mcp = null, unity = null } = {}) {
   if (mcp) args.push("--mcp-config", mcp.configFile, "--allowedTools", "mcp__agenthub");
   // /plan 요청은 그 턴만 계획 모드로 실행한다(파일 수정·명령 없이 계획을 세우고 ExitPlanMode로 승인을 묻는다).
   args.push("--permission-mode", session.planTurn ? "plan" : session.permission ?? "acceptEdits");
+  // 사용자가 모두 허용을 고른 세션은 /plan으로 시작해도 승인 뒤 원래 권한으로 돌아갈 수 있어야 한다.
+  if (session.permission === "bypassPermissions") args.push("--allow-dangerously-skip-permissions");
   // "이 세션에서 계속 허용"한 규칙과 유니티 통제는 이 실행에만 쓰는 설정으로 넘긴다(사용자·프로젝트 설정 파일은 고치지 않는다).
   // ask 규칙은 권한 모드가 bypassPermissions여도 묻고, deny 규칙은 allow보다 앞선다.
   if (!session.chat) {
@@ -75,7 +77,7 @@ export const keepAlive = true;
 export const interruptLine = () => JSON.stringify({ type: "control_request", request_id: `interrupt-${randomUUID()}`, request: { subtype: "interrupt" } });
 
 // 실행 중인 CLI의 권한 모드를 바로 바꾼다(Agent SDK의 setPermissionMode와 같은 요청).
-export const permissionModeLine = (mode) => JSON.stringify({ type: "control_request", request_id: `mode-${randomUUID()}`, request: { subtype: "set_permission_mode", mode } });
+export const permissionModeLine = (mode, requestId = `mode-${randomUUID()}`) => JSON.stringify({ type: "control_request", request_id: requestId, request: { subtype: "set_permission_mode", mode } });
 
 // perTaskStopAffordance: 작업별 중지(stop_task)를 쓰는 화면이라고 알린다. 열린 입력에서 interrupt가 턴만 멈추고 백그라운드 작업은 살려 둔다.
 // agentProgressSummaries: 서브에이전트 진행 한 줄 요약(task_progress summary)을 받는다.

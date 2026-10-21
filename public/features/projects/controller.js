@@ -7,7 +7,7 @@ import { permissionLabel } from "../../shared/permissions.js";
 const FALLBACK_PERMISSIONS = { claude: ["default", "plan", "acceptEdits", "bypassPermissions"], codex: ["read-only", "workspace-write", "auto-review", "danger-full-access"] };
 // 유니티 사용: 세션에 주는 도구 권한으로만 통제한다(지침 문구를 넣지 않는다).
 const UNITY_HINT = {
-  ask: "AI가 유니티를 열거나 조작하려 하면(unity 명령, Unity MCP 도구) 권한이 자동 허용이어도 권한 카드로 먼저 묻습니다.",
+  ask: "유니티 명령·Unity MCP 도구를 매번 확인합니다. 세션을 전체 허용으로 바꾸거나 같은 요청을 계속 허용해도 이 설정이 우선합니다.",
   allow: "유니티 실행·조작을 따로 막거나 묻지 않습니다. 세션 권한 설정을 그대로 따릅니다.",
   off: "유니티 명령과 Unity MCP 도구, unity-cli 스킬을 쓰지 못하게 합니다. Codex는 Unity MCP 서버를 끄고 실행합니다.",
 };
@@ -246,7 +246,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     }
     $("project-settings-agent").value = d.agent ?? "";
     $("project-settings-isolate").value = d.isolate == null ? "" : String(d.isolate);
-    $("project-settings-unity").value = settings?.unity ?? "ask";
+    $("project-settings-unity").value = settings?.unity ?? "allow";
     $("project-settings-unity-hint").textContent = UNITY_HINT[$("project-settings-unity").value] ?? "";
   }
 

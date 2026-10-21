@@ -6,9 +6,9 @@ import * as claude from "./agents/claude.mjs";
 import * as codex from "./agents/codex.mjs";
 
 const PERMISSIONS = { claude: claude.PERMISSION_MODES, codex: codex.PERMISSION_MODES };
-// ask: 권한이 자동 허용이어도 유니티 실행·조작 도구는 권한 카드로 묻는다(기본). allow: 따로 막지 않는다. off: 유니티 도구를 끈다.
+// allow(기본): 세션 권한을 따른다. ask: 세션 권한과 무관하게 유니티 실행·조작을 매번 묻는다. off: 유니티 도구를 끈다.
 export const UNITY_MODES = ["ask", "allow", "off"];
-export const DEFAULT_UNITY = "ask";
+export const DEFAULT_UNITY = "allow";
 
 export function projectSettingsKey(projectPath) {
   if (typeof projectPath !== "string" || !projectPath.trim()) throw new HttpError(400, "프로젝트를 선택하세요.");

@@ -10,14 +10,14 @@ import { claudeMcpServers, claudeUnityRules, codexUnityServers, codexUnitySettin
 
 const flag = (args, name) => args[args.indexOf(name) + 1];
 
-test("프로젝트 설정: 쓸 수 없는 값은 버리고 유니티 사용 기본값은 실행 전 확인이다", () => {
-  assert.deepEqual(projectSettings({}, "C:/repo"), { defaults: { agent: null, permission: {}, isolate: null }, unity: "ask" });
+test("프로젝트 설정: 쓸 수 없는 값은 버리고 유니티 사용 기본값은 세션 권한을 따른다", () => {
+  assert.deepEqual(projectSettings({}, "C:/repo"), { defaults: { agent: null, permission: {}, isolate: null }, unity: "allow" });
   const config = { projectSettings: { "c:\\repo": { defaults: { agent: "codex", permission: { claude: "nope", codex: "read-only" }, isolate: true }, unity: "off" } } };
   if (process.platform === "win32") {
     assert.deepEqual(projectSettings(config, "C:/Repo"), { defaults: { agent: "codex", permission: { codex: "read-only" }, isolate: true }, unity: "off" });
     assert.equal(projectUnityMode(config, "C:/Repo"), "off");
   }
-  assert.equal(projectUnityMode(config, null), "ask");
+  assert.equal(projectUnityMode(config, null), "allow");
   assert.throws(() => checkProjectSettings({ unity: "maybe" }), /유니티/);
   assert.throws(() => checkProjectSettings({ defaults: { permission: { codex: "acceptEdits" } } }), /권한/);
   assert.deepEqual(checkProjectSettings({ defaults: { agent: "claude", permission: { claude: "default" }, isolate: false }, unity: "allow" }).defaults, { agent: "claude", permission: { claude: "default" }, isolate: false });
@@ -151,7 +151,7 @@ test("러너: 계속 허용한 Codex 명령은 다음 실행에서 묻지 않고
   assert.equal(session.events.at(-1).status, "pending");
 });
 
-test("러너: Claude 계속 허용의 setMode 제안은 세션 권한에 남고 실행 중 권한 변경은 CLI에 바로 보낸다", () => {
+test("러너: Claude 계속 허용의 setMode 제안은 세션 권한에 남고 권한 변경 완료는 CLI 응답으로 확인한다", () => {
   const session = { id: "c", agent: "claude", permission: "default", events: [] };
   const runner = new Runner({ touch() {}, get: () => session }, { spawn: () => null });
   runner.remember(session, claude, { suggestions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }, { type: "addRules", rules: [{ toolName: "Bash", ruleContent: "ls *" }], behavior: "allow" }] });
@@ -162,10 +162,15 @@ test("러너: Claude 계속 허용의 setMode 제안은 세션 권한에 남고 
   const stdin = new PassThrough();
   const written = [];
   stdin.on("data", (chunk) => written.push(JSON.parse(chunk.toString())));
-  runner.running.set(session.id, { stdin });
+  const child = { stdin, controls: new Map(), canBypassPermissions: true };
+  runner.running.set(session.id, child);
   session.permission = "bypassPermissions";
   assert.equal(runner.setPermissionMode(session), true);
+  assert.equal(session.events.length, 0, "전송만으로 적용 완료를 알리지 않는다");
+  assert.deepEqual(written[0].request, { subtype: "set_permission_mode", mode: "bypassPermissions" });
+  runner.controlReply(session, child, { subtype: "success", request_id: written[0].request_id });
+  assert.match(session.events.at(-1).text, /적용을 확인했습니다/);
   runner.running.set(session.id, { stdin, appServer: {} });
   assert.equal(runner.setPermissionMode(session), false);
-  return tick().then(() => assert.deepEqual(written[0].request, { subtype: "set_permission_mode", mode: "bypassPermissions" }));
+  stdin.destroy();
 });

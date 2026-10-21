@@ -9,9 +9,15 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 const MINUTE = 60000;
 
 function fakeChild(args) {
-  const child = Object.assign(new EventEmitter(), { args, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), messages: [], killed: false });
+  const child = Object.assign(new EventEmitter(), { args, stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), messages: [], killed: false, acknowledgePermission: true });
   child.stdin.on("data", (chunk) => {
-    for (const line of chunk.toString().split("\n")) if (line.trim()) child.messages.push(JSON.parse(line));
+    for (const line of chunk.toString().split("\n")) if (line.trim()) {
+      const message = JSON.parse(line);
+      child.messages.push(message);
+      if (child.acknowledgePermission && message.request?.subtype === "set_permission_mode") {
+        queueMicrotask(() => child.emit_({ type: "control_response", response: { subtype: "success", request_id: message.request_id, response: {} } }));
+      }
+    }
   });
   child.stdin.once("finish", () => queueMicrotask(() => child.emit("close", 0, null)));
   child.emit_ = (message) => child.stdout.write(JSON.stringify(message) + "\n");
@@ -278,11 +284,86 @@ test("keep-alive: 모델처럼 CLI 인자가 바뀌면 다음 요청에서 다�
   init(f.children[2]);
   result(f.children[2]);
   await tick();
-  // 모든 권한 허용은 그 모드로 띄운 CLI에서만 켤 수 있어 다시 띄운다.
+  // 시작할 때 모두 허용을 선택하지 않은 CLI는 해당 모드로 전환할 수 없어 다시 띄운다.
   f.session.permission = "bypassPermissions";
   f.runner.send(f.session, "모두 허용", "fake-cli");
   assert.equal(f.children.length, 4);
   assert.ok(f.children[3].args.includes("bypassPermissions"));
+});
+
+test("keep-alive: 모두 허용 세션을 /plan으로 시작해도 같은 CLI에서 원래 권한으로 돌아간다", async (t) => {
+  const f = fixture(t);
+  f.session.permission = "bypassPermissions";
+  f.session.planTurn = true;
+  f.runner.send(f.session, "/plan 계획", "fake-cli");
+  const child = f.children[0];
+  assert.equal(child.args[child.args.indexOf("--permission-mode") + 1], "plan");
+  assert.ok(child.args.includes("--allow-dangerously-skip-permissions"));
+  init(child);
+  result(child);
+  await tick();
+  delete f.session.planTurn;
+  f.runner.send(f.session, "구현", "fake-cli");
+  await tick();
+  assert.equal(f.children.length, 1);
+  assert.equal(lines(child, "set_permission_mode").at(-1).request.mode, "bypassPermissions");
+  assert.equal(child.permissionRestart, false);
+});
+
+test("keep-alive: 시작할 때 선택하지 않은 모두 허용은 백그라운드 작업 종료 뒤 적용한다", async (t) => {
+  const f = fixture(t);
+  const child = await toBackground(f);
+  f.session.permission = "bypassPermissions";
+  assert.equal(f.runner.setPermissionMode(f.session), false);
+  assert.equal(lines(child, "set_permission_mode").length, 0, "적용할 수 없는 전환을 보내지 않는다");
+  f.runner.send(f.session, "다음 작업", "fake-cli");
+  assert.equal(f.children.length, 1);
+  assert.equal(child.killed, false);
+  assert.match(f.session.events.findLast((event) => event.kind === "status").text, /현재 권한으로 진행/);
+  result(child);
+  child.emit_({ type: "system", subtype: "task_notification", task_id: "task-1", status: "completed" });
+  await tick();
+  f.runner.send(f.session, "작업 종료 뒤", "fake-cli");
+  assert.equal(f.children.length, 2);
+  assert.ok(f.children[1].args.includes("bypassPermissions"));
+});
+
+for (const failure of ["reject", "timeout"]) test(`keep-alive: 권한 변경 ${failure}은 완료로 표시하지 않고 다음 실행을 새로 띄운다`, async (t) => {
+  const f = fixture(t);
+  f.runner.send(f.session, "첫 요청", "fake-cli");
+  const child = f.children[0];
+  init(child);
+  child.acknowledgePermission = false;
+  f.session.permission = "default";
+  assert.equal(f.runner.setPermissionMode(f.session), true);
+  const request = lines(child, "set_permission_mode").at(-1);
+  if (failure === "reject") child.emit_({ type: "control_response", response: { subtype: "error", request_id: request.request_id, error: "mode unavailable" } });
+  else t.mock.timers.tick(10000);
+  assert.equal(child.controls.size, 0);
+  assert.equal(child.permissionRestart, true);
+  assert.ok(f.session.events.some((event) => event.kind === "status" && /적용을 확인하지 못했습니다/.test(event.text)));
+  assert.equal(f.session.events.some((event) => /적용을 확인했습니다/.test(event.text ?? "")), false);
+  result(child);
+  await tick();
+  f.runner.send(f.session, "재시도", "fake-cli");
+  assert.equal(f.children.length, 2);
+  assert.equal(f.children[1].args[f.children[1].args.indexOf("--permission-mode") + 1], "default");
+});
+
+test("keep-alive: 이전 권한 변경의 늦은 응답이 새로 선택한 모두 허용의 적용 대기를 지우지 않는다", async (t) => {
+  const f = fixture(t);
+  f.runner.send(f.session, "첫 요청", "fake-cli");
+  const child = f.children[0];
+  init(child);
+  child.acknowledgePermission = false;
+  f.session.permission = "default";
+  assert.equal(f.runner.setPermissionMode(f.session), true);
+  const previous = lines(child, "set_permission_mode").at(-1);
+  f.session.permission = "bypassPermissions";
+  assert.equal(f.runner.setPermissionMode(f.session), false);
+  child.emit_({ type: "control_response", response: { subtype: "success", request_id: previous.request_id } });
+  assert.equal(child.permissionRestart, true);
+  assert.equal(f.session.events.some((event) => /적용을 확인했습니다/.test(event.text ?? "")), false);
 });
 
 test("keep-alive: 다시 시작·세션 삭제 정리는 띄워 둔 프로세스를 닫는다", async (t) => {
@@ -310,5 +391,5 @@ test("keep-alive: 백그라운드 작업 중에는 인자가 바뀌어도 작업
   f.runner.send(f.session, "모델 바꾼 요청", "fake-cli");
   assert.equal(f.children.length, 1);
   assert.equal(child.stdin.writableEnded, false);
-  assert.ok(f.session.events.some((event) => event.kind === "status" && /백그라운드 작업이 진행 중이라 바뀐 실행 설정/.test(event.text)));
+  assert.ok(f.session.events.some((event) => event.kind === "status" && /백그라운드 작업이 진행 중이라 다시 실행해야 하는 설정/.test(event.text)));
 });

@@ -650,13 +650,12 @@ export function createSessionService({
       if (!AGENTS[session.agent].PERMISSION_MODES.includes(body.permission)) throw new HttpError(400, "권한 모드가 올바르지 않습니다.");
       const changed = body.permission !== session.permission;
       session.permission = body.permission;
-      // 실행 중이면 Claude는 CLI에 바로 적용하고, Codex는 실행 중인 작업에 바꿀 수 없어 다음 요청부터 적용한다.
-      // 쉬고 있는 CLI에도 바로 적용한다(다음 요청 때도 다시 맞춘다). 백그라운드 작업 중이면 작업의 권한 요청에도 적용된다.
-      const now = changed ? runner.setPermissionMode?.(session) : false;
+      // Claude는 실행 중인 CLI에도 변경을 요청하고, 실제 적용 여부는 CLI 응답을 받아 알린다.
+      const requested = changed ? runner.setPermissionMode?.(session) : false;
       if (changed && isBusy(session.id)) {
-        runner.append(session, { kind: "status", text: now
-          ? `권한을 ${session.permission}(으)로 바꿨습니다. 실행 중인 작업에 바로 적용했습니다.`
-          : `권한을 ${session.permission}(으)로 바꿨습니다. ${AGENT_NAME[session.agent] ?? session.agent}는 실행 중인 작업에는 적용할 수 없어 다음 요청부터 적용합니다.` });
+        runner.append(session, { kind: "status", text: requested
+          ? `권한을 ${session.permission}(으)로 저장하고 Claude에 변경을 요청했습니다. CLI의 적용 확인을 기다립니다.`
+          : `권한을 ${session.permission}(으)로 저장했습니다. 현재 ${AGENT_NAME[session.agent] ?? session.agent} 실행에는 적용되지 않았으며, 진행 중인 작업이 끝난 뒤 다음 요청부터 적용합니다.` });
       }
     }
     // 세션 설정에서 지운 "이 세션에서 계속 허용" 규칙. 다음 실행부터 다시 묻는다.
