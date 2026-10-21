@@ -34,7 +34,11 @@ test("projects: 프로젝트 설정은 기본값과 유니티 사용을 따로 �
     deps: { cliPaths: () => ({ claude: null, codex: null }), discoverProjects: () => [], logger: { log() {}, error() {} } } });
   t.after(() => hub.shutdown());
   const projects = hub.services.projects;
-  assert.equal(projects.settings(repo).unity, "ask");
+  assert.equal(projects.settings(repo).unity, "allow");
+  assert.equal(hub.runner.unityMode({ projectPath: repo }), "allow");
+  projects.updateSettings(repo, { unity: "ask" });
+  projects.updateSettings(repo, { defaults: { permission: { claude: "bypassPermissions" } } });
+  assert.equal(projects.settings(repo).unity, "ask", "세션 기본 권한을 바꿔도 저장한 매번 확인 설정은 보존한다");
   assert.equal(hub.runner.unityMode({ projectPath: repo }), "ask");
   projects.updateSettings(repo, { unity: "off" });
   projects.updateSettings(repo, { defaults: { agent: "codex", permission: { codex: "read-only" }, isolate: false } });
