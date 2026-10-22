@@ -1,7 +1,7 @@
 import { $ } from "./shared/dom.js";
 import { createApiClient } from "./shared/api.js";
 import { configureErrorReports } from "./shared/error-report.js";
-import { createStore, samePath } from "./shared/store.js";
+import { createStore, samePath, indexById } from "./shared/store.js";
 import { refreshElapsedTimes } from "./shared/elapsed.js";
 import { createModelControls } from "./shared/model-controls.js";
 import { createSessionReadTracker, mergeSessionRead } from "./shared/session-read.js";
@@ -36,8 +36,8 @@ const sessionOpener = (id) => (event) => {
   if (event.button === 1 || event.ctrlKey || event.shiftKey) openSessionWindow(id);
   else if (event.button === 0) selectSession(id);
 };
-const sessionById = (id) => data.sessions.find((session) => session.id === id);
-const commandById = (id) => data.commands.find((command) => command.id === id);
+const sessionById = (id) => indexById(data.sessions).get(id);
+const commandById = (id) => indexById(data.commands).get(id);
 const nodeTitle = (id) => (sessionById(id) ?? commandById(id))?.title ?? "?";
 const { fillModels, fillEfforts } = createModelControls(() => data.status);
 let sessionSelectionRevision = 0;
@@ -215,6 +215,7 @@ const git = createGitController({
   sessionForFolder: (cwd) => data.sessions.filter((s) => !s.chat && s.cwd && samePath(s.cwd, cwd)).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""))).at(-1)?.id ?? null,
 });
 const graph = createGraphController({
+  projectTab,
   openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, clearCommandError, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, clearSessionError, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation
 });
 const commands = createCommandsController({
@@ -278,7 +279,7 @@ const sessionReads = createSessionReadTracker({
 // 첫 로딩 중에 목록이 먼저 그려지면 사용자가 프로젝트·세션을 누를 수 있다. 그랬으면 대시보드로 되돌리지 않는다.
 const bootView = navigation.viewRevision;
 const bootSelection = sessionSelectionRevision;
-await Promise.all([loadStatus(), loadSessions(), loadLimits(), loadUpdate(), loadProjects(), loadLinks(), loadAccount()]);
+await Promise.all([loadStatus(), loadSessions(), loadProjects(), loadLinks()]);
 if (POPUP) {
   document.body.classList.add("popup");
   if (POPUP === "new") openChat();
@@ -291,9 +292,11 @@ const stream = connectLiveUpdates({
   updateEvent: sessions.updateEvent, appendDraft: sessions.appendDraft, taskProgress: tasks.taskProgress, applySubtasks: sessions.applySubtasks,
   readCurrent: () => sessionReads.readCurrent(),
 });
+// Optional CLI/account probes must not hold the first screen or live connection open.
+void Promise.allSettled([loadLimits(), loadUpdate(), loadAccount()]);
 loadAuth();
 loadSetup();
-const refreshTimers = () => { refreshElapsedTimes(data, commands.commandNodeFoot); sessions.renderRunActivity(); };
+const refreshTimers = () => { if (!document.hidden) { refreshElapsedTimes(data, commands.commandNodeFoot); sessions.renderRunActivity(); } };
 const timers = [
   setInterval(loadAuth, 5 * 60_000),
   setInterval(loadProjects, 120_000),

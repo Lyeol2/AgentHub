@@ -340,7 +340,8 @@ export function createSessionService({
     if (changed) broadcast("commands", {});
   }
 
-  function cleanupSession(session, { deleteRecords = false } = {}) {
+  async function cleanupSession(session, { deleteRecords = false } = {}) {
+    chain.workflow?.forgetNode?.(session.id);
     links.removeForSession(session.id);
     replaceGroupMember(session.id);
     chain.queue.delete(session.id);
@@ -350,7 +351,7 @@ export function createSessionService({
     let records = { deleted: 0, errors: [] };
     if (!session.chat) {
       const ids = cliSessionIds(session);
-      if (deleteRecords) records = deleteSessionRecords(ids);
+      if (deleteRecords) records = await deleteSessionRecords(ids);
       hideRecords(ids);
     }
     try { attachments.remove(session.id); } catch (err) { records.errors.push(`첨부 파일 정리 실패: ${err.message}`); }
@@ -374,12 +375,12 @@ export function createSessionService({
     const tabId = graphTabs?.resolve(project.path, body.tabId, body.connectFrom);
     const existing = store.list().find((s) => cliSessionIds(s).includes(body.agentSessionId));
     if (existing) return summary(existing);
-    const found = discoverSessions(project.path).find((s) => s.agent === body.agent && s.agentSessionId === body.agentSessionId);
+    const found = (await discoverSessions(project.path, { fresh: true })).find((s) => s.agent === body.agent && s.agentSessionId === body.agentSessionId);
     if (!found) throw new HttpError(404, "세션 기록을 찾지 못했습니다.");
     const cwd = found.cwd || project.path;
     const git = await isGitRepo(project.path);
     const now = new Date().toISOString();
-    const history = loadHistory(found);
+    const history = await loadHistory(found);
     const session = {
       id: `${Date.now().toString(36)}-${randomBytes(3).toString("hex")}`,
       title: found.title || `${found.agent} 세션`,
@@ -918,6 +919,7 @@ export function createSessionService({
     }
     store.remove(id);
     try { attachments.remove(id); } catch (err) { runner.append(created, { kind: "log", text: `이전 첨부 파일 정리 실패: ${err.message}` }); }
+    chain.workflow?.forgetNode?.(id);
     if (!session.chat) hideRecords(cliSessionIds(session));
     broadcast("sessions", {});
     broadcast("links", {});
@@ -951,7 +953,7 @@ export function createSessionService({
     } catch (err) {
       throw new HttpError(500, `세션 파일을 지우지 못했습니다: ${err.message}`);
     }
-    const records = cleanupSession(session, { deleteRecords });
+    const records = await cleanupSession(session, { deleteRecords });
     nodeGroups?.()?.pruneNode(id);
     tasks?.()?.detachSession?.(id);
     issueLinks?.dropSession?.(id);

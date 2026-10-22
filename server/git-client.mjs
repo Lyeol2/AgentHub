@@ -1,7 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execGit } from "./git-execution.mjs";
+import { readCommitSummaries, containsAnyCommit } from "./git-history.mjs";
 import { HttpError } from "./application/errors.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
 import { validateWorktreeName } from "./git.mjs";
@@ -27,23 +28,19 @@ const inside = (child, parent) => {
 };
 
 // Git gets separate argv and a non-interactive, repository-independent environment.
-export function clientGit(cwd, args, { write = false, timeout = 30_000 } = {}) {
+export async function clientGit(cwd, args, { write = false, timeout = 30_000 } = {}) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "Never", GIT_EDITOR: "true", GIT_SEQUENCE_EDITOR: "true" };
   for (const name of ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES"]) delete env[name];
-  return new Promise((resolve, reject) => {
-    execFile("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-c", "core.longpaths=true", "-C", cwd, ...args],
-      { windowsHide: true, env, timeout, maxBuffer: 12 * 1024 * 1024 }, (failure, stdout, stderr) => {
-        if (!failure) return resolve(stdout);
-        const unknown = !!(failure.killed || failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
-        const message = String(stderr || failure.message).replace(/(https?:\/\/)[^/\s@]+@/g, "$1[credentials]@").trim().slice(0, 2000);
-        // 병합·리베이스의 CONFLICT 줄은 stdout으로 나오므로 함께 본다.
-        const output = String(stdout || "").replace(/(https?:\/\/)[^/\s@]+@/g, "$1[credentials]@").trim().slice(0, 2000);
-        const known = !unknown && gitErrorDetails([message, output].filter(Boolean).join("\n"));
-        if (known) return reject(error(known.message, known.reason, known.status, { hint: known.hint, raw: known.raw, exitCode: failure.code }));
-        reject(error(message, unknown ? "git-outcome-unknown" : "git-error", unknown ? 504 : 409,
-          { outcomeUnknown: write && unknown, exitCode: failure.code }));
-      });
-  });
+  try { return await execGit(cwd, args, { env, timeout, maxBuffer: 12 * 1024 * 1024 }); }
+  catch (failure) {
+    const unknown = !!(failure.killed || failure.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER");
+    const raw = [failure.stdout, failure.stderr].filter(Boolean).join("\n") || failure.message;
+    const message = String(raw).replace(/(https?:\/\/)[^/\s@]+@/g, "$1[credentials]@").trim().slice(0, 4000);
+    const known = !unknown && gitErrorDetails(message);
+    if (known) throw error(known.message, known.reason, known.status, { hint: known.hint, raw: known.raw, exitCode: failure.code });
+    throw error(message, unknown ? "git-outcome-unknown" : "git-error", unknown ? 504 : 409,
+      { outcomeUnknown: write && unknown, exitCode: failure.code });
+  }
 }
 const git = clientGit;
 const head = async (cwd) => (await git(cwd, ["rev-parse", "--verify", "HEAD"])).trim();
@@ -134,9 +131,9 @@ async function protectIgnored(ctx, target, changedCommits = []) {
   if (collision) throw error("Git에서 무시하는 파일을 덮어쓸 수 있어 중단했습니다. 먼저 다른 곳에 보존하세요: " + collision, "git-ignored-files");
 }
 async function commits(cwd, range) {
-  const hashes = (await git(cwd, ["rev-list", "--topo-order", "--max-count=501", range])).trim().split(/\r?\n/).filter(Boolean);
-  if (hashes.length > 500) throw error("한 번에 변경할 수 있는 커밋은 500개까지입니다.", "git-limit");
-  return Promise.all(hashes.map(async hash => ({ hash, short: hash.slice(0, 8), subject: (await git(cwd, ["show", "-s", "--format=%s", hash])).trim() })));
+  const values = await readCommitSummaries(cwd, range, { run: git });
+  if (values.length > 500) throw error("한 번에 변경할 수 있는 커밋은 500개까지입니다.", "git-limit");
+  return values;
 }
 
 export function createGitClient({ getSessions = () => [], getTasks = () => [], isRunning = () => false, assertSession = () => {}, assertTaskOperation = () => {} } = {}) {
@@ -407,12 +404,10 @@ export function createGitClient({ getSessions = () => [], getTasks = () => [], i
       catch { return "원격 게시 상태를 확인할 수 없어 기록 변경을 막았습니다. 연결을 확인하거나 Revert를 사용하세요."; }
       for (const line of output.trim().split(/\r?\n/)) if (line) tips.add(line.split(/\s+/)[0]);
     }
-    for (const tip of tips) {
-      for (const commit of affected) {
-        try { if (await ancestor(ctx.cwd, commit.hash, tip)) return "이미 원격에 게시된 커밋의 기록 변경은 지원하지 않습니다. Revert로 취소 커밋을 추가하세요."; }
-        catch { return "원격 커밋을 먼저 Fetch한 뒤 게시 여부를 다시 확인하세요. Revert도 사용할 수 있습니다."; }
-      }
-    }
+    try {
+      if (await containsAnyCommit(ctx.cwd, tips, new Set(affected.map(commit => commit.hash))))
+        return "이미 원격에 게시된 커밋의 기록 변경은 지원하지 않습니다. Revert로 취소 커밋을 추가하세요.";
+    } catch { return "원격 커밋을 먼저 Fetch한 뒤 게시 여부를 다시 확인하세요. Revert도 사용할 수 있습니다."; }
     return null;
   }
   async function preview(ctx, body) {

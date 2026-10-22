@@ -77,7 +77,7 @@ export function createSystemService({ config, setup, cliPaths, saveConfig, versi
 
   async function usageLimits(fresh) {
     await limits.refreshClaudeUsage({ fresh });
-    return limits.readLimits();
+    return limits.readLimits({ fresh });
   }
 
   function updateState() {

@@ -63,8 +63,14 @@ async function browser(profile, url) {
     await navigate();
     const stale = await evaluate(`(async () => {
       const end = Date.now() + 8000;
-      while (document.getElementById('view-project').hidden || !document.querySelector('.gcard.locked')) {
+      while (document.getElementById('view-project').hidden || !document.querySelector('#p-sessions .session-lock[aria-pressed="true"]')) {
         if (Date.now() > end) throw Error('Locked detail response did not recover the popup');
+        await new Promise(resolve => setTimeout(resolve, 20));
+      }
+      if (document.querySelector('#p-tabs [aria-selected="true"]').dataset.tab !== 'sessions') throw Error('Locked recovery did not preserve the selected project tab');
+      document.querySelector('#p-tabs [data-tab="flow"]').click();
+      while (!document.querySelector('.gcard.locked')) {
+        if (Date.now() > end) throw Error('Opening the graph did not render the recovered locked state');
         await new Promise(resolve => setTimeout(resolve, 20));
       }
       return { popup: document.body.classList.contains('popup'), events: document.getElementById('s-events').textContent, sessionHidden: document.getElementById('view-session').hidden };

@@ -56,8 +56,8 @@ async function api(method, url, body) {
   return { status: res.status, body: await res.json() };
 }
 
-test.after(() => {
-  server.shutdown();
+test.after(async () => {
+  await server.shutdown();
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 

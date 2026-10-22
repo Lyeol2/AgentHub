@@ -98,7 +98,7 @@ export class Runner extends EventEmitter {
   // 이미 남긴 이벤트의 일부를 바꾸고 화면에 알린다(추가 요청의 반영 상태 등).
   updateEvent(session, event, patch) {
     Object.assign(event, patch);
-    this.store.touch(session);
+    this.store.touch(session, { event });
     this.emit("eventUpdate", session.id, event.seq, patch);
   }
 
@@ -128,7 +128,7 @@ export class Runner extends EventEmitter {
   // 지금 작업에 반영하지 못한 추가 요청. 사용자가 중지한 경우가 아니면 대기열 앞으로 되돌려 지금 작업이 끝난 뒤 보낸다.
   returnInjected(session, records, reason) {
     if (!records.length) return;
-    const dropped = session.stopRequested && !session.paused;
+    const dropped = this.shuttingDown || (session.stopRequested && !session.paused);
     for (const record of records) this.updateEvent(session, record.event, { delivery: dropped ? "dropped" : "requeued" });
     if (dropped) {
       this.append(session, { kind: "status", text: `중지해서 지금 작업에 반영하지 못한 추가 요청 ${records.length}개는 보내지 않았습니다.` });
@@ -230,6 +230,7 @@ export class Runner extends EventEmitter {
   // 실행 중인 턴에 요청을 붙인다. CLI가 같은 작업에 반영할 수 있을 때만 허용한다.
   // 입력을 이미 닫은 CLI(턴을 마치고 끝나는 중)에는 붙일 수 없다. 써도 CLI가 읽지 못해 요청이 사라진다.
   canInject(session) {
+    if (this.shuttingDown) return false;
     const child = this.running.get(session.id);
     return !!child && !child.retired && (child.appServer ? child.appServer.canInject() : !!AGENTS[session.agent].interactive && !inputClosed(child));
   }
@@ -237,6 +238,7 @@ export class Runner extends EventEmitter {
   // meta: 요청 이벤트에 덧붙일 값(보낸 세션 등)
   // input: CLI에 실제로 넘길 내용(@참조를 풀어 쓴 요청 등). 화면에는 text만 남긴다.
   inject(session, text, meta = {}, input = text) {
+    if (this.shuttingDown) throw new Error("서버가 종료 중입니다.");
     const child = this.running.get(session.id);
     const agent = AGENTS[session.agent];
     if (!child) throw new Error("실행 중이 아닙니다.");
@@ -251,10 +253,13 @@ export class Runner extends EventEmitter {
     const record = { event, text, meta, input };
     // Claude는 CLI가 요청을 돌려주면(--replay-user-messages) 반영한 것으로 본다. Codex는 turn/steer 응답으로 안다.
     if (!child.appServer) (child.pendingInputs ??= []).push(record);
-    else reply?.then?.((result) => {
-      if (result?.applied) this.updateEvent(session, event, { delivery: "applied" });
-      else this.returnInjected(session, [record], `Codex가 지금 작업에 받지 않아(${result?.error ?? "응답 없음"})`);
-    });
+    else if (reply?.then) {
+      const pending = Promise.resolve(reply).then(result => {
+        if (result?.applied) this.updateEvent(session, event, { delivery: "applied" });
+        else this.returnInjected(session, [record], `Codex가 지금 작업에 받지 않아(${result?.error ?? "응답 없음"})`);
+      }).finally(() => child.pendingInjections.delete(pending));
+      (child.pendingInjections ??= new Set()).add(pending);
+    }
   }
 
   // CLI가 돌려준 사용자 요청을 보낸 요청과 맞춘다. 처음 보낸 요청(event 없음)도 같은 목록에 있다.
@@ -291,7 +296,7 @@ export class Runner extends EventEmitter {
       if (decision === "always") this.remember(session, agent, control);
     }
     session.waiting = this.waitingFor(session.id);
-    this.store.touch(session);
+    this.store.touch(session, { event });
     this.activity(session);
     return event;
   }
@@ -305,6 +310,7 @@ export class Runner extends EventEmitter {
     for (const [id, p] of this.prompts) {
       if (p.session.id !== sessionId || (onlyId && id !== onlyId)) continue;
       p.event.status = "skipped";
+      this.store.touch(p.session, { event: p.event });
       this.prompts.delete(id);
     }
     const session = this.store.get(sessionId);
@@ -319,7 +325,7 @@ export class Runner extends EventEmitter {
     const full = { seq: session.events.length, ts: new Date().toISOString(), ...event };
     if (event.kind === "result") recordCompletion(session);
     session.events.push(full);
-    this.store.touch(session);
+    this.store.touch(session, { appendOnly: true });
     this.emit("event", session.id, full);
     return full;
   }
@@ -339,7 +345,7 @@ export class Runner extends EventEmitter {
       if ("lastOutputAt" in session) delete session.lastOutputAt;
     }
     session.state = state;
-    this.store.touch(session);
+    this.store.touch(session, { metadataOnly: true });
     this.emit("state", session.id, state, session.runningStartedAt);
   }
 
@@ -366,6 +372,7 @@ export class Runner extends EventEmitter {
   // retry는 이어 갈 대화가 없어 새 대화로 다시 보낼 때 쓴다. 요청은 이미 화면에 있으므로 다시 남기지 않는다.
   // Claude는 턴을 마친 CLI를 띄워 둔다. 실행 조건이 같으면 새로 띄우지 않고 열린 입력에 요청을 쓴다.
   send(session, prompt, cliPath, input = prompt, meta = {}, retry = false) {
+    if (this.shuttingDown) throw new Error("서버가 종료 중입니다.");
     if (this.running.has(session.id)) throw new Error("이 세션은 이미 실행 중입니다.");
     if (this.isUpdating(session.agent)) throw new Error(`${session.agent} CLI 업데이트 중입니다. 완료한 뒤 다시 시도하세요.`);
     // 단계별 소요 시간(AGENTHUB_DEBUG=timing일 때만 로그에 남는다)
@@ -383,7 +390,10 @@ export class Runner extends EventEmitter {
     const userInput = agent.interactive ? agent.userLine(input, meta.attachments) : null;
     if (!retry) {
       // 답하지 않은 질문은 새 요청이 들어오면 지나간 것으로 본다.
-      for (const e of session.events) if (e.kind === "question" && e.status === "pending") e.status = "skipped";
+      for (const e of session.events) if (e.kind === "question" && e.status === "pending") {
+        e.status = "skipped";
+        this.store.touch(session, { event: e });
+      }
       session.waiting = false;
       this.append(session, { kind: "user", text: prompt, ...publicMeta(meta) });
       // 설정의 기본 모델을 쓸 수 없어 다른 모델로 실행하면 새 대화를 시작할 때 한 번 알린다.
@@ -478,7 +488,7 @@ export class Runner extends EventEmitter {
     if (child.appServer) {
       child.appServer.on("event", (event) => this.handleLine(session, child, agent, JSON.stringify({ type: "agenthub_event", event }), true));
       child.appServer.on("control", (msg) => this.ask(session, child, agent, msg));
-      child.appServer.on("cancel", (id) => { this.dropPrompts(session.id, id); this.store.touch(session); });
+      child.appServer.on("cancel", (id) => { this.dropPrompts(session.id, id); this.store.touch(session, { metadataOnly: true }); });
       child.appServer.on("shutdown", () => this.killLater(session, child, session.stopRequested ? EXIT_GRACE_MS : INTERRUPT_GRACE_MS, "shutdown"));
     }
 
@@ -568,7 +578,7 @@ export class Runner extends EventEmitter {
       }
       // 턴 사이에 CLI가 스스로 다음 턴을 시작했다(백그라운드 작업 완료 알림, 턴 사이에 남은 추가 요청 등).
       const starting = main && (msg?.type === "assistant" || (msg?.type === "stream_event" && msg.event?.type === "message_start") || (msg?.type === "system" && msg.subtype === "init"));
-      if (starting && !child.turn && agent.keepAlive) this.beginAutoTurn(session, child);
+      if (starting && !child.turn && agent.keepAlive && !this.shuttingDown) this.beginAutoTurn(session, child);
       if (msg?.type === "control_request") return this.ask(session, child, agent, msg);
       if (msg?.type === "control_cancel_request") return this.dropPrompts(session.id, msg.request_id);
       if (msg?.type === "control_response") return this.controlReply(session, child, msg.response); // initialize·권한 모드·작업 중지 응답
@@ -731,7 +741,7 @@ export class Runner extends EventEmitter {
     const stopping = !!session.stopRequested;
     const cut = settleSubtasks(session, stopping ? "stopped" : "interrupted");
     if (cut.length) {
-      this.store.touch(session);
+      this.store.touch(session, { metadataOnly: true });
       this.emit("subtasks", session.id, { tasks: cut, removed: [] });
       if (!stopping) this.append(session, { kind: "status", text: `CLI가 끝나 진행 중이던 하위 작업 ${cut.length}개가 중단됐습니다.` });
     }
@@ -820,7 +830,7 @@ export class Runner extends EventEmitter {
   subtask(session, child, event) {
     const changed = event.kind === "subtask" ? applySubtask(session, event) : addSubtaskActivity(session, event.toolUseId, event.items);
     if (!changed) return;
-    this.store.touch(session);
+    this.store.touch(session, { metadataOnly: true });
     this.emit("subtasks", session.id, { tasks: [changed.task], removed: changed.removed });
     // 턴 밖에서 작업이 모두 끝나면 대기로 돌리고 쉬는 프로세스로 둔다.
     if (child.turn || child.retired || activeSubtasks(session).length) return;
@@ -945,6 +955,35 @@ export class Runner extends EventEmitter {
       if (session) this.release(session);
       else if (this.procs.has(id)) this.retire(this.procs.get(id));
     }
+  }
+
+  shutdown({ timeout = 5000 } = {}) {
+    if (this.stoppingPromise) return this.stoppingPromise;
+    this.shuttingDown = true;
+    const children = new Set([...this.running.values(), ...this.procs.values(), ...this.closing]);
+    const pending = [...children].filter(child => !child.closed).map(child => new Promise(resolve => {
+      const done = () => { clearTimeout(timer); child.off("close", done); resolve(); };
+      const timer = setTimeout(() => {
+        // A CLI may leave its pipes open indefinitely. Finalize its state before
+        // saving, then ignore late output from the retired process.
+        child.appServer?.close();
+        if (!child.retired) {
+          const session = this.store.get(child.sessionId);
+          if (session) {
+            session.stopRequested = true;
+            this.closed(session, child, { code: null, signal: "SIGTERM" });
+          }
+          this.retire(child, { kill: true });
+        } else this.kill(child);
+        for (const reply of child.controls?.values() ?? []) reply({ subtype: "error", error: "서버가 종료 중입니다." });
+        child.controls?.clear();
+        done();
+      }, timeout);
+      child.once("close", done);
+    }));
+    this.stoppingPromise = Promise.all(pending).then(() => Promise.all([...children].flatMap(child => [...(child.pendingInjections ?? [])])));
+    this.stopAll();
+    return this.stoppingPromise;
   }
 }
 

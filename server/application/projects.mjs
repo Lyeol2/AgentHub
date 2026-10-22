@@ -54,12 +54,13 @@ export function createProjectService({ config, store, runner, links, commands, c
         }
       }
       store.remove(s.id);
-      cleanupSession(s);
+      await cleanupSession(s);
       tasks?.()?.detachSession?.(s.id);
     }
     const cmds = commands.list(dir);
     for (const c of cmds) {
       chain.stopCommand(c);
+      chain.workflow?.forgetNode?.(c.id);
       commands.remove(c.id);
       links.removeForSession(c.id);
     }
@@ -92,8 +93,8 @@ export function createProjectService({ config, store, runner, links, commands, c
     return result;
   }
 
-  function all() {
-    const detected = discoverProjects();
+  async function all() {
+    const detected = await discoverProjects();
     const merged = config.projects.map((p) => {
       const d = detected.find((x) => samePath(x.path, p.path));
       return { name: p.name, path: p.path, registered: true, claude: d?.claude ?? 0, codex: d?.codex ?? 0, lastActive: d?.lastActive ?? null, settings: projectSettings(config, p.path) };
@@ -105,11 +106,11 @@ export function createProjectService({ config, store, runner, links, commands, c
     return merged;
   }
 
-  function discover(projectPath) {
+  async function discover(projectPath) {
     if (!projectPath || !fs.existsSync(projectPath)) throw new HttpError(400, "프로젝트 폴더가 없습니다.");
     const linked = new Map(store.list().flatMap((s) => cliSessionIds(s).map((id) => [id, s.id])));
     const hidden = new Set(config.hiddenSessions);
-    return discoverSessions(path.resolve(projectPath)).map(({ file, ...found }) => {
+    return (await discoverSessions(path.resolve(projectPath))).map(({ file, ...found }) => {
       const linkedId = linked.get(found.agentSessionId) ?? null;
       return { ...found, linkedId, linkedTitle: linkedId ? store.get(linkedId)?.title ?? null : null, hidden: hidden.has(found.agentSessionId) };
     });

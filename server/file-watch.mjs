@@ -20,6 +20,7 @@ export function createFileWatch({ node, onChange = () => {}, onError = () => {} 
   const watchers = [];
   let timer = null;
   let stopped = false;
+  let checking = false;
 
   function stop() {
     if (stopped) return;
@@ -30,11 +31,11 @@ export function createFileWatch({ node, onChange = () => {}, onError = () => {} 
   }
 
   // 삭제/이름 변경은 가장 가까운 존재하는 부모까지 확인한다. 심볼릭 링크를 통한 외부 변경은 전달하지 않는다.
-  function safeEventPath(file) {
+  async function safeEventPath(file) {
     if (!inside(project, file)) return false;
     let existing = file;
     while (true) {
-      try { fs.lstatSync(existing); break; }
+      try { await fs.promises.lstat(existing); break; }
       catch (error) {
         if (!["ENOENT", "ENOTDIR"].includes(error.code)) return false;
         const parent = path.dirname(existing);
@@ -42,24 +43,50 @@ export function createFileWatch({ node, onChange = () => {}, onError = () => {} 
         existing = parent;
       }
     }
-    try { return inside(project, fs.realpathSync(existing)); }
+    try {
+      const real = await fs.promises.realpath(existing);
+      return inside(project, real) && !ignored(path.relative(project, real));
+    }
     catch { return false; }
   }
 
-  function changed(file) {
-    if (stopped || !safeEventPath(file)) return;
-    const relative = path.relative(project, file).replaceAll(path.sep, "/") || ".";
-    if (ignored(relative)) return;
-    pending.add(relative);
+  function schedule() {
     clearTimeout(timer);
     timer = setTimeout(() => {
       timer = null;
-      if (stopped || !pending.size) return;
-      const changedPaths = [...pending].sort();
-      pending.clear();
-      onChange({ paths: changedPaths, at: new Date().toISOString() });
+      void flush().catch((error) => { if (!stopped) { stop(); onError(error); } });
     }, debounceMs);
     timer.unref?.();
+  }
+
+  async function flush() {
+    if (stopped || checking || !pending.size) return;
+    checking = true;
+    const candidates = [...pending];
+    pending.clear();
+    const changedPaths = [];
+    try {
+      // Repeated fs.watch notifications for one path require one safety check.
+      // Resolve symlinks after the debounce, including newly replaced paths.
+      for (let offset = 0; offset < candidates.length && !stopped; offset += 8) {
+        const batch = candidates.slice(offset, offset + 8);
+        const safe = await Promise.all(batch.map(relative => safeEventPath(path.resolve(project, relative))));
+        for (let i = 0; i < batch.length; i++) if (safe[i]) changedPaths.push(batch[i]);
+      }
+      if (!stopped && changedPaths.length) onChange({ paths: changedPaths.sort(), at: new Date().toISOString() });
+    } finally {
+      checking = false;
+      if (!stopped && pending.size && !timer) schedule();
+    }
+  }
+
+  function changed(file) {
+    if (stopped || !inside(project, file)) return;
+    const relative = path.relative(project, file).replaceAll(path.sep, "/") || ".";
+    // Most install/build bursts are ignored without filesystem operations.
+    if (ignored(relative)) return;
+    pending.add(relative);
+    schedule();
   }
 
   try {

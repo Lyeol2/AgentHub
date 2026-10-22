@@ -11,34 +11,39 @@ export const CMD_SIZE = { w: CARD_W, h: 108 }; // style.css의 .gcmd와 같다
 export const nodeSize = (id) => (isCommandNode(id) ? CMD_SIZE : CARD_SIZE);
 
 export function layoutGraph(sessions, links) {
+  if (sessions.every((node) => node.graphPos || node.pos)) return new Map(sessions.map((node) => [node.id, node.graphPos ?? node.pos]));
   // 순환 연결은 만든 순서로 따라가다 되돌아가는 연결을 빼고 단계를 매긴다.
-  const forward = new Set();
+  const outgoing = new Map(), forward = new Map(), order = [];
+  for (const link of links) {
+    if (!outgoing.has(link.from)) outgoing.set(link.from, []);
+    outgoing.get(link.from).push(link);
+  }
   const done = new Set();
   const onPath = new Set();
-  const walk = (id) => {
-    onPath.add(id);
-    for (const l of links.filter((l) => l.from === id)) {
-      if (onPath.has(l.to)) continue;
-      forward.add(l);
-      if (!done.has(l.to)) walk(l.to);
+  // Explicit DFS frames preserve cycle-breaking order without exhausting the JS stack.
+  for (const node of sessions) {
+    if (done.has(node.id)) continue;
+    const stack = [{ id: node.id, index: 0 }];
+    onPath.add(node.id);
+    while (stack.length) {
+      const frame = stack.at(-1), edges = outgoing.get(frame.id) ?? [];
+      if (frame.index === edges.length) {
+        onPath.delete(frame.id); done.add(frame.id); order.push(frame.id); stack.pop();
+        continue;
+      }
+      const link = edges[frame.index++];
+      if (onPath.has(link.to)) continue;
+      if (!forward.has(link.from)) forward.set(link.from, []);
+      forward.get(link.from).push(link.to);
+      if (!done.has(link.to)) { onPath.add(link.to); stack.push({ id: link.to, index: 0 }); }
     }
-    onPath.delete(id);
-    done.add(id);
-  };
-  for (const s of sessions) if (!done.has(s.id)) walk(s.id);
-
+  }
   const level = new Map();
-  const depth = (id) => {
-    if (level.has(id)) return level.get(id);
-    const parents = [...forward].filter((l) => l.to === id).map((l) => l.from);
-    const value = parents.length ? Math.max(...parents.map((p) => depth(p) + 1)) : 0;
-    level.set(id, value);
-    return value;
-  };
+  for (const id of order.reverse()) for (const to of forward.get(id) ?? []) level.set(to, Math.max(level.get(to) ?? 0, (level.get(id) ?? 0) + 1));
   const rows = new Map();
   const pos = new Map();
   for (const s of sessions) {
-    const lv = depth(s.id);
+    const lv = level.get(s.id) ?? 0;
     const row = rows.get(lv) ?? 0;
     rows.set(lv, row + 1);
     // graphPos: 옮긴 세션 카드 위치, pos: 옮긴 명령 노드 위치

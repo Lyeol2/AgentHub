@@ -163,8 +163,19 @@ test("git nodes: timeout during merge hook preserves uncertain state and never r
   const f = fixture(t);
   const cwd = f.add("feature/slow"); f.commit(cwd, "feature.txt", "feature\n");
   const hook = path.join(f.repo, ".git", "hooks", "pre-merge-commit");
-  fs.writeFileSync(hook, "#!/bin/sh\necho attempted >> .git/merge-attempts\nsleep 10\n", { mode: 0o755 });
-  const result = await runGitNode({ command: { projectPath: f.repo, gitAction: "merge", branch: "feature/slow", targetBranch: "main", timeoutSec: 5 } });
+  fs.writeFileSync(hook, "#!/bin/sh\necho attempted >> .git/merge-attempts\necho AGENTHUB_MERGE_HOOK_READY\nsleep 10\n", { mode: 0o755 });
+  // Advance the deadline timer only after Git has entered its write hook. A
+  // loaded test machine must not accidentally test a preflight read timeout.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let entered = false, result;
+  try {
+    result = await runGitNode({ command: { projectPath: f.repo, gitAction: "merge", branch: "feature/slow", targetBranch: "main", timeoutSec: 60 },
+      onOutput(output) {
+        if (!entered && output.includes("AGENTHUB_MERGE_HOOK_READY")) { entered = true; t.mock.timers.tick(60_000); }
+      },
+    });
+  } finally { t.mock.timers.reset(); }
+  assert.equal(entered, true);
   assert.equal(result.ok, false, result.output); assert.equal(result.timedOut, true);
   assert.equal(result.recoveryRequired, true); assert.match(result.output, /자동으로 재시도하지/);
   assert.equal(fs.readFileSync(path.join(f.repo, ".git", "merge-attempts"), "utf8").trim(), "attempted");

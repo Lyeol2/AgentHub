@@ -30,29 +30,40 @@ export class RunControls {
     return saved;
   }
 
+  // Keep each synchronous state transition in one persistence operation.
+  // Never hold this batch across an await or another node's execution.
+  batch(update) { return this.history?.batch ? this.history.batch(update) : update(); }
+
   queue(node, flow, input, options = {}) {
-    if (!this.ensure(node, flow) || flow.cancelled) return null;
-    const step = this.history.beginStep(flow.id, { nodeId: node.id, title: (node.title ?? "") + (options.approval ? " · 승인 대기" : " · 대기"),
-      kind: isCommandId(node.id) ? commandKind(node) : "session", input, variables: flow.variables,
-      depth: options.depth ?? 0, cwd: options.origin?.cwd ?? node.cwd ?? node.projectPath, options: { ...this.cleanOptions(options), queued: true } });
-    this.history.waitStep(flow.id, step.id, { output: options.approval ? "실행 승인을 기다립니다." : "실행 순서를 기다립니다." });
+    const step = this.batch(() => {
+      if (!this.ensure(node, flow) || flow.cancelled) return null;
+      const queued = this.history.beginStep(flow.id, { nodeId: node.id, title: (node.title ?? "") + (options.approval ? " · 승인 대기" : " · 대기"),
+        kind: isCommandId(node.id) ? commandKind(node) : "session", input, variables: flow.variables,
+        depth: options.depth ?? 0, cwd: options.origin?.cwd ?? node.cwd ?? node.projectPath, options: { ...this.cleanOptions(options), queued: true } });
+      this.history.waitStep(flow.id, queued.id, { output: options.approval ? "실행 승인을 기다립니다." : "실행 순서를 기다립니다." });
+      return queued;
+    });
+    if (!step) return null;
     this.changed(flow);
     return step.id;
   }
 
   begin(node, flow, input = "", options = {}) {
-    if (!this.ensure(node, flow) || flow.cancelled) return null;
-    if (options.historyStepId) this.history.finishStep(flow.id, options.historyStepId, { ok: true, output: "대기열에서 실행을 시작했습니다." });
-    const previous = this.steps.get(node.id);
-    if (previous) {
-      this.history.finishStep(previous.flow.id, previous.stepId, { ok: true,
-        output: this.history.get(previous.flow.id)?.steps.find((step) => step.id === previous.stepId)?.output ?? "" });
-    }
-    const step = this.history.beginStep(flow.id, {
-      nodeId: node.id, title: node.title, kind: isCommandId(node.id) ? commandKind(node) : "session",
-      input, variables: flow.variables, depth: options.depth ?? node.chainDepth ?? 0,
-      cwd: options.cwd ?? options.origin?.cwd ?? node.cwd ?? node.projectPath, options: this.cleanOptions(options),
+    const step = this.batch(() => {
+      if (!this.ensure(node, flow) || flow.cancelled) return null;
+      if (options.historyStepId) this.history.finishStep(flow.id, options.historyStepId, { ok: true, output: "대기열에서 실행을 시작했습니다." });
+      const previous = this.steps.get(node.id);
+      if (previous) {
+        this.history.finishStep(previous.flow.id, previous.stepId, { ok: true,
+          output: this.history.get(previous.flow.id)?.steps.find((step) => step.id === previous.stepId)?.output ?? "" });
+      }
+      return this.history.beginStep(flow.id, {
+        nodeId: node.id, title: node.title, kind: isCommandId(node.id) ? commandKind(node) : "session",
+        input, variables: flow.variables, depth: options.depth ?? node.chainDepth ?? 0,
+        cwd: options.cwd ?? options.origin?.cwd ?? node.cwd ?? node.projectPath, options: this.cleanOptions(options),
+      });
     });
+    if (!step) return null;
     if (step) this.steps.set(node.id, { flow, stepId: step.id });
     this.changed(flow);
     return step;
@@ -62,10 +73,13 @@ export class RunControls {
     if (!this.history || !flow) return;
     const active = this.steps.get(node.id);
     if (!active || active.flow.id !== flow.id) return;
-    this.history.finishStep(flow.id, active.stepId, { ok, output, stopped: stopped || flow.cancelled,
-      error, result: result ?? (isCommandId(node.id) ? node.lastRun : { cwd: node.cwd }) });
+    const update = () => {
+      this.history.finishStep(flow.id, active.stepId, { ok, output, stopped: stopped || flow.cancelled,
+        error, result: result ?? (isCommandId(node.id) ? node.lastRun : { cwd: node.cwd }) });
+      this.history.update(flow.id, { repeats: flow.repeats, variables: flow.variables });
+    };
+    this.batch(update);
     this.steps.delete(node.id);
-    this.history.update(flow.id, { repeats: flow.repeats, variables: flow.variables });
     this.changed(flow);
   }
 
@@ -90,111 +104,117 @@ export class RunControls {
 
   fail(node, flow, error, options = {}) {
     if (!this.history || !flow || flow.cancelled) return;
-    const previous = this.history.get(flow.id)?.steps.filter((step) => step.nodeId === node.id).at(-1);
-    const active = this.steps.get(node.id);
-    if (active && active.flow.id !== flow.id) {
-      this.ensure(node, flow);
-      const failed = this.history.beginStep(flow.id, { nodeId: node.id, title: node.title,
-        kind: isCommandId(node.id) ? commandKind(node) : "session", input: options.prompt ?? previous?.input ?? node.command ?? "",
-        variables: flow.variables, depth: options.depth ?? 0, cwd: options.origin?.cwd ?? node.cwd ?? node.projectPath,
-        options: this.cleanOptions(options) });
-      this.history.finishStep(flow.id, failed.id, { ok: false, output: error.message ?? String(error), error: error.message ?? String(error) });
-      this.changed(flow);
-      return;
-    }
-    if (!active) this.begin(node, flow, options.prompt ?? previous?.input ?? "", previous?.options ?? options);
-    this.finish(node, flow, { ok: false, output: error.message ?? String(error), error: error.message ?? String(error) });
+    return this.batch(() => {
+      const previous = this.history.get(flow.id)?.steps.filter((step) => step.nodeId === node.id).at(-1);
+      const active = this.steps.get(node.id);
+      if (active && active.flow.id !== flow.id) {
+        this.ensure(node, flow);
+        const failed = this.history.beginStep(flow.id, { nodeId: node.id, title: node.title,
+          kind: isCommandId(node.id) ? commandKind(node) : "session", input: options.prompt ?? previous?.input ?? node.command ?? "",
+          variables: flow.variables, depth: options.depth ?? 0, cwd: options.origin?.cwd ?? node.cwd ?? node.projectPath,
+          options: this.cleanOptions(options) });
+        this.history.finishStep(flow.id, failed.id, { ok: false, output: error.message ?? String(error), error: error.message ?? String(error) });
+        this.changed(flow);
+        return;
+      }
+      if (!active) this.begin(node, flow, options.prompt ?? previous?.input ?? "", previous?.options ?? options);
+      this.finish(node, flow, { ok: false, output: error.message ?? String(error), error: error.message ?? String(error) });
+    });
   }
 
   refresh() {
     if (!this.history) return;
-    for (const entry of this.chain.workflow.flows.values()) {
-      const flow = entry.flow;
-      const run = this.history.get(flow.id);
-      if (!run) continue;
-      let status;
-      if (flow.cancelled) {
-        const stillRunning = [...this.chain.workflow.nodes].some(([nodeId, current]) => current.id === flow.id && (this.chain.runner.isRunning(nodeId) || (this.chain.runs.has(nodeId) && !this.chain.workflow.watchers.has(nodeId) && this.chain.runs.get(nodeId).kind !== "schedule")));
-        status = stillRunning && !this.stopped.has(flow.id) ? "running" : "stopped";
-        for (const step of run.steps) if (step.status === "waiting" && this.steps.get(step.nodeId)?.stepId !== step.id) this.history.finishStep(flow.id, step.id, { ok: false, stopped: true });
+    return this.batch(() => {
+      for (const entry of this.chain.workflow.flows.values()) {
+        const flow = entry.flow;
+        const run = this.history.get(flow.id);
+        if (!run) continue;
+        let status;
+        if (flow.cancelled) {
+          const stillRunning = [...this.chain.workflow.nodes].some(([nodeId, current]) => current.id === flow.id && (this.chain.runner.isRunning(nodeId) || (this.chain.runs.has(nodeId) && !this.chain.workflow.watchers.has(nodeId) && this.chain.runs.get(nodeId).kind !== "schedule")));
+          status = stillRunning && !this.stopped.has(flow.id) ? "running" : "stopped";
+          for (const step of run.steps) if (step.status === "waiting" && this.steps.get(step.nodeId)?.stepId !== step.id) this.history.finishStep(flow.id, step.id, { ok: false, stopped: true });
+        }
+        else if (this.chain.workflow.active(flow)) {
+          const waitingStep = run.steps.some((step) => step.status === "waiting");
+          const approval = (this.chain.links.list?.() ?? []).some((link) => link.pending?.flow?.id === flow.id);
+          status = waitingStep || approval ? "waiting" : "running";
+        } else if (run.steps.some((step) => step.status === "running" || step.status === "waiting")) {
+          status = "running";
+        } else {
+          status = [...entry.results.values()].some((result) => !result.ok) || run.steps.some((step) => step.status === "error" && !entry.results.has(step.nodeId)) ? "error" : "success";
+        }
+        if (run.status !== status) {
+          this.history.update(flow.id, { status, endedAt: terminal(status) ? new Date().toISOString() : null,
+            variables: flow.variables, repeats: flow.repeats });
+          this.changed(flow);
+        }
       }
-      else if (this.chain.workflow.active(flow)) {
-        const waitingStep = run.steps.some((step) => step.status === "waiting");
-        const approval = (this.chain.links.list?.() ?? []).some((link) => link.pending?.flow?.id === flow.id);
-        status = waitingStep || approval ? "waiting" : "running";
-      } else if (run.steps.some((step) => step.status === "running" || step.status === "waiting")) {
-        status = "running";
-      } else {
-        status = [...entry.results.values()].some((result) => !result.ok) || run.steps.some((step) => step.status === "error" && !entry.results.has(step.nodeId)) ? "error" : "success";
-      }
-      if (run.status !== status) {
-        this.history.update(flow.id, { status, endedAt: terminal(status) ? new Date().toISOString() : null,
-          variables: flow.variables, repeats: flow.repeats });
-        this.changed(flow);
-      }
-    }
+    });
   }
 
   stopRun(id) {
     const run = this.history?.get(id);
     if (!run) throw new Error("실행 기록이 없습니다.");
-    const c = this.chain;
-    this.stopped.add(id);
-    const entry = c.workflow.flows.get(id);
-    if (entry) c.workflow.cancel(entry.flow);
-    for (const [nodeId, current] of c.workflow.nodes) {
-      if (current.id !== id) continue;
-      c.workflow.cancel(current);
-      const node = c.node(nodeId);
-      if (!node) continue;
-      if (c.workflow.watchers.has(nodeId)) c.workflow.watchers.get(nodeId).stop();
-      else if (isCommandId(nodeId)) c.runs.get(nodeId)?.stop();
-      else {
-        node.paused = false;
-        if (c.runner.isRunning(nodeId)) c.runner.stop(node);
-        else if (node.paused || node.waiting) {
+    return this.batch(() => {
+      const c = this.chain;
+      this.stopped.add(id);
+      const entry = c.workflow.flows.get(id);
+      if (entry) c.workflow.cancel(entry.flow);
+      for (const [nodeId, current] of c.workflow.nodes) {
+        if (current.id !== id) continue;
+        c.workflow.cancel(current);
+        const node = c.node(nodeId);
+        if (!node) continue;
+        if (c.workflow.watchers.has(nodeId)) c.workflow.watchers.get(nodeId).stop();
+        else if (isCommandId(nodeId)) c.runs.get(nodeId)?.stop();
+        else {
           node.paused = false;
-          node.waiting = false;
-          c.runner.dropPrompts?.(nodeId);
-          c.runner.setState?.(node, "idle");
-          c.store.touch?.(node);
+          if (c.runner.isRunning(nodeId)) c.runner.stop(node);
+          else if (node.paused || node.waiting) {
+            node.paused = false;
+            node.waiting = false;
+            c.runner.dropPrompts?.(nodeId);
+            c.runner.setState?.(node, "idle");
+            c.store.touch?.(node);
+          }
         }
       }
-    }
-    for (const [nodeId, items] of c.queue) {
-      const kept = items.filter((item) => item.flow?.id !== id);
-      if (kept.length) c.queue.set(nodeId, kept); else c.queue.delete(nodeId);
-      c.notify("queue", nodeId);
-    }
-    for (const [nodeId, items] of c.workflow.queues) {
-      const kept = [];
-      for (const item of items) {
-        if (item.options.flow?.id === id) item.resolve();
-        else kept.push(item);
+      for (const [nodeId, items] of c.queue) {
+        const kept = items.filter((item) => item.flow?.id !== id);
+        if (kept.length) c.queue.set(nodeId, kept); else c.queue.delete(nodeId);
+        c.notify("queue", nodeId);
       }
-      if (kept.length) c.workflow.queues.set(nodeId, kept); else c.workflow.queues.delete(nodeId);
-      const node = c.commands?.get(nodeId);
-      if (node) c.commands.update(node, { queued: c.workflow.queueInfo(nodeId) });
-    }
-    for (const node of c.commands?.list?.() ?? []) {
-      if (node.queued?.flow?.id === id) c.commands.update(node, { queued: null });
-    }
-    for (const link of c.links.list?.() ?? []) {
-      if (link.pending?.flow?.id !== id) continue;
-      c.links.update(link, { pending: null });
-      c.notify("links");
-    }
-    for (const [nodeId, active] of this.steps) {
-      if (active.flow.id !== id) continue;
-      this.history.finishStep(id, active.stepId, { ok: false, stopped: true });
-      this.steps.delete(nodeId);
-    }
-    for (const step of run.steps) if (!terminal(step.status)) this.history.finishStep(id, step.id, { ok: false, stopped: true });
-    this.history.update(id, { status: "stopped" });
-    this.changed({ id });
-    c.notify("commands");
-    c.workflow.settle();
-    return this.history.get(id);
+      for (const [nodeId, items] of c.workflow.queues) {
+        const kept = [];
+        for (const item of items) {
+          if (item.options.flow?.id === id) item.resolve();
+          else kept.push(item);
+        }
+        if (kept.length) c.workflow.queues.set(nodeId, kept); else c.workflow.queues.delete(nodeId);
+        const node = c.commands?.get(nodeId);
+        if (node) c.commands.update(node, { queued: c.workflow.queueInfo(nodeId) });
+      }
+      for (const node of c.commands?.list?.() ?? []) {
+        if (node.queued?.flow?.id === id) c.commands.update(node, { queued: null });
+      }
+      for (const link of c.links.list?.() ?? []) {
+        if (link.pending?.flow?.id !== id) continue;
+        c.links.update(link, { pending: null });
+        c.notify("links");
+      }
+      for (const [nodeId, active] of this.steps) {
+        if (active.flow.id !== id) continue;
+        this.history.finishStep(id, active.stepId, { ok: false, stopped: true });
+        this.steps.delete(nodeId);
+      }
+      for (const step of run.steps) if (!terminal(step.status)) this.history.finishStep(id, step.id, { ok: false, stopped: true });
+      this.history.update(id, { status: "stopped" });
+      this.changed({ id });
+      c.notify("commands");
+      c.workflow.settle();
+      return this.history.get(id);
+    });
   }
 
   descendants(nodeId) {
@@ -236,21 +256,24 @@ export class RunControls {
     const flow = c.newFlow(step.variables ?? old.variables ?? {});
     flow.repeats = { ...(old.repeats ?? {}) };
     if (kind === "repeat") flow.repeats[node.id] = 0;
-    const run = this.ensure(node, flow);
-    this.history.update(flow.id, { resumedFrom: { runId: old.id, stepId: step.id } });
-    const excluded = this.descendants(node.id);
-    const latest = new Map(old.steps.map((item) => [item.nodeId, item]));
-    for (const preserved of latest.values()) {
-      if (preserved.status !== "success" || excluded.has(preserved.nodeId)) continue;
-      const member = c.node(preserved.nodeId);
-      if (!member) continue;
-      const entry = c.workflow.entry(flow);
-      entry.results.set(member.id, { id: member.id, title: preserved.title, agent: preserved.kind, cwd: preserved.cwd,
-        ok: true, text: preserved.output, revision: ++entry.revision });
-      const copy = this.history.beginStep(flow.id, { ...preserved,
-        options: { ...preserved.options, reused: true, sourceRunId: old.id }, variables: flow.variables });
-      this.history.finishStep(flow.id, copy.id, { ok: true, output: preserved.output, durationMs: 0, result: preserved.result });
-    }
+    const run = this.batch(() => {
+      const resumed = this.ensure(node, flow);
+      this.history.update(flow.id, { resumedFrom: { runId: old.id, stepId: step.id } });
+      const excluded = this.descendants(node.id);
+      const latest = new Map(old.steps.map((item) => [item.nodeId, item]));
+      for (const preserved of latest.values()) {
+        if (preserved.status !== "success" || excluded.has(preserved.nodeId)) continue;
+        const member = c.node(preserved.nodeId);
+        if (!member) continue;
+        const entry = c.workflow.entry(flow);
+        entry.results.set(member.id, { id: member.id, title: preserved.title, agent: preserved.kind, cwd: preserved.cwd,
+          ok: true, text: preserved.output, revision: ++entry.revision });
+        const copy = this.history.beginStep(flow.id, { ...preserved,
+          options: { ...preserved.options, reused: true, sourceRunId: old.id }, variables: flow.variables });
+        this.history.finishStep(flow.id, copy.id, { ok: true, output: preserved.output, durationMs: 0, result: preserved.result });
+      }
+      return resumed;
+    });
     if (step.options?.approval) {
       c.hold(approvalLink, step.options.sourceRun ? { ...approvalSource, lastRun: step.options.sourceRun } : approvalSource, step.input, Math.max(0, step.depth - 1), flow);
     } else if (kind === "session") {
@@ -261,9 +284,11 @@ export class RunControls {
       c.setFlow(node, flow);
       c.printMessage(node, step.options?.source ?? { id: node.id, title: node.title, cwd: step.cwd ?? node.projectPath }, step.input);
     } else if (["watch", "schedule", "webhook-in"].includes(kind)) {
-      c.setFlow(node, flow);
-      this.begin(node, flow, step.input, step.options);
-      c.workflow.record(node, true, step.input, flow);
+      this.batch(() => {
+        c.setFlow(node, flow);
+        this.begin(node, flow, step.input, step.options);
+        c.workflow.record(node, true, step.input, flow);
+      });
       for (const link of c.pickFlowLinks(node, true, step.input)) {
         if (link.approve) c.hold(link, node, step.input, 0, flow);
         else await c.deliver(link, 0, step.input, null, flow);

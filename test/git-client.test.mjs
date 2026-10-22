@@ -174,10 +174,14 @@ test("git overview: upstream ahead/behind and branch counts are reported togethe
   f.add("upstream-1.txt", "1\n"); f.add("upstream-2.txt", "2\n");
   run(f.repo, "switch", "-q", "main");
   run(f.repo, "branch", "--set-upstream-to=base");
-  const overview = await gitOverview(f.repo);
+  const firstRead = gitOverview(f.repo);
+  assert.equal(gitOverview(f.repo), firstRead, "overlapping overview requests share their work");
+  const overview = await firstRead;
   assert.deepEqual([overview.branch, overview.upstream, overview.ahead, overview.behind], ["main", "base", 1, 2]);
   assert.deepEqual(overview.branches.map(b => [b.name, b.current, b.ahead]), [["main", true, 0], ["base", false, 2]]);
   run(f.repo, "branch", "--unset-upstream");
-  const plain = await gitOverview(f.repo);
+  const nextRead = gitOverview(f.repo);
+  assert.notEqual(nextRead, firstRead, "completed overviews are not a freshness cache");
+  const plain = await nextRead;
   assert.deepEqual([plain.upstream, plain.ahead, plain.behind], [null, null, null]);
 });

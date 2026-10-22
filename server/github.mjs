@@ -1,93 +1,18 @@
 // GitHub.com Pull Requests. gh handles authentication; writes are explicit REST calls.
 // Never use gh pr create: it may publish local branches implicitly.
 import fs from "node:fs";
-import { spawn } from "node:child_process";
 import { locateCli } from "./cli.mjs";
-import { parseStatus } from "./gitpanel.mjs";
+import { parseStatus } from "./git-status.mjs";
+import { GitHubError, cleanError, gitAuthFailure, githubCredentialArgs } from "./git-auth.mjs";
+import { runCommand as runGitHubCommand } from "./command-process.mjs";
+export { GitHubError, gitAuthFailure, githubCredentialArgs } from "./git-auth.mjs";
+export { runCommand as runGitHubCommand } from "./command-process.mjs";
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const NUMBER = /^[1-9][0-9]{0,8}$/;
 const DIFF_MAX = 1_500_000;
 const API_VERSION = "2022-11-28";
 
-export class GitHubError extends Error {
-  constructor(message, reason = "github-error", status = 400, outcomeUnknown = false) {
-    super(message);
-    Object.assign(this, { reason, status, outcomeUnknown });
-  }
-}
-
-const cleanError = (text) => String(text ?? "")
-  .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
-  .replace(/(?:gh[pousr]_|github_pat_)[A-Za-z0-9_]+/g, "[token]")
-  .replace(/https?:\/\/[^/\s@]+@/g, "https://[credentials]@")
-  .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "").trim().slice(0, 1600);
-
-// 백그라운드 Git 명령은 로그인 창을 띄울 수 없다. 인증 실패를 사용자가 해결할 수 있는 안내로 바꾼다.
-const SSH_AUTH = /Permission denied \(publickey\)|Host key verification failed/i;
-const HTTPS_AUTH = /could not read (?:Username|Password) for|Authentication failed for|Invalid username or (?:password|token)|user interactivity has been disabled|terminal prompts disabled|Repository not found|requested URL returned error: 40[13]/i;
-export function gitAuthFailure(text) {
-  const value = String(text ?? "");
-  if (SSH_AUTH.test(value)) return new GitHubError("SSH 키로 GitHub에 접속하지 못했습니다. 이 PC의 SSH 키를 GitHub 계정에 등록하거나, 원격 주소를 https://github.com/<소유자>/<저장소>.git 형식으로 바꾼 뒤 GitHub에 로그인하세요.", "git-auth-ssh", 401);
-  if (HTTPS_AUTH.test(value)) return new GitHubError("GitHub 로그인이 필요합니다. GitHub CLI로 로그인하면 AgentHub의 최신 확인·푸시도 그 계정을 씁니다. 이미 로그인했다면 그 계정에 이 저장소 접근 권한이 있는지 확인하세요.", "git-auth", 401);
-  return null;
-}
-
-// 저장된 자격 증명이 없거나 만료됐을 때 GitHub CLI 로그인으로 이어 받는다.
-// 기존 자격 증명 도우미가 먼저 시도되고, 사용자의 전역 Git 설정은 바꾸지 않는다.
-export function githubCredentialArgs(gh = locateCli("gh", "")) {
-  const file = String(gh ?? "").replace(/\\/g, "/");
-  if (!file || /["$`\r\n]/.test(file)) return [];
-  return ["-c", `credential.https://github.com.helper=!"${file}" auth git-credential`];
-}
-
-// Structured arguments and stdin only; no shell, prompts, pager, or debug token output.
-export function runGitHubCommand(file, args, { cwd, input, timeout = 30_000, maxBuffer = 5_000_000 } = {}) {
-  return new Promise((resolve, reject) => {
-    const env = { ...process.env, GH_HOST: "github.com", GH_REPO: "", GH_DEBUG: "", DEBUG: "", GH_FORCE_TTY: "",
-      GH_PROMPT_DISABLED: "1", NO_COLOR: "1", GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never" };
-    const child = spawn(file, args, { cwd, env, shell: false, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
-    let stdout = "", stderr = "", size = 0, timedOut = false, overflow = false;
-    let stopping = false;
-    const stop = () => {
-      if (stopping) return;
-      stopping = true;
-      if (process.platform === "win32" && child.pid) {
-        spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore", shell: false })
-          .on("error", () => child.kill()).on("close", (code) => { if (code !== 0) child.kill(); });
-      } else child.kill();
-    };
-    const abort = () => {
-      stop();
-      const error = new Error(timedOut ? "명령 응답 시간이 초과되었습니다." : "명령 출력이 너무 큽니다.");
-      Object.assign(error, { timedOut, overflow, stderr, stdout });
-      reject(error);
-      // Helpers may retain inherited pipes after a failed tree termination.
-      child.stdout.destroy(); child.stderr.destroy(); child.stdin.destroy(); child.unref();
-    };
-    const timer = setTimeout(() => { timedOut = true; abort(); }, timeout);
-    const add = (name, data) => {
-      size += Buffer.byteLength(data);
-      if (size > maxBuffer) { overflow = true; clearTimeout(timer); abort(); return; }
-      if (name === "stdout") stdout += data;
-      else stderr += data;
-    };
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (data) => add("stdout", data));
-    child.stderr.on("data", (data) => add("stderr", data));
-    child.stdin.on("error", () => {});
-    child.on("error", (error) => { clearTimeout(timer); reject(error); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0 && !timedOut && !overflow) return resolve(stdout);
-      const error = new Error(cleanError(stderr || stdout) || "명령 실행에 실패했습니다.");
-      Object.assign(error, { exitCode: code, timedOut, overflow, stderr, stdout });
-      reject(error);
-    });
-    child.stdin.end(input ?? "");
-  });
-}
 
 export function parseGitHubRemote(value) {
   const raw = String(value ?? "").trim();
@@ -225,9 +150,10 @@ export class GitHubPulls {
       ? "요청 시간이 초과되어 완료 여부를 알 수 없습니다. GitHub에서 완료 여부를 확인한 뒤 다시 시도하세요."
       : "GitHub 응답 시간이 초과되었습니다. 연결을 확인하고 다시 조회하세요.", "github-timeout", 504, write);
     // 인증 거부는 쓰기 전에 끝나므로 완료 여부가 불확실하지 않다.
-    const auth = gitAuthFailure(error.stderr || error.message);
+    const output = [error.stdout, error.stderr].filter(Boolean).join("\n") || error.message;
+    const auth = gitAuthFailure(output);
     if (auth) return auth;
-    const message = cleanError(error.stderr || error.stdout || error.message);
+    const message = cleanError(output);
     const http = Number(message.match(/HTTP\s+(\d{3})/i)?.[1]);
     // 로그인하지 않은 gh는 HTTP 응답 없이 로그인 방법만 알린다.
     if (http === 401 || (!http && /gh auth login|not logged in/i.test(message))) return new GitHubError("GitHub 인증이 만료되었습니다. 설정에서 GitHub CLI에 다시 로그인하세요.", "gh-auth", 401);

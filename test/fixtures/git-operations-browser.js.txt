@@ -15,6 +15,7 @@
   const head = 'b'.repeat(40), old = 'a'.repeat(40);
   let behind = 0, upstream = 'origin/feature/test';
   let removed = false, holdPreview, previewDelay = false, executionDelay = false, failExecute = false;
+  let overviewDelay = false, releaseOverview;
   const requests = [];
   const commits = [{ hash: head, short: 'bbbbbbb', subject: 'Current change', author: 'test', date: '2026-10-01', refs: ['feature/test'], parents: [old] }, { hash: old, short: 'aaaaaaa', subject: 'Previous change', author: 'test', date: '2026-09-30', refs: [], parents: [] }];
   const calls = (path) => requests.filter(r => r.path === path);
@@ -23,7 +24,11 @@
     const req = { method, path: url.pathname, query: Object.fromEntries(url.searchParams), body: body ? structuredClone(body) : undefined };
     requests.push(req);
     const cwd = body?.cwd || url.searchParams.get('cwd') || project;
-    if (url.pathname === '/api/git') return { head, branch: cwd === project ? 'main' : 'feature/test', upstream, ahead: 1, behind, stagedCount: 0, unstagedCount: 1, files: [{ path: 'a.txt', unstaged: true, staged: false, label: '수정' }], moreFiles: 0, commits, branches: [{ name: cwd === project ? 'main' : 'feature/test', current: true }, { name: 'feature/source', ahead: 1, current: false }] };
+    if (url.pathname === '/api/git') {
+      const result = { head, branch: cwd === project ? 'main' : 'feature/test', upstream, ahead: 1, behind, stagedCount: 0, unstagedCount: 1, files: [{ path: 'a.txt', unstaged: true, staged: false, label: '수정' }], moreFiles: 0, commits, branches: [{ name: cwd === project ? 'main' : 'feature/test', current: true }, { name: 'feature/source', ahead: 1, current: false }] };
+      if (overviewDelay) { overviewDelay = false; await new Promise(resolve => { releaseOverview = resolve; }); }
+      return result;
+    }
     if (url.pathname === '/api/git/worktrees' && method === 'GET') return { currentCwd: cwd, worktrees: [{ cwd: project, branch: 'main', head, original: true, canRemove: false, reason: '원본 폴더' }, ...(removed ? [] : [{ cwd: worktree, branch: 'feature/test', head, canRemove: true, dirty: 0, sessionIds: [], taskIds: [] }])] };
     if (url.pathname === '/api/git/show' || url.pathname === '/api/git/diff' || url.pathname === '/api/git/branch') return { diff: '+safe fixture diff' };
     if (url.pathname === '/api/git/stage') return {};
@@ -51,6 +56,16 @@
   const navigation = { project, view: 'project' };
   const controller = createGitController({ api, currentProject: () => ({ path: project }), projectTab: () => 'git', navigation, selectSession: () => {}, openSetup: () => {} });
   await controller.loadGit();
+  const overviewBefore = calls('/api/git').length;
+  overviewDelay = true;
+  const firstOverview = controller.loadGit();
+  await until(() => releaseOverview);
+  const refreshes = Array.from({ length: 20 }, () => controller.loadGit());
+  behind = 4; releaseOverview();
+  await Promise.all([firstOverview, ...refreshes]);
+  check(calls('/api/git').length === overviewBefore + 2, 'Concurrent refreshes share one request and one trailing refresh');
+  check($('g-pull').querySelector('.git-tool-badge').textContent === '4', 'Refresh callers wait for the fresh trailing response');
+  behind = 0; await controller.loadGit();
   click('g-workspaces'); await until(() => document.querySelector('[data-workspace="' + worktree + '"]'));
   document.querySelector('[data-workspace="' + worktree + '"]').click();
   await until(() => $('g-branch').textContent === 'feature/test');

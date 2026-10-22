@@ -8,6 +8,9 @@ export function createLimitsService({ repository, credentials, rollouts, fetchUs
   let usageCheckedAt = 0;
   let usageBlockedUntil = 0;
   let usageError = null;
+  let codexCheckedAt = -Infinity;
+  let codexSnapshot = null;
+  let codexFlight = null;
 
   function recordClaudeLimit(info) {
     const saved = repository.load();
@@ -48,19 +51,29 @@ export function createLimitsService({ repository, credentials, rollouts, fetchUs
     }
   }
 
-  function codexLimits() {
-    for (const text of rollouts.recentTails()) {
+  async function scanCodexLimits(options) {
+    for await (const text of rollouts.recentTails(options)) {
       const limits = parseCodexLimits(text);
       if (limits) return limits;
     }
     return { windows: [], observedAt: null };
   }
 
-  function readLimits() {
+  async function codexLimits({ fresh = false } = {}) {
+    if (codexSnapshot && !fresh && now() - codexCheckedAt < 5000) return codexSnapshot;
+    codexFlight ??= scanCodexLimits({ fresh }).then((value) => {
+      codexSnapshot = value;
+      codexCheckedAt = now();
+      return value;
+    }).finally(() => { codexFlight = null; });
+    return codexFlight;
+  }
+
+  async function readLimits(options) {
     const result = {};
-    const readers = { claude: () => claudeSnapshot(repository.load(), usageError), codex: codexLimits };
+    const readers = { claude: () => claudeSnapshot(repository.load(), usageError), codex: () => codexLimits(options) };
     for (const [agent, read] of Object.entries(readers)) {
-      try { result[agent] = read(); }
+      try { result[agent] = await read(); }
       catch (error) { result[agent] = { windows: [], observedAt: null, error: error.message }; }
     }
     return result;

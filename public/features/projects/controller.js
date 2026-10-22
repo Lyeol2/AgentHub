@@ -1,7 +1,8 @@
 import { createProjectsView } from "./view.js";
 import { mergeSessionRead } from "../../shared/session-read.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
-import { samePath } from "../../shared/store.js";
+import { samePath, pathKey } from "../../shared/store.js";
+import { projectSummaries } from "./model.js";
 import { showError } from "../../shared/error-report.js";
 import { permissionLabel } from "../../shared/permissions.js";
 
@@ -37,7 +38,15 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   }
 
   // ── 프로젝트 목록(등록 + 자동 감지) ─────────────────────────────
-  const hubSessions = (p) => data.sessions.filter((s) => samePath(s.projectPath, p.path));
+  let summaries = new Map(), summarySessions, summaryProjects;
+  function refreshSummaries() {
+    summaries = projectSummaries(data.projects ?? [], data.sessions);
+    summarySessions = data.sessions; summaryProjects = data.projects;
+  }
+  const hubSessions = (p) => {
+    if (summarySessions !== data.sessions || summaryProjects !== data.projects) refreshSummaries();
+    return summaries.get(pathKey(p.path))?.sessions ?? [];
+  };
 
   async function loadProjects() {
     try {
@@ -51,10 +60,11 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
 
   // 감지된 기록과 AgentHub 세션 중 가장 최근 활동
   function lastActive(p) {
-    return [p.lastActive, ...hubSessions(p).map((s) => s.updatedAt)].filter(Boolean).sort().at(-1) ?? null;
+    return summaries.get(pathKey(p.path))?.lastActive ?? p.lastActive ?? null;
   }
 
   function sortedProjects() {
+    refreshSummaries();
     return [...(data.projects ?? [])].sort((a, b) => (lastActive(b) ?? "").localeCompare(lastActive(a) ?? ""));
   }
 
@@ -87,6 +97,7 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
       b.setAttribute("aria-selected", String(b.dataset.tab === tab));
     }
     for (const panel of document.querySelectorAll("#view-project .tab-panel")) panel.hidden = panel.dataset.panel !== tab;
+    renderProjectSessions();
     if (tab === "git") loadGit();
     if (tab === "tasks") loadTasks?.(navigation.project);
     if (tab === "issues") loadIssues(navigation.project);
@@ -154,8 +165,11 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   });
 
   function renderProjectSessions() {
-    renderGraph();
-    renderProjectSessionTable();
+    if (navigation.view !== "project") return;
+    const count = currentProject() ? hubSessions(currentProject()).filter((s) => !s.chat).length : 0;
+    $("p-tab-sessions").textContent = count ? String(count) : "";
+    if (projectTab() === "flow") renderGraph();
+    if (projectTab() === "sessions") renderProjectSessionTable();
   }
 
   async function renderProject() {
@@ -164,7 +178,6 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     $("p-name").textContent = p.name;
     $("p-path").textContent = p.path;
     $("p-registered").hidden = p.registered;
-    renderProjectSessions();
     renderIssueCount();
     showProjectTab(projectTab());
     loadSkills(p.path);

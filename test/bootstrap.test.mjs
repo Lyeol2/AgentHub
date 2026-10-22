@@ -104,6 +104,26 @@ test("bootstrap: 시작하기 전 종료와 반복 종료는 안전하고 재시
   await assert.rejects(hub.start(), /종료/);
 });
 
+test("bootstrap: a failed shutdown save can be retried without disposing twice", async t => {
+  const { root, hubs } = temporary(t);
+  const { createHub } = await import("../server/bootstrap.mjs");
+  const hub = createHub({ dataDir: path.join(root, "data"), port: 0, warmup: false });
+  hubs.push(hub);
+  await hub.start();
+  const dispose = t.mock.method(hub.chain, "dispose");
+  const close = hub.store.close.bind(hub.store);
+  let attempts = 0;
+  t.mock.method(hub.store, "close", async () => {
+    if (++attempts === 1) throw new Error("temporary disk failure");
+    await close();
+  });
+  await assert.rejects(hub.shutdown(), /temporary disk failure/);
+  assert.equal(hub.server.listening, false);
+  await hub.shutdown();
+  assert.equal(attempts, 2);
+  assert.equal(dispose.mock.callCount(), 1);
+});
+
 test("bootstrap: SSE 구독과 상태 이벤트는 서버 인스턴스별로 분리된다", async (t) => {
   const { root, hubs } = temporary(t);
   const { createHub } = await import("../server/bootstrap.mjs");

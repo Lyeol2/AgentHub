@@ -11,9 +11,11 @@
     $("project-nav").querySelector("button").click();
     await until(() => $("p-graph").querySelectorAll(".gcard").length === 2 && $("p-graph").querySelector(".gcmd") && $("p-graph-tabs").querySelector('[data-graph-tab][aria-selected="true"]'));
     check(!$("view-project").hidden, "project navigation and graph rendering");
+    await new Promise(requestAnimationFrame);
+    await new Promise(requestAnimationFrame);
     let canvas = $("p-graph").querySelector(".graph-canvas");
-    const firstCard = canvas.querySelector('.gcard[data-id="s1"]');
-    const command = canvas.querySelector(".gcmd");
+    let firstCard = canvas.querySelector('.gcard[data-id="s1"]');
+    let command = canvas.querySelector(".gcmd");
     check(canvas.querySelectorAll("path.edge").length === 1, "graph links rendered");
     const context = (target) => target.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 650, clientY: 350 }));
     const menuItem = (label) => [...document.querySelectorAll(".context-menu button")].find((item) => item.textContent === label);
@@ -50,6 +52,7 @@
     const panX = parseFloat(canvas.style.left), panY = parseFloat(canvas.style.top);
     pointer($("p-graph"), "pointerdown", { button: 1 });
     pointer(window, "pointermove", { clientX: 390, clientY: 380 });
+    await new Promise(requestAnimationFrame);
     check(Math.abs(parseFloat(canvas.style.left) - panX - 40) < .001 && Math.abs(parseFloat(canvas.style.top) - panY - 30) < .001, "middle drag pan");
     pointer(window, "pointercancel");
     const canceledX = canvas.style.left;
@@ -59,10 +62,15 @@
     const cardRect = firstCard.getBoundingClientRect();
     pointer(firstCard, "pointerdown", { clientX: cardRect.left + 15, clientY: cardRect.top + 15 });
     pointer(window, "pointermove", { clientX: cardRect.left + 15, clientY: graphRect.bottom - cardRect.height + 5 });
+    await new Promise(requestAnimationFrame);
     const lowerCard = firstCard.getBoundingClientRect();
     check(document.elementFromPoint(lowerCard.left + 20, lowerCard.bottom - 10)?.closest(".gcard") === firstCard, "nodes remain visible and interactive at the bottom of the graph");
     check(graphStaysFixed(), "moving nodes does not resize the graph panel");
     pointer(window, "pointercancel");
+    // A load deferred during the gesture can replace the canvas on cancellation.
+    canvas = $("p-graph").querySelector(".graph-canvas");
+    firstCard = canvas.querySelector('.gcard[data-id="s1"]');
+    command = canvas.querySelector(".gcmd");
     $("p-zoom-fit").click();
     check(graphStaysFixed() && [...canvas.querySelectorAll(".gcard, .gcmd")].every((node) => {
       const rect = node.getBoundingClientRect();
@@ -86,11 +94,18 @@
     check(firstCard.classList.contains("selected") && command.classList.contains("selected"), "mixed session and command selection");
     check($("p-flow-assistant-status").textContent === "선택 2개 함께 보냄", "flow assistant shows how many selected cards it will include");
     const firstX = parseFloat(firstCard.style.left), commandX = parseFloat(command.style.left);
+    const retainedEdge = canvas.querySelector("path.edge");
     pointer(firstCard, "pointerdown"); pointer(window, "pointermove", { clientX: 398 });
+    await new Promise(requestAnimationFrame);
     check(parseFloat(firstCard.style.left) > firstX && parseFloat(command.style.left) > commandX, "selected group drag");
+    check(canvas.querySelector("path.edge") === retainedEdge, "drag updates existing SVG paths without rebuilding edges");
     window.dispatchEvent(new Event("blur"));
     check(parseFloat(firstCard.style.left) === firstX && parseFloat(command.style.left) === commandX, "blur restores canceled group positions");
+    canvas = $("p-graph").querySelector(".graph-canvas");
+    firstCard = canvas.querySelector('.gcard[data-id="s1"]');
+    command = canvas.querySelector(".gcmd");
     pointer(firstCard, "pointerdown"); pointer(window, "pointermove", { clientX: 390 });
+    await new Promise(requestAnimationFrame);
     await fetch("/fixture/emit", { method: "POST", body: JSON.stringify({ type: "sessions" }) });
     await new Promise((resolve) => setTimeout(resolve, 80));
     check($("p-graph").querySelector(".graph-canvas") === canvas, "live redraw defers during gesture");
@@ -223,15 +238,17 @@
     await fetch("/fixture/emit", { method: "POST", body: JSON.stringify({ type: "sessions" }) });
     await until(() => $("view-session").hidden && !$("view-project").hidden);
     check(!$("s-events").children.length && !$("s-prompt").value, "locking from another window removes the open conversation");
+    $("p-tabs").querySelector('[data-tab="flow"]').click();
     let lockedCard = $("p-graph").querySelector('.gcard[data-id="s1"]');
     lockedCard.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     await new Promise((resolve) => setTimeout(resolve, 60));
     check($("view-session").hidden, "locked graph card cannot open chat");
     lockedCard = $("p-graph").querySelector('.gcard[data-id="s1"]');
+    const wasSelectedBeforeUnlock = lockedCard.classList.contains("selected");
     const lockButton = lockedCard.querySelector(".session-lock");
     pointer(lockButton, "pointerdown"); pointer(window, "pointerup"); lockButton.click();
     await until(() => $("p-graph").querySelector('.gcard[data-id="s1"] .session-lock')?.getAttribute("aria-pressed") === "false");
-    check(!$("p-graph").querySelector('.gcard[data-id="s1"]').classList.contains("selected"), "lock icon toggles without selecting or dragging card");
+    check($("p-graph").querySelector('.gcard[data-id="s1"]').classList.contains("selected") === wasSelectedBeforeUnlock, "lock icon toggles without changing card selection");
     $("p-graph").querySelector('.gcard[data-id="s1"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
     await until(() => !$("view-session").hidden);
     check($("s-events").textContent.includes("Hello"), "unlock restores conversation access");

@@ -1,13 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import { githubCredentialArgs, runGitHubCommand } from "./github.mjs";
+import { githubCredentialArgs } from "./git-auth.mjs";
+import { runCommand as runGitHubCommand } from "./command-process.mjs";
 import { gitErrorDetails } from "./git-errors.mjs";
 import { HttpError } from "./application/errors.mjs";
 import { normalizeGitflowSettings } from "./gitflow-settings.mjs";
 import { logTiming } from "./timing.mjs";
 
 const SHA = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
-const clean = (value) => String(value ?? "").replace(/https?:\/\/[^/\s@]+@/g, "https://[credentials]@").slice(0, 1600);
+const clean = (value, max = 1600) => String(value ?? "").replace(/https?:\/\/[^/\s@]+@/g, "https://[credentials]@").slice(0, max);
 export const sameTaskPath = (a, b) => !!a && !!b && path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 // 실제 경로 기준으로 child가 parent 폴더이거나 그 안에 있는지 본다.
 // 정션·subst 드라이브·8.3 짧은 이름으로 등록한 프로젝트도 Git이 돌려주는 경로와 맞춰 비교한다.
@@ -24,7 +25,8 @@ export async function taskGit(cwd, args, { write = false, ...options } = {}) {
     return await runGitHubCommand("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-c", "core.longpaths=true", "-C", cwd, ...args],
       { cwd, timeout: write ? 60_000 : 20_000, ...options });
   } catch (error) {
-    const known = !error.timedOut && gitErrorDetails(clean(error.stderr || error.message));
+    const raw = clean([error.stdout, error.stderr].filter(Boolean).join("\n") || error.message, Infinity);
+    const known = !error.timedOut && gitErrorDetails(raw);
     if (known) throw new HttpError(known.status, known.message, known.reason, { hint: known.hint, raw: known.raw });
     throw new HttpError(error.timedOut ? 504 : 409, clean(error.message), error.timedOut ? "git-timeout" : "git-error",
       { outcomeUnknown: write && !!(error.timedOut || error.overflow) });

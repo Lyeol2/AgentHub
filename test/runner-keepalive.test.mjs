@@ -52,6 +52,44 @@ const launchAgent = (child, taskId = "task-1", toolUseId = "toolu_agent") => {
   child.emit_({ type: "user", message: { content: [{ type: "tool_result", tool_use_id: toolUseId, content: "Async agent launched" }] } });
 };
 
+test("shutdown waits for final CLI events before persistence may close", async t => {
+  const f = fixture(t);
+  f.runner.send(f.session, "work", "fake-cli");
+  const child = f.children.at(-1);
+  init(child);
+  let killed = false;
+  f.runner.kill = () => { killed = true; };
+  let stopped = false;
+  const closing = f.runner.shutdown().then(() => { stopped = true; });
+  await tick();
+  assert.equal(killed, true);
+  assert.equal(stopped, false);
+  child.emit_({ type: "assistant", message: { content: [{ type: "text", text: "Last output" }] } });
+  child.emit("close", 1, "SIGTERM");
+  await closing;
+  assert.equal(f.session.events.some(event => event.text === "Last output"), true);
+  assert.equal(f.session.state, "idle");
+  assert.equal(f.runner.isRunning(f.session.id), false);
+  assert.throws(() => f.runner.send(f.session, "late", "fake-cli"), /종료/);
+});
+
+test("shutdown retires an unresponsive CLI and ignores late output", async t => {
+  const f = fixture(t);
+  f.runner.send(f.session, "work", "fake-cli");
+  const child = f.children.at(-1);
+  init(child);
+  f.runner.kill = () => {};
+  const closing = f.runner.shutdown({ timeout: 100 });
+  t.mock.timers.tick(100);
+  await closing;
+  assert.equal(child.retired, true);
+  assert.equal(f.session.state, "idle");
+  const count = f.session.events.length;
+  child.emit_({ type: "assistant", message: { content: [{ type: "text", text: "Too late" }] } });
+  child.emit("close", 1, "SIGTERM");
+  assert.equal(f.session.events.length, count);
+});
+
 // 첫 턴에서 백그라운드 서브에이전트를 띄우고 결과까지 받은 상태
 async function toBackground(f) {
   f.runner.send(f.session, "조사 맡겨", "fake-cli");

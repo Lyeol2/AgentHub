@@ -127,14 +127,19 @@ async function executionBrowserChecks() {
     { id: 'step-failed', nodeId: shell.id, nodeTitle: '테스트', status: 'error', input: { task: '<img src=x onerror=alert(1)>' }, output: 'FAIL payment', error: '종료 코드 1', durationMs: 1000 },
   ] };
   const running = { id: 'run-running', projectPath: project, sourceId: shell.id, sourceTitle: '진행 중인 검증', status: 'running', startedAt: now, steps: [{ id: 'step-running', nodeId: shell.id, nodeTitle: '테스트', status: 'running', input: '현재 실행', output: '' }] };
-  let runs = [failed, running];
+  let runs = [failed, running], listPageSize = 50;
   const data = { commands: [shell, notify], commandsProject: project, sessions: [], shells: [{ id: 'powershell', label: 'PowerShell' }], links: [], messages: [], nodeGroups: groupList, nodeGroupsProject: project, status: { linkConditions: [{ id: 'success', label: '성공 시' }, { id: 'error', label: '실패 시' }, { id: 'always', label: '항상' }] } };
   const navigation = { project, view: 'project' };
   const byId = (id) => data.commands.find((node) => node.id === id);
   const clone = (value) => JSON.parse(JSON.stringify(value));
   const api = async (method, url, body) => {
     requests.push({ method, url, body: clone(body ?? null) });
-    if (method === 'GET' && url.startsWith('/api/runs?')) return { runs: clone(runs) };
+    if (method === 'GET' && url.startsWith('/api/runs?')) {
+      const cursor = new URL(url, location.origin).searchParams.get('cursor');
+      const start = cursor ? runs.findIndex(run => run.id === cursor) + 1 : 0;
+      const page = runs.slice(start, start + listPageSize);
+      return { runs: clone(page.map(({ steps, ...run }) => ({ ...run, stepCount: steps.length }))), nextCursor: start + page.length < runs.length ? page.at(-1).id : null };
+    }
     if (method === 'GET' && url.startsWith('/api/runs/')) return clone(runs.find((run) => run.id === url.split('/')[3]));
     if (method === 'POST' && url.endsWith('/stop') && url.startsWith('/api/runs/')) { const run = runs.find((run) => run.id === url.split('/')[3]); run.status = 'stopped'; run.steps.filter((step) => step.status === 'running').forEach((step) => step.status = 'stopped'); return {}; }
     if (method === 'POST' && url.endsWith('/resume')) { const run = { ...clone(failed), id: 'run-resumed', sourceTitle: '재개한 검증', status: 'running', resumedFrom: failed.id }; run.steps[0].options = { reused: true, sourceRunId: failed.id }; runs.unshift(run); return { run }; }
@@ -241,8 +246,20 @@ async function executionBrowserChecks() {
   const savedRuns = runs; runs = []; await controls.openHistory();
   check($('execution-history-dialog').textContent.includes('아직 실행 기록이 없습니다'), 'empty execution history explains how records appear');
   $('execution-history-dialog').close(); runs = savedRuns;
+  listPageSize = 1;
   const pendingHistory = controls.openHistory(); await pendingHistory;
   check($('execution-history-dialog')?.open, 'history reopens after other interactions');
+  check(document.querySelectorAll('.execution-run-row').length === 1, 'history starts with a summary page');
+  const more = [...document.querySelectorAll('.execution-run-list button')].find(button => button.textContent === '이전 실행 더 보기');
+  check(more && !more.disabled, 'the next history page is available');
+  more.click(); await until(() => document.querySelectorAll('.execution-run-row').length === 2);
+  document.querySelector('[data-run-id="run-failed"]').click();
+  await until(() => $('execution-run-resume') && !$('execution-run-resume').hidden);
+  check($('execution-step-detail').textContent.includes('FAIL payment'), 'a later summary page loads its full detail on selection');
+  const beforeBurst = requests.filter(request => request.url.startsWith('/api/runs?')).length;
+  await Promise.all(Array.from({ length: 100 }, () => controls.refreshRuns()));
+  check(requests.filter(request => request.url.startsWith('/api/runs?')).length - beforeBurst <= 2, 'live history bursts share an active refresh and one trailing refresh');
+  check(document.querySelector('[data-run-id="run-failed"]')?.classList.contains('selected'), 'live refresh retains a selected run beyond the first page');
   graph.clearGraphTransientState(); await until(() => !$('execution-history-dialog')); check(!$('execution-history-dialog'), 'leaving the graph closes transient execution controls');
   window.__executionBrowserPreview = async () => { await controls.openHistory('run-failed'); };
   check(alerts.length === 0, 'execution control interactions produce no alert errors: ' + alerts.join('; '));

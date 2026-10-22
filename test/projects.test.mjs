@@ -44,7 +44,7 @@ test("projects: 프로젝트 설정은 기본값과 유니티 사용을 따로 �
   projects.updateSettings(repo, { defaults: { agent: "codex", permission: { codex: "read-only" }, isolate: false } });
   assert.deepEqual(projects.settings(repo), { defaults: { agent: "codex", permission: { codex: "read-only" }, isolate: false }, unity: "off" });
   assert.equal(hub.runner.unityMode({ projectPath: repo }), "off");
-  assert.equal(projects.all().find((p) => p.path === repo).settings.unity, "off");
+  assert.equal((await projects.all()).find((p) => p.path === repo).settings.unity, "off");
   assert.throws(() => projects.updateSettings(repo, { unity: "sometimes" }), /유니티/);
   // 권한 없이 만든 세션은 프로젝트 기본 권한을 쓴다.
   const session = await hub.services.sessions.createSession({ project: { name: "repo", path: repo }, agent: "codex" });

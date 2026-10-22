@@ -1,19 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import { execGit, isGitRead } from "./git-execution.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
 import { removeWorktreeDir } from "./tasks.mjs";
 
-export function git(cwd, args, { maxBuffer = 20 * 1024 * 1024 } = {}) {
-  return new Promise((resolve, reject) => {
-    // status의 선택적 갱신과 diff의 stat 캐시 갱신을 모두 끄고 index 읽기 경쟁을 막는다.
-    // add·commit 등 명시적으로 요청한 쓰기의 필수 잠금은 그대로 유지한다.
-    // core.longpaths: 워크트리는 원본보다 경로가 길어 Windows의 260자 제한에 먼저 걸린다.
-    execFile("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-c", "core.longpaths=true", "-C", cwd, ...args], { maxBuffer, windowsHide: true }, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr.trim() || err.message));
-      else resolve(stdout);
-    });
-  });
+export async function git(cwd, args, { maxBuffer = 20 * 1024 * 1024, timeout = isGitRead(args) ? 30_000 : 0 } = {}) {
+  try { return await execGit(cwd, args, { maxBuffer, timeout }); }
+  catch (error) {
+    throw Object.assign(new Error([error.stdout, error.stderr].filter(Boolean).join("\n").trim() || error.message), { cause: error });
+  }
 }
 
 export async function isGitRepo(dir) {

@@ -1,13 +1,20 @@
 // Each hub owns its own subscribers and heartbeat; importing this module opens nothing.
-export function createEventStream({ pingInterval = 25000 } = {}) {
+export function createEventStream({ pingInterval = 25000, maxBufferedBytes = 1024 * 1024 } = {}) {
+  if (!Number.isSafeInteger(maxBufferedBytes) || maxBufferedBytes < 1) throw new Error("Invalid SSE buffer limit");
   const streams = new Set();
   let timer = null;
 
   function broadcast(type, data) {
     const payload = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
+    const bytes = Buffer.byteLength(payload);
     for (const res of streams) {
       if (res.destroyed) streams.delete(res);
-      else res.write(payload);
+      else if ((res.writableLength ?? 0) + bytes > maxBufferedBytes) {
+        // A slow window must not retain every session's output indefinitely.
+        // EventSource reconnects; the open handler reloads current snapshots.
+        streams.delete(res);
+        res.destroy();
+      } else res.write(payload);
     }
   }
 
@@ -31,7 +38,7 @@ export function createEventStream({ pingInterval = 25000 } = {}) {
   function close() {
     clearInterval(timer);
     timer = null;
-    for (const res of streams) res.end();
+    for (const res of streams) { res.end(); res.destroy?.(); }
     streams.clear();
   }
 
