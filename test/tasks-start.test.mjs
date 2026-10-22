@@ -10,7 +10,7 @@ test("tasks: without a worktree the source folder switches to the task branch an
   f.change(f.repo, "dirty.txt");
   await assert.rejects(f.create("feature", { worktree: false }), (error) => error.reason === "task-dirty");
   fs.rmSync(path.join(f.repo, "dirty.txt"));
-  await assert.rejects(f.create("feature", { worktree: false, workBranch: "feature/x" }), /새 작업 브랜치만/);
+  await assert.rejects(f.create("feature", { worktree: false, workBranch: "feature/x" }), (error) => error.reason === "workbranch-missing");
 
   const { task, session } = await f.create("feature", { worktree: false });
   assert.equal(task.inPlace, true); assert.equal(task.previousBranch, "main"); assert.equal(task.ownsWorktree, false);

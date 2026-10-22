@@ -359,6 +359,122 @@
   const reusedPost = (await requests()).filter(request => request.path === '/api/tasks' && request.method === 'POST').at(-1).body;
   check(reusedPost.worktreePath === 'C:/fixture.agenthub/finished' && !('worktreeName' in reusedPost) && !('workBranch' in reusedPost) && reusedPost.worktree === undefined, 'task sends the chosen worktree instead of creating a folder');
   await returnToTasks();
+
+  // 기존 브랜치도 원본 폴더를 고를 수 있고, 폴더마다 별도로 검증한 후보만 쓴다.
+  const change = (id, value) => { $(id).value = value; $(id).dispatchEvent(new Event('change')); };
+  const branchOption = name => [...$('task-workbranch').options].find(option => option.value === name);
+  const branchRequests = async () => (await requests()).filter(request => request.path === '/api/workbranches');
+  const createPosts = async () => (await requests()).filter(request => request.path === '/api/tasks' && request.method === 'POST');
+  const preflightRequests = async () => (await requests()).filter(request => request.path === '/api/tasks/in-place');
+  const createPrefs = () => JSON.parse(localStorage.getItem('agenthub.newTask') || '{}');
+  const confirmation = () => document.querySelector('dialog.confirm-dialog[open]');
+  const releaseBranches = () => fetch('/fixture/release-workbranches', { method: 'POST' });
+  const openManual = async title => {
+    await until(() => !$('tasks-new').disabled);
+    $('tasks-new').click(); await until(() => $('new-task-dialog').open);
+    $('task-create-manual').click(); $('task-title').value = title;
+  };
+  const selectBranch = async name => {
+    await until(() => !$('task-workbranch').disabled && branchOption(name) && !branchOption(name).disabled);
+    change('task-workbranch', name); await until(() => !$('task-create-submit').disabled);
+  };
+  const submitTask = () => $('new-task-form').requestSubmit($('task-create-submit'));
+  const expectBlockedCreate = async (branch, message) => {
+    await selectBranch(branch);
+    const before = (await createPosts()).length;
+    submitTask();
+    await until(() => !$('task-create-error').hidden && $('task-create-error').textContent.includes(message) && !$('task-create-submit').disabled);
+    check(!confirmation() && (await createPosts()).length === before && $('new-task-dialog').open, `${branch} cannot fall back to an unavailable worktree or submit a task`);
+  };
+  await mode({ branchScenario: true });
+  localStorage.setItem('agenthub.newTask', JSON.stringify({ ...createPrefs(), type: 'hotfix' }));
+  await openManual('기존 브랜치 폴더 선택 확인');
+  change('task-worktree', 'reuse');
+  await until(() => !$('task-reuse-worktree').disabled);
+  change('task-workbranch-mode', 'existing');
+  await until(() => !$('task-workbranch').disabled && branchOption('feature/original'));
+  check(!$('task-worktree-row').hidden && !$('task-worktree-row').closest('details'), 'existing branches expose the original-folder and worktree choice');
+  check($('task-worktree').value === 'create' && $('task-reuse-row').hidden, 'entering existing-branch mode normalizes a previous reuse choice to a separate worktree');
+  const reuseOption = [...$('task-worktree').options].find(option => option.value === 'reuse');
+  check(!reuseOption || reuseOption.disabled || reuseOption.hidden, 'existing-branch mode does not offer new-branch worktree reuse');
+  check(branchOption('feature/original').disabled && !(await branchRequests()).at(-1).search.includes('inPlace=true'), 'separate-worktree candidates exclude the branch in the original folder');
+  change('task-worktree', 'none');
+  await selectBranch('feature/original');
+  check((await branchRequests()).at(-1).search.includes('inPlace=true') && branchOption('feature/blocked').disabled, 'original-folder selection reloads explicitly scoped candidates and keeps blocked branches disabled');
+  check($('task-worktree-hint').textContent.includes('feature/original') && !$('task-worktree-hint').textContent.includes('새 작업 브랜치') && !$('task-create-hint').textContent.includes('새 작업 브랜치'), 'existing original-folder guidance names the selected branch without promising a new one');
+  const existingPreview = await window.captureExistingBranch();
+  check(!existingPreview.error && existingPreview.width === 390 && existingPreview.scroll <= 390 && existingPreview.dialogLeft >= 0 && existingPreview.dialogRight <= 390 && existingPreview.dialogScroll <= existingPreview.dialogWidth, 'existing-branch original-folder dialog fits a 390px viewport without horizontal overflow');
+
+  // 이전 폴더의 느린 응답은 현재 폴더의 후보나 선택 가능 여부를 덮어쓸 수 없다.
+  let branchReadCount = (await branchRequests()).length;
+  await mode({ holdWorkbranches: 'worktree' }); change('task-worktree', 'create');
+  await until(async () => (await branchRequests()).length > branchReadCount);
+  check($('task-workbranch').disabled && $('task-create-submit').disabled, 'changing folders blocks creation until the new candidates arrive');
+  change('task-worktree', 'none'); await selectBranch('feature/original');
+  await releaseBranches(); await new Promise(resolve => setTimeout(resolve, 80));
+  check($('task-worktree').value === 'none' && $('task-workbranch').value === 'feature/original' && !branchOption('feature/original').disabled && !$('task-create-submit').disabled, 'a late worktree response cannot remove the selected original-folder branch');
+  change('task-worktree', 'create'); await until(() => !$('task-workbranch').disabled && branchOption('feature/original')?.disabled);
+  branchReadCount = (await branchRequests()).length;
+  await mode({ holdWorkbranches: 'inPlace' }); change('task-worktree', 'none');
+  await until(async () => (await branchRequests()).length > branchReadCount);
+  change('task-worktree', 'create'); await selectBranch('feature/current');
+  await releaseBranches(); await new Promise(resolve => setTimeout(resolve, 80));
+  check($('task-worktree').value === 'create' && $('task-workbranch').value === 'feature/current' && branchOption('feature/original').disabled, 'a late original-folder response cannot enable the original branch in a worktree');
+
+  change('task-worktree', 'none'); await selectBranch('feature/original');
+  await mode({ inPlaceBusy: true });
+  await expectBlockedCreate('feature/original', '다른 작업');
+  await mode({ branchCurrent: 'feature/current' }); $('task-workbranch-refresh').click();
+  await until(() => !$('task-workbranch').disabled);
+  await expectBlockedCreate('feature/current', '다른 작업');
+  await mode({ branchCurrent: 'feature/original' }); $('task-workbranch-refresh').click();
+  await until(() => !$('task-workbranch').disabled);
+  branchReadCount = (await branchRequests()).length;
+  await expectBlockedCreate('feature/restricted', '다른 작업에 연결');
+  check((await branchRequests()).length > branchReadCount && !(await branchRequests()).at(-1).search.includes('inPlace=true'), 'fallback rechecks task eligibility using the separate-worktree branch list');
+
+  await selectBranch('feature/free');
+  let beforePosts = (await createPosts()).length;
+  submitTask(); await until(() => confirmation());
+  check(confirmation().textContent.includes('feature/free') && (await createPosts()).length === beforePosts, 'eligible existing-branch fallback describes the selected branch and waits for confirmation');
+  confirmation().querySelector('button[value="cancel"]').click();
+  await until(() => !confirmation() && !$('task-create-submit').disabled);
+  check((await createPosts()).length === beforePosts && $('task-worktree').value === 'none', 'declining existing-branch fallback preserves the original-folder choice without creating a task');
+  submitTask(); await until(() => confirmation()); confirmation().querySelector('[data-confirm-ok]').click();
+  await until(() => !$('new-task-dialog').open && !$('view-session').hidden);
+  const fallbackPost = (await createPosts()).at(-1).body;
+  check(fallbackPost.workBranch === 'feature/free' && fallbackPost.worktree === undefined && !('worktreePath' in fallbackPost) && !('worktreeName' in fallbackPost), 'accepted fallback creates a worktree for the existing branch without requesting a new branch or folder name');
+  await mode({ inPlaceBusy: false, inPlaceParks: true }); await returnToTasks();
+
+  await openManual('원본 폴더에서 기존 브랜치 작업');
+  change('task-worktree', 'none'); change('task-workbranch-mode', 'existing'); await selectBranch('feature/original');
+  const beforePreflight = (await preflightRequests()).length;
+  beforePosts = (await createPosts()).length;
+  submitTask(); await until(() => confirmation());
+  check((await preflightRequests()).length === beforePreflight + 1 && (await createPosts()).length === beforePosts, 'existing original-folder creation performs preflight before posting');
+  check(confirmation().textContent.includes('feature/original') && confirmation().textContent.includes('잠시 대기할 작업') && !confirmation().textContent.includes('새 작업 브랜치'), 'parking confirmation names the existing branch and the task being parked');
+  confirmation().querySelector('[data-confirm-ok]').click();
+  await until(() => !$('new-task-dialog').open && !$('view-session').hidden);
+  const originalPost = (await createPosts()).at(-1).body;
+  check(originalPost.workBranch === 'feature/original' && originalPost.worktree === false && !('worktreePath' in originalPost) && !('worktreeName' in originalPost), 'existing original-folder creation posts the selected branch with worktree false');
+  check(createPrefs().worktree === 'none' && createPrefs().type === 'hotfix', 'existing original-folder creation remembers the folder choice while preserving the new-branch type preference');
+  await mode({ inPlaceParks: false }); await returnToTasks();
+  await openManual('기존 브랜치 별도 폴더 작업');
+  check($('task-worktree').value === 'none' && $('task-type').value === 'hotfix', 'reopening task creation restores the original-folder choice and prior new-branch type');
+  change('task-worktree', 'create'); change('task-workbranch-mode', 'existing'); await selectBranch('feature/current');
+  const directPreflight = (await preflightRequests()).length;
+  submitTask(); await until(() => !$('new-task-dialog').open && !$('view-session').hidden);
+  check((await createPosts()).at(-1).body.workBranch === 'feature/current' && (await createPosts()).at(-1).body.worktree === undefined && (await preflightRequests()).length === directPreflight, 'an existing branch in a separate worktree skips original-folder preflight');
+  check(createPrefs().worktree === 'create' && createPrefs().type === 'hotfix', 'existing separate-worktree creation remembers its folder choice without replacing the saved task type');
+  await returnToTasks(); await openManual('폴더 선택 복원 확인');
+  check($('task-worktree').value === 'create', 'reopening task creation restores the separate-worktree choice');
+  $('task-create-cancel').click();
+
+  $('open-new').click(); await until(() => $('new-dialog').open);
+  change('new-agent', 'codex'); change('new-isolate', 'true'); change('new-worktree-mode', 'existing');
+  await until(() => !$('new-worktree-branch').disabled && [...$('new-worktree-branch').options].some(option => option.value === 'feature/original'));
+  check([...$('new-worktree-branch').options].find(option => option.value === 'feature/original').disabled && !(await branchRequests()).at(-1).search.includes('inPlace=true'), 'session branch picker still blocks the original-folder branch and uses the default branch list');
+  $('new-dialog').close();
   await until(() => !$('tasks-settings').disabled); await openSettings();
   return checks;
 })()
