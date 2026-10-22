@@ -1,4 +1,4 @@
-import { el, badge, pill, lifePill, subtaskPill } from "../../shared/dom.js";
+import { el, badge, pill, lifePill, subtaskPill, unreadPill } from "../../shared/dom.js";
 import { elapsedElement } from "../../shared/elapsed.js";
 import { firstLine } from "../../shared/store.js";
 import { sessionLockButton } from "../../shared/session-lock.js";
@@ -21,7 +21,7 @@ export function createGraphView({ skillChips, restartSession, clearSessionError,
           s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : pill(s.state),
           subtaskPill(s),
           sessionLockButton(s, toggleSessionLock)),
-        el("div", { class: "gcard-title" }, s.title),
+        el("div", { class: "gcard-heading" }, el("div", { class: "gcard-title" }, s.title), unreadPill(s)),
         el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
         skillChips(s),
         el("div", { class: "gcard-foot" }, elapsedElement("session", s, true),

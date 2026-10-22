@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DATA_DIR } from "../../config.mjs";
 import { handoverText } from "../../handover.mjs";
+import { sessionReadState } from "../../session-read.mjs";
 import { readJsonFile, writeJsonAtomic } from "./json-file.mjs";
 
 const validSession = (session) => typeof session?.id === "string" && typeof session.updatedAt === "string";
@@ -139,5 +140,5 @@ export function summary(session) {
   const branch = !session.chat && !session.worktree && session.cwd ? currentBranch(session.cwd) : null;
   // 목록에는 하위 작업 수만 싣는다(작업 목록·최근 활동은 세션 상세에 있다).
   const subtaskCount = subtasks?.length ? { running: subtasks.filter((task) => task.status === "running" && !task.ambient).length, total: subtasks.length } : null;
-  return { ...rest, locked: !!session.locked, eventCount: events.length, handoverPending: !!handover, ...(branch ? { branch } : {}), ...(subtaskCount ? { subtaskCount } : {}) };
+  return { ...rest, ...sessionReadState(session), locked: !!session.locked, eventCount: events.length, handoverPending: !!handover, ...(branch ? { branch } : {}), ...(subtaskCount ? { subtaskCount } : {}) };
 }

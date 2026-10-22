@@ -4,6 +4,7 @@ import { configureErrorReports } from "./shared/error-report.js";
 import { createStore, samePath } from "./shared/store.js";
 import { refreshElapsedTimes } from "./shared/elapsed.js";
 import { createModelControls } from "./shared/model-controls.js";
+import { createSessionReadTracker, mergeSessionRead } from "./shared/session-read.js";
 import { connectLiveUpdates } from "./application/live-updates.js";
 import { createSettingsController } from "./features/settings/controller.js";
 import { createProjectsController } from "./features/projects/controller.js";
@@ -86,6 +87,7 @@ async function selectSession(id) {
   }
   if (revision !== sessionSelectionRevision || navigation.viewRevision !== viewRevision) return;
   if (session.locked || sessionById(id)?.locked) return onSessionLocked(session);
+  mergeSessionRead(session, sessionById(id));
   data.current = session;
   navigation.project = null;
   if (data.current.chat) {
@@ -95,6 +97,7 @@ async function selectSession(id) {
     show("session");
     renderSession();
   }
+  void sessionReads.readCurrent();
 }
 
 function onSessionLocked(session) {
@@ -262,6 +265,16 @@ const executions = createExecutionControls({
   },
 });
 
+const sessionReads = createSessionReadTracker({
+  api, data, navigation, eventsList,
+  onChange() {
+    renderSessionList();
+    renderProjectNav();
+    if (navigation.view === "dashboard") renderDashboard();
+    if (navigation.view === "project") renderProjectSessions();
+  },
+});
+
 // 첫 로딩 중에 목록이 먼저 그려지면 사용자가 프로젝트·세션을 누를 수 있다. 그랬으면 대시보드로 되돌리지 않는다.
 const bootView = navigation.viewRevision;
 const bootSelection = sessionSelectionRevision;
@@ -276,6 +289,7 @@ const stream = connectLiveUpdates({
   data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved,
   refreshSessionMeta: sessions.refreshSessionMeta, applyActivity: sessions.applyActivity, markOutput: sessions.markOutput, sessionStateChanged: sessions.sessionStateChanged,
   updateEvent: sessions.updateEvent, appendDraft: sessions.appendDraft, taskProgress: tasks.taskProgress, applySubtasks: sessions.applySubtasks,
+  readCurrent: () => sessionReads.readCurrent(),
 });
 loadAuth();
 loadSetup();
@@ -289,5 +303,6 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden) refr
 window.addEventListener("pagehide", (event) => {
   if (event.persisted) return; // Back/forward cache pauses and resumes the existing window.
   stream.close();
+  sessionReads.dispose();
   timers.forEach(clearInterval);
 });

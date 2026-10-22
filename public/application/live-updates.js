@@ -1,11 +1,22 @@
 import { connectEventStream } from "../shared/stream.js";
 import { applySessionState, samePath } from "../shared/store.js";
+import { applySessionRead } from "../shared/session-read.js";
 
-export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved, refreshSessionMeta, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, taskProgress, applySubtasks }) {
+export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved, refreshSessionMeta, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, taskProgress, applySubtasks, readCurrent }) {
+  function renderReadState() {
+    renderSessionList();
+    renderProjectNav();
+    if (navigation.view === "dashboard") renderDashboard();
+    if (navigation.view === "project") renderProjectSessions();
+  }
   const source = connectEventStream({ handlers: {
   event: (e) => {
     const { sessionId, event } = JSON.parse(e.data);
     if ((event.kind === "question" || event.kind === "permission") && event.status === "pending") notifyQuestion(sessionId, event);
+    if (event.kind === "result") {
+      applySessionRead(data, sessionId, { lastResultSeq: event.seq });
+      renderReadState();
+    }
     const s = data.current;
     if (s?.id !== sessionId || event.seq < s.events.length) return;
     s.events.push(event);
@@ -16,6 +27,12 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     if (atBottom) scrollToBottom();
     // CLI 세션 ID·사용량 등 세션 정보만 다시 받는다. 기록은 이미 이어 붙였으므로 다시 그리지 않는다.
     if (event.kind === "status" || event.kind === "result") (refreshSessionMeta ?? selectSession)(sessionId);
+    if (event.kind === "result") void readCurrent?.();
+  },
+  "session-read": (e) => {
+    const { sessionId, ...state } = JSON.parse(e.data);
+    applySessionRead(data, sessionId, state);
+    renderReadState();
   },
   // 실행 중 진행 표시(시작 단계·마지막 출력 시각·답 대기)
   activity: (e) => {

@@ -815,6 +815,24 @@
     </form>
   </dialog>
 
+  <dialog id="mcp-dialog" class="mcp-dialog" aria-labelledby="mcp-title" aria-describedby="mcp-session">
+    <header class="mcp-heading">
+      <div><h3 id="mcp-title">MCP 서버</h3><p id="mcp-session"></p></div>
+      <button type="button" id="mcp-close" class="ghost" autofocus>닫기</button>
+    </header>
+    <div class="mcp-toolbar">
+      <p id="mcp-context"></p>
+      <button type="button" id="mcp-refresh" class="sm">새로고침</button>
+      <button type="button" id="mcp-reload" class="sm" hidden>설정 다시 읽기</button>
+    </div>
+    <div class="mcp-body">
+      <p id="mcp-message" class="mcp-message" hidden></p>
+      <p id="mcp-feedback" class="mcp-feedback" role="status" hidden></p>
+      <p id="mcp-error" class="mcp-error" role="alert" hidden></p>
+      <div id="mcp-servers" class="mcp-servers" aria-busy="false"></div>
+    </div>
+  </dialog>
+
   <dialog id="config-dialog">
     <form method="dialog" id="config-form" class="dialog-form">
       <h3>세션 설정</h3>

@@ -12,6 +12,7 @@ import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
 import { HttpError } from "./errors.mjs";
+import { sessionReadState } from "../session-read.mjs";
 import { projectSettings } from "../project-settings.mjs";
 import { assertSessionGitContext } from "../git-context.mjs";
 import { AttachmentStore, isImageAttachment, publicAttachment } from "../attachments.mjs";
@@ -401,7 +402,30 @@ export function createSessionService({
   function detail(id) {
     const session = getSession(id);
     if (session.locked) throw new HttpError(423, "잠긴 세션입니다. 좌물쇠를 눌러 잠금을 해제하세요.", "locked");
-    return { ...settleState(session), ...(graphTabs && !session.chat ? { tabId: graphTabs.tabFor(session) } : {}), queue: chain.list(session.id), canInject: !!AGENTS[session.agent].interactive || AGENTS[session.agent].transport === "app-server" };
+    return { ...settleState(session), ...sessionReadState(session), ...(graphTabs && !session.chat ? { tabId: graphTabs.tabFor(session) } : {}), queue: chain.list(session.id), canInject: !!AGENTS[session.agent].interactive || AGENTS[session.agent].transport === "app-server" };
+  }
+
+  function markRead(id, body = {}) {
+    const session = getSession(id);
+    if (session.locked) throw new HttpError(423, "잠긴 세션입니다. 자물쇠를 눌러 잠금을 해제하세요.", "locked");
+    const seq = body?.seq;
+    if (!Number.isSafeInteger(seq) || seq < 0 || !session.events.some((event) => event.seq === seq && event.kind === "result")) {
+      throw new HttpError(400, "화면에서 확인한 완료 결과를 지정하세요.");
+    }
+    const previous = sessionReadState(session);
+    if (seq > previous.readResultSeq) {
+      const stored = session.readResultSeq;
+      session.readResultSeq = seq;
+      // 읽음만으로 최근 활동 순서나 실행 시간은 바뀌지 않는다.
+      try { store.flush(session.id); }
+      catch (err) {
+        if (stored === undefined) delete session.readResultSeq;
+        else session.readResultSeq = stored;
+        throw err;
+      }
+      broadcast("session-read", { sessionId: id, ...sessionReadState(session) });
+    }
+    return sessionReadState(session);
   }
 
   // 기록(events) 없이 세션 정보만. 실행 중 화면은 머리글만 다시 그린다.
@@ -771,6 +795,45 @@ export function createSessionService({
     }
   }
 
+  function mcpSession(id) {
+    const session = getSession(id);
+    if (session.locked) throw new HttpError(423, "잠긴 세션입니다. 자물쇠를 눌러 잠금을 해제하세요.", "locked");
+    if (session.chat) throw new HttpError(400, "일반 채팅에서는 MCP 도구를 사용하지 않습니다.");
+    return session;
+  }
+
+  // 관리 명령은 대화·대기열을 건드리지 않고 CLI의 MCP 제어 API만 사용한다.
+  async function mcpStatus(id) {
+    const session = mcpSession(id);
+    try {
+      return await runner.mcpStatus(session, cliPaths()[session.agent]);
+    } catch (err) {
+      throw new HttpError(503, err.message);
+    }
+  }
+
+  async function reconnectMcp(id, body = {}) {
+    const session = mcpSession(id);
+    const serverName = body?.serverName;
+    if (typeof serverName !== "string" || !serverName.trim() || serverName.length > 512 || /[\x00-\x1f\x7f]/.test(serverName)) {
+      throw new HttpError(400, "다시 연결할 MCP 서버 이름을 지정하세요.");
+    }
+    try {
+      return await runner.reconnectMcp(session, serverName);
+    } catch (err) {
+      throw new HttpError(409, err.message);
+    }
+  }
+
+  async function reloadMcp(id) {
+    const session = mcpSession(id);
+    try {
+      return await runner.reloadMcp(session);
+    } catch (err) {
+      throw new HttpError(409, err.message);
+    }
+  }
+
   function pause(id) {
     const session = getSession(id);
     pauseSession(session);
@@ -900,9 +963,9 @@ export function createSessionService({
   }
 
   return {
-    list: () => store.list().map((s) => summary(settleState(s))), detail, detailMeta,
+    list: () => store.list().map((s) => summary(settleState(s))), detail, detailMeta, markRead,
     create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, artifact, artifactContent, artifactPreview, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
-    stop, stopSubtask, pause, resume, restart, clearError, recreate, diff, remove,
+    stop, stopSubtask, mcpStatus, reconnectMcp, reloadMcp, pause, resume, restart, clearError, recreate, diff, remove,
     getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,
     finishHandover(session) {
