@@ -199,6 +199,74 @@ test('tasks own only the folder materialized for an existing unchecked branch', 
   assert.deepEqual(f.refs(), before);
 });
 
+test('an existing branch task uses the original folder and preserves that branch after restart and removal', async t => {
+  const f = await fixture(t);
+  const branch = 'feature/in-place';
+  git(f.repo, 'branch', branch, 'develop');
+  const refs = f.refs();
+  const worktrees = git(f.repo, 'worktree', 'list', '--porcelain');
+  const requestId = 'existing-original-folder';
+  const { task, session } = await f.createTask(branch, { worktree: false, requestId });
+  assert.equal(path.resolve(task.cwd), path.resolve(f.repo));
+  assert.equal(path.resolve(session.cwd), path.resolve(f.repo));
+  assert.equal(task.inPlace, true);
+  assert.equal(task.previousBranch, 'main');
+  assert.equal(task.selectedWorkBranch, true);
+  assert.equal(task.ownsWorktree, false);
+  assert.equal(task.ownsBranch, false);
+  assert.equal(git(f.repo, 'branch', '--show-current'), branch);
+  assert.equal(existsSync(f.repo + '.agenthub'), false);
+  assert.deepEqual(f.refs(), refs);
+
+  await f.restart();
+  const retry = await f.createTask(branch, { worktree: false, requestId });
+  assert.equal(retry.reused, true);
+  assert.equal(retry.task.id, task.id);
+  assert.equal(retry.session.id, session.id);
+  const restored = await f.success('GET', `/sessions/${session.id}`);
+  assert.equal(path.resolve(restored.cwd), path.resolve(f.repo));
+  assert.equal(restored.taskId, task.id);
+
+  const removed = await f.success('DELETE', `/tasks/${task.id}?branch=delete`);
+  assert.equal(removed.worktreeRemoved, false);
+  assert.equal(removed.branchRemoved, false);
+  assert.equal(git(f.repo, 'branch', '--show-current'), 'main');
+  assert.equal(git(f.repo, 'worktree', 'list', '--porcelain'), worktrees);
+  assert.deepEqual(f.refs(), refs);
+  assert.equal(await readFile(path.join(f.repo, 'README.md'), 'utf8'), 'Existing branch fixture\n');
+  assert.equal(await readFile(path.join(f.shared, 'draft.txt'), 'utf8'), 'Existing uncommitted work\n');
+});
+
+test('original-folder branch listing enables only the current project folder and revalidates creation', async t => {
+  const f = await fixture(t);
+  const branch = 'feature/current-source';
+  git(f.repo, 'switch', '-c', branch);
+  const before = git(f.repo, 'worktree', 'list', '--porcelain');
+  const normal = (await f.branches()).find(item => item.name === branch);
+  assert.equal(normal.selectableForTask, false);
+  const inPlace = await f.success('GET', `/workbranches?path=${encodeURIComponent(f.repo)}&inPlace=true`);
+  assert.equal(inPlace.branches.find(item => item.name === branch).selectableForTask, true);
+  for (const name of ['main', 'develop', f.branch]) {
+    assert.equal(inPlace.branches.find(item => item.name === name).selectableForTask, false, name);
+    const rejected = await f.request('POST', '/tasks', {
+      ...f.options, title: 'Cannot switch original folder', type: 'feature', workBranch: name, worktree: false,
+    });
+    assert.equal(rejected.status, 409, JSON.stringify(rejected.body));
+  }
+  await writeFile(path.join(f.repo, 'unfinished.txt'), 'Keep original work\n');
+  const dirty = await f.request('POST', '/tasks', {
+    ...f.options, title: 'Keep dirty folder', type: 'feature', workBranch: branch, worktree: false,
+  });
+  assert.equal(dirty.status, 409, JSON.stringify(dirty.body));
+  assert.equal(dirty.body.reason, 'task-dirty');
+  assert.equal(await readFile(path.join(f.repo, 'unfinished.txt'), 'utf8'), 'Keep original work\n');
+  await rm(path.join(f.repo, 'unfinished.txt'));
+  const { task } = await f.createTask(branch, { worktree: false });
+  assert.equal(task.inPlace, true);
+  assert.equal(git(f.repo, 'worktree', 'list', '--porcelain'), before);
+  assert.equal(existsSync(f.repo + '.agenthub'), false);
+});
+
 test('source, missing, malformed and foreign-only branches cannot be selected', async t => {
   const f = await fixture(t);
   const foreign = path.join(f.root, 'foreign-project');

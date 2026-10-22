@@ -12,6 +12,8 @@ const chromium = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 async function browser(temp, url, expression) {
   const profile = path.join(temp, "profile");
+  const output = path.join(root, "data/tasks-qa");
+  await fs.mkdir(output, { recursive: true });
   const child = spawn(chromium, ["--headless=new", "--no-sandbox", "--disable-gpu", "--no-first-run", "--no-default-browser-check", "--remote-debugging-port=0", "--user-data-dir=" + profile, "about:blank"], { windowsHide: true });
   let log = "", socket;
   child.stderr.on("data", (chunk) => log += chunk);
@@ -51,12 +53,32 @@ async function browser(temp, url, expression) {
       socket.addEventListener("message", listener);
     });
     await command("Page.navigate", { url }); await loaded;
+    let existingBranchPreview;
+    await command('Runtime.addBinding', { name: 'taskInPlaceCheckpoint' });
+    socket.addEventListener('message', async ({ data }) => {
+      const message = JSON.parse(data);
+      if (message.method !== 'Runtime.bindingCalled' || message.params.name !== 'taskInPlaceCheckpoint') return;
+      try {
+        const settle = "new Promise(resolve => { document.getElementById('task-worktree-row').scrollIntoView({block:'center'}); requestAnimationFrame(() => requestAnimationFrame(resolve)); })";
+        await command('Runtime.evaluate', { expression: settle, awaitPromise: true });
+        await fs.writeFile(path.join(output, 'existing-branch-in-place.png'), Buffer.from((await command('Page.captureScreenshot', { format: 'png' })).data, 'base64'));
+        await command('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+        await command('Runtime.evaluate', { expression: settle, awaitPromise: true });
+        const measured = await command('Runtime.evaluate', { expression: "(() => { const dialog = document.getElementById('new-task-dialog'); const rect = dialog.getBoundingClientRect(); return { width:innerWidth, scroll:document.documentElement.scrollWidth, dialogLeft:rect.left, dialogRight:rect.right, dialogWidth:dialog.clientWidth, dialogScroll:dialog.scrollWidth }; })()", returnByValue: true });
+        existingBranchPreview = measured.result.value;
+        await fs.writeFile(path.join(output, 'existing-branch-in-place-mobile.png'), Buffer.from((await command('Page.captureScreenshot', { format: 'png', captureBeyondViewport: false })).data, 'base64'));
+        await command('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+        await command('Runtime.evaluate', { expression: 'window.taskInPlaceCheckpointDone(' + JSON.stringify(existingBranchPreview) + ')' });
+      } catch (error) {
+        await command('Runtime.evaluate', { expression: 'window.taskInPlaceCheckpointDone({error:' + JSON.stringify(error.message) + '})' });
+      }
+    });
+    await command('Runtime.evaluate', { expression: 'window.captureExistingBranch = () => new Promise(resolve => { window.taskInPlaceCheckpointDone = resolve; window.taskInPlaceCheckpoint(\'\'); })' });
     const result = await command("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
     if (result.exceptionDetails) {
       const state = await command("Runtime.evaluate", { expression: "JSON.stringify({viewProject:document.getElementById('view-project')?.hidden,panel:document.getElementById('tab-tasks')?.hidden,refresh:document.getElementById('tasks-refresh')?.outerHTML,context:document.getElementById('tasks-context')?.textContent,body:document.body.innerText.slice(-3500)})", returnByValue: true });
       throw Error((result.exceptionDetails.exception?.description ?? result.exceptionDetails.text) + "\n" + errors.join("\n") + "\nState: " + state.result.value);
     }
-    const output = path.join(root, "data/tasks-qa"); await fs.mkdir(output, { recursive: true });
     const desktop = await command("Page.captureScreenshot", { format: "png" });
     await fs.writeFile(path.join(output, "desktop.png"), Buffer.from(desktop.data, "base64"));
     const settingsOutput = path.join(root, ".tmp", "gitflow-settings-ui.png");
@@ -83,7 +105,7 @@ async function browser(temp, url, expression) {
     await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await command("Runtime.evaluate", { expression: showCards, awaitPromise: true });
     await fs.writeFile(path.join(output, "cards.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
-    return { checks: result.result.value, errors, mobile: mobile.result.value };
+    return { checks: result.result.value, errors, mobile: mobile.result.value, existingBranchPreview };
   } finally {
     socket?.close(); child.kill();
     await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 1000))]);
@@ -101,8 +123,8 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
   const settings = new Map(projects.map((item) => [item.path, { ...defaults }]));
   const agents = Object.fromEntries(["claude", "codex"].map((name) => [name, { path: name === "codex" ? "C:/bin/codex.exe" : null, version: name === "codex" ? "1.0.0" : null, models: [{ id: "test", label: "Test", efforts: ["medium"] }], efforts: ["medium"], permissions: name === "claude" ? ["default", "acceptEdits"] : ["read-only", "workspace-write"] }]));
   const context = { mainSha: "a".repeat(40), developSha: "a".repeat(40), mainInDevelop: true, needsSetup: false, checkedAt: "2026-10-15T12:00:00Z", freshness: { state: "current", checkedAt: "2026-10-15T12:00:00Z" } };
-  const mode = { uncertain: false, contextFailure: false, holdCreate: false, holdSettingsRead: false, holdSettingsSave: false, settingsReadFailure: false, settingsSaveFailure: false, assistantFailure: false, holdAssistant: false, inPlaceBusy: false };
-  let releaseCreate, releaseSettingsRead, releaseSettingsSave, releaseAssistant;
+  const mode = { uncertain: false, contextFailure: false, holdCreate: false, holdSettingsRead: false, holdSettingsSave: false, settingsReadFailure: false, settingsSaveFailure: false, assistantFailure: false, holdAssistant: false, inPlaceBusy: false, inPlaceParks: false, branchScenario: false, holdWorkbranches: '', branchCurrent: 'feature/original' };
+  let releaseCreate, releaseSettingsRead, releaseSettingsSave, releaseAssistant, releaseWorkbranches;
   const reviews = new Map();
   const server = http.createServer(async (req, res) => {
     try {
@@ -115,6 +137,7 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
       if (url.pathname === "/fixture/mode") { Object.assign(mode, body); value = {}; }
       else if (url.pathname === "/fixture/release") { releaseCreate?.(); value = {}; }
       else if (url.pathname === "/fixture/release-assistant") { releaseAssistant?.(); value = {}; }
+      else if (url.pathname === "/fixture/release-workbranches") { releaseWorkbranches?.(); value = {}; }
       else if (url.pathname === "/fixture/release-settings") { if (body.read) releaseSettingsRead?.(); if (body.save) releaseSettingsSave?.(); value = {}; }
       else if (url.pathname === "/fixture/requests") value = requests;
       else if (url.pathname === "/fixture/emit") {
@@ -129,7 +152,9 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
         value = { summary: body.history?.length ? "접근성 확인도 반영했습니다." : "로그인 문제 수정 초안을 정리했습니다.",
           draft: { title: "AI 로그인 초안", content: body.draft.content || "모바일 로그인 문제를 수정한다.", acceptance: "모바일·데스크톱 로그인과 접근성을 확인한다.", type: "feature", agent: "codex", branchName: "", worktreeName: "", version: "" } };
       }
-      else if (url.pathname === "/api/tasks/in-place") value = mode.inPlaceBusy ? { available: false, reason: "task-in-place", message: '원본 폴더는 이미 "다른 작업" 작업에서 쓰고 있습니다.' } : { available: true };
+      else if (url.pathname === "/api/tasks/in-place") value = mode.inPlaceBusy
+        ? { available: false, reason: "task-in-place", message: '원본 폴더는 이미 "다른 작업" 작업에서 쓰고 있습니다.' }
+        : { available: true, ...(mode.inPlaceParks ? { parks: { id: 'parked-task', title: '잠시 대기할 작업', branch: 'feature/parked' } } : {}) };
       else if (url.pathname === "/api/tasks/context") { if (mode.contextFailure) throw Object.assign(Error("원격 확인 실패"), { status: 400 }); value = { ...context, settings: settings.get(url.searchParams.get("path")) }; }
       else if (url.pathname === "/api/tasks/settings") {
         const projectPath = url.searchParams.get("path");
@@ -146,15 +171,29 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
         }
         value = { settings: snapshot };
       }
-      else if (url.pathname === "/api/workbranches") value = { currentBranch: 'main', branches: [
+      else if (url.pathname === "/api/workbranches") {
+        const inPlace = url.searchParams.get('inPlace') === 'true';
+        value = { currentBranch: mode.branchScenario ? mode.branchCurrent : 'main', branches: [
         { name: 'main', cwd: project.path, original: true, selectable: false, reason: '원본 작업 폴더' },
         { name: 'feature/selected', cwd: 'C:/fixture.agenthub/selected', selectable: true, selectableForTask: !tasks.some((task) => task.branch === 'feature/selected'), selectableForSession: true },
         { name: 'feature/locked', cwd: 'C:/fixture.agenthub/locked', selectable: false, locked: true, reason: '잠긴 작업 폴더' },
+        ...(mode.branchScenario ? [
+          { name: 'feature/original', cwd: project.path, original: true, selectable: inPlace, selectableForTask: inPlace, selectableForSession: false, reason: inPlace ? '' : '원본 폴더에서 사용 중' },
+          { name: 'feature/current', selectable: true, selectableForTask: true, selectableForSession: true },
+          { name: 'feature/free', selectable: true, selectableForTask: true, selectableForSession: true },
+          { name: 'feature/restricted', selectable: inPlace, selectableForTask: inPlace, selectableForSession: true, reason: inPlace ? '' : '기존 작업 폴더는 다른 작업에 연결되어 있습니다.' },
+          { name: 'feature/blocked', selectable: false, selectableForTask: false, selectableForSession: false, reason: '사용할 수 없는 작업 브랜치' },
+        ] : []),
         ...tasks.filter((task) => task.branch !== 'feature/selected').map((task) => ({ name: task.branch, cwd: task.cwd, selectable: true, selectableForTask: false, selectableForSession: true, taskId: task.id })),
       ], worktrees: [
         { cwd: 'C:/fixture.agenthub/finished', branch: 'feature/finished', original: false, selectableForTask: true, taskId: 'task-old', taskState: 'merged', taskTitle: '끝난 작업' },
         { cwd: 'C:/fixture.agenthub/dirty', branch: 'feature/dirty', original: false, selectableForTask: false, reason: '커밋하지 않은 변경이 있습니다.' },
       ] };
+        if (mode.holdWorkbranches === (inPlace ? 'inPlace' : 'worktree')) {
+          mode.holdWorkbranches = '';
+          await new Promise(resolve => releaseWorkbranches = resolve);
+        }
+      }
       else if (url.pathname === "/api/tasks") {
         if (req.method === "POST") {
           if (mode.holdCreate) { mode.holdCreate = false; await new Promise((resolve) => releaseCreate = resolve); }
@@ -238,7 +277,7 @@ test("browser: task references, GitFlow tasks and per-project settings retain st
     assert.ok(!requests.some((request) => /\/(run|stop|messages)$/.test(request.path) && request.method === "POST"));
     await fs.writeFile(path.join(root, "data/tasks-qa/checks.json"), JSON.stringify(report, null, 2));
   } finally {
-    releaseCreate?.(); releaseSettingsRead?.(); releaseSettingsSave?.(); releaseAssistant?.(); for (const stream of streams) stream.end();
+    releaseCreate?.(); releaseSettingsRead?.(); releaseSettingsSave?.(); releaseAssistant?.(); releaseWorkbranches?.(); for (const stream of streams) stream.end();
     await new Promise((resolve) => server.close(resolve));
     assert.equal(path.dirname(path.resolve(temp)), path.resolve(os.tmpdir()));
     await fs.rm(temp, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 });

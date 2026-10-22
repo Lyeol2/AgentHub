@@ -80,6 +80,30 @@ test("workbranches: primary original and main/develop branches cannot be selecte
   assert.equal(f.git(f.repo, "branch", "--show-current"), "feature/original-checkout");
 });
 
+test("workbranches: 원본 모드는 현재 브랜치와 미체크아웃 브랜치를 허용하고 다른 워크트리는 거부한다", async (t) => {
+  const f = fixture(t);
+  f.git(f.repo, "switch", "-q", "-c", "feature/current");
+  f.git(f.repo, "branch", "feature/available");
+  const linked = f.add("feature/elsewhere");
+  const before = f.git(f.repo, "show-ref", "--heads");
+  const result = await listWorkbranches(f.repo, { inPlace: true });
+  for (const name of ["feature/current", "feature/available"]) {
+    assert.equal(result.branches.find((item) => item.name === name).selectable, true);
+    const selected = await resolveWorkbranch(f.repo, name, { inPlace: true });
+    assert.equal(path.resolve(selected.dir), path.resolve(f.repo));
+    assert.equal(selected.created, false);
+    assert.equal(selected.managed, false);
+  }
+  for (const name of ["main", "develop", "feature/elsewhere"]) {
+    assert.equal(result.branches.find((item) => item.name === name).selectable, false);
+    await assert.rejects(resolveWorkbranch(f.repo, name, { inPlace: true }), (error) => error.status === 409);
+  }
+  assert.equal(f.git(f.repo, "show-ref", "--heads"), before);
+  assert.equal(f.git(f.repo, "branch", "--show-current"), "feature/current", "후보 확인은 브랜치를 전환하지 않는다");
+  assert.equal(f.git(linked, "branch", "--show-current"), "feature/elsewhere");
+  assert.equal(fs.existsSync(f.repo + ".agenthub"), false);
+});
+
 test("workbranches: missing and locked worktrees are listed but cannot be reused", async (t) => {
   const f = fixture(t);
   const missing = f.add("feature/missing");

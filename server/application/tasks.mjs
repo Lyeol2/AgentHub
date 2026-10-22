@@ -163,6 +163,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   // 정리할 때 원본 폴더를 작업 전 브랜치(없으면 PR 대상 브랜치)로 되돌려 작업 브랜치를 지울 수 있게 한다.
   // 이어받은 워크트리는 대상 브랜치를 차지하지 않도록 작업 전 브랜치가 없으면 커밋에 그대로 둔다.
   async function leaveInPlaceBranch(task) {
+    // 이미 선택한 브랜치에 있던 원본 폴더는 작업을 정리해도 원래 체크아웃을 유지한다.
+    if (task.inPlace && task.selectedWorkBranch && task.previousBranch === task.branch) return;
     for (const branch of task.inPlace ? [task.previousBranch, task.targetBranch] : [task.previousBranch]) {
       if (!branch || branch === task.branch || !await taskRef(task.projectPath, `refs/heads/${branch}`)) continue;
       try { await taskGit(task.cwd, ["switch", "--no-guess", branch], { write: true }); return; }
@@ -290,10 +292,10 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   function branchOwner(common, branch) {
     return [...records.values()].find((task) => task.state !== "cleaned" && task.branch === branch && sameTaskPath(task.gitCommonDir, common));
   }
-  async function workbranches(projectPath) {
+  async function workbranches(projectPath, { inPlace = false } = {}) {
     if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
     const repo = await taskRepo(projectPath);
-    const result = await listWorkbranches(projectPath);
+    const result = await listWorkbranches(projectPath, { inPlace });
     const flow = projectGitflowSettings(config, repo.top);
     const worktrees = await Promise.all((result.worktrees ?? []).filter((item) => !item.original).map(async (item) => {
       const owner = folderOwner(item.cwd, repo.common);
@@ -498,9 +500,8 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     if (!["feature", "hotfix", "release"].includes(type)) throw new HttpError(400, "작업 유형이 올바르지 않습니다.");
     const selectedBranch = body.workBranch;
     if (selectedBranch !== undefined && (typeof selectedBranch !== "string" || !selectedBranch.trim())) throw new HttpError(400, "작업 브랜치를 선택하세요.");
-    // worktree:false는 워크트리를 만들지 않고 원본 폴더를 새 작업 브랜치로 바꿔 그 자리에서 작업한다.
+    // worktree:false는 워크트리를 만들지 않고 원본 폴더에서 선택한 작업 브랜치를 쓴다.
     const inPlace = body.worktree === false;
-    if (inPlace && selectedBranch !== undefined) throw new HttpError(400, "원본 폴더에서 작업할 때는 새 작업 브랜치만 만들 수 있습니다.");
     // worktreePath는 이미 등록된 워크트리를 골라 그 폴더를 새 작업 브랜치로 바꿔 작업한다.
     const reusePath = body.worktreePath;
     if (reusePath !== undefined && (typeof reusePath !== "string" || !reusePath.trim())) throw new HttpError(400, "작업할 워크트리를 선택하세요.");
@@ -573,7 +574,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
         throw new HttpError(409, "해당 작업 브랜치가 이미 있습니다.", "task-branch-exists");
       const baseBranch = flowBranches.base;
       const baseCommit = type === "hotfix" ? current.mainSha : current.developSha ?? current.mainSha;
-      const selected = selectedBranch ? await resolveWorkbranch(project.path, branch) : null;
+      const selected = selectedBranch ? await resolveWorkbranch(project.path, branch, { inPlace }) : null;
       if (selected) assertIdle({ cwd: selected.dir });
       let reused = null;
       if (reusePath !== undefined) {
@@ -592,7 +593,7 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       if (worktreeName && ((fs.existsSync(location.cwd) && !emptyDir(location.cwd)) || [...records.values()].some((other) => other.state !== "cleaned" && sameTaskPath(other.cwd, location.cwd))))
         throw new HttpError(409, `같은 이름의 작업 폴더가 이미 있습니다: ${worktreeName}`, "task-worktree-exists");
       const targetSha = type === "feature" ? current.developSha ?? current.mainSha : current.mainSha;
-      const behind = !!selected && !await taskAncestor(project.path, targetSha, await taskRef(selected.dir, "HEAD"));
+      const behind = !!selected && !await taskAncestor(project.path, targetSha, await taskRef(project.path, `refs/heads/${branch}`));
       // 기존 배포 준비 브랜치를 고르면 접두어 뒤 이름이 버전이다.
       const releaseVersion = version || (selectedBranch && branch.startsWith(gitflow.releasePrefix) ? branch.slice(gitflow.releasePrefix.length) : "");
       const task = { id, projectPath: project.path, title, content, acceptance, type, version: type === "release" ? releaseVersion || undefined : undefined,
@@ -614,10 +615,15 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
       task.provisioning = true;
       save(task);
       if (inPlace || reused) {
-        // 실패하면 고른 폴더는 그대로이므로 작업 기록을 남기지 않는다.
-        try { await taskGit(location.cwd, ["switch", "--no-guess", "-c", branch, baseCommit], { write: true }); }
+        // 전환 전 실패는 기록을 지우고, 전환 여부가 불확실하거나 hook에서 실패하면 기록을 남긴다.
+        try {
+          if (!selected) await taskGit(location.cwd, ["switch", "--no-guess", "-c", branch, baseCommit], { write: true });
+          else if (readTaskBranch(location.cwd) !== branch) await taskGit(location.cwd, ["switch", "--no-guess", branch], { write: true });
+        }
         catch (error) {
-          if (!error.outcomeUnknown && !await taskRef(project.path, `refs/heads/${branch}`)) {
+          const checkout = selected && readTaskBranch(location.cwd);
+          const unchanged = !error.outcomeUnknown && (selected ? checkout && checkout !== branch : !await taskRef(project.path, `refs/heads/${branch}`));
+          if (unchanged) {
             fs.rmSync(path.join(directory, `${id}.json`), { force: true }); records.delete(id);
           } else { task.error = `작업 브랜치 준비 결과를 확인하세요: ${error.message}`; save(task); }
           throw failure(error);

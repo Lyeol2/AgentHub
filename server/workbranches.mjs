@@ -49,9 +49,9 @@ async function validateBranch(projectPath, branch, { forTarget = false, readGit 
     throw unavailable("main과 develop은 작업 브랜치로 선택할 수 없습니다.", "workbranch-protected");
 }
 
-async function inspectWorktree(repo, entry, original, { forTarget = false, readGit = taskGit, readRepo = taskRepo } = {}) {
+async function inspectWorktree(repo, entry, original, { forTarget = false, inPlace = false, readGit = taskGit, readRepo = taskRepo } = {}) {
   const result = { ...entry, original, missing: !fs.existsSync(entry.cwd) };
-  if (original && !forTarget) result.reason = "원본 작업 폴더는 기본 모드에서 사용하세요.";
+  if (original && !forTarget && !inPlace) result.reason = "원본 작업 폴더는 기본 모드에서 사용하세요.";
   else if (entry.bare) result.reason = "Bare 저장소는 작업 폴더로 사용할 수 없습니다.";
   else if (result.missing) result.reason = "등록된 작업 폴더가 없습니다. Git 워크트리 상태를 먼저 복구하세요.";
   else if (entry.locked) result.reason = "잠긴 작업 폴더입니다. 잠금 상태를 먼저 확인하세요.";
@@ -100,6 +100,8 @@ async function snapshot(projectPath, knownRepo, options = {}) {
       original: matching.some((item) => item.original), selectable: true };
     if (!options.forTarget && (name === "main" || name === "develop")) branch.reason = "main과 develop은 작업 브랜치로 선택할 수 없습니다.";
     else if (matching.length > 1) branch.reason = "같은 브랜치가 여러 작업 폴더에 연결되어 있습니다. Git 상태를 먼저 확인하세요.";
+    else if (options.inPlace && worktree && (!fs.existsSync(worktree.cwd) || !samePath(worktree.cwd, repo.top)))
+      branch.reason = "다른 워크트리에서 사용 중인 브랜치입니다. 원본 폴더에서 선택할 수 없습니다.";
     else if (worktree?.reason) branch.reason = worktree.reason;
     branch.selectable = !branch.reason;
     return branch;
@@ -133,6 +135,8 @@ export async function resolveWorkbranch(projectPath, branch, options = {}) {
     if (!selected) throw unavailable("선택한 로컬 작업 브랜치가 없습니다. 목록을 새로고침하세요.", "workbranch-missing");
     if (!selected.selectable) throw unavailable(selected.reason);
     const extra = { commonDir: repo.common };
+    // 원본 폴더 모드는 후보만 확인한다. 작업 생성자가 보호 조건과 기록을 저장한 뒤 브랜치를 전환한다.
+    if (options.inPlace) return { dir: path.resolve(repo.top), branch, created: false, managed: false, ...extra };
     if (selected.cwd) return { dir: selected.cwd, branch, created: false, managed: false, ...extra };
     const location = workbranchLocation({ ...repo, original: initial.original }, branch);
     if (fs.existsSync(location.dir)) throw unavailable("작업 브랜치의 폴더 경로가 이미 사용 중입니다. 기존 폴더를 먼저 확인하세요.", "workbranch-path-exists");
