@@ -1,13 +1,23 @@
 import { connectEventStream } from "../shared/stream.js";
-import { applySessionState, samePath } from "../shared/store.js";
+import { applySessionState, samePath, indexById } from "../shared/store.js";
 import { applySessionRead } from "../shared/session-read.js";
+import { createFrameTask } from "../shared/frame-task.js";
 
 export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved, refreshSessionMeta, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, taskProgress, applySubtasks, readCurrent }) {
-  function renderReadState() {
+  const changedProjects = new Set();
+  let unknownProject = false;
+  const renderTask = createFrameTask(() => {
     renderSessionList();
     renderProjectNav();
     if (navigation.view === "dashboard") renderDashboard();
-    if (navigation.view === "project") renderProjectSessions();
+    if (navigation.view === "project" && (unknownProject || [...changedProjects].some((path) => samePath(path, navigation.project)))) renderProjectSessions();
+    changedProjects.clear(); unknownProject = false;
+  });
+  function renderReadState(sessionId) {
+    const session = indexById(data.sessions).get(sessionId);
+    if (!session) unknownProject = true;
+    else if (session.projectPath) changedProjects.add(session.projectPath);
+    renderTask.schedule();
   }
   const source = connectEventStream({ handlers: {
   event: (e) => {
@@ -15,7 +25,7 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     if ((event.kind === "question" || event.kind === "permission") && event.status === "pending") notifyQuestion(sessionId, event);
     if (event.kind === "result") {
       applySessionRead(data, sessionId, { lastResultSeq: event.seq });
-      renderReadState();
+      renderReadState(sessionId);
     }
     const s = data.current;
     if (s?.id !== sessionId || event.seq < s.events.length) return;
@@ -32,7 +42,7 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
   "session-read": (e) => {
     const { sessionId, ...state } = JSON.parse(e.data);
     applySessionRead(data, sessionId, state);
-    renderReadState();
+    renderReadState(sessionId);
   },
   // 실행 중 진행 표시(시작 단계·마지막 출력 시각·답 대기)
   activity: (e) => {
@@ -60,11 +70,9 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
   },
   // 하위 작업(서브에이전트·백그라운드 명령)이 바뀌었다. 보고 있는 세션은 패널만 고치고, 개수가 바뀌면 목록·그래프 배지를 다시 그린다.
   subtasks: (e) => {
-    if (!applySubtasks?.(JSON.parse(e.data))) return;
-    renderSessionList();
-    renderProjectNav();
-    if (navigation.view === "dashboard") renderDashboard();
-    if (navigation.view === "project") renderProjectSessions();
+    const payload = JSON.parse(e.data);
+    if (!applySubtasks?.(payload)) return;
+    renderReadState(payload.sessionId);
   },
   // 작업 만들기 진행 단계(원격 확인 → 작업 폴더 → 세션)
   "task-progress": (e) => taskProgress?.(JSON.parse(e.data)),
@@ -75,10 +83,7 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     sessionStateChanged?.(sessionId, next);
     // Codex 한도는 턴이 끝난 뒤 기록 파일에서 읽는다.
     if (item?.agent === "codex" && next !== "running") loadLimits();
-    renderSessionList();
-    renderProjectNav();
-    if (navigation.view === "dashboard") renderDashboard();
-    if (navigation.view === "project") renderProjectSessions();
+    renderReadState(sessionId);
     // 시작·종료 상태를 모두 반영해 노선도의 작업 중 표시를 갱신한다.
     if (navigation.view === "project" && projectTab() === "git" && item && samePath(item.projectPath, navigation.project)) loadGit();
     if (navigation.view === "project" && projectTab() === "tasks" && item && samePath(item.projectPath, navigation.project)) loadTasks?.(navigation.project, { localOnly: true });
@@ -147,5 +152,5 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     if (navigation.view === "project" && projectTab() === "tasks") loadTasks?.(navigation.project);
   },
   } });
-  return source;
+  return { close() { renderTask.cancel(); source.close(); } };
 }

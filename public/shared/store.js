@@ -8,14 +8,26 @@ export function createStore() {
 }
 
 // Git이 주는 E:/Git/x와 Windows 경로 E:\Git\x, 끝 구분자 차이를 같은 경로로 본다.
-const pathKey = (p) => p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+export const pathKey = (p) => (p ?? "").replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
 export const samePath = (a, b) => !!a && !!b && pathKey(a) === pathKey(b);
 export const firstLine = (text) => text?.split(/\r?\n/)[0] ?? "";
+
+// Snapshots replace their arrays; mutations to an existing item remain visible through the map.
+const indexes = new WeakMap();
+export function indexById(items = []) {
+  let cached = indexes.get(items);
+  if (!cached || cached.size !== items.length) {
+    cached = new Map(items.map((item) => [item.id, item]));
+    indexes.set(items, cached);
+  }
+  return cached;
+}
 
 /** Apply live execution metadata equally to list and open-detail snapshots. */
 export function applySessionState(data, payload) {
   const { sessionId, state: next } = payload;
-  const targets = new Set([data.sessions.find((s) => s.id === sessionId), data.current?.id === sessionId ? data.current : null]);
+  const item = indexById(data.sessions).get(sessionId);
+  const targets = new Set([item, data.current?.id === sessionId ? data.current : null]);
   for (const session of targets) {
     if (!session) continue;
     session.state = next;
@@ -23,5 +35,5 @@ export function applySessionState(data, payload) {
     if (next !== "running") { session.runningStartedAt = null; delete session.runPhase; delete session.lastOutputAt; }
     else if (Object.hasOwn(payload, "runningStartedAt")) session.runningStartedAt = payload.runningStartedAt;
   }
-  return data.sessions.find((s) => s.id === sessionId);
+  return item;
 }

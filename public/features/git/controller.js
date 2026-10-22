@@ -98,6 +98,20 @@ export function createGitController({ api, selectSession, openSetup, currentProj
       $("p-tab-git").textContent = "";
     }
     const current = ui.git;
+    if (current.loadPromise) {
+      current.reloadRequested = true;
+      return current.loadPromise;
+    }
+    current.loadPromise = (async () => {
+      do {
+        current.reloadRequested = false;
+        await readGit(current, projectPath);
+      } while (current.reloadRequested && ui.git === current && samePath(projectPath, navigation.project));
+    })().finally(() => { current.loadPromise = null; });
+    return current.loadPromise;
+  }
+
+  async function readGit(current, projectPath) {
     const version = ++current.loadVersion;
     $("g-refresh").disabled = true;
     try {

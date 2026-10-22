@@ -1,5 +1,6 @@
 import { runningElapsed } from "../elapsed.js";
 import { $, el, timeAgo } from "./dom.js";
+import { indexById } from "./store.js";
 
 // 타이머는 텍스트만 갱신한다. 노드 선택·끌기·입력창 포커스는 그대로 유지한다.
 export function updateElapsedElement(node, item, now = Date.now()) {
@@ -38,9 +39,11 @@ export function renderSessionElapsed(prefix, session) {
 
 export function refreshElapsedTimes(data, commandNodeFoot) {
   const now = Date.now();
+  const commands = indexById(data.commands), sessions = indexById(data.sessions);
   for (const node of document.querySelectorAll("[data-elapsed-kind]")) {
-    const item = node.dataset.elapsedKind === "command" ? data.commands.find((item) => item.id === node.dataset.elapsedId)
-      : data.current?.id === node.dataset.elapsedId ? data.current : data.sessions.find((item) => item.id === node.dataset.elapsedId);
+    if (node.parentElement?.closest("[hidden]")) continue;
+    const item = node.dataset.elapsedKind === "command" ? commands.get(node.dataset.elapsedId)
+      : data.current?.id === node.dataset.elapsedId ? data.current : sessions.get(node.dataset.elapsedId);
     updateElapsedElement(node, item, now);
     if (node.dataset.elapsedKind === "command" && item) {
       const detail = node.nextElementSibling;

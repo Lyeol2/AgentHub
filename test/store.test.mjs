@@ -40,7 +40,8 @@ function fixture(id, extra = {}) {
 }
 
 function persisted(id) {
-  return JSON.parse(fs.readFileSync(path.join(sessionsDir, id + ".json"), "utf8"));
+  const { _journalGeneration, _journalRevision, ...session } = JSON.parse(fs.readFileSync(path.join(sessionsDir, id + ".json"), "utf8"));
+  return session;
 }
 
 test("store: 기존 워크트리 세션은 재시작해도 폴더·CLI 대화·진행 기록을 유지한다", () => {

@@ -59,6 +59,11 @@ export class WorkflowRuntime {
 
   get(node) { return node ? this.nodes.get(node.id) ?? null : null; }
 
+  forgetNode(id) {
+    this.nodes.delete(id);
+    this.chain.controls?.steps?.delete(id);
+  }
+
   record(node, ok, text, flow = this.get(node)) {
     if (!flow) return;
     this.chain.controls?.finish(node, flow, { ok, output: text });
@@ -105,7 +110,11 @@ export class WorkflowRuntime {
     if (this.flows.size <= 256) return;
     for (const [id, entry] of this.flows) {
       if (this.flows.size <= 256) break;
-      if (!this.active(entry.flow)) this.flows.delete(id);
+      if (!this.active(entry.flow)) {
+        this.flows.delete(id);
+        for (const [nodeId, flow] of this.nodes) if (flow.id === id) this.forgetNode(nodeId);
+        this.chain.controls?.stopped?.delete(id);
+      }
     }
   }
 

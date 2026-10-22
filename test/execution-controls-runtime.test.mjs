@@ -125,6 +125,99 @@ function fixture(t, { nodes = [], connections = [], runGit } = {}) {
 const shell = { kind: "command", title: "검사", command: "echo result", shell: process.platform === "win32" ? "powershell" : "sh", cwdMode: "project", timeoutSec: 10 };
 const input = { kind: "input", title: "시작", fields: [{ key: "goal", label: "목표", type: "text", required: true, defaultValue: "" }], prompt: "{{goal}}" };
 
+function captureHistoryWrites(t, history) {
+  const writes = [];
+  const save = history.repository.save.bind(history.repository);
+  t.mock.method(history.repository, "save", (runs, dirty) => {
+    writes.push({ ids: [...dirty], runs: structuredClone(runs) });
+    return save(runs, dirty);
+  });
+  return writes;
+}
+
+test("execution history: queue, begin and failure persist complete transitions once", t => {
+  const f = fixture(t);
+  const controls = f.chain.controls;
+  const node = f.sessions.get("a");
+  const flow = f.chain.newFlow();
+  const writes = captureHistoryWrites(t, f.history);
+  const queued = controls.queue(node, flow, "queued input");
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].runs[0].steps[0].status, "waiting");
+  writes.length = 0;
+  controls.begin(node, flow, "queued input", { historyStepId: queued });
+  assert.equal(writes.length, 1);
+  assert.deepEqual(writes[0].runs[0].steps.map(step => step.status), ["success", "running"]);
+  writes.length = 0;
+  const competing = f.chain.newFlow();
+  controls.fail(node, competing, new Error("cannot start"));
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].runs.find(run => run.id === competing.id).steps[0].status, "error");
+  assert.equal(controls.steps.get(node.id).flow.id, flow.id, "another run's active step stays intact");
+  writes.length = 0;
+  const failed = f.chain.newFlow();
+  controls.fail(f.sessions.get("b"), failed, new Error("failed before start"));
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].runs.find(run => run.id === failed.id).steps[0].status, "error");
+});
+
+test("execution history: cancelling many queued steps batches stop and refresh", t => {
+  const f = fixture(t);
+  const controls = f.chain.controls;
+  const first = f.chain.newFlow(), second = f.chain.newFlow();
+  for (const flow of [first, second]) for (const node of f.sessions.values()) controls.queue(node, flow, "waiting");
+  const writes = captureHistoryWrites(t, f.history);
+  f.chain.stopRun(first.id);
+  assert.equal(writes.length, 1);
+  assert.ok(f.history.get(first.id).steps.every(step => step.status === "stopped"));
+  writes.length = 0;
+  second.cancelled = true;
+  controls.refresh();
+  assert.equal(writes.length, 1);
+  assert.equal(f.history.get(second.id).status, "stopped");
+  assert.ok(f.history.get(second.id).steps.every(step => step.status === "stopped"));
+});
+
+test("execution history: resume batches copied siblings but releases the batch before async delivery", async t => {
+  const f = fixture(t, { nodes: [
+    { id: "cmd-first", kind: "transform", title: "First", transformMode: "template", template: "first" },
+    { id: "cmd-second", kind: "transform", title: "Second", transformMode: "template", template: "second" },
+    { id: "cmd-retry", kind: "watch", title: "Watch", watchPaths: ["."], debounceMs: 100 },
+  ], connections: [{ from: "cmd-retry", to: "a" }] });
+  const flow = f.chain.newFlow({ original: true });
+  let failed;
+  f.history.batch(() => {
+    f.history.start(flow, { projectPath: f.directory });
+    for (const id of ["cmd-first", "cmd-second"]) {
+      const step = f.history.beginStep(flow.id, { nodeId: id, kind: "transform", input: "original", cwd: f.directory });
+      f.history.finishStep(flow.id, step.id, { ok: true, output: id + " output" });
+    }
+    failed = f.history.beginStep(flow.id, { nodeId: "cmd-retry", kind: "watch", input: "changed.txt", cwd: f.directory });
+    f.history.finishStep(flow.id, failed.id, { ok: false, error: "interrupted" });
+    f.history.update(flow.id, { status: "error" });
+  });
+  const writes = captureHistoryWrites(t, f.history);
+  let release, entered = false;
+  t.mock.method(f.chain, "deliver", async () => {
+    entered = true;
+    assert.equal(f.history.batchDepth, 0);
+    await new Promise(resolve => { release = resolve; });
+  });
+  const pending = f.chain.resumeRun(flow.id, failed.id);
+  await until(() => entered, "resume reaches asynchronous delivery");
+  assert.equal(writes.length, 2, "one preparation snapshot and one completed watch snapshot");
+  const prepared = writes[0].runs.find(run => run.id !== flow.id);
+  assert.equal(prepared.steps.length, 2);
+  assert.ok(prepared.steps.every(step => step.status === "success" && step.options.reused));
+  f.history.start({ id: "unrelated", variables: {}, repeats: {} }, { projectPath: f.directory });
+  assert.equal(writes.length, 3, "unrelated writes are not held while delivery waits");
+  release();
+  const resumed = await pending;
+  assert.equal(resumed.status, "success");
+  assert.equal(resumed.steps.length, 3);
+  assert.equal(resumed.resumedFrom.stepId, failed.id);
+});
+
 test("execution history: session, command and notification share one invocation and completion snapshots", async t => {
   const f = fixture(t, { nodes: [{ id: "cmd-shell", ...shell }, { id: "cmd-notify", kind: "notify", title: "완료 알림", message: "{{goal}} / {{input}}", notificationTitle: "검사 종료", level: "success", sound: true }],
     connections: [{ from: "a", to: "cmd-shell" }, { from: "cmd-shell", to: "cmd-notify" }] });
@@ -324,7 +417,8 @@ test("execution approvals restart: interrupted handoffs require fresh approval b
   const source = await first.api("POST", "/commands", { id: "ignored", kind: "input", projectPath, ...input });
   const link = await first.api("POST", "/links", { from: source.id, to: "approval-target", approve: true });
   await first.api("POST", "/commands/" + source.id + "/run", { values: { goal: "원래 승인할 입력" } });
-  const old = (await first.api("GET", "/runs?path=" + encodeURIComponent(projectPath))).runs[0];
+  const summary = (await first.api("GET", "/runs?path=" + encodeURIComponent(projectPath))).runs[0];
+  const old = await first.api("GET", "/runs/" + summary.id);
   assert.equal(old.status, "waiting");
   const approval = old.steps.find(step => step.options?.approval);
   assert.ok(approval, "approval wait is persisted as a resumable step");

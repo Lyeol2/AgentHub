@@ -20,6 +20,7 @@
   const gcard = document.querySelector(".gcard");
   check(gcard.classList.contains("background") && gcard.querySelector(".pill.subtasks-running")?.textContent === "하위 작업 1개", "graph node shows background state and subtask badge");
   check(gcard.querySelector(".gcard-restart").disabled, "graph restart is disabled while background work runs");
+  $("p-tabs").querySelector('[data-tab="sessions"]').click();
   check($("p-sessions").querySelector(".pill.subtasks-running")?.textContent === "하위 작업 1개", "project session table shows subtask badge");
 
   // 세션 화면의 패널
@@ -42,6 +43,8 @@
   check(card("t1") === t1, "timer updates text without rebuilding cards");
 
   // 대화의 도구 호출 줄과 연결
+  for (const work of $("s-events").querySelectorAll(".work > details")) work.open = true;
+  await until(() => document.querySelector('#s-events li.ev.tool[data-tool-use-id="toolu_1"]'), "lazy work expanded");
   const toolNode = document.querySelector('#s-events li.ev.tool[data-tool-use-id="toolu_1"]');
   const link = toolNode?.querySelector(".subtask-link");
   check(link?.textContent === "하위 작업 · 실행 중", "Agent tool line shows the subtask status");
@@ -80,7 +83,7 @@
   await until(() => card("t4") && sidebarPill()?.textContent === "하위 작업 2개", "new task merged");
   check(panel().open && panel().querySelector(":scope > summary").textContent.includes("실행 중 2개"), "new running task keeps panel open and updates the summary");
   await post("/fixture/emit", { tasks: [{ ...parent, status: "completed", endedAt: new Date().toISOString(), summary: "조사 끝" }, { id: "t4", toolUseId: "toolu_4", description: "새 작업", status: "completed", startedAt: ago(2), endedAt: ago(0), activity: [] }] });
-  await until(() => panel().querySelector(":scope > summary").textContent.includes("모두 완료"), "all completed");
+  await until(() => panel().querySelector(":scope > summary").textContent.includes("모두 완료") && !sidebarPill(), "all completed");
   check(!panel().open, "panel collapses to a summary when everything finished");
   check(document.querySelector('#s-events li.ev.tool[data-tool-use-id="toolu_1"]') === toolNode && toolNode.querySelector(".subtask-link").textContent === "하위 작업 · 완료", "conversation is not re-rendered and the tool badge follows");
   check(!sidebarPill() && card("t1").querySelector(".subtask-summary").textContent === "조사 끝" && !card("t1").querySelector(".subtask-notice"), "list badge disappears and finished card shows result");

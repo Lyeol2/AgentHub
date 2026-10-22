@@ -38,6 +38,12 @@ test("run history API: lists project records and returns full step snapshots", t
   const latest = f.start("latest");
   const step = f.history.beginStep(latest.id, { nodeId: "session", input: "고쳐줘", options: { prompt: "고쳐줘" } });
   assert.deepEqual(f.service.list(f.projectPath).runs.map(run => run.id), ["latest", "older"]);
+  assert.equal(f.service.list(f.projectPath).runs[0].stepCount, 1);
+  assert.equal(Object.hasOwn(f.service.list(f.projectPath).runs[0], "steps"), false);
+  const first = f.service.list(f.projectPath, { limit: 1 });
+  assert.equal(first.nextCursor, "latest");
+  assert.deepEqual(f.service.list(f.projectPath, { cursor: first.nextCursor, limit: 1 }).runs.map(run => run.id), ["older"]);
+  assert.throws(() => f.service.list(f.projectPath, { limit: 10000 }), status(400));
   assert.equal(f.service.get("latest").steps[0].id, step.id);
   assert.equal(f.service.get("latest").steps[0].options.prompt, "고쳐줘");
   assert.throws(() => f.service.list(null), status(400));

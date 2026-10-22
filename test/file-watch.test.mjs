@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { EventEmitter } from "node:events";
 import { createFileWatch } from "../server/file-watch.mjs";
 
 function fixture(t) {
@@ -97,4 +98,48 @@ test("file watch: excluded folders and symlinks outside the project cannot trigg
   fs.writeFileSync(path.join(f.project, "real.txt"), "real");
   await waitFor(() => f.events.length === 1);
   assert.deepEqual(f.events[0].paths, ["real.txt"]);
+});
+
+test("file watch: ignored bursts avoid disk checks and duplicate paths are checked once after debounce", async t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.project, "changed.txt"), "before");
+  let emit;
+  t.mock.method(fs, "watch", (_, options, callback) => {
+    emit = callback;
+    return Object.assign(new EventEmitter(), { close() {} });
+  });
+  const lstat = fs.promises.lstat;
+  let checked = 0;
+  t.mock.method(fs.promises, "lstat", async function (...args) { checked++; return lstat.apply(this, args); });
+  f.watch();
+  for (let i = 0; i < 1000; i++) emit("change", "node_modules/package/installed.js");
+  await delay(150);
+  assert.equal(checked, 0);
+  assert.equal(f.events.length, 0);
+  for (let i = 0; i < 100; i++) emit("change", "changed.txt");
+  assert.equal(checked, 0);
+  await waitFor(() => f.events.length === 1);
+  assert.equal(checked, 1);
+  assert.deepEqual(f.events[0].paths, ["changed.txt"]);
+});
+
+test("file watch: rechecks replaced symlinks at flush time", async t => {
+  const f = fixture(t);
+  const outside = path.join(f.root, "outside");
+  const nested = path.join(f.project, "nested");
+  fs.mkdirSync(outside);
+  fs.mkdirSync(nested);
+  fs.writeFileSync(path.join(outside, "file.txt"), "outside");
+  let emit;
+  t.mock.method(fs, "watch", (_, options, callback) => {
+    emit = callback;
+    return Object.assign(new EventEmitter(), { close() {} });
+  });
+  f.watch();
+  emit("change", "nested/file.txt");
+  fs.rmdirSync(nested);
+  try { fs.symlinkSync(outside, nested, process.platform === "win32" ? "junction" : "dir"); }
+  catch (error) { if (["EPERM", "EACCES", "ENOTSUP"].includes(error.code)) return t.skip("symlink unavailable"); throw error; }
+  await delay(250);
+  assert.deepEqual(f.events, []);
 });

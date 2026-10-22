@@ -4,6 +4,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { git } from "./git.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
+import { parseStatus, statusLabel } from "./git-status.mjs";
+import { shareGitRead } from "./git-execution.mjs";
+export { parseStatus, statusLabel } from "./git-status.mjs";
 
 const FILES_MAX = 500;
 const COMMITS_MAX = 40;
@@ -14,29 +17,6 @@ const HASH = /^[0-9a-f]{4,40}$/i;
 
 const cutDiff = (text) => (text.length > DIFF_MAX ? `${text.slice(0, DIFF_MAX)}\n… (너무 길어 ${text.length - DIFF_MAX}자 생략)` : text);
 
-// `git status --porcelain=v1 -z` 결과. 이름이 바뀐 파일은 원래 이름(orig)도 담는다.
-export function parseStatus(out) {
-  const parts = out.split("\0");
-  const files = [];
-  for (let i = 0; i < parts.length; i++) {
-    const entry = parts[i];
-    if (entry.length < 4) continue;
-    const x = entry[0];
-    const y = entry[1];
-    const file = { x, y, path: entry.slice(3) };
-    if (x === "R" || x === "C" || y === "R" || y === "C") file.orig = parts[++i];
-    files.push(file);
-  }
-  return files;
-}
-
-// 상태 두 글자를 사람이 읽는 말로
-export function statusLabel({ x, y }) {
-  if (x === "?" && y === "?") return "새 파일";
-  if (x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D")) return "충돌";
-  const code = x !== " " ? x : y;
-  return { M: "수정", A: "추가", D: "삭제", R: "이름 바꿈", C: "복사", T: "형식 바꿈" }[code] ?? code;
-}
 
 const conflicted = ({ x, y }) => x === "U" || y === "U" || (x === "A" && y === "A") || (x === "D" && y === "D");
 
@@ -99,8 +79,29 @@ async function count(dir, range) {
   }
 }
 
+// Commit objects are immutable. Keep a small cache keyed by both SHAs, never by
+// a moving branch name or by the working tree's dirty state.
+const branchCounts = new Map();
+function branchCount(repo, head, tip) {
+  if (!head) return count(repo, `HEAD..${tip}`);
+  const key = `${path.resolve(repo)}\0${head}\0${tip}`;
+  if (branchCounts.has(key)) return branchCounts.get(key);
+  const pending = count(repo, `${head}..${tip}`);
+  branchCounts.set(key, pending);
+  if (branchCounts.size > 512) branchCounts.delete(branchCounts.keys().next().value);
+  pending.then(value => { if (value === null && branchCounts.get(key) === pending) branchCounts.delete(key); });
+  return pending;
+}
+
 // sessions: 이 프로젝트의 AgentHub 세션(작업 폴더를 분리한 세션의 브랜치를 세션과 잇는다)
-export async function gitOverview(repo, sessions = []) {
+export function gitOverview(repo, sessions = []) {
+  const location = path.resolve(repo);
+  const key = JSON.stringify([process.platform === "win32" ? location.toLowerCase() : location,
+    sessions.filter(s => s.worktree).map(s => [s.id, s.title, s.state, s.worktree.branch, s.worktree.dir])]);
+  return shareGitRead(key, () => readOverview(repo, sessions));
+}
+
+async function readOverview(repo, sessions) {
   // 서로 기다릴 필요가 없는 조회는 함께 실행한다. git 프로세스 하나가 수십 ms라 차례로 부르면 화면이 늦게 뜬다.
   const [branchOut, files, logOut, refsOut, graphOut, elsewhere, upstreamOut] = await Promise.all([
     git(repo, ["rev-parse", "--abbrev-ref", "HEAD"]).catch(() => "HEAD"),
@@ -127,14 +128,16 @@ export async function gitOverview(repo, sessions = []) {
     refsByTip.get(tip).push(name);
   }
   const graphCommits = parseGraphLog(graphOut, refsByTip);
+  const commits = parseLog(logOut);
+  const head = commits[0]?.hash;
   const branches = await Promise.all(refs.slice(0, 80).map(async ({ name, tip, date, subject }) => {
     const session = bySession.get(name);
     const current = name === branch;
     // 세션은 보통 커밋하지 않고 작업 폴더에 변경을 남기므로 그 수도 센다.
     const dir = session?.worktree.dir;
     const [ahead, dirty] = await Promise.all([
-      current ? 0 : count(repo, `HEAD..${name}`),
-      session && fs.existsSync(dir) ? status(dir).then((files) => files.length, () => 0) : null,
+      current ? 0 : branchCount(repo, head, tip),
+      session && fs.existsSync(dir) ? (path.resolve(dir) === path.resolve(repo) ? files.length : status(dir).then((files) => files.length, () => 0)) : null,
     ]);
     const item = { name, tip, date, subject, current, ahead, checkedOutAt: elsewhere.get(name) ?? null };
     if (session) Object.assign(item, { sessionId: session.id, sessionTitle: session.title, sessionState: session.state, worktree: dir, dirty });
@@ -153,7 +156,7 @@ export async function gitOverview(repo, sessions = []) {
     stagedCount: files.filter((f) => fileState(f).staged).length,
     unstagedCount: files.filter((f) => fileState(f).unstaged).length,
     moreFiles: Math.max(0, files.length - FILES_MAX),
-    commits: parseLog(logOut),
+    commits,
     graph: { commits: graphCommits.slice(0, GRAPH_COMMITS_MAX), truncated: graphCommits.length > GRAPH_COMMITS_MAX },
     branches,
   };

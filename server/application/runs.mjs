@@ -11,10 +11,17 @@ export function createRunService({ history, chain, projects, notify = () => {} }
     if (!run) throw new HttpError(404, "실행 기록이 없습니다.");
     return run;
   }
-  function list(projectPath) {
+  function list(projectPath, { cursor = null, limit = 50 } = {}) {
     if (typeof projectPath !== "string" || !projectPath.trim()) throw new HttpError(400, "프로젝트를 선택하세요.");
+    limit = Number(limit);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100 || (cursor !== null && !validId(cursor))) throw new HttpError(400, "실행 기록 조회 범위가 올바르지 않습니다.");
     const project = projects.ensureProject(projectPath);
-    return { runs: history.list(project.path) };
+    const all = history.list(project.path);
+    const start = cursor ? all.findIndex(run => run.id === cursor) + 1 : 0;
+    const page = all.slice(start, start + limit);
+    return { runs: page.map(run => ({ id: run.id, projectPath: run.projectPath, sourceId: run.sourceId,
+      sourceTitle: run.sourceTitle, status: run.status, startedAt: run.startedAt, updatedAt: run.updatedAt,
+      endedAt: run.endedAt, stepCount: run.steps.length })), nextCursor: start + page.length < all.length ? page.at(-1)?.id ?? null : null };
   }
   async function invoke(method, run, ...args) {
     try {

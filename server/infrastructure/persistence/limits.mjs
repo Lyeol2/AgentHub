@@ -32,47 +32,86 @@ export class FileClaudeCredentials {
 
 // Codex가 날짜별로 남기는 최근 실행 기록의 끝부분만 읽는다.
 export class FileCodexRollouts {
-  constructor({ codexDir }) {
+  constructor({ codexDir, now = Date.now, cacheMs = 5000 }) {
     this.directory = path.join(codexDir, "sessions");
+    this.now = now;
+    this.cacheMs = cacheMs;
+    this.files = null;
+    this.checkedAt = 0;
+    this.scanFlight = null;
+    this.tails = new Map();
   }
 
-  recentFiles(limit = 40) {
-    if (!fs.existsSync(this.directory)) return [];
+  async recentFiles(limit = 40, { fresh = false } = {}) {
+    limit = Math.max(0, Math.min(40, Math.floor(limit)));
+    if (!limit) return [];
+    if (this.files && !fresh && this.now() - this.checkedAt < this.cacheMs) return this.files.slice(0, limit);
+    this.scanFlight ??= this.scanFiles().finally(() => { this.scanFlight = null; });
+    return (await this.scanFlight).slice(0, limit);
+  }
+
+  async scanFiles() {
     const files = [];
-    const desc = (directory) => fs.readdirSync(directory).sort().reverse();
-    for (const year of desc(this.directory)) {
-      for (const month of desc(path.join(this.directory, year))) {
-        for (const day of desc(path.join(this.directory, year, month))) {
-          const directory = path.join(this.directory, year, month, day);
-          for (const name of fs.readdirSync(directory)) {
-            if (name.endsWith(".jsonl")) files.push(path.join(directory, name));
-          }
-          if (files.length >= limit) break;
-        }
-        if (files.length >= limit) break;
+    const pending = [this.directory];
+    // An older thread can be resumed today. Sort by actual mtime across all
+    // dates, retaining only the newest 40 candidates and eight stat calls.
+    while (pending.length) {
+      const directory = pending.pop();
+      let entries;
+      try { entries = await fs.promises.readdir(directory, { withFileTypes: true }); } catch { continue; }
+      const candidates = [];
+      for (const entry of entries) {
+        if (entry.isDirectory()) pending.push(path.join(directory, entry.name));
+        else if (entry.isFile() && entry.name.endsWith(".jsonl")) candidates.push(path.join(directory, entry.name));
       }
-      if (files.length >= limit) break;
+      for (let offset = 0; offset < candidates.length; offset += 8) {
+        const batch = await Promise.all(candidates.slice(offset, offset + 8).map(async file => {
+          try { const stat = await fs.promises.stat(file); return { file, mtime: stat.mtimeMs, size: stat.size }; }
+          catch { return null; }
+        }));
+        for (const item of batch) {
+          if (!item) continue;
+          files.push(item);
+          files.sort((left, right) => right.mtime - left.mtime || left.file.localeCompare(right.file));
+          if (files.length > 40) files.pop();
+        }
+      }
     }
-    return files.map((file) => ({ file, mtime: fs.statSync(file).mtimeMs })).sort((left, right) => right.mtime - left.mtime);
+    this.files = files;
+    this.checkedAt = this.now();
+    const keep = new Set(files.map(item => item.file));
+    for (const file of this.tails.keys()) if (!keep.has(file)) this.tails.delete(file);
+    return files;
   }
 
-  tail(file) {
-    const descriptor = fs.openSync(file, "r");
+  async tail(file) {
+    const descriptor = await fs.promises.open(file, "r");
     try {
-      const size = fs.fstatSync(descriptor).size;
+      const { size, mtimeMs } = await descriptor.stat();
+      const cached = this.tails.get(file);
+      if (cached?.size === size && cached.mtimeMs === mtimeMs) return cached.text;
       const start = Math.max(0, size - TAIL_BYTES);
       const buffer = Buffer.alloc(size - start);
-      fs.readSync(descriptor, buffer, 0, buffer.length, start);
-      return buffer.toString("utf8");
+      let filled = 0;
+      while (filled < buffer.length) {
+        const { bytesRead } = await descriptor.read(buffer, filled, buffer.length - filled, start + filled);
+        if (!bytesRead) break;
+        filled += bytesRead;
+      }
+      const text = buffer.subarray(0, filled).toString("utf8");
+      this.tails.delete(file);
+      this.tails.set(file, { size, mtimeMs, text });
+      while (this.tails.size > 40) this.tails.delete(this.tails.keys().next().value);
+      return text;
     } finally {
-      fs.closeSync(descriptor);
+      await descriptor.close();
     }
   }
 
-  *recentTails() {
-    for (const { file } of this.recentFiles()) {
+  async *recentTails(options) {
+    for (const { file } of await this.recentFiles(40, options)) {
       let text;
-      try { text = this.tail(file); }
+      try { text = await this.tail(file); }
       catch { continue; }
       yield text;
     }

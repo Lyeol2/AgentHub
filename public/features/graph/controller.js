@@ -10,8 +10,10 @@ import { createFlowAssistant } from "./flow-assistant.js";
 import { createGraphHistory, linkBody, commandBody } from "./history.js";
 import { createGraphTabs, graphScopeKey, inGraphTab, nodeTabId } from "./tabs.js";
 import { showError } from "../../shared/error-report.js";
+import { createFrameTask } from "../../shared/frame-task.js";
+import { createLabelPlacer } from "./edge-layout.js";
 
-export function createGraphController({ openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, clearCommandError, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, clearSessionError, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
+export function createGraphController({ projectTab, openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, clearCommandError, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, clearSessionError, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
   const ui = {
     "graph": null,
     "graphSelected": new Set(),
@@ -107,6 +109,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   // 옮기지 않은 카드는 연결을 따라 왼쪽에서 오른쪽으로 놓는다. 같은 단계 안에서는 만든 순서대로 쌓는다.
 
   function renderGraph() {
+    if (projectTab && (navigation.view !== "project" || projectTab() !== "flow")) return;
     const box = $("p-graph");
     tabs.ensureLoaded();
     tabs.render();
@@ -123,7 +126,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     }
     $("p-relayout").disabled = false;
     assistant.selectionChanged();
-    if (ui.graph?.dragging) {
+    if (ui.graph && (ui.graph.dragging || ui.graphGesture)) {
       ui.graph.needsRender = true; // 데이터 변경은 끌기를 마친 뒤 한 번 반영한다.
       return;
     }
@@ -379,9 +382,11 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     const graph = ui.graph;
     let active = true;
     const matches = (e) => e.pointerId === startEvent.pointerId;
-    const move = (e) => { if (matches(e)) onMove(e); };
+    const motion = createFrameTask(onMove);
+    const move = (e) => { if (matches(e)) motion.schedule(e); };
     const finish = (e, cancelled) => {
       if (!active) return;
+      if (cancelled) motion.cancel(); else motion.flush();
       active = false;
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
@@ -447,7 +452,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     g.canvas.style.width = `${g.size.width}px`;
     g.canvas.style.height = `${g.size.height}px`;
     applyGraphZoom();
-    drawEdges();
+    if (g.dragging && g.edgeGeometry) moveEdges();
+    else drawEdges();
   }
 
   // ── 그래프 확대·축소 ────────────────────────────────────────────
@@ -560,6 +566,8 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
     if (!g) return;
     g.svg.querySelectorAll("path.edge").forEach((n) => n.remove());
     g.canvas.querySelectorAll(".edge-label").forEach((n) => n.remove());
+    g.edgeGeometry = [];
+    const remember = (path, from, to, link = {}, label = null) => g.edgeGeometry.push({ path, from, to, link, label });
     // 메시지를 주고받은 세션 사이의 대화선(방향 없이 한 줄, 주고받은 수를 툴팁으로)
     const talks = new Map();
     for (const m of data.messages ?? []) {
@@ -581,6 +589,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
   ${talk.last.text}`;
       path.append(title);
       g.svg.append(path);
+      remember(path, talk.from, talk.to);
     }
     for (const command of g.commands) {
       const edge = graphEdgePath(g, command.from, command.to);
@@ -589,6 +598,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       path.setAttribute("d", edge.d);
       path.setAttribute("class", "edge command");
       g.svg.append(path);
+      remember(path, command.from, command.to);
     }
     for (const member of g.members ?? []) {
       const edge = graphEdgePath(g, member.from, member.to);
@@ -600,6 +610,7 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       title.textContent = `${nodeTitle(member.from)} → 결과 모으기 ${nodeTitle(member.to)}`;
       path.append(title);
       g.svg.append(path);
+      remember(path, member.from, member.to);
     }
     // Expanded groups show the correspondence between boundary ports and real nodes.
     for (const group of nodeGroups.groups().filter((item) => !item.collapsed)) for (const port of group.ports) {
@@ -612,15 +623,21 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       path.setAttribute("d", `M${a.x},${a.y} C${a.x + 32},${a.y} ${b.x - 32},${b.y} ${b.x},${b.y}`);
       path.setAttribute("class", "edge group-boundary");
       g.svg.append(path);
+      g.edgeGeometry.push({ path, boundary: () => {
+        const pos = g.pos.get(port.nodeId);
+        const boundary = nodeGroups.portPoint(group, port), dimensions = nodeSize(port.nodeId);
+        const actual = { x: pos.x + (port.direction === "output" ? dimensions.w : 0), y: pos.y + (port.direction === "output" && hasBranchPorts(commandById(port.nodeId)) ? port.when === "error" ? 78 : 40 : dimensions.h / 2) };
+        const a = port.direction === "output" ? actual : boundary, b = port.direction === "output" ? boundary : actual;
+        return { d: `M${a.x},${a.y} C${a.x + 32},${a.y} ${b.x - 32},${b.y} ${b.x},${b.y}` };
+      } });
     }
-    const placed = []; // 라벨이 겹치면 아래로 비킨다.
+    const placeLabel = createLabelPlacer();
     for (const link of g.links) {
       const edge = graphEdgePath(g, link.from, link.to, link);
       if (!edge) continue;
-      const { d, mid } = edge;
+      const { d } = edge;
       const halfWidth = linkLabel(link).length * 4 + 10;
-      while (placed.some((p) => Math.abs(p.x - mid.x) < p.halfWidth + halfWidth && Math.abs(p.y - mid.y) < 22)) mid.y += 22;
-      placed.push({ ...mid, halfWidth });
+      const mid = placeLabel(edge.mid, halfWidth);
       const path = document.createElementNS(SVG_NS, "path");
       const live = (sessionById(link.from) ?? commandById(link.from))?.state === "running";
       path.setAttribute("d", d);
@@ -633,6 +650,24 @@ export function createGraphController({ openSessionWindow, api, goProject, selec
       label.style.left = `${mid.x}px`;
       label.style.top = `${mid.y}px`;
       g.canvas.append(label);
+      remember(path, link.from, link.to, link, label);
+    }
+  }
+
+  // While moving, retain SVG nodes, gate buttons and their listeners. Only changed
+  // geometry writes to the DOM; conversation aggregation stays outside this path.
+  function moveEdges() {
+    const g = ui.graph, placeLabel = createLabelPlacer();
+    for (const item of g.edgeGeometry) {
+      const edge = item.boundary?.() ?? graphEdgePath(g, item.from, item.to, item.link);
+      if (!edge) continue;
+      if (item.path.getAttribute("d") !== edge.d) item.path.setAttribute("d", edge.d);
+      if (item.label) {
+        const mid = placeLabel(edge.mid, linkLabel(item.link).length * 4 + 10);
+        const left = `${mid.x}px`, top = `${mid.y}px`;
+        if (item.label.style.left !== left) item.label.style.left = left;
+        if (item.label.style.top !== top) item.label.style.top = top;
+      }
     }
   }
 

@@ -1,7 +1,7 @@
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { DATA_DIR } from "./config.mjs";
-import { readJsonFile, writeJsonAtomic } from "./infrastructure/persistence/json-file.mjs";
+import { FileRunHistoryRepository } from "./infrastructure/persistence/run-history-store.mjs";
 
 export const RUN_HISTORY_TEXT_MAX = 200_000;
 const ACTIVE = new Set(["running", "waiting"]);
@@ -53,7 +53,10 @@ export class RunHistoryStore {
     if (!Number.isInteger(maxRuns) || maxRuns < 1) throw new Error("실행 기록 보관 개수가 올바르지 않습니다.");
     this.file = path.join(dataDir, "run-history.json");
     this.maxRuns = maxRuns;
-    this.runs = readJsonFile(this.file, { dataDir, fallback: () => [], valid: validRuns });
+    this.repository = new FileRunHistoryRepository(dataDir, validRuns);
+    this.runs = this.repository.load();
+    this.dirty = new Set();
+    this.batchDepth = 0;
     let changed = false;
     const now = timestamp();
     for (const run of this.runs) {
@@ -72,7 +75,7 @@ export class RunHistoryStore {
       }
     }
     if (this.trim()) changed = true;
-    if (changed) this.save();
+    if (changed || (this.repository.legacy && this.runs.length)) this.save();
   }
 
   get(id) { return this.runs.find((run) => run.id === id); }
@@ -89,7 +92,7 @@ export class RunHistoryStore {
       variables: snapshot(flow.variables ?? {}), repeats: snapshot(flow.repeats ?? {}),
       startedAt: now, updatedAt: now, endedAt: null, status: "running", steps: [] };
     this.runs.push(run);
-    this.save();
+    this.save(run.id);
     return run;
   }
 
@@ -106,7 +109,7 @@ export class RunHistoryStore {
     run.status = "running";
     run.endedAt = null;
     run.updatedAt = now;
-    this.save();
+    this.save(run.id);
     return step;
   }
 
@@ -119,7 +122,7 @@ export class RunHistoryStore {
     run.status = "waiting";
     run.endedAt = null;
     run.updatedAt = timestamp();
-    this.save();
+    this.save(run.id);
     return step;
   }
 
@@ -136,7 +139,7 @@ export class RunHistoryStore {
     if (error !== undefined) step.error = limitedText(error instanceof Error ? error.message : error);
     if (result !== undefined) step.result = snapshot(result);
     run.updatedAt = now;
-    this.save();
+    this.save(run.id);
     return step;
   }
 
@@ -150,7 +153,7 @@ export class RunHistoryStore {
     }
     run.updatedAt = timestamp();
     if (changes.status && !ACTIVE.has(changes.status) && !Object.hasOwn(changes, "endedAt")) run.endedAt = run.updatedAt;
-    this.save();
+    this.save(run.id);
     return run;
   }
 
@@ -166,5 +169,21 @@ export class RunHistoryStore {
     return changed;
   }
 
-  save() { this.trim(); writeJsonAtomic(this.file, this.runs); }
+  batch(action) {
+    this.batchDepth++;
+    try { return action(); }
+    finally { if (!--this.batchDepth && this.dirty.size) this.persist(); }
+  }
+
+  save(id) {
+    if (id) this.dirty.add(id);
+    else for (const run of this.runs) this.dirty.add(run.id);
+    if (!this.batchDepth) this.persist();
+  }
+
+  persist() {
+    this.trim();
+    this.repository.save(this.runs, this.dirty);
+    this.dirty.clear();
+  }
 }

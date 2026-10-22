@@ -156,7 +156,9 @@ export class CodexAppServer extends EventEmitter {
     if (msg.method === "turn/completed") {
       if (this.turnId && p.turn?.id !== this.turnId) return;
       if (p.turn?.id) this.completedTurns.add(p.turn.id);
+      if (this.completedTurns.size > 256) this.completedTurns.delete(this.completedTurns.values().next().value);
       this.turnId = null;
+      this.items.clear();
       this.clearApprovals(false);
       const turn = p.turn ?? {};
       this.emit("event", turn.status === "completed"
@@ -176,7 +178,11 @@ export class CodexAppServer extends EventEmitter {
   }
 
   item(completed, item) {
-    if (item.id) this.items.set(item.id, item);
+    if (item.id) {
+      if (completed) this.items.delete(item.id);
+      else if (item.type === "commandExecution") this.items.set(item.id, { type: item.type, command: item.command, cwd: item.cwd });
+      else if (item.type === "fileChange") this.items.set(item.id, { type: item.type, changes: item.changes });
+    }
     const event = (kind, text, extra = {}) => this.emit("event", { kind, text, ...extra });
     // 도구 줄에는 한국어 동작 이름을 붙인다(결과 줄에는 붙이지 않는다).
     const label = codexToolLabel(item);

@@ -1,9 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomUUID } from "node:crypto";
 import { DATA_DIR } from "../../config.mjs";
 import { handoverText } from "../../handover.mjs";
 import { sessionReadState } from "../../session-read.mjs";
-import { readJsonFile, writeJsonAtomic } from "./json-file.mjs";
+import { readJsonFile, writeJsonAtomic, quarantine } from "./json-file.mjs";
+import { JournalWriter } from "./journal-writer.mjs";
+import { replaySessionJournal } from "./session-journal.mjs";
 
 const validSession = (session) => typeof session?.id === "string" && typeof session.updatedAt === "string";
 
@@ -53,12 +56,16 @@ export function useProjectFolder(session) {
   return true;
 }
 
-// 세션은 메모리에 두고 변경 시 data/sessions/<id>.json에 저장한다.
+// 세션은 메모리에 두고 변경분을 worker 저널에, 명시적 저장은 JSON 스냅샷에 기록한다.
 export class SessionStore {
   constructor({ dataDir = DATA_DIR } = {}) {
     this.directory = path.join(dataDir, "sessions");
     this.sessions = new Map();
     this.timers = new Map();
+    this.journals = new Map();
+    this.checkpoints = new Set();
+    this.writer = new JournalWriter();
+    this.persistenceError = null;
     fs.mkdirSync(this.directory, { recursive: true });
     for (const file of fs.readdirSync(this.directory)) {
       // 저장 도중 꺼져 남은 임시 파일. 원래 파일은 이전 내용 그대로다.
@@ -67,6 +74,19 @@ export class SessionStore {
       // 깨진 파일 하나 때문에 시작이 실패하지 않도록 data/corrupted로 옮기고 나머지 세션으로 시작한다.
       const session = readJsonFile(path.join(this.directory, file), { dataDir, fallback: () => null, valid: validSession });
       if (!session) continue;
+      const generation = session._journalGeneration ?? "legacy";
+      let revision = session._journalRevision ?? 0;
+      delete session._journalGeneration;
+      delete session._journalRevision;
+      let replayed = false;
+      try { ({ changed: replayed, revision } = replaySessionJournal(this.journalFile(session.id), session, generation, revision)); }
+      catch (error) {
+        const moved = quarantine(this.journalFile(session.id), dataDir);
+        // Preserve the valid prefix before beginning a new journal generation.
+        replayed = true;
+        console.warn(`[agenthub] Session journal could not be fully restored: ${session.id} (${error.message})${moved ? ` → ${moved}` : ""}`);
+      }
+      this.journals.set(session.id, { generation, revision, count: session.events.length, full: false, patches: new Set() });
       // 서버가 꺼질 때 실행 중이던 턴은 중단된 것으로 보고 타이머도 종료한다.
       // 백그라운드 작업 중이던 세션도 CLI가 함께 끝났으므로 중단된 것이다.
       const interrupted = session.state === "running" || session.state === "background";
@@ -80,7 +100,7 @@ export class SessionStore {
       if (interrupted || staleTimer) { delete session.runPhase; delete session.lastOutputAt; }
       const migrated = useProjectFolder(session);
       this.sessions.set(session.id, session);
-      if (migrated || interrupted || staleTimer || cut.length) this.flush(session.id);
+      if (replayed || migrated || interrupted || staleTimer || cut.length) this.flush(session.id);
     }
   }
 
@@ -97,29 +117,97 @@ export class SessionStore {
     this.flush(session.id);
   }
 
-  touch(session) {
+  touch(session, { appendOnly = false, metadataOnly = false, event } = {}) {
     session.updatedAt = new Date().toISOString();
+    const state = this.journals.get(session.id);
+    if (state) {
+      if (event) {
+        const index = session.events[event.seq] === event ? event.seq : session.events.indexOf(event);
+        if (index >= 0) state.patches.add(index);
+        else state.full = true;
+      } else if (!appendOnly && !metadataOnly) state.full = true;
+    }
     if (this.timers.has(session.id)) return;
-    this.timers.set(session.id, setTimeout(() => this.flush(session.id), 500));
+    this.timers.set(session.id, setTimeout(() => this.flushJournal(session.id), 500));
+  }
+
+  journalFile(id) { return path.join(this.directory, `${id}.journal.jsonl`); }
+
+  flushJournal(id) {
+    clearTimeout(this.timers.get(id));
+    this.timers.delete(id);
+    const session = this.sessions.get(id);
+    const state = this.journals.get(id);
+    if (!session || !state) return Promise.resolve();
+    // One transferred record per session at a time. Further changes stay in the
+    // live session and are captured together when the worker catches up.
+    if (state.saving) return state.next ??= state.saving.then(() => {
+      state.next = null;
+      if (this.journals.get(id) === state) return this.flushJournal(id);
+    });
+    const { events, ...metadata } = session;
+    const from = state.full || state.count > events.length ? 0 : state.count;
+    const record = { generation: state.generation, revision: ++state.revision, metadata, from, events: events.slice(from),
+      patches: from ? [...state.patches].filter(index => index < from).map(index => ({ index, event: events[index] })) : [] };
+    let saving;
+    try { saving = this.writer.append(this.journalFile(id), record); }
+    catch (error) { saving = Promise.reject(error); }
+    state.count = events.length;
+    state.full = false;
+    state.patches.clear();
+    state.saving = saving.catch(error => {
+      state.full = true;
+      this.persistenceError = error;
+      console.error(`[agenthub] Could not save session ${id}: ${error.message}`);
+    }).finally(() => { state.saving = null; });
+    return state.saving;
   }
 
   flush(id) {
     clearTimeout(this.timers.get(id));
     this.timers.delete(id);
     const session = this.sessions.get(id);
-    if (session) writeJsonAtomic(path.join(this.directory, `${id}.json`), session);
+    if (!session) return;
+    this.checkpoints.add(id);
+    this.writer.drainSync({ ignoreFailure: true });
+    const generation = randomUUID();
+    writeJsonAtomic(path.join(this.directory, `${id}.json`), { ...session, _journalGeneration: generation });
+    this.journals.set(id, { generation, revision: 0, count: session.events.length, full: false, patches: new Set() });
+    fs.rmSync(this.journalFile(id), { force: true });
+    this.checkpoints.delete(id);
   }
 
   // 파일을 먼저 지운다. 파일을 못 지웠는데(다른 프로그램이 잡고 있는 등) 목록에서만 빠지면 다음 실행 때 되살아난다.
   remove(id) {
+    const dirty = this.timers.has(id) || this.checkpoints.has(id);
     clearTimeout(this.timers.get(id));
     this.timers.delete(id);
+    this.writer.drainSync({ ignoreFailure: true });
+    // If either unlink fails, the remaining snapshot must still contain every
+    // durable event. Checkpoint first so a partial deletion cannot lose deltas.
+    if (dirty || fs.existsSync(this.journalFile(id))) this.flush(id);
     fs.rmSync(path.join(this.directory, `${id}.json`), { force: true, maxRetries: 3 });
+    fs.rmSync(this.journalFile(id), { force: true, maxRetries: 3 });
     this.sessions.delete(id);
+    this.journals.delete(id);
+    this.checkpoints.delete(id);
   }
 
   flushAll() {
     for (const id of this.sessions.keys()) this.flush(id);
+  }
+
+  async close() {
+    // Flush only dirty sessions. Clean, potentially large histories need no rewrite.
+    await Promise.all([...this.timers.keys()].map(id => this.flushJournal(id)));
+    await Promise.all([...this.journals.values()].map(state => state.next ?? state.saving));
+    try { await this.writer.close(); }
+    catch {
+      // A failed journal cannot prevent a final durable snapshot of current state.
+      this.writer.drainSync({ ignoreFailure: true });
+      for (const id of this.sessions.keys()) this.flush(id);
+    }
+    for (const id of this.checkpoints) this.flush(id);
   }
 }
 

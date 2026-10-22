@@ -261,6 +261,7 @@ export function createHub(options = {}) {
 
   let starting = null;
   let stopping = null;
+  let quiesced = null;
   let closed = false;
   let warmupTimer = null;
 
@@ -284,7 +285,7 @@ export function createHub(options = {}) {
         if (!closed && options.warmup !== false) {
           warmupTimer = setTimeout(() => {
             warmupTimer = null;
-            (deps.discoverProjects ?? discoverProjects)();
+            Promise.resolve().then(() => (deps.discoverProjects ?? discoverProjects)()).catch(error => logger.error(error));
           }, 200);
           warmupTimer.unref();
         }
@@ -306,27 +307,34 @@ export function createHub(options = {}) {
 
   function shutdown() {
     if (stopping) return stopping;
-    closed = true;
-    clearTimeout(warmupTimer);
-    warmupTimer = null;
-    cliAutoUpdater?.dispose();
-    mcpProbe.stop();
-    events.close();
-    for (const remove of listeners) remove();
-    setUpdater(null);
-    runner.stopAll();
-    chain.dispose?.();
-    mailbox.dispose?.();
-    store.flushAll();
-    flushDiscoverCache();
-    // A listen() call may still be binding its socket. Let it settle before
-    // closing, so a late listening callback cannot resurrect a stopped hub.
-    const started = starting ?? Promise.resolve();
-    stopping = started.catch(() => {}).then(() => new Promise((resolve) => {
-      if (!server.listening) return resolve();
-      server.close(() => resolve());
-      server.closeIdleConnections?.();
-    }));
+    if (!quiesced) {
+      closed = true;
+      clearTimeout(warmupTimer);
+      warmupTimer = null;
+      cliAutoUpdater?.dispose();
+      mcpProbe.stop();
+      events.close();
+      for (const remove of listeners) remove();
+      setUpdater(null);
+      chain.dispose?.();
+      const runnersStopped = runner.shutdown ? runner.shutdown() : runner.stopAll();
+      mailbox.dispose?.();
+      // A listen() call may still be binding its socket. Let it settle before
+      // closing, so a late listening callback cannot resurrect a stopped hub.
+      const started = starting ?? Promise.resolve();
+      quiesced = started.catch(() => {}).then(() => new Promise((resolve) => {
+        if (!server.listening) return resolve();
+        server.close(() => resolve());
+        server.closeIdleConnections?.();
+      })).then(() => runnersStopped);
+    }
+    stopping = quiesced.then(async () => {
+      await Promise.all([store.close ? store.close() : store.flushAll(), flushDiscoverCache()]);
+    }).catch(error => {
+      // A temporary disk error must allow the next quit attempt to save again.
+      stopping = null;
+      throw error;
+    });
     return stopping;
   }
 

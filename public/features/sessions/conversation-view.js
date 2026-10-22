@@ -311,8 +311,9 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     const failed = turn.events.some((ev) => ev.kind === "error") && !turn.events.some((ev) => ev.kind === "result");
     const answer = failed ? null : turn.events.findLast((ev) => ev.kind === "text" && answerText(ev));
     let work = null;
+    const toolGroups = [];
     for (const ev of turn.events) {
-      if (ev.kind === "tool_result" && attachToolResult(pendingTools, ev)) continue;
+      if (ev.kind === "tool_result" && toolGroups.length) { toolGroups.shift().events.push(ev); continue; }
       // 사용자 결정과 오류는 접힌 작업 과정 안에 감추지 않는다.
       const visible = ev === answer || ["user", "error", "question", "permission", "plan"].includes(ev.kind) || (ev.kind === "result" && !answer);
       if (visible) {
@@ -326,15 +327,35 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       if (!work) {
         const body = el("ol", { class: "work-events" });
         const summary = el("summary", {}, "작업 과정");
-        list.append(el("li", { class: "ev work" }, el("details", {}, summary, body)));
-        work = { body, summary, count: 0 };
+        const details = el("details", {}, summary, body);
+        list.append(el("li", { class: "ev work" }, details));
+        const group = work = { body, summary, events: [], count: 0 };
+        let loaded = false;
+        details.addEventListener("toggle", () => {
+          if (!details.open || loaded) return;
+          loaded = true;
+          const pending = [];
+          for (const event of group.events) {
+            const node = appendRendered(body, event, pending);
+            if (node) for (const child of node.querySelectorAll("details")) child.open = false;
+          }
+        });
       }
-      const node = appendRendered(work.body, ev, pendingTools);
-      if (node) {
-        for (const details of node.querySelectorAll("details")) details.open = false;
-        work.summary.textContent = `작업 과정 · ${++work.count}개`;
-      }
+      work.events.push(ev);
+      if (ev.kind === "tool") toolGroups.push(work);
+      work.summary.textContent = `작업 과정 · ${++work.count}개`;
     }
+  }
+
+  function drawTurn(list, turn) {
+    const fragment = document.createDocumentFragment();
+    turn.pendingTools = [];
+    renderTurn(fragment, turn, turn.pendingTools);
+    const previous = turn.nodes ?? [];
+    turn.nodes = [...fragment.childNodes];
+    if (previous[0]?.parentNode === list) list.insertBefore(fragment, previous[0]);
+    else list.append(fragment);
+    for (const node of previous) node.remove();
   }
 
   // 실행 중에 붙인 요청의 반영 상태. 예전 기록(delivery 없음)은 표시하지 않는다.
@@ -380,25 +401,31 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     const history = histories.get(list);
     if (!history) return renderEvents(list, [ev]);
     history.events.push(ev);
-    if (ev.kind === "result" || (ev.kind === "user" && !ev.injected) || history.complete) {
-      renderEvents(list, history.events);
-      return;
+    let turn = history.groups.at(-1);
+    const boundary = ev.kind === "user" && !ev.injected || turn?.complete && ["user", "text", "thinking", "tool"].includes(ev.kind);
+    if (turn?.events.length && boundary) {
+      if (!turn.complete) { turn.complete = true; drawTurn(list, turn); }
+      turn = null;
     }
+    if (!turn) { turn = { events: [], complete: false, nodes: [], pendingTools: [] }; history.groups.push(turn); }
+    turn.events.push(ev);
     history.settled = false;
-    appendRendered(list, ev, history.pendingTools);
+    if (ev.kind === "result" || turn.complete) {
+      turn.complete = true;
+      drawTurn(list, turn);
+    } else {
+      const node = appendRendered(list, ev, turn.pendingTools);
+      if (node) turn.nodes.push(node);
+    }
   }
 
   function renderEvents(list, events) {
     const draft = drafts.get(list);
-    const history = { events: [...events], pendingTools: [], settled: isSettled(), sessionId: getSession()?.id };
-    const groups = turns(history.events, history.settled);
-    history.complete = groups.at(-1)?.complete ?? false;
+    const history = { events: [...events], settled: isSettled(), sessionId: getSession()?.id };
+    history.groups = turns(history.events, history.settled);
     histories.set(list, history);
     list.replaceChildren();
-    for (const turn of groups) {
-      history.pendingTools = [];
-      renderTurn(list, turn, history.pendingTools);
-    }
+    for (const turn of history.groups) drawTurn(list, turn);
     // 다시 그려도 같은 세션의 쓰는 중인 글은 끝에 남긴다.
     if (draft && !history.settled && draft.sessionId === history.sessionId) list.append(draft.node);
     else clearDraft(list);
@@ -408,7 +435,11 @@ export function createConversationView({ api, getSession, sessionById, selectSes
   function settleEvents(list) {
     if (isSettled()) clearDraft(list);
     const history = histories.get(list);
-    if (history && history.sessionId === getSession()?.id && !history.settled && isSettled()) renderEvents(list, history.events);
+    if (history && history.sessionId === getSession()?.id && !history.settled && isSettled()) {
+      history.settled = true;
+      const turn = history.groups.at(-1);
+      if (turn && !turn.complete) { turn.complete = true; drawTurn(list, turn); }
+    }
   }
 
   $("s-expand-tools").checked = expandTools();

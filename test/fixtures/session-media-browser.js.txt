@@ -121,16 +121,19 @@
   check(!findText("중간 진행 메시지").closest(".work") && $("s-events").querySelector(".tool > details").open, "active work remains visible and respects tool expansion preference");
   await emit("result", "턴 완료 · 접기 검증");
   await state("s1", "idle");
-  await until(() => findText("중간 진행 메시지")?.closest(".work"));
-  const work = findText("중간 진행 메시지").closest(".work").querySelector("details");
-  check(!work.open && !findText("중간 진행 메시지").checkVisibility(), "completion automatically collapses intermediate conversation");
+  await until(() => findText("접기 동작 확인")?.nextElementSibling?.classList.contains("work"));
+  const work = findText("접기 동작 확인").nextElementSibling.querySelector("details");
+  check(!work.open && !findText("중간 진행 메시지") && !work.querySelector(".work-events").children.length, "completion defers collapsed intermediate DOM until it is opened");
   check(!findText("접기 검증 최종 결과").closest(".work") && findText("접기 검증 최종 결과").checkVisibility(), "final answer stays expanded outside work history");
   check(findText("접기 동작 확인").checkVisibility() && findText("작업 중 추가 요청").checkVisibility(), "original and injected user requests remain visible");
-  check(!$("s-events").querySelector(".tool > details").open && $("s-events").querySelector(".tool .tool-output").textContent === "도구 실행 출력", "completed tools close and retain output across injected requests");
   work.querySelector("summary").click();
+  await until(() => findText("중간 진행 메시지"));
+  check(!$("s-events").querySelector(".tool > details").open && $("s-events").querySelector(".tool .tool-output").textContent === "도구 실행 출력", "completed tools close and retain output across injected requests");
   check(work.open && findText("중간 진행 메시지").checkVisibility(), "collapsed work can be reopened without losing messages");
   await open("Second"); await open("First");
-  check(!findText("중간 진행 메시지").closest(".work").querySelector("details").open, "reopening a completed session restores collapsed history");
+  const previousWork = findText("접기 동작 확인").nextElementSibling.querySelector("details");
+  const previousAnswer = findText("접기 검증 최종 결과");
+  check(!findText("중간 진행 메시지") && !previousWork.open, "reopening a completed session restores lazy collapsed history");
 
   await state("s1", "running");
   await emit("user", "다음 작업 확인");
@@ -138,8 +141,8 @@
   await emit("error", "재시도 가능한 중간 오류");
   check(!findText("아직 실행 중인 답변").closest(".work"), "intermediate errors do not end or collapse an active turn");
   await state("s1", "error");
-  check(findText("아직 실행 중인 답변").closest(".work") && !findText("재시도 가능한 중간 오류").closest(".work"), "terminal failure folds work while leaving its error visible");
-  check(!findText("중간 진행 메시지").closest(".work").querySelector("details").open, "subsequent turns never expand earlier work");
+  check(!findText("아직 실행 중인 답변") && !findText("재시도 가능한 중간 오류").closest(".work"), "terminal failure lazily folds work while leaving its error visible");
+  check(findText("접기 검증 최종 결과") === previousAnswer && findText("접기 동작 확인").nextElementSibling.querySelector("details") === previousWork && !previousWork.open, "subsequent turns preserve earlier answer and folded-work DOM identity");
 
   // 같은 렌더러를 쓰는 일반 채팅과 완료 이벤트 없는 가져온 기록도 확인한다.
   const { createConversationView } = await import("/features/sessions/conversation-view.js");
@@ -155,8 +158,25 @@
   ]);
   check([...list.querySelectorAll(":scope > .text")].map((node) => node.textContent).join(",") === "이전 결과,최근 결과", "imported chat history keeps only each turn's visible final answer");
   check(list.querySelectorAll(":scope > .work").length === 2 && !list.querySelector(".work > details").open, "imported chat progress is grouped and collapsed");
+  check(!list.querySelector(".tool"), "imported folded work allocates no tool DOM before expansion");
+  for (const details of list.querySelectorAll(".work > details")) { details.open = true; details.dispatchEvent(new Event("toggle")); }
   check(list.querySelector(".tool.pending").textContent.includes("미완료 도구") && !list.querySelector(".tool.pending .tool-output") && list.querySelector(".tool.done .tool-output").textContent === "최근 도구 출력", "tool results cannot attach to an unfinished tool from a previous turn");
   check(list.querySelector(":scope > .question .q-submit") && !list.querySelector(":scope > .question").closest(".work"), "unanswered questions remain accessible outside collapsed work");
+  const largeHistory = Array.from({ length: 50 }, (_, turn) => [
+    { kind: "user", text: `request ${turn}` },
+    ...Array.from({ length: 50 }, (_, step) => ({ kind: "text", text: `progress ${turn}/${step}` })),
+    { kind: "text", text: `answer ${turn}` }, { kind: "result", text: "done" },
+  ]).flat();
+  conversation.renderEvents(list, largeHistory);
+  check(list.querySelectorAll(".ev").length === 150 && !list.querySelector(".work-events").children.length, "large history only renders visible summaries instead of thousands of folded messages");
+  const retainedAnswer = list.querySelector(":scope > .text"), retainedWork = list.querySelector(".work > details");
+  retainedWork.open = true; retainedWork.dispatchEvent(new Event("toggle"));
+  history.state = "running";
+  conversation.appendEvent(list, { kind: "user", text: "new request" });
+  conversation.appendEvent(list, { kind: "text", text: "new answer" });
+  conversation.appendEvent(list, { kind: "result", text: "done" });
+  history.state = "idle"; conversation.settleEvents(list);
+  check(list.querySelector(":scope > .text") === retainedAnswer && list.querySelector(".work > details") === retainedWork && retainedWork.open, "finishing a new turn preserves earlier DOM and expanded work");
   history.state = "paused";
   conversation.renderEvents(list, [{ kind: "user", text: "멈춘 요청" }, { kind: "text", text: "멈춘 작업 과정" }, { kind: "thinking", text: "진행 중 생각" }]);
   check(!list.querySelector(".work"), "pausing keeps unfinished work available for resume");

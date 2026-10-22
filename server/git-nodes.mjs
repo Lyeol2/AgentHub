@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { listWorkbranches, resolveWorkbranch } from "./workbranches.mjs";
 import { taskGit, taskRepo, insideTaskPath, removeWorktreeDir } from "./tasks.mjs";
 import { withGitRepoLock } from "./git-lock.mjs";
+import { invalidateGitReads } from "./git-execution.mjs";
 
 const OUTPUT_MAX = 200_000;
 const operationMarkers = ["MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer"];
@@ -87,6 +88,7 @@ function executeGit(cwd, args, { signal, deadline, write = false, onData = () =>
         { stopped: !!signal?.aborted, timedOut: !signal?.aborted }));
       return;
     }
+    if (write) invalidateGitReads();
     const child = spawn("git", ["--no-optional-locks", "-c", "diff.autoRefreshIndex=false", "-C", cwd, ...args], {
       cwd, windowsHide: true, shell: false, detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0", GCM_INTERACTIVE: "never", GIT_MERGE_AUTOEDIT: "no", NO_COLOR: "1" },
@@ -96,6 +98,7 @@ function executeGit(cwd, args, { signal, deadline, write = false, onData = () =>
     const finish = (error) => {
       if (finished) return;
       finished = true;
+      if (write) invalidateGitReads();
       clearTimeout(timer); clearTimeout(fallback);
       signal?.removeEventListener("abort", abort);
       if (error) reject(Object.assign(error, { stopped, timedOut, overflow, outcomeUnknown: write && (stopped || timedOut || overflow), stdout, stderr }));

@@ -52,7 +52,10 @@ async function start() {
     app.exit(1);
     return;
   }
-  const updater = new Updater();
+  const updater = new Updater({
+    beforeInstall: () => server.shutdown(),
+    onInstallError: error => dialog.showErrorBox("기록을 저장하지 못했습니다", String(error.message ?? error)),
+  });
   server.setUpdater(updater);
   createWindow(`http://127.0.0.1:${server.port}/`);
   // 시작하고 잠시 뒤, 이후 1시간마다 조용히 확인한다. 실패해도 화면의 업데이트 버튼에만 표시된다.
@@ -124,4 +127,11 @@ function guard(contents, base) {
 }
 
 app.on("window-all-closed", () => app.quit());
-app.on("before-quit", () => server?.shutdown?.());
+let quitting = false;
+app.on("before-quit", event => {
+  if (quitting || !server) return;
+  event.preventDefault();
+  server.shutdown().then(() => { quitting = true; app.quit(); }).catch(error => {
+    dialog.showErrorBox("기록을 저장하지 못했습니다", String(error.message ?? error));
+  });
+});

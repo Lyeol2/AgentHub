@@ -18,7 +18,7 @@ export function createLimitsService({
   return createLimitsApplication({
     repository: new FileLimitsRepository({ dataDir }),
     credentials: new FileClaudeCredentials({ claudeDir }),
-    rollouts: new FileCodexRollouts({ codexDir }),
+    rollouts: new FileCodexRollouts({ codexDir, now }),
     fetchUsage: createClaudeUsageReader({ fetch }),
     now,
   });
@@ -28,4 +28,4 @@ let defaultLimits;
 const limits = () => defaultLimits ??= createLimitsService();
 export const recordClaudeLimit = (info) => limits().recordClaudeLimit(info);
 export const refreshClaudeUsage = (options) => limits().refreshClaudeUsage(options);
-export const readLimits = () => limits().readLimits();
+export const readLimits = (options) => limits().readLimits(options);

@@ -49,12 +49,26 @@ export function createExecutionControls({ api, navigation, refreshGraph = async 
   async function refreshRuns() {
     const state = history;
     if (!state || !stillHistory(state)) return;
+    if (state.refreshing) { state.refreshAgain = true; return state.refreshing; }
+    state.refreshing = (async () => {
+      do {
+        state.refreshAgain = false;
+        await loadRuns(state);
+      } while (state.refreshAgain && stillHistory(state));
+    })().finally(() => { state.refreshing = null; });
+    return state.refreshing;
+  }
+
+  async function loadRuns(state) {
     const revision = ++historyRevision;
     try {
       const result = await api("GET", "/api/runs?path=" + encodeURIComponent(state.projectPath));
       if (!stillHistory(state) || revision !== historyRevision) return;
+      const previous = state.runs?.find(run => run.id === state.selectedRunId);
       state.runs = result.runs ?? [];
-      const selected = state.runs.some((run) => run.id === state.selectedRunId) ? state.selectedRunId : state.runs[0]?.id;
+      state.nextCursor = result.nextCursor ?? null;
+      if (previous && !state.runs.some(run => run.id === previous.id)) state.runs.unshift(previous);
+      const selected = state.selectedRunId ?? state.runs[0]?.id;
       state.selectedRunId = selected ?? null;
       renderRuns(state);
       if (selected) await selectRun(state, selected, revision);
@@ -66,6 +80,22 @@ export function createExecutionControls({ api, navigation, refreshGraph = async 
   function renderRuns(state) {
     state.list.replaceChildren(...state.runs.map((run) => el("button", { type: "button", class: "execution-run-row" + (run.id === state.selectedRunId ? " selected" : ""), "data-run-id": run.id, "aria-pressed": String(run.id === state.selectedRunId), onclick: () => { state.selectedStepId = null; state.selectedRunId = run.id; renderRuns(state); void selectRun(state, run.id, ++historyRevision); } },
       el("strong", {}, run.sourceTitle ?? run.title ?? "흐름 실행"), el("span", { class: "execution-run-status " + run.status }, STATUS[run.status] ?? run.status), el("small", { class: "muted" }, [date(run.startedAt), duration(run)].filter(Boolean).join(" · ")))));
+    if (state.nextCursor) state.list.append(el("button", { type: "button", class: "ghost sm", ...(state.moreBusy ? { disabled: "" } : {}),
+      onclick: () => loadMoreRuns(state) }, state.moreBusy ? "불러오는 중…" : "이전 실행 더 보기"));
+  }
+
+  async function loadMoreRuns(state) {
+    if (state.moreBusy || !state.nextCursor || !stillHistory(state)) return;
+    const revision = historyRevision;
+    state.moreBusy = true;
+    renderRuns(state);
+    try {
+      const result = await api("GET", "/api/runs?path=" + encodeURIComponent(state.projectPath) + "&cursor=" + encodeURIComponent(state.nextCursor));
+      if (!stillHistory(state) || revision !== historyRevision) return;
+      state.runs = [...new Map([...state.runs, ...(result.runs ?? [])].map(run => [run.id, run])).values()];
+      state.nextCursor = result.nextCursor ?? null;
+    } catch (error) { if (stillHistory(state)) state.error.textContent = error.message; }
+    finally { state.moreBusy = false; if (stillHistory(state)) renderRuns(state); }
   }
 
   async function selectRun(state, id, revision) {

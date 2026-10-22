@@ -108,6 +108,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     const command = getCommand(id);
     chain.stopCommand(command);
     commands.remove(id);
+    chain.workflow?.forgetNode?.(id);
     for (const group of commands.list()) {
       if (commandKind(group) !== "group" || !group.members?.includes(id)) continue;
       commands.update(group, { members: group.members.filter((memberId) => memberId !== id) });

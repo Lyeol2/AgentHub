@@ -281,6 +281,31 @@ test("runner app-server integration: approval answer, pause and shutdown remove 
   assert.ok(!f.session.events.some((event) => event.kind === "error"));
 });
 
+test("runner shutdown settles unanswered Codex injections before storage closes", async () => {
+  const f = runnerFixture();
+  f.runner.send(f.session, "작업", "fake-codex");
+  await tick();
+  const child = f.children[0];
+  child.stdin.removeAllListeners("data");
+  child.stdin.removeAllListeners("finish");
+  f.runner.kill = () => {};
+  f.runner.inject(f.session, "아직 반영되지 않은 요청");
+  const injected = f.session.events.at(-1);
+  let closed = false, lateTouches = 0;
+  f.runner.store.touch = () => { if (closed) lateTouches++; };
+  await f.runner.shutdown({ timeout: 10 });
+  closed = true;
+  assert.equal(injected.delivery, "dropped");
+  assert.equal(child.appServer.requests.size, 0);
+  assert.equal(child.pendingInjections.size, 0);
+  const count = f.session.events.length;
+  child.appServer.close();
+  child.emit("close", 1, "SIGTERM");
+  await tick();
+  assert.equal(lateTouches, 0);
+  assert.equal(f.session.events.length, count);
+});
+
 test("runner app-server integration: missing thread retries once with one visible request and unchanged timer", async () => {
   const f = runnerFixture({ missing: true }); const ended = new Promise((resolve) => f.runner.once("turnEnd", (...args) => resolve(args)));
   f.runner.send(f.session, "작업", "fake-codex"); const began = f.session.runningStartedAt; await tick();

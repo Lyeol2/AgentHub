@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { FileCodexRollouts } from "../server/infrastructure/persistence/limits.mjs";
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-limits-"));
 process.env.AGENTHUB_DATA = tmp;
@@ -63,8 +64,8 @@ test("limits: Hub마다 기록 경로와 TTL이 독립적이고 새로고침도 
   const first = fixture("first-ttl");
   const second = fixture("second-ttl");
   first.service.recordClaudeLimit({ rateLimitType: "seven_day", utilization: 0.4, resetsAt: epoch / 1000 + 86400 });
-  assert.equal(first.service.readLimits().claude.windows[0].usedPercent, 40);
-  assert.deepEqual(second.service.readLimits().claude.windows, []);
+  assert.equal((await first.service.readLimits()).claude.windows[0].usedPercent, 40);
+  assert.deepEqual((await second.service.readLimits()).claude.windows, []);
   assert.equal(fs.existsSync(path.join(second.dataDir, "limits.json")), false);
   await first.service.refreshClaudeUsage();
   await first.service.refreshClaudeUsage();
@@ -73,8 +74,8 @@ test("limits: Hub마다 기록 경로와 TTL이 독립적이고 새로고침도 
   assert.equal(second.requests.length, 1); // 앞 Hub의 TTL이 새 Hub의 첫 조회를 막지 않는다.
   assert.equal(first.requests[0].options.headers.Authorization, "Bearer fixture-token-first-ttl");
   assert.equal(second.requests[0].options.headers.Authorization, "Bearer fixture-token-second-ttl");
-  assert.equal(first.service.readLimits().claude.plan, "max");
-  assert.equal(second.service.readLimits().claude.windows[0].usedPercent, 23.5);
+  assert.equal((await first.service.readLimits()).claude.plan, "max");
+  assert.equal((await second.service.readLimits()).claude.windows[0].usedPercent, 23.5);
   await first.service.refreshClaudeUsage({ fresh: true });
   assert.equal(first.requests.length, 2);
   assert.equal(second.requests.length, 1);
@@ -93,10 +94,10 @@ test("limits: 한 Hub의 429 backoff와 오류가 다른 Hub의 조회를 막거
   });
   const second = fixture("second-backoff", { clock });
   await first.service.refreshClaudeUsage();
-  assert.match(first.service.readLimits().claude.error, /2분 뒤/);
+  assert.match((await first.service.readLimits()).claude.error, /2분 뒤/);
   await second.service.refreshClaudeUsage();
   assert.equal(second.requests.length, 1);
-  assert.equal(second.service.readLimits().claude.error, null);
+  assert.equal((await second.service.readLimits()).claude.error, null);
   await first.service.refreshClaudeUsage({ fresh: true });
   assert.equal(first.requests.length, 1); // 강제 새로고침도 backoff는 지킨다.
   clock.now += 60_001;
@@ -107,15 +108,15 @@ test("limits: 한 Hub의 429 backoff와 오류가 다른 Hub의 조회를 막거
   clock.now += 60_001;
   await first.service.refreshClaudeUsage();
   assert.equal(first.requests.length, 2);
-  assert.equal(first.service.readLimits().claude.error, null);
-  assert.equal(first.service.readLimits().claude.windows[0].usedPercent, 51);
-  assert.equal(second.service.readLimits().claude.windows[0].usedPercent, 23.5);
+  assert.equal((await first.service.readLimits()).claude.error, null);
+  assert.equal((await first.service.readLimits()).claude.windows[0].usedPercent, 51);
+  assert.equal((await second.service.readLimits()).claude.windows[0].usedPercent, 23.5);
 });
 
 test("limits: retry-after가 없으면 5분 대기하고 만료된 OAuth 토큰은 API에 보내지 않는다", async () => {
   const blocked = fixture("fallback-backoff", { response: () => usageResponse(null, 429) });
   await blocked.service.refreshClaudeUsage();
-  assert.match(blocked.service.readLimits().claude.error, /5분 뒤/);
+  assert.match((await blocked.service.readLimits()).claude.error, /5분 뒤/);
   blocked.clock.now += 299_999;
   await blocked.service.refreshClaudeUsage({ fresh: true });
   assert.equal(blocked.requests.length, 1);
@@ -125,7 +126,7 @@ test("limits: retry-after가 없으면 5분 대기하고 만료된 OAuth 토큰�
   const expired = fixture("expired", { expiresAt: epoch - 1 });
   await expired.service.refreshClaudeUsage();
   assert.equal(expired.requests.length, 0);
-  assert.match(expired.service.readLimits().claude.error, /만료/);
+  assert.match((await expired.service.readLimits()).claude.error, /만료/);
 });
 
 test("limits: API 실패에도 실행 중 기록은 유지하며 오류는 인스턴스마다 관리한다", async () => {
@@ -134,16 +135,16 @@ test("limits: API 실패에도 실행 중 기록은 유지하며 오류는 인�
   failed.service.recordClaudeLimit({ rateLimitType: "five_hour", utilization: 0.8, resetsAt: epoch / 1000 + 3600 });
   await failed.service.refreshClaudeUsage();
   await healthy.service.refreshClaudeUsage();
-  assert.match(failed.service.readLimits().claude.error, /HTTP 503/);
-  assert.equal(failed.service.readLimits().claude.windows[0].usedPercent, 80);
-  assert.equal(healthy.service.readLimits().claude.error, null);
+  assert.match((await failed.service.readLimits()).claude.error, /HTTP 503/);
+  assert.equal((await failed.service.readLimits()).claude.windows[0].usedPercent, 80);
+  assert.equal((await healthy.service.readLimits()).claude.error, null);
   fs.rmSync(path.join(failed.claudeDir, ".credentials.json"));
   await failed.service.refreshClaudeUsage({ fresh: true });
-  assert.equal(failed.service.readLimits().claude.error, null);
+  assert.equal((await failed.service.readLimits()).claude.error, null);
   assert.equal(failed.requests.length, 1);
 });
 
-test("limits: 지정한 Codex 기록만 읽고 각 파일의 마지막 유효 한도 이벤트를 고른다", () => {
+test("limits: 지정한 Codex 기록만 읽고 각 파일의 마지막 유효 한도 이벤트를 고른다", async () => {
   const first = fixture("codex-first");
   const second = fixture("codex-second");
   function writeRollout(world, percent, timestamp, extra = "") {
@@ -158,11 +159,82 @@ test("limits: 지정한 Codex 기록만 읽고 각 파일의 마지막 유효 �
   }
   writeRollout(first, 72.34, "2026-10-15T11:59:00Z", '{"rate_limits":');
   writeRollout(second, 15, "2026-10-15T12:00:00Z");
-  const firstRead = first.service.readLimits().codex;
-  const secondRead = second.service.readLimits().codex;
+  const firstRead = (await first.service.readLimits()).codex;
+  const secondRead = (await second.service.readLimits()).codex;
   assert.deepEqual(firstRead.windows.map((window) => [window.label, window.usedPercent]), [["5시간", 72.3], ["주간", 9.9]]);
   assert.equal(firstRead.observedAt, "2026-10-15T11:59:00Z");
   assert.equal(firstRead.plan, "pro");
   assert.equal(firstRead.limitReached, "none");
   assert.equal(secondRead.windows[0].usedPercent, 15);
+});
+
+test("limits: select exactly the newest 40 files by mtime, including resumed older dates", async t => {
+  const directory = path.join(tmp, "latest-forty");
+  const today = path.join(directory, "sessions", "2026", "10", "15");
+  const previous = path.join(directory, "sessions", "2025", "01", "01");
+  fs.mkdirSync(today, { recursive: true });
+  fs.mkdirSync(previous, { recursive: true });
+  for (let i = 0; i < 55; i++) {
+    const file = path.join(today, `rollout-${i}.jsonl`);
+    fs.writeFileSync(file, String(i));
+    fs.utimesSync(file, new Date(epoch + i * 1000), new Date(epoch + i * 1000));
+  }
+  const resumed = path.join(previous, "resumed.jsonl");
+  fs.writeFileSync(resumed, "resumed");
+  fs.utimesSync(resumed, new Date(epoch + 100_000), new Date(epoch + 100_000));
+  fs.writeFileSync(path.join(directory, "sessions", "not-a-date.txt"), "ignored");
+  const rollouts = new FileCodexRollouts({ codexDir: directory, now: () => epoch });
+  const newest = await rollouts.recentFiles();
+  assert.equal(newest.length, 40);
+  assert.equal(newest[0].file, resumed);
+  assert.equal(path.basename(newest.at(-1).file), "rollout-16.jsonl");
+  t.mock.method(fs.promises, "readdir", () => { throw new Error("warm read must use inventory cache"); });
+  assert.deepEqual(await rollouts.recentFiles(), newest);
+  const tails = [];
+  for await (const tail of rollouts.recentTails()) tails.push(tail);
+  assert.equal(tails.length, 40);
+});
+
+test("limits: tail reads are byte bounded, cached by stat, and invalidate after append", async t => {
+  const directory = path.join(tmp, "tail-cache");
+  fs.mkdirSync(directory);
+  const file = path.join(directory, "large.jsonl");
+  fs.writeFileSync(file, "x".repeat(2 << 20) + "last");
+  const rollouts = new FileCodexRollouts({ codexDir: directory });
+  const open = fs.promises.open;
+  let bytes = 0;
+  t.mock.method(fs.promises, "open", async function (...args) {
+    const handle = await open.apply(this, args);
+    const read = handle.read;
+    handle.read = async function (...values) { const result = await read.apply(this, values); bytes += result.bytesRead; return result; };
+    return handle;
+  });
+  assert.ok((await rollouts.tail(file)).endsWith("last"));
+  assert.equal(bytes, 512 * 1024);
+  await rollouts.tail(file);
+  assert.equal(bytes, 512 * 1024);
+  fs.appendFileSync(file, "updated");
+  assert.ok((await rollouts.tail(file)).endsWith("lastupdated"));
+  assert.equal(bytes, 1024 * 1024);
+});
+
+test("limits: parsed Codex snapshots share in-flight reads and fresh bypasses the TTL", async () => {
+  const { createLimitsService: application } = await import("../server/application/limits.mjs");
+  let reads = 0;
+  let percent = 20;
+  let now = epoch;
+  const service = application({
+    repository: { load: () => ({}) }, credentials: { read: () => null }, now: () => now,
+    rollouts: { async *recentTails() { reads++; await Promise.resolve(); yield JSON.stringify({ payload: { rate_limits: { primary: { used_percent: percent, window_minutes: 300, resets_at: epoch / 1000 + 3600 } } } }); } },
+  });
+  const [first, concurrent] = await Promise.all([service.readLimits(), service.readLimits()]);
+  assert.deepEqual(first, concurrent);
+  assert.equal(reads, 1);
+  percent = 50;
+  assert.equal((await service.readLimits()).codex.windows[0].usedPercent, 20);
+  assert.equal((await service.readLimits({ fresh: true })).codex.windows[0].usedPercent, 50);
+  assert.equal(reads, 2);
+  now += 5001;
+  await service.readLimits();
+  assert.equal(reads, 3);
 });

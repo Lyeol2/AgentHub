@@ -12,6 +12,33 @@ function fixture(t, options = {}) {
 }
 const flow = (id, variables = {}) => ({ id, variables, repeats: {} });
 
+test("run history migrates legacy snapshots and writes only the changed run", t => {
+  const { history, dataDir, projectPath } = fixture(t);
+  history.start(flow("old"), { projectPath });
+  history.update("old", { status: "success" });
+  history.start(flow("current"), { projectPath });
+  history.update("current", { status: "success" });
+  const legacy = structuredClone(history.runs);
+  fs.writeFileSync(history.file, JSON.stringify(legacy));
+  const restored = new RunHistoryStore({ dataDir });
+  assert.deepEqual(restored.runs, legacy);
+  assert.deepEqual(JSON.parse(fs.readFileSync(history.file, "utf8")), { version: 2, ids: ["old", "current"] });
+  const oldFile = restored.repository.path("old"), manifest = fs.readFileSync(history.file, "utf8");
+  // An unchanged record keeps its original filesystem timestamp as well as data.
+  fs.utimesSync(oldFile, new Date(1000), new Date(1000));
+  const rename = fs.renameSync, targets = [];
+  t.mock.method(fs, "renameSync", (from, to) => { targets.push(to); return rename(from, to); });
+  restored.batch(() => {
+    const step = restored.beginStep("current", { nodeId: "cmd-next" });
+    restored.finishStep("current", step.id, { ok: true, output: "Done" });
+    restored.update("current", { status: "success" });
+  });
+  assert.deepEqual(targets, [restored.repository.path("current")]);
+  assert.equal(fs.statSync(oldFile).mtimeMs, 1000);
+  assert.equal(fs.readFileSync(history.file, "utf8"), manifest);
+  assert.equal(new RunHistoryStore({ dataDir }).get("current").steps[0].output, "Done");
+});
+
 test("run history: persisted steps retain immutable resume inputs and results", t => {
   const { history, dataDir, projectPath } = fixture(t);
   const input = { goal: "검토", details: { limit: 2 } };

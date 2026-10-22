@@ -1,4 +1,4 @@
-import { gitAuthFailure } from "./github.mjs";
+import { gitAuthFailure } from "./git-auth.mjs";
 
 // 자주 나는 git 오류 원문을 사용자가 이해할 수 있는 한국어 설명과 해결 방법으로 바꾼다.
 // 위에서부터 먼저 맞는 규칙을 쓴다. 인증 실패는 푸시 거부 문구와 함께 나와도 인증을 먼저 안내한다.
