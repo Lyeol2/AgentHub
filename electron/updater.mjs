@@ -2,6 +2,7 @@
 import { app, shell } from "electron";
 import { EventEmitter } from "node:events";
 import updaterPkg from "electron-updater";
+import { createUpdateInstall } from "./update-install.mjs";
 
 const { autoUpdater } = updaterPkg;
 const OWNER = "Lyeol2";
@@ -9,7 +10,7 @@ const REPO = "AgentHub";
 const RELEASES_URL = `https://github.com/${OWNER}/${REPO}/releases/latest`;
 
 export class Updater extends EventEmitter {
-  constructor() {
+  constructor({ beforeInstall = async () => {}, onInstallError = () => {} } = {}) {
     super();
     // 포터블 실행 파일은 자기 자신을 바꿀 수 없으므로 릴리스 페이지만 열어 준다.
     this.portable = !!process.env.PORTABLE_EXECUTABLE_DIR;
@@ -32,6 +33,14 @@ export class Updater extends EventEmitter {
     autoUpdater.on("download-progress", (p) => this.set({ status: "downloading", progress: Math.round(p.percent) }));
     autoUpdater.on("update-downloaded", (info) => this.set({ status: "ready", latest: info.version, progress: 100 }));
     autoUpdater.on("error", (err) => this.set({ status: "error", error: shortError(err) }));
+    this.beginInstall = createUpdateInstall({
+      prepare: beforeInstall,
+      install: () => autoUpdater.quitAndInstall(true, true),
+      onError: (error) => {
+        this.set({ status: "error", error: shortError(error) });
+        onInstallError(error);
+      },
+    });
   }
 
   set(patch) {
@@ -65,9 +74,9 @@ export class Updater extends EventEmitter {
 
   install() {
     if (this.state.status !== "ready") throw new Error("설치할 업데이트가 없습니다.");
-    // before-quit에서 서버가 세션을 저장한 뒤 설치 프로그램이 실행된다.
-    // 설치 창 없이(/S) 설치하고 끝나면 앱을 다시 실행한다.
-    setImmediate(() => autoUpdater.quitAndInstall(true, true));
+    // quitAndInstall은 before-quit보다 먼저 설치 프로그램을 띄운다.
+    // 응답을 먼저 보내고 세션 저장이 끝난 뒤 설치 창 없이 실행한다.
+    this.beginInstall();
     return this.state;
   }
 }
