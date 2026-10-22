@@ -1,0 +1,124 @@
+(async function () {
+  const checks = [], $ = (id) => document.getElementById(id);
+  const check = (condition, label) => { if (!condition) throw Error(label); checks.push(label); };
+  const until = async (predicate) => { const end = Date.now() + 6000; while (!await predicate()) { if (Date.now() > end) throw Error("Timed out waiting: " + predicate + "\n" + $("mcp-error").textContent); await new Promise((resolve) => setTimeout(resolve, 20)); } };
+  const post = (url, body = {}) => fetch(url, { method: "POST", body: JSON.stringify(body) }).then((response) => response.json());
+  const mode = (body) => post("/fixture/mode", body);
+  const requests = () => fetch("/fixture/requests").then((response) => response.json());
+  const mcpRequests = async () => (await requests()).filter((request) => /\/mcp(?:\/|$)/.test(request.path));
+  const settled = () => until(() => $("mcp-dialog").open && !$("mcp-refresh").disabled);
+  const input = (prefix, text) => { $(prefix + "-prompt").value = text; $(prefix + "-prompt").dispatchEvent(new Event("input", { bubbles: true })); };
+  const openSession = async (title) => { [...$("session-list").querySelectorAll("button")].find((node) => node.textContent.includes(title)).click(); await until(() => $("s-title").textContent === title); };
+  const openMcp = async () => { input("s", "/mcp"); $("s-form").requestSubmit(); await settled(); };
+  const close = () => $("mcp-close").click();
+  const refresh = async () => { $("mcp-refresh").click(); await settled(); };
+  const row = (name) => [...$("mcp-servers").querySelectorAll(".mcp-server")].find((node) => node.dataset.serverName === name);
+  const held = (key) => until(async () => (await fetch("/fixture/held").then((response) => response.json())).includes(key));
+  const release = async (key) => { await post("/fixture/release", { key }); await new Promise((resolve) => setTimeout(resolve, 80)); };
+  const noSessionSend = async () => !(await requests()).some((request) => /^\/api\/sessions\/s[12]\/(messages|queue|attachments|pause|stop)$/.test(request.path) && request.method === "POST");
+
+  await until(() => $("session-list").querySelector("button"));
+  const sidebar = () => [...$("session-list").querySelectorAll(".session-item")].find((node) => node.title === "Second");
+  const tableRow = (id) => [...$(id).querySelectorAll("tbody tr")].find((node) => node.querySelector('.title-cell')?.title === "Second");
+  const graphCard = () => $("p-graph").querySelector('.gcard[data-id="s2"]');
+  const project = async () => { $("project-nav").querySelector("button").click(); await until(() => !$("view-project").hidden && graphCard()); };
+  await until(() => sidebar()?.querySelector(".session-unread") && tableRow("recent-table"));
+  check(sidebar().querySelector(".session-unread").title === "완료 결과를 아직 읽지 않았습니다" && sidebar().querySelector(".dot.running"), "unread badge coexists with the sidebar running state");
+  check(tableRow("recent-table").querySelector(".session-unread") && tableRow("recent-table").querySelector(".pill.running") && $("project-nav").querySelector(".project-unread-count").textContent === "안 읽음 1", "dashboard unread badge and project count preserve running state");
+  await project();
+  check(graphCard().querySelector(".gcard-heading .session-unread") && graphCard().querySelector(".pill.running") && tableRow("p-sessions").querySelector(".session-unread"), "project graph and table show unread independently of execution status");
+  await window.captureFixture("unread-graph");
+  await openSession("Second");
+  await until(async () => (await requests()).some((request) => request.path === "/api/sessions/s2/read" && request.body?.seq === 2) && !sidebar().querySelector(".session-unread"));
+  check(!$("project-nav").querySelector(".project-unread-count") && $("s-events").textContent.includes("Completed answer awaiting review"), "opening a visible completed result posts its sequence and removes unread count");
+  await project();
+  check(!graphCard().querySelector(".session-unread") && !tableRow("p-sessions").querySelector(".session-unread"), "read acknowledgement removes graph and project table badges");
+  await post("/fixture/emit", { type: "event", payload: { sessionId: "s2", event: { seq: 3, kind: "result", text: "A new completed answer" } } });
+  await until(() => graphCard()?.querySelector(".session-unread"));
+  check(sidebar().querySelector(".session-unread") && tableRow("p-sessions").querySelector(".session-unread") && graphCard().querySelector(".pill.running"), "SSE result marks an unselected session unread without replacing its running state");
+  await post("/fixture/emit", { type: "session-read", payload: { sessionId: "s2", lastResultSeq: 3, readResultSeq: 3, unread: false } });
+  await until(() => !graphCard()?.querySelector(".session-unread"));
+  check(!sidebar().querySelector(".session-unread") && !tableRow("p-sessions").querySelector(".session-unread") && !$("project-nav").querySelector(".project-unread-count"), "cross-window session-read SSE clears every visible unread marker");
+  $("nav-dashboard").click();
+  check(!tableRow("recent-table").querySelector(".session-unread"), "dashboard retains acknowledged read state after navigation");
+  await openSession("First");
+  await openMcp();
+  check($("mcp-title").textContent.includes("MCP") && $("mcp-session").textContent.includes("First"), "exact /mcp opens management for the selected session");
+  check(await noSessionSend(), "local /mcp never sends or queues an agent message");
+  const statuses = [...$("mcp-servers").querySelectorAll(".mcp-status")].map((node) => node.dataset.status);
+  check(JSON.stringify(statuses) === JSON.stringify(["connected", "failed", "needs-auth", "pending", "disabled", "disconnected", "unknown", "unknown"]), "every MCP status and an unknown future status render safely");
+  check($("mcp-servers").querySelectorAll(".mcp-auth").length === 8 && row("failed").querySelector(".mcp-server-error").textContent.includes("Connection failed"), "authentication and individual server errors remain readable");
+  const first = $("mcp-servers").querySelector(".mcp-server"), firstName = first.dataset.serverName;
+  first.querySelector("summary").click();
+  check(first.querySelector(".mcp-tools").open && first.querySelector(".mcp-tool-list code").textContent.includes("<img") && first.querySelector(".mcp-tool-list p").textContent.includes("Tool description"), "tool details expand with names and descriptions");
+  check(!$("mcp-dialog").querySelector("img,script") && !window.mcpInjected, "server errors and tool HTML are escaped as text");
+  check(row("disabled").querySelector(".mcp-empty-tools").textContent.length > 0, "servers without tools have an explicit empty state");
+  const beforeRefresh = (await mcpRequests()).length; await refresh();
+  check((await mcpRequests()).length === beforeRefresh + 1 && row(firstName).querySelector(".mcp-tools").open, "refresh reloads server state and preserves expanded tools");
+  $("mcp-servers").querySelector(".mcp-reconnect").click(); await settled();
+  const reconnect = (await mcpRequests()).at(-2);
+  check(reconnect.method === "POST" && reconnect.path === "/api/sessions/s1/mcp/reconnect" && reconnect.body.serverName === firstName && (await mcpRequests()).at(-1).method === "GET", "reconnect targets the exact server and refreshes its state");
+  check($("mcp-feedback").textContent === "Exact action result <not markup>" && !$("mcp-feedback").hidden, "reconnect preserves the exact action message after refresh");
+  $("mcp-reload").click(); await settled();
+  check((await mcpRequests()).at(-2).path === "/api/sessions/s1/mcp/reload" && $("mcp-feedback").textContent === "Exact action result <not markup>", "reload refreshes state and preserves its action message");
+  await mode({ actionError: true }); $("mcp-reload").click(); await settled();
+  check($("mcp-error").textContent === "fixture action failure" && !$("mcp-reload").disabled, "action failure shows an error and restores controls");
+  $("mcp-reload").click(); await settled();
+  check($("mcp-error").hidden && $("mcp-feedback").textContent === "Exact action result <not markup>", "action retry clears the previous error");
+  await mode({ getError: true }); await refresh();
+  check($("mcp-error").textContent === "fixture GET failure" && $("mcp-servers").querySelectorAll(".mcp-server").length === 8, "refresh failure preserves the previous server list");
+  await refresh(); check($("mcp-error").hidden, "successful refresh recovers from a GET error");
+  await mode({ getError: true }); $("mcp-reload").click(); await settled();
+  check($("mcp-feedback").textContent === "Exact action result <not markup>" && !$("mcp-error").hidden, "post-action refresh failure retains the successful action message");
+  await refresh();
+
+  await mode({ snapshot: { live: true, checkedAt: "", servers: [], actions: {} } }); await refresh();
+  check($("mcp-servers").querySelector(".mcp-empty") && $("mcp-reload").hidden, "empty server lists and unavailable actions are shown correctly");
+  await mode({ reset: true }); await refresh();
+  check($("mcp-servers").querySelectorAll(".mcp-server").length === 8, "refresh recovers from an empty list");
+  await mode({ snapshot: { live: false, checkedAt: "", servers: [{ name: "probe", status: "connected", tools: [] }], actions: { reconnect: true, reload: true }, message: "Read-only probe" } }); await refresh();
+  check($("mcp-reload").hidden && !$("mcp-servers").querySelector(".mcp-reconnect") && $("mcp-message").textContent === "Read-only probe", "non-live snapshots hide every mutation even when action flags are true");
+  await mode({ snapshot: { live: true, checkedAt: "", servers: [{ name: "limited", status: "connected", tools: [] }], actions: { reconnect: false, reload: true } } }); await refresh();
+  check(!$("mcp-reload").hidden && !$("mcp-servers").querySelector(".mcp-reconnect"), "live capability flags independently control actions");
+  await mode({ reset: true }); close();
+  input("s", "/mc"); await until(() => !$("s-prompt-complete").hidden);
+  [...$("s-prompt-complete").querySelectorAll(".complete-item")].find((node) => node.querySelector(".complete-name").textContent === "/mcp").click(); await settled();
+  check($("s-prompt").value === "" && await noSessionSend(), "autocomplete executes the local command without posting a message");
+  close();
+  const transfer = new DataTransfer(); transfer.items.add(new File(["draft content"], "draft.txt", { type: "text/plain" }));
+  $("s-files").files = transfer.files; $("s-files").dispatchEvent(new Event("change"));
+  await openMcp();
+  check($("s-attachments").querySelector(".attachment-name").textContent === "draft.txt" && await noSessionSend(), "exact /mcp preserves attachment drafts and does not upload them");
+  close(); $("s-attachments").querySelector("button").click();
+  await post("/fixture/emit", { type: "state", payload: { sessionId: "s1", state: "running", runningStartedAt: new Date().toISOString() } });
+  await until(() => $("s-send").dataset.action === "pause"); await openMcp();
+  check(await noSessionSend(), "running sessions execute /mcp locally without queueing or pausing");
+  close();
+
+  for (const type of ["get", "action"]) {
+    for (const navigate of [false, true]) {
+      await openSession("First"); await mode({ reset: true });
+      if (type === "action") await openMcp();
+      const key = `${type}-${navigate ? "switch" : "close"}`;
+      await mode({ hold: { type, key }, snapshot: { live: true, checkedAt: "", servers: [{ name: "stale-" + key, status: "failed", tools: [] }], actions: { reconnect: true, reload: true } }, actionMessage: "stale-action-" + key });
+      if (type === "action") $("mcp-reload").click();
+      else { input("s", "/mcp"); $("s-form").requestSubmit(); }
+      await held(key);
+      check($("mcp-refresh").disabled && $("mcp-servers").getAttribute("aria-busy") === "true", `${key}: request disables actions while pending`);
+      if (navigate) { await openSession("Second"); check(!$("mcp-dialog").open, `${key}: changing sessions closes the dialog`); }
+      else close();
+      await mode({ reset: true, actionMessage: "Exact action result <not markup>" });
+      await openMcp(); const before = (await mcpRequests()).length;
+      await release(key);
+      check(!$("mcp-servers").textContent.includes("stale-") && !$("mcp-feedback").textContent.includes("stale-") && !$("mcp-refresh").disabled && (await mcpRequests()).length === before, `${key}: late response cannot alter a reopened dialog or start follow-up fetches`);
+      close();
+    }
+  }
+  $("nav-chat").click(); await until(() => !$("view-chat").hidden);
+  const beforeChat = (await mcpRequests()).length;
+  input("c", "/mcp"); $("c-form").requestSubmit();
+  await until(async () => (await requests()).some((request) => /^\/api\/sessions\/chat\d+\/messages$/.test(request.path) && request.body?.prompt === "/mcp"));
+  check((await mcpRequests()).length === beforeChat && !$("mcp-dialog").open, "chat /mcp remains an ordinary message and never calls MCP APIs");
+  await openSession("First"); await mode({ reset: true }); await openMcp();
+  return checks;
+})()

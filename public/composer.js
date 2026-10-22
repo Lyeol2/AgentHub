@@ -55,6 +55,7 @@ export function filterCommands(commands, query = "") {
 // prompt: 바로 실행하지 않고 "/이름 요청"으로 이어 써서 보내는 명령이다.
 export const BUILTIN_COMMANDS = [
   { name: "plan", description: "계획 모드: 파일을 고치지 않고 계획만 세운 뒤 승인을 받습니다 (/plan 요청)", builtin: true, prompt: true },
+  { name: "mcp", description: "MCP 서버 연결 상태와 사용 가능한 도구를 확인합니다", builtin: true },
   { name: "clear", description: "다시 시작: CLI 대화를 새로 시작해 컨텍스트를 비웁니다", builtin: true },
   { name: "export", description: "세션을 .agenthub 파일로 내보냅니다", builtin: true },
   { name: "import", description: "내보낸 기록을 새 세션으로 불러오거나 이 세션에 읽힙니다", builtin: true },

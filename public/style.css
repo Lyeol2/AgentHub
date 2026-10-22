@@ -1378,3 +1378,50 @@ td .pill.subtasks-running { margin-left: 4px; }
 .ev.tool .subtask-link.failed { color: var(--danger); border-color: rgb(240 100 100 / .45); }
 .ev.tool .subtask-link.stopped, .ev.tool .subtask-link.interrupted { color: var(--warn); border-color: rgb(229 180 75 / .45); }
 .ev.tool .subtask-link:hover { background: var(--accent-soft); }
+
+/* 완료 결과를 아직 읽지 않은 세션: 실행 상태 배지와 별도로 표시한다. */
+.session-unread, .project-unread-count { display: inline-flex; align-items: center; gap: 4px; flex: none; color: var(--accent); background: var(--accent-soft); border: 1px solid var(--accent); border-radius: 999px; font-size: 10px; font-weight: 600; line-height: 1.6; white-space: nowrap; padding: 0 6px; }
+.session-unread::before { content: ""; width: 5px; height: 5px; flex: none; border-radius: 50%; background: currentColor; }
+.session-item .session-unread, .title-cell .session-unread { margin-right: 6px; vertical-align: middle; }
+.gcard-heading { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.gcard-heading > .gcard-title { flex: 1; min-width: 0; }
+
+/* 세션 MCP 연결과 도구 목록 */
+.mcp-dialog { width: min(760px, calc(100vw - 32px)); max-height: min(86dvh, 900px); }
+.mcp-dialog[open] { display: flex; flex-direction: column; }
+.mcp-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 18px 20px 12px; }
+.mcp-heading > div { min-width: 0; }
+.mcp-heading h3 { margin: 0; font-size: 17px; }
+.mcp-heading p { margin: 4px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.mcp-heading button { flex: none; }
+.mcp-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 0 20px 14px; border-bottom: 1px solid var(--line); }
+.mcp-toolbar p { flex: 1 1 240px; margin: 0; color: var(--muted); font-size: 12px; }
+.mcp-body { display: grid; gap: 12px; min-height: 0; padding: 16px 20px 20px; overflow-y: auto; }
+.mcp-message, .mcp-feedback, .mcp-error { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mcp-message { padding: 8px 10px; border-radius: 6px; background: var(--accent-soft); }
+.mcp-feedback { color: var(--text); }
+.mcp-error, .mcp-server-error { color: var(--danger); }
+.mcp-servers { display: grid; gap: 10px; min-width: 0; }
+.mcp-server { min-width: 0; padding: 12px; border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel-2); }
+.mcp-server-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.mcp-server-head h4 { flex: 1 1 160px; min-width: 0; margin: 0; font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.mcp-status[data-status="connected"] { color: var(--ok); }
+.mcp-status[data-status="failed"] { color: var(--danger); }
+.mcp-status[data-status="needs-auth"] { color: var(--warn); }
+.mcp-status[data-status="pending"] { color: var(--accent); }
+.mcp-auth, .mcp-server-error { margin: 8px 0 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.mcp-auth { color: var(--muted); }
+.mcp-tools { margin-top: 10px; min-width: 0; }
+.mcp-tools > summary { width: fit-content; cursor: pointer; color: var(--text); font-size: 12px; }
+.mcp-tool-list { display: grid; gap: 10px; margin: 10px 0 0; padding: 10px 0 0 20px; border-top: 1px solid var(--line); }
+.mcp-tool-list li { min-width: 0; overflow-wrap: anywhere; }
+.mcp-tool-list code { font-family: var(--mono); color: var(--text); }
+.mcp-tool-list p { margin: 3px 0 0; color: var(--muted); font-size: 12px; white-space: pre-wrap; }
+.mcp-empty, .mcp-empty-tools { margin: 8px 0; color: var(--muted); }
+@media (max-width: 520px) {
+  .mcp-dialog { width: calc(100vw - 20px); max-height: calc(100dvh - 28px); }
+  .mcp-heading { padding: 14px 12px 10px; }
+  .mcp-toolbar { padding: 0 12px 12px; }
+  .mcp-toolbar p { flex-basis: 100%; }
+  .mcp-body { padding: 12px; }
+}

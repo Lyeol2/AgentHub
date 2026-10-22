@@ -57,7 +57,18 @@ test("고른 항목으로 커서의 낱말을 바꾸고 폴더는 이어서 고�
   assert.equal(builtinCommand("/clear 지금"), null);
   assert.equal(builtinCommand("/code-review"), null);
   assert.equal(builtinCommand("/plan"), null, "/plan은 요청과 함께 보내는 명령이다");
-  assert.deepEqual(BUILTIN_COMMANDS.map((c) => c.name), ["plan", "clear", "export", "import"]);
+  assert.deepEqual(BUILTIN_COMMANDS.map((c) => c.name), ["plan", "mcp", "clear", "export", "import"]);
+});
+
+test("/mcp는 단독 입력일 때만 직접 실행하고 자동 완성에서도 기본 명령으로 찾는다", () => {
+  assert.equal(builtinCommand("/mcp"), "mcp");
+  assert.equal(builtinCommand(" \n/mcp \n"), "mcp");
+  for (const text of ["/mcp 설정 설명", "설명 /mcp", "/mcp-server", "/mcp\n다음 요청"]) assert.equal(builtinCommand(text), null);
+  const commands = filterCommands(BUILTIN_COMMANDS, "mc");
+  assert.equal(commands.length, 1);
+  assert.equal(commands[0].name, "mcp");
+  assert.equal(commands[0].builtin, true);
+  assert.ok(!commands[0].prompt);
 });
 
 test("고른 파일은 파일 이름으로 줄여 보이고 보낼 때 전체 경로로 되돌린다", () => {

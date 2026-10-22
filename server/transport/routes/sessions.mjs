@@ -14,6 +14,7 @@ export function sessionRoutes(s) {
     // meta=1: 기록(events) 없이 세션 정보만 돌려준다. 실행 중 화면의 머리글만 갱신할 때 쓴다.
     ["GET", "sessions/:id", ({ params, query }) => query.get("meta") === "1" ? s.detailMeta(params.id) : s.detail(params.id)],
     ["PUT", "sessions/:id", ({ params, body }) => s.update(params.id, body)],
+    ["POST", "sessions/:id/read", ({ params, body }) => s.markRead(params.id, body)],
     ["DELETE", "sessions/:id", ({ params, query }) => s.remove(params.id, {
       force: query.get("force") === "1",
       removeWorktree: query.get("removeWorktree") === "1",
@@ -60,6 +61,9 @@ export function sessionRoutes(s) {
     ["POST", "sessions/:id/export", ({ params, body }) => s.exportRecord(params.id, { format: body.format ?? "markdown" })],
     ["POST", "sessions/:id/read-record", ({ params, body }) => s.readRecordInto(params.id, body), { maxBodyBytes: RECORD_BODY_LIMIT }],
     ["GET", "sessions/:id/files", ({ params, query }) => s.files(params.id, query.get("q") ?? "")],
+    ["GET", "sessions/:id/mcp", ({ params }) => s.mcpStatus(params.id)],
+    ["POST", "sessions/:id/mcp/reconnect", ({ params, body }) => s.reconnectMcp(params.id, body)],
+    ["POST", "sessions/:id/mcp/reload", ({ params }) => s.reloadMcp(params.id)],
     ["POST", "sessions/:id/messages", ({ params, body }) => s.sendMessage(params.id, body)],
     ["DELETE", "sessions/:id/queue/:item", ({ params }) => s.queueAction(params.id, params.item, "delete")],
     ["POST", "sessions/:id/queue/:item", ({ params, body }) => s.queueAction(params.id, params.item, body.action)],

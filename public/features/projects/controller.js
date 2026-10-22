@@ -1,4 +1,5 @@
 import { createProjectsView } from "./view.js";
+import { mergeSessionRead } from "../../shared/session-read.js";
 import { $, el, badge, timeAgo, table } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { showError } from "../../shared/error-report.js";
@@ -25,7 +26,10 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
 
   // ── 사이드바 ────────────────────────────────────────────────────
   async function loadSessions() {
-    data.sessions = await api("GET", "/api/sessions");
+    const incoming = await api("GET", "/api/sessions");
+    // 조회 중 다른 창에서 읽음 처리가 끝났어도 오래된 응답으로 배지를 되살리지 않는다.
+    const previous = new Map(data.sessions.map((session) => [session.id, session]));
+    data.sessions = incoming.map((session) => mergeSessionRead(session, previous.get(session.id)));
     renderSessionList();
     renderProjectNav();
     if (navigation.view === "dashboard") renderDashboard();

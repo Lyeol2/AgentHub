@@ -12,12 +12,15 @@ import { defaultPermission, permissionLabel } from "../../shared/permissions.js"
 import { showError } from "../../shared/error-report.js";
 import { createSubtasksView } from "./subtasks-view.js";
 import { mergeSubtasks, countSubtasks } from "../../shared/subtasks.js";
+import { createMcpDialog } from "./mcp-dialog.js";
+import { mergeSessionRead } from "../../shared/session-read.js";
 
 export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
   const ui = {
     "chatDraft": null
   };
   const subtasksView = createSubtasksView({ api, getSession: () => data.current });
+  const mcpDialog = createMcpDialog({ api, getSession: () => navigation.view === "session" ? data.current : null });
   const { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft, updateSubtaskLinks } = createConversationView({
     api, getSession: () => data.current, sessionById, selectSession, onTaskReference, onSubtaskFocus: (id) => subtasksView.focus(id),
     onPlanDecision: (id, plan, body) => api("POST", `/api/sessions/${id}/plans/${plan}`, body),
@@ -54,6 +57,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
 
   // 기록(events)을 빼고 머리글·상태만 그린다. 실행 중 상태·결과 알림은 이것만 다시 그린다.
   function renderSessionHeader() {
+    mcpDialog.syncSession();
     const s = data.current;
     if (!s) return false;
     $("s-crumb-project").textContent = s.chat ? "대시보드" : s.projectName;
@@ -99,7 +103,9 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     if (data.current !== s) return;
     if (meta.locked || meta.eventCount > s.events.length) return selectSession(id);
     const { eventCount, handoverPending, ...rest } = meta;
+    const previousReadState = { readResultSeq: s.readResultSeq, lastResultSeq: s.lastResultSeq };
     Object.assign(s, rest);
+    mergeSessionRead(s, previousReadState);
     if (navigation.view === "chat") {
       $("c-title").textContent = s.title;
       renderChatState();
@@ -161,6 +167,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   }
 
   function renderRunActivity(now = Date.now()) {
+    mcpDialog.syncSession();
     const s = data.current;
     const prefix = navigation.view === "chat" ? "c" : navigation.view === "session" ? "s" : null;
     if (!prefix) return;
@@ -266,6 +273,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
 
   // "/" 기본 명령: 작성창에서 고르거나 그대로 보내면 실행한다.
   function runBuiltin(name) {
+    if (name === "mcp") return mcpDialog.open();
     if (name === "clear") return restartSession();
     if (name === "export") return exportRecord("agenthub");
     if (name === "import") return $("s-import").click();
@@ -382,9 +390,11 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     const action = composerAction(s, raw, snapshot.items.length).action;
     if (action === "pause" || action === "resume") return togglePause();
     if (!prompt && !snapshot.items.length) return;
-    const builtin = !snapshot.items.length && builtinCommand(prompt);
+    const command = builtinCommand(prompt);
+    const builtin = command === "mcp" || !snapshot.items.length ? command : null;
     if (builtin) {
       input.value = "";
+      completion.close();
       renderComposerAction("s", s);
       return runBuiltin(builtin);
     }
@@ -810,6 +820,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
   const chatConfig = () => data.current ?? ui.chatDraft;
 
   function renderChat() {
+    mcpDialog.syncSession();
     const s = data.current;
     imageComposers.c.activate(s?.id ?? "new-chat-" + newChatDraft);
     $("c-title").textContent = s?.title ?? "새 채팅";

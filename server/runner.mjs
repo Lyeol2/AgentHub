@@ -8,6 +8,8 @@ import { CodexAppServer } from "./codex-app-server.mjs";
 import { unityControl, isUnityCommand } from "./unity-control.mjs";
 import { stopwatch } from "./timing.mjs";
 import { applySubtask, addSubtaskActivity, settleSubtasks, activeSubtasks } from "./subtasks.mjs";
+import { McpStatusService } from "./mcp-status.mjs";
+import { recordCompletion } from "./session-read.mjs";
 
 const publicMeta = (meta) => ({ ...meta, ...(meta.attachments ? { attachments: meta.attachments.map(({ id, name, mimeType, size, url }) => ({ id, name, mimeType, size, url })) } : {}) });
 
@@ -67,7 +69,12 @@ export class Runner extends EventEmitter {
     this.unityMode = () => "allow";
     this.activitySent = new Map(); // 세션 ID → 진행 상태를 마지막으로 알린 시각
     this.draftSeq = 0;
+    this.mcpInspector = new McpStatusService(this, AGENTS);
   }
+
+  mcpStatus(session, cliPath) { return this.mcpInspector.status(session, cliPath); }
+  reconnectMcp(session, serverName) { return this.mcpInspector.reconnect(session, serverName); }
+  reloadMcp(session) { return this.mcpInspector.reload(session); }
 
   // ── 진행 상태 ───────────────────────────────────────────────────
   // runPhase: starting(CLI를 띄우고 첫 출력을 기다림) | working(출력이 오기 시작함). lastOutputAt: CLI의 마지막 출력 시각.
@@ -310,6 +317,7 @@ export class Runner extends EventEmitter {
 
   append(session, event) {
     const full = { seq: session.events.length, ts: new Date().toISOString(), ...event };
+    if (event.kind === "result") recordCompletion(session);
     session.events.push(full);
     this.store.touch(session);
     this.emit("event", session.id, full);
@@ -412,7 +420,18 @@ export class Runner extends EventEmitter {
     } else if (agent.interactive) {
       child.pendingInputs.push({ event: null, input });
       // 띄워 둔 CLI에는 이번 요청의 권한 모드(/plan이면 계획 모드)를 먼저 맞춘다.
-      if (fresh) child.stdin.write(`${agent.initLine()}\n`);
+      if (fresh) {
+        const initialization = agent.initLine();
+        const { request_id: id } = JSON.parse(initialization);
+        child.initializationRequestId = id;
+        child.controls.set(id, (response) => {
+          child.initializationRequestId = null;
+          child.claudeInitialized = response?.subtype === "success";
+          child.claudeInitializationFailed = !child.claudeInitialized;
+          child.emit("cliInitialized");
+        });
+        child.stdin.write(`${initialization}\n`);
+      }
       else if (!this.requestPermissionMode(session, child, agent, session.planTurn ? "plan" : session.permission ?? "acceptEdits")) {
         this.append(session, { kind: "status", text: "현재 Claude CLI는 모든 권한 허용으로 전환할 수 없습니다. 백그라운드 작업을 유지하며 현재 권한으로 진행하고, 작업 종료 뒤 다음 요청에서 선택한 권한으로 다시 실행합니다." });
       }
@@ -528,6 +547,13 @@ export class Runner extends EventEmitter {
         msg = JSON.parse(line);
       } catch {
         // 아래에서 일반 줄로 처리한다.
+      }
+      if (msg?.type === "system" && msg.subtype === "init") {
+        child.controls.delete(child.initializationRequestId);
+        child.initializationRequestId = null;
+        child.claudeInitialized = true;
+        child.claudeInitializationFailed = false;
+        child.emit("cliInitialized");
       }
       // 하위 작업 안의 메시지(parent_tool_use_id·agent_id)는 본 턴의 진행이 아니다.
       const main = !msg?.parent_tool_use_id && !msg?.request?.agent_id;
@@ -833,6 +859,8 @@ export class Runner extends EventEmitter {
     const reply = child.controls.get(response?.request_id);
     // 기다리는 곳이 없는 요청(초기화 등)이 거절되면 기록에만 남긴다.
     if (!reply) {
+      // 시간이 지난 MCP 조회 응답에는 연결 주소나 인증 오류가 포함될 수 있다.
+      if (response?.request_id?.startsWith("mcp-")) return;
       if (response?.subtype === "error" && response.error) this.append(session, { kind: "log", text: `CLI가 요청을 거절했습니다: ${response.error}` });
       return;
     }
@@ -911,6 +939,7 @@ export class Runner extends EventEmitter {
   }
 
   stopAll() {
+    this.mcpInspector.stopAll();
     for (const id of new Set([...this.running.keys(), ...this.procs.keys()])) {
       const session = this.store.get(id);
       if (session) this.release(session);

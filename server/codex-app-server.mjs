@@ -40,22 +40,32 @@ export class CodexAppServer extends EventEmitter {
     this.child.stdin.write(JSON.stringify(message) + "\n");
   }
 
-  request(method, params) {
+  request(method, params, { timeoutMs = this.timeoutMs } = {}) {
     if (this.closed) return Promise.reject(new Error("Codex 연결이 끝났습니다."));
     const id = "agenthub-" + ++this.counter;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.requests.delete(id); reject(new Error("Codex 응답 시간 초과: " + method)); }, this.timeoutMs);
+      const timer = setTimeout(() => { this.requests.delete(id); reject(new Error("Codex 응답 시간 초과: " + method)); }, timeoutMs);
       timer.unref?.();
       this.requests.set(id, { resolve, reject, timer });
       try { this.write({ id, method, params }); } catch (err) { clearTimeout(timer); this.requests.delete(id); reject(err); }
     });
   }
 
+  // MCP 점검은 프로토콜만 초기화한다. 대화 생성·재개나 모델 턴은 시작하지 않는다.
+  initialize() {
+    return this.initialization ??= this.request("initialize", { clientInfo: { name: "agenthub", title: "AgentHub", version: "0.2.0" }, capabilities: {} })
+      .then(() => {
+        if (this.closed || this.stopping) throw new Error("Codex 연결이 끝났습니다.");
+        this.write({ method: "initialized", params: {} });
+        this.initialized = true;
+        this.emit("initialized");
+      });
+  }
+
   async start(text, attachments = []) {
     try {
-      await this.request("initialize", { clientInfo: { name: "agenthub", title: "AgentHub", version: "0.2.0" }, capabilities: {} });
+      await this.initialize();
       if (this.stopping || this.closed) return this.shutdown();
-      this.write({ method: "initialized", params: {} });
       const params = { cwd: this.session.cwd, ...codex.permissionSettings(this.session) };
       if (this.resolved.model) params.model = this.resolved.model;
       let result;
@@ -64,6 +74,7 @@ export class CodexAppServer extends EventEmitter {
       if (this.stopping || this.closed) return this.shutdown();
       this.threadId = result.thread?.id;
       if (!this.threadId) throw new Error("Codex가 대화 ID를 반환하지 않았습니다.");
+      this.emit("threadReady");
       this.emit("event", { kind: "status", text: "세션 시작", agentSessionId: this.threadId });
       const turn = { threadId: this.threadId, input: codexInput(text, attachments) };
       if (this.resolved.effort) turn.effort = this.resolved.effort;
@@ -282,5 +293,6 @@ export class CodexAppServer extends EventEmitter {
     this.closed = true;
     for (const pending of this.requests.values()) { clearTimeout(pending.timer); pending.reject(new Error("Codex 연결이 끝났습니다.")); }
     this.requests.clear();
+    this.emit("close");
   }
 }
