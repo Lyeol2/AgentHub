@@ -346,6 +346,16 @@ test("app-server: unexpected clean process exit before completion is an error", 
   assert.match(f.session.events.at(-1).text, /완료하기 전에/);
 });
 
+test("app-server: a Codex crash before completion shows the stderr cause in the error", async () => {
+  const f = runnerFixture(); const ended = new Promise((resolve) => f.runner.once("turnEnd", (...args) => resolve(args)));
+  f.runner.send(f.session, "작업", "fake-codex"); await tick();
+  f.children[0].stderr.emit("data", "codex.js:107\r\n  throw new Error(\r\n        ^\r\n\r\nError: Missing optional dependency @openai/codex-win32-x64. Reinstall Codex: npm install -g @openai/codex@latest\r\n    at findCodexExecutable (codex.js:107:9)\r\n\r\nNode.js v24.12.0\r\n");
+  f.children[0].emit("close", 1, null);
+  await ended;
+  const error = f.session.events.find((event) => event.kind === "error");
+  assert.match(error.text, /완료하기 전에 끝났습니다\.\nError: Missing optional dependency @openai\/codex-win32-x64/);
+});
+
 
 test("app-server: declined or failed file changes are not displayed as applied changes", () => {
   const f = fixture();
