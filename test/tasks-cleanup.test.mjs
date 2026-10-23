@@ -56,7 +56,41 @@ test("tasks: hotfix cleanup waits for propagation from main to develop", async (
   f.git(f.repo, "merge", "--no-edit", task.branch); f.git(f.repo, "push", "-q", "origin", "main");
   await assert.rejects(f.service.cleanup(task.id), (error) => error.reason === "gitflow-develop-pending");
   f.git(f.repo, "switch", "-q", "develop"); f.git(f.repo, "merge", "--no-edit", "main"); f.git(f.repo, "push", "-q", "origin", "develop");
-  assert.equal((await f.service.cleanup(task.id)).task.state, "cleaned");
+  assert.ok(f.git(f.repo, "ls-remote", "--heads", "origin", task.branch));
+  const result = await f.service.cleanup(task.id);
+  assert.equal(result.task.state, "cleaned");
+  assert.equal(result.task.remoteBranchRemoved, true);
+  assert.equal(f.git(f.repo, "ls-remote", "--heads", "origin", task.branch), "", "병합된 원격 작업 브랜치도 함께 지운다");
+});
+
+test("tasks: local completion cleanup removes the backed-up remote branch only when it holds no unmerged commits", async (t) => {
+  const finishLocal = async (f) => {
+    const { task } = await f.create();
+    f.commit(task.cwd, "completed.txt");
+    await f.service.backup(task.id);
+    const reviewed = await f.service.review(task.id);
+    await f.service.finish(task.id, { mode: "local", expectedHead: reviewed.head, reviewToken: reviewed.token, expectedTargetHead: reviewed.localTargetHead, push: true });
+    return task;
+  };
+  const f = fixture(t);
+  const task = await finishLocal(f);
+  assert.ok(f.git(f.repo, "ls-remote", "--heads", "origin", task.branch));
+  const result = await f.service.cleanup(task.id);
+  assert.equal(result.task.remoteBranchRemoved, true);
+  assert.equal(f.git(f.repo, "ls-remote", "--heads", "origin", task.branch), "");
+
+  // 원격 작업 브랜치에만 있는 커밋은 지우지 않고 알린다.
+  const g = fixture(t);
+  const kept = await finishLocal(g);
+  const other = path.join(path.dirname(g.repo), "other-clone");
+  g.git(path.dirname(g.repo), "clone", "-q", "-b", kept.branch, g.git(g.repo, "remote", "get-url", "origin"), other);
+  g.commit(other, "late.txt"); g.git(other, "push", "-q", "origin", kept.branch);
+  const late = g.git(other, "rev-parse", "HEAD");
+  const leftover = await g.service.cleanup(kept.id);
+  assert.equal(leftover.task.state, "cleaned");
+  assert.equal(leftover.task.remoteBranchRemoved, undefined);
+  assert.match(leftover.task.cleanupWarning, /원격 작업 브랜치/);
+  assert.match(g.git(g.repo, "ls-remote", "--heads", "origin", kept.branch), new RegExp(late));
 });
 
 test("tasks: two sessions of one task can run together, Git task actions wait for both, and switching the branch blocks execution", async (t) => {

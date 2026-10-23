@@ -473,6 +473,7 @@ export function createTasksController({
         : task.localBranchRemoved === false
           ? '작업 폴더를 정리했습니다. 로컬 브랜치와 작업·PR 기록은 보관됩니다.'
           : '작업 폴더와 로컬 브랜치를 정리했습니다. 작업과 PR 기록은 보관됩니다.'));
+      if (task.remoteBranchRemoved) card.append(node('p', 'task-note', `원격 작업 브랜치 ${task.remote}/${task.branch}도 지웠습니다.`));
       if (task.cleanupWarning) card.append(node('p', 'task-note', typeof task.cleanupWarning === 'string' ? task.cleanupWarning : task.cleanupWarning.message || '정리 결과를 확인해 주세요.'));
       if (task.state === 'cleaned' && task.folderLeft) card.append(actionButton('남은 폴더 다시 지우기', 'cleanup', task, { primary: true }));
       if (mergedNotice.has(task.id) && task.state === 'merged')
@@ -1180,15 +1181,18 @@ export function createTasksController({
     const develop = task.gitflow?.develop || DEFAULT_GITFLOW.develop, main = task.gitflow?.main || DEFAULT_GITFLOW.main;
     if (action === 'cleanup' && task.state === 'cleaned') return true; // 정리 뒤 남은 폴더만 다시 지운다.
     if (action === 'cleanup') {
-      const changes = [], keeps = ['작업·대화 기록', `원격 브랜치 ${task.remote || 'origin'}/${task.branch}`, task.pull?.number ? `PR #${task.pull.number}` : ''];
+      const changes = [], keeps = ['작업·대화 기록', task.pull?.number ? `PR #${task.pull.number}` : ''];
       if (task.inPlace) changes.push(`원본 폴더를 ${task.previousBranch || task.targetBranch} 브랜치로 되돌립니다.`);
       else if (task.reusedWorktree) {
         keeps.push(`기존 워크트리 ${task.cwd}`);
         changes.push(task.previousBranch ? `작업 폴더를 ${task.previousBranch} 브랜치로 되돌립니다.` : '작업 폴더를 마지막 커밋에 그대로 두고 브랜치에서 분리합니다.');
       } else if (task.ownsWorktree === false) keeps.push(`기존 작업 폴더 ${task.cwd}`);
       else changes.push(workspace.reuseOn() ? `작업 폴더를 지우지 않고 재사용 대기 폴더로 남깁니다(자리가 없거나 옮길 수 없으면 삭제): ${task.cwd}` : `작업 폴더를 삭제합니다: ${task.cwd}`);
-      if (task.ownsBranch === false) keeps.push(`기존 로컬 브랜치 ${task.branch}`);
-      else changes.push(`로컬 브랜치 ${task.branch}를 삭제합니다.`);
+      if (task.ownsBranch === false) keeps.push(`기존 브랜치 ${task.branch} (로컬·원격)`);
+      else {
+        changes.push(`로컬 브랜치 ${task.branch}를 삭제합니다.`);
+        if (task.remote) changes.push(`원격 작업 브랜치 ${task.remote}/${task.branch}도 대상 브랜치에 모두 반영된 것으로 확인되면 삭제합니다. 확인하지 못하거나 반영되지 않은 커밋이 있으면 남기고 알립니다.`);
+      }
       return (await confirmAction({ title: '작업 폴더 정리', subject: task.title, changes, keeps,
         warnings: ['커밋하지 않은 변경이나 게시하지 않은 커밋이 있으면 정리를 멈춥니다.'], confirmLabel: '정리', danger: true })).ok;
     }

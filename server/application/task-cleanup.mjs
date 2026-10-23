@@ -24,6 +24,20 @@ export function createTaskCleanup({ busy, directory, findPull, freshness, get, g
     if (!lines.length) return undefined;
     return `남은 커밋:\n${lines.slice(0, 10).join("\n")}${lines.length > 10 ? "\n…" : ""}`;
   }
+  // 이 작업이 만든 원격 작업 브랜치를 찾는다. 작업을 만들 때 확인한 원격 주소일 때만 다룬다.
+  async function remoteTaskBranch(task) {
+    if (task.ownsBranch === false || !task.remote) return null;
+    const url = (await taskGit(task.projectPath, ["remote", "get-url", task.remote])).trim();
+    if (remoteFingerprint(url) !== task.remoteFingerprint) throw new HttpError(409, "작업 생성 후 원격 주소가 바뀌었습니다. 원격 브랜치는 Git 탭에서 직접 확인하세요.", "task-remote");
+    const sha = (await taskGit(task.projectPath, [...githubCredentialArgs(), "ls-remote", "--heads", "--", url, `refs/heads/${task.branch}`])).trim().split(/\s+/)[0];
+    return sha ? { url, sha } : null;
+  }
+  // 확인한 커밋일 때만 지운다. 그사이 누가 올렸으면 거절된다.
+  async function deleteRemoteBranch(task, { url, sha }) {
+    await taskGit(task.projectPath, [...githubCredentialArgs(), "push", `--force-with-lease=refs/heads/${task.branch}:${sha}`, "--", url, `:refs/heads/${task.branch}`], { write: true });
+    // URL로 지우면 원격 추적 브랜치가 남으므로 함께 지운다.
+    await taskGit(task.projectPath, ["update-ref", "-d", `refs/remotes/${task.remote}/${task.branch}`], { write: true }).catch(() => {});
+  }
   async function cleanup(id) {
     return mutate(id, async (task) => {
       if (task.state === "cleaned") {
@@ -47,8 +61,10 @@ export function createTaskCleanup({ busy, directory, findPull, freshness, get, g
         await assertTaskGitIdle(task);
         if (await taskDirty(task)) throw new HttpError(409, "커밋하지 않은 변경이나 새 파일이 남아 있어 정리할 수 없습니다.", "task-dirty");
       }
+      let mergedInto;
       if (task.completion?.kind === "local") {
         const targetHead = await taskRef(task.projectPath, `refs/heads/${task.targetBranch}`);
+        mergedInto = targetHead;
         if (task.state !== "merged" || !task.mergedHead || !targetHead || !await taskAncestor(task.projectPath, task.mergedHead, targetHead)
           || (head !== task.mergedHead && !await contentInTarget(task, head, targetHead)))
           throw new HttpError(409, "대상 브랜치에 반영되지 않은 커밋이 있어 정리할 수 없습니다.", "task-unmerged-commits", { hint: await extraCommits(task, task.mergedHead, head) });
@@ -60,6 +76,7 @@ export function createTaskCleanup({ busy, directory, findPull, freshness, get, g
         }
       } else {
       await freshness(task);
+      mergedInto = task.freshness.targetSha;
       const target = await githubTarget(task);
       // Git 탭에서 만든 PR처럼 작업에 아직 연결되지 않은 PR도 찾아 확인한다.
       const pull = task.pull ? (await github.detail(taskDir(task), task.pull.number, { remote: task.remote })).pull : await findPull(task, target);
@@ -86,6 +103,19 @@ export function createTaskCleanup({ busy, directory, findPull, freshness, get, g
       if (present ? await assertTaskWorktree(task) !== head || await taskDirty(task)
         : (!moved && hasFolder(task)) || (moved && !offBranch(task)) || await taskRef(task.projectPath, `refs/heads/${task.branch}`) !== head)
         throw new HttpError(409, "정리 확인 중 작업 폴더가 변경됐습니다. 다시 확인하세요.", "task-stale-head");
+      // 원격에 올린 작업 브랜치도 대상에 모두 들어갔으면 함께 지운다. 확인하지 못하거나 남은 커밋이 있으면 원격 브랜치만 남기고 알린다.
+      let remoteBranch = null, remoteWarning;
+      try {
+        remoteBranch = await remoteTaskBranch(task);
+        if (remoteBranch && ![head, task.mergedHead].includes(remoteBranch.sha) && !await taskAncestor(task.projectPath, remoteBranch.sha, head)
+          && !await contentInTarget(task, remoteBranch.sha, mergedInto)) {
+          remoteWarning = `원격 작업 브랜치 ${task.remote}/${task.branch}에 대상에 반영되지 않은 커밋이 있어 원격 브랜치는 남겼습니다.`;
+          remoteBranch = null;
+        }
+      } catch (error) {
+        remoteWarning = `원격 작업 브랜치를 확인하지 못해 남겼습니다: ${error.message}`;
+        remoteBranch = null;
+      }
       // 기존 워크트리를 골라 시작한 작업은 폴더를 남기고 작업 전 브랜치로 되돌린다. AgentHub가 만든 폴더는 재사용 대기 폴더로 남기거나 지운다.
       if (task.inPlace || (task.reusedWorktree && present)) { if (present) await leaveInPlaceBranch(task); }
       else if (ownsWorktree) { if (!await workspace.park(task)) await removeTaskWorktree(task); }
@@ -98,6 +128,13 @@ export function createTaskCleanup({ busy, directory, findPull, freshness, get, g
           task.localBranchRemoved = true;
         }
       } catch (error) { task.cleanupWarning = `작업 폴더는 정리됐지만 로컬 브랜치는 남았습니다: ${error.message}`; }
+      if (remoteBranch) {
+        try {
+          await deleteRemoteBranch(task, remoteBranch);
+          task.remoteBranchRemoved = true;
+        } catch (error) { remoteWarning = `원격 작업 브랜치 ${task.remote}/${task.branch}는 남았습니다: ${error.message}`; }
+      }
+      if (remoteWarning) task.cleanupWarning = [task.cleanupWarning, remoteWarning].filter(Boolean).join("\n");
       task.state = "cleaned";
       task.cleanedAt = now();
       task.developPending = false;
@@ -200,16 +237,10 @@ export function createTaskCleanup({ busy, directory, findPull, freshness, get, g
           task.pull = { ...task.pull, state: "CLOSED" };
           save(task);
         }
-        if (task.ownsBranch !== false && task.remote) {
-          const url = (await taskGit(task.projectPath, ["remote", "get-url", task.remote])).trim();
-          if (remoteFingerprint(url) !== task.remoteFingerprint) throw new HttpError(409, "작업 생성 후 원격 주소가 바뀌었습니다. 원격 브랜치는 Git 탭에서 직접 확인하세요.", "task-remote");
-          const line = (await taskGit(task.projectPath, [...githubCredentialArgs(), "ls-remote", "--heads", "--", url, `refs/heads/${task.branch}`])).trim();
-          const sha = line.split(/\s+/)[0];
-          if (sha) {
-            // 확인한 커밋일 때만 지운다. 그사이 누가 올렸으면 거절된다.
-            await taskGit(task.projectPath, [...githubCredentialArgs(), "push", `--force-with-lease=refs/heads/${task.branch}:${sha}`, "--", url, `:refs/heads/${task.branch}`], { write: true });
-            remote.remoteBranchRemoved = true;
-          }
+        const branch = await remoteTaskBranch(task);
+        if (branch) {
+          await deleteRemoteBranch(task, branch);
+          remote.remoteBranchRemoved = true;
         }
       } catch (error) { recordError(task, error); save(task); throw failure(error); }
       finally { busy.delete(id); }
