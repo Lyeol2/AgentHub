@@ -26,6 +26,11 @@ const STDERR_NOISE = [
 export function stderrSummary(text, lines = 15) {
   return String(text ?? "").split(/\r?\n/).filter((line) => line.trim() && !STDERR_NOISE.some((noise) => noise.test(line))).slice(-lines).join("\n");
 }
+// stderr 요약에서 원인을 말하는 한 줄. 스택 추적·버전 줄보다 오류 문장을 고른다.
+export function stderrCause(summary) {
+  const lines = String(summary ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  return lines.findLast((line) => !/^at\s/.test(line) && /\berror\b|failed|panicked|not found|cannot|denied/i.test(line)) ?? lines.at(-1) ?? "";
+}
 const INJECT_GRACE_MS = 4000;
 export const INTERRUPT_GRACE_MS = 10000;
 const STOP_TASK_TIMEOUT_MS = 10000;
@@ -696,13 +701,15 @@ export class Runner extends EventEmitter {
     }
     const finishedBeforeExit = !!exit && !!child.appServer && turn.completed && !turn.sawError;
     if (exit) {
+      const summary = stderrSummary(child.stderrTail.join(""));
       if (child.appServer && !turn.completed && !turn.sawError) {
         turn.sawError = true;
-        this.append(session, { kind: "error", text: "Codex 연결이 턴을 완료하기 전에 끝났습니다." });
+        // 설치 손상·메모리 부족처럼 Codex가 시작하자마자 죽은 원인을 오류 문구에 바로 보인다. 전체 내용은 아래 로그에 남는다.
+        const cause = stderrCause(summary);
+        this.append(session, { kind: "error", text: `Codex 연결이 턴을 완료하기 전에 끝났습니다.${cause ? `\n${cause}` : ""}` });
       }
       // Codex가 턴을 마쳤다고 알린 뒤의 종료는 AgentHub가 입력을 닫아 끝낸 것이라 대화에 남기지 않는다.
       // 제때 끝나지 않아 AgentHub가 강제로 닫아 종료 코드가 0이 아니어도 결과는 바뀌지 않는다.
-      const summary = stderrSummary(child.stderrTail.join(""));
       if (finishedBeforeExit) {
         // 정상 종료로 본다.
       } else if (exit.code !== 0 && !turn.sawError) {
