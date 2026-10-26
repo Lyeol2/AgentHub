@@ -39,6 +39,24 @@ function fixture({ resume = null, failMethod = null, response = null, resumeRetr
 }
 const tick = () => new Promise((resolve) => setImmediate(resolve));
 
+test("app-server: an approved plan resumes its conversation with write access instead of the plan sandbox", async () => {
+  const planning = fixture();
+  planning.session.planTurn = true;
+  planning.session.permission = "auto-review";
+  await planning.protocol.start("계획 수립");
+  assert.equal(planning.sent.find((message) => message.method === "thread/start").params.sandbox, "read-only");
+  planning.protocol.close();
+  const implementation = fixture({ resume: "thread" });
+  implementation.session.permission = "auto-review";
+  await implementation.protocol.start("승인한 계획 구현");
+  const params = implementation.sent.find((message) => message.method === "thread/resume").params;
+  assert.equal(params.threadId, "thread");
+  assert.equal(params.sandbox, "workspace-write");
+  assert.equal(params.approvalsReviewer, "auto_review");
+  assert.ok(codex.buildArgs(implementation.session).includes('sandbox_mode="workspace-write"'));
+  implementation.protocol.close();
+});
+
 test("app-server: initialization, resume and native text/image turn input are ordered", async () => {
   const f = fixture({ resume: "previous" });
   await f.protocol.start("사진 설명", [{ path: "C:/saved/image.png", mimeType: "image/png" }]);

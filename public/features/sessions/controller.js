@@ -25,7 +25,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     api, getSession: () => data.current, sessionById, selectSession, onTaskReference, onSubtaskFocus: (id) => subtasksView.focus(id),
     onPlanDecision: (id, plan, body) => api("POST", `/api/sessions/${id}/plans/${plan}`, body),
     onPlanError: (id, error) => api("POST", `/api/sessions/${id}/messages`, { prompt: `[계획 오류] ${error}\n계획 블록을 고쳐 다시 제안하라.` }),
-    onQuestionAnswer: (id, question, answers) => api("POST", `/api/sessions/${id}/questions/${question}`, { answers }),
+    onQuestionAnswer: (id, question, answers, mode) => api("POST", `/api/sessions/${id}/questions/${question}`, { answers, ...(mode ? { mode } : {}) }),
     onPermissionDecision: (id, request, body) => api("POST", `/api/sessions/${id}/permissions/${request}`, body),
   });
 

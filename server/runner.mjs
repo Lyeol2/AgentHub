@@ -298,6 +298,7 @@ export class Runner extends EventEmitter {
     } else {
       event.status = decision === "deny" ? "denied" : "allowed";
       event.decision = decision;
+      if (control.planApproval && decision !== "deny") delete session.planTurn;
       if (decision === "always") this.remember(session, agent, control);
     }
     session.waiting = this.waitingFor(session.id);

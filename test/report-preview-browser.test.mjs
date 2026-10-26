@@ -105,6 +105,7 @@ $$
   await Promise.all([
     fs.writeFile(path.join(project, "docs", "화면 (완료).png"), png),
     fs.writeFile(path.join(project, "docs", "두번째.png"), png),
+    fs.writeFile(path.join(project, "docs", "영상 데모.webm"), ""),
     fs.writeFile(path.join(project, "docs", "result.md"), reportMarkdown),
     fs.writeFile(path.join(project, "docs", "nested.txt"), "연결 문서의 본문"),
     fs.writeFile(path.join(project, "docs", "preview.css"), "#local-result{color:rgb(20, 90, 180)}"),
@@ -119,7 +120,7 @@ $$
   const first = session("report-qa", "보고서 미리보기 QA"), second = session("report-other", "참조 세션");
   first.events = [
     { seq: 0, kind: "user", text: "@docs/result.md 결과를 확인해 주세요. docs/result.md.map은 별도 파일입니다.", references: [{ label: "result.md", path: "docs/result.md" }] },
-    { seq: 1, kind: "text", text: `검증 통과 · [최종 보고서](docs/result.md)\n\n![화면 미리보기](<docs/화면 (완료).png>) · [다음 화면](docs/두번째.png)\n\n[HTML 화면](docs/index.html) · [실행 화면](${liveUrl})\n\n[검증 기록](docs/missing.md)\n\n[참조 세션](agenthub://session/report-other) · [없는 작업](agenthub://task/missing-task)` },
+    { seq: 1, kind: "text", text: `검증 통과 · [최종 보고서](docs/result.md)\n\n![화면 미리보기](${encodeURI("docs/화면 (완료).png")}) · [다음 화면](docs/두번째.png)\n\n[HTML 화면](docs/index.html) · [실행 화면](${liveUrl})\n\n[검증 기록](docs/missing.md) · [영상 재생](${encodeURI("docs/영상 데모.webm")})\n\n[참조 세션](agenthub://session/report-other) · [없는 작업](agenthub://task/missing-task)` },
     { seq: 2, kind: "result", text: "완료" },
   ];
   hub.store.add(first); hub.store.add(second);
@@ -132,7 +133,7 @@ $$
   const output = path.join(root, "data", "report-preview-qa");
   await fs.mkdir(output, { recursive: true });
   await withBrowser(temp, `http://127.0.0.1:${hub.port}/`, async ({ command, evaluate, errors }) => {
-    await evaluate(until("document.querySelectorAll('#s-events .report-card').length===6"));
+    await evaluate(until("document.querySelectorAll('#s-events .report-card').length===7"));
     assert.equal(await evaluate("document.querySelector('#s-events .mention-chip').textContent"), "@result.md");
     assert.equal(await evaluate("document.querySelectorAll('#s-events .mention-chip').length"), 1);
     assert.equal(await evaluate("document.querySelectorAll('.report-verification.passed').length"), 1);
@@ -146,6 +147,26 @@ $$
     assert.equal(await evaluate("document.querySelector('.report-scale').textContent"), "125%");
     await evaluate("[...document.querySelectorAll('.report-toolbar button')].find(x=>x.textContent==='다음').click()");
     await evaluate(until("document.querySelector('.report-preview h2').textContent==='다음 화면'"));
+    // Produce a tiny playable fixture in Chromium without external codecs or network assets.
+    const video = await evaluate(`(async () => {
+      const canvas = document.createElement('canvas'); canvas.width = 32; canvas.height = 32;
+      const ctx = canvas.getContext('2d'), stream = canvas.captureStream(10), chunks = [];
+      const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp8' });
+      recorder.ondataavailable = event => chunks.push(event.data);
+      const stopped = new Promise(resolve => recorder.onstop = resolve);
+      recorder.start();
+      for (let i = 0; i < 6; i++) { ctx.fillStyle = i % 2 ? 'red' : 'blue'; ctx.fillRect(0, 0, 32, 32); await new Promise(resolve => setTimeout(resolve, 100)); }
+      recorder.stop(); await stopped; stream.getTracks().forEach(track => track.stop());
+      return btoa(String.fromCharCode(...new Uint8Array(await new Blob(chunks).arrayBuffer())));
+    })()`);
+    await fs.writeFile(path.join(project, "docs", "영상 데모.webm"), Buffer.from(video, "base64"));
+    await evaluate("document.querySelector('.report-preview').close(); document.querySelector('[data-report-video]').click()");
+    await evaluate(until("document.querySelector('.report-video')?.readyState >= 2"));
+    assert.equal(await evaluate("document.querySelector('.report-video').videoWidth"), 32);
+    assert.ok(await evaluate("document.querySelector('.report-video').controls"));
+    const partial = await evaluate("fetch(document.querySelector('.report-video').src, {headers: {Range: 'bytes=0-15'}}).then(async r => ({status:r.status, size:(await r.arrayBuffer()).byteLength, type:r.headers.get('Content-Type')}))");
+    assert.deepEqual(partial, { status: 206, size: 16, type: "video/webm" });
+    await fs.writeFile(path.join(output, "video.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
     await evaluate("document.querySelector('.report-preview').close(); document.querySelector('.mention-chip').click()");
     await evaluate(until("document.querySelector('.report-document h1')?.textContent==='검증 결과'"));
     assert.equal(await evaluate("document.querySelector('.report-document strong').textContent"), "통과");

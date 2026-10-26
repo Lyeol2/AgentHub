@@ -2,7 +2,7 @@ import { el } from "../../shared/dom.js";
 import { renderMarkdown } from "../../markdown.js";
 import { collectReportReferences, classifyReportTarget } from "../../report-references.js";
 
-const KIND = { image: "화면·이미지", markdown: "보고서", text: "검증 기록·텍스트", html: "화면", file: "파일", web: "실행 화면", session: "세션", task: "작업" };
+const KIND = { image: "화면·이미지", video: "영상", markdown: "보고서", text: "검증 기록·텍스트", html: "화면", file: "파일", web: "실행 화면", session: "세션", task: "작업" };
 const STATUS = { passed: "검증 통과", failed: "검증 실패", "not-run": "검증 미실행" };
 const basename = (value) => String(value ?? "").replace(/\\/g, "/").split("/").pop();
 const contentUrl = (session, path, download = false) => `/api/sessions/${encodeURIComponent(session.id)}/artifact/content?path=${encodeURIComponent(path)}${download ? "&download=1" : ""}`;
@@ -94,6 +94,12 @@ export function createReportView({ api, getSession, sessionById = () => null, se
     body.replaceChildren();
     if (!dialog.open) dialog.showModal();
     if (ref.url) {
+      if (ref.kind === "video" && /^https?:\/\//.test(ref.url)) {
+        message.textContent = "";
+        renderVideo(ref.url, ref.label);
+        toolbar.append(el("a", { class: "ghost sm", href: ref.url, target: "_blank", rel: "noopener noreferrer" }, "원본 열기"));
+        return;
+      }
       if (ref.kind === "image" && /^(https?:\/\/|\/api\/sessions\/[^/]+\/attachments\/)/.test(ref.url)) {
         message.textContent = "";
         renderImage(ref.url, ref.label, ref, session, gallery);
@@ -126,6 +132,7 @@ export function createReportView({ api, getSession, sessionById = () => null, se
       }
       message.textContent = item.truncated ? "미리보기는 파일의 앞부분입니다. 전체 내용은 다운로드로 확인하세요." : "";
       if (item.kind === "image") renderImage(contentUrl(session, item.path), item.name, ref, session, gallery);
+      else if (item.kind === "video") renderVideo(contentUrl(session, item.path), item.name);
       else if (["markdown", "text", "html"].includes(item.kind)) renderDocument(item, session);
       else body.append(el("p", { class: "muted" }, "이 형식은 다운로드하거나 기본 앱으로 열어 확인할 수 있습니다."));
     } catch (error) {
@@ -133,6 +140,12 @@ export function createReportView({ api, getSession, sessionById = () => null, se
       message.textContent = error.status === 404 ? "파일을 찾을 수 없습니다. 이동되었거나 다른 환경에서 만든 경로일 수 있습니다." : error.message;
       body.append(el("p", { class: "muted" }, "위 경로를 복사해 파일 위치를 확인할 수 있습니다."));
     }
+  }
+
+  function renderVideo(url, name) {
+    const video = el("video", { class: "report-video", controls: "", preload: "metadata", playsinline: "", src: url, "aria-label": name || "영상 미리보기" });
+    video.addEventListener("error", () => { message.textContent = "영상을 재생하지 못했습니다. 파일 위치나 브라우저가 지원하는 영상 형식인지 확인하세요."; });
+    body.append(video);
   }
 
   function showError(ref, text) {
@@ -203,7 +216,7 @@ export function createReportView({ api, getSession, sessionById = () => null, se
   function referenceFromAnchor(anchor, basePath) {
     return { label: anchor.textContent, path: anchor.dataset.reportPath ? relativeTo(anchor.dataset.reportPath, basePath) : undefined,
       url: anchor.dataset.reportUrl, sessionId: anchor.dataset.reportSession, taskId: anchor.dataset.reportTask,
-      kind: anchor.dataset.reportImage === "true" ? "image" : anchor.dataset.reportUrl ? "web" : undefined };
+      kind: anchor.dataset.reportImage === "true" ? "image" : anchor.dataset.reportVideo === "true" ? "video" : anchor.dataset.reportUrl ? "web" : undefined };
   }
 
   function enhance(node, text, { references, session = getSession(), showCards = true, basePath } = {}) {
@@ -217,7 +230,7 @@ export function createReportView({ api, getSession, sessionById = () => null, se
       void open(referenceFromAnchor(anchor, basePath), session, gallery);
     });
     if (!showCards) return;
-    const artifacts = refs.filter((ref) => ref.path || ref.kind === "image" || (ref.url && isLocalPreviewUrl(ref.url))).slice(0, 24);
+    const artifacts = refs.filter((ref) => ref.path || ["image", "video"].includes(ref.kind) || (ref.url && isLocalPreviewUrl(ref.url))).slice(0, 24);
     if (!artifacts.length) return;
     const cards = el("div", { class: "report-cards" });
     for (const ref of artifacts) {

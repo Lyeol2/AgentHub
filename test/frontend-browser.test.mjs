@@ -59,11 +59,49 @@ async function runBrowser(temp, url) {
       const bounds = layout.result.value;
       assert.ok(bounds.height > 100 && bounds.tabsHeight > 0 && bounds.graphGap < 2 && bounds.tabsGap < 2 && Math.abs(bounds.bottom - bounds.expectedBottom) < 2, "Graph fills resized window above its tabs and toolbar: " + JSON.stringify({ width, height, ...bounds }));
       assert.ok(bounds.right <= width && bounds.documentWidth <= width && bounds.documentHeight <= height, "Panels stay inside resized window");
+      const sidebar = await command("Runtime.evaluate", { expression: `(() => {
+        const foot = document.querySelector('.sidebar-foot').getBoundingClientRect();
+        const list = document.getElementById('session-list').getBoundingClientRect();
+        return { foot: foot.height, bottom: foot.bottom, list: list.height, listBottom: list.bottom };
+      })()`, returnByValue: true });
+      assert.ok(sidebar.result.value.foot < 125 && sidebar.result.value.bottom <= height && sidebar.result.value.list > 100 && sidebar.result.value.listBottom <= sidebar.result.value.bottom - sidebar.result.value.foot, "Sidebar reserves visible list space at short window heights: " + JSON.stringify(sidebar.result.value));
+      if (process.env.AGENTHUB_UI_SCREENSHOT && width === 900) {
+        const { data } = await command("Page.captureScreenshot", { format: "png" });
+        await fs.writeFile(process.env.AGENTHUB_UI_SCREENSHOT.replace(/\.png$/, "-short.png"), Buffer.from(data, "base64"));
+      }
     }
     if (process.env.AGENTHUB_UI_SCREENSHOT) {
       const { data } = await command("Page.captureScreenshot", { format: "png" });
       await fs.writeFile(process.env.AGENTHUB_UI_SCREENSHOT, Buffer.from(data, "base64"));
     }
+    const compact = await command("Runtime.evaluate", { expression: `new Promise(resolve => {
+      document.getElementById('sidebar-resizer').dispatchEvent(new KeyboardEvent('keydown', {key:'Home', bubbles:true}));
+      document.getElementById('sidebar-status-toggle').click();
+      requestAnimationFrame(() => {
+        const sidebar = document.getElementById('sidebar').getBoundingClientRect();
+        const panel = document.getElementById('sidebar-status').getBoundingClientRect();
+        const mini = document.getElementById('limit-mini');
+        resolve(sidebar.width === 180 && panel.width > 0 && panel.left >= sidebar.left && panel.right <= sidebar.right && mini.scrollWidth <= mini.clientWidth);
+      });
+    })`, awaitPromise: true, returnByValue: true });
+    assert.equal(compact.result.value, true, "Compact controls and update details fit the minimum sidebar width");
+    if (process.env.AGENTHUB_UI_SCREENSHOT) {
+      const { data } = await command("Page.captureScreenshot", { format: "png" });
+      await fs.writeFile(process.env.AGENTHUB_UI_SCREENSHOT.replace(/\.png$/, "-details.png"), Buffer.from(data, "base64"));
+    }
+    await command("Runtime.evaluate", { expression: `document.querySelector('[data-sidebar-section="projects"]').click(); document.querySelector('[data-sidebar-section="sessions"]').click()` });
+    const reloaded = new Promise((resolve) => { const listener = ({ data }) => { if (JSON.parse(data).method === "Page.loadEventFired") { socket.removeEventListener("message", listener); resolve(); } }; socket.addEventListener("message", listener); });
+    await command("Page.reload"); await reloaded;
+    const restored = await command("Runtime.evaluate", { expression: `new Promise((resolve, reject) => {
+      const end = Date.now() + 8000;
+      const check = () => {
+        const toggle = document.querySelector('[data-sidebar-section="projects"]');
+        if (toggle?.getAttribute('aria-expanded') === 'false') return resolve(document.getElementById('project-nav').hidden && document.getElementById('session-list').hidden && document.getElementById('session-filter').hidden);
+        if (Date.now() > end) return reject(Error('Collapsed sections were not restored after reload'));
+        setTimeout(check, 20);
+      }; check();
+    })`, awaitPromise: true, returnByValue: true });
+    assert.equal(restored.result.value, true, "Section preferences survive a full page reload");
     return { checks: result.result.value, errors };
   } finally {
     socket?.close(); child.kill();
@@ -148,7 +186,10 @@ test("browser: feature composition, graph gestures, Git, settings, and live sess
         { id: "cmd-md", kind: "markdown", title: "완료 보고서", cwdMode: "source", projectPath: project.path, state: "idle", pos: { x: 700, y: 200 } },
       ] };
       else if (url.pathname === "/api/skills" || url.pathname === "/api/messages") value = [];
-      else if (url.pathname === "/api/limits") value = { claude: { windows: [] }, codex: { windows: [] } };
+      else if (url.pathname === "/api/limits") value = {
+        claude: { windows: [{ id: "five_hour", label: "5시간", usedPercent: 24, resetsAt: new Date(Date.now() + 2 * 3600000).toISOString() }, { id: "seven_day", label: "주간", usedPercent: 61, resetsAt: new Date(Date.now() + 3 * 86400000).toISOString() }] },
+        codex: { windows: [{ id: "primary", label: "5시간", usedPercent: 35, resetsAt: new Date(Date.now() + 90 * 60000).toISOString() }] },
+      };
       else if (url.pathname === "/api/auth") value = { claude: false, codex: false };
       else if (url.pathname === "/api/setup") value = setup;
       else if (url.pathname === "/api/setup/winget/install" && req.method === "POST") {

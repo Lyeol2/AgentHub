@@ -727,12 +727,15 @@ export function createSessionService({
     return event;
   }
 
-  function answerQuestion(id, questionId, { answers }) {
+  function answerQuestion(id, questionId, { answers = [], mode } = {}) {
     const session = getSession(id);
     const event = session.events.find((e) => e.kind === "question" && e.questionId === questionId);
     if (!event) throw new HttpError(404, "질문이 없습니다.");
     if (event.status !== "pending") throw new HttpError(409, "이미 답했거나 지나간 질문입니다.");
-    if (!hasAnswer(answers)) throw new HttpError(400, "답을 고르거나 적으세요.");
+    if (mode !== undefined && mode !== "implement") throw new HttpError(400, "지원하지 않는 답변 모드입니다.");
+    const implement = mode === "implement";
+    if (implement && (session.chat || !session.planTurn || event.live)) throw new HttpError(409, "완료된 계획 턴의 질문에서만 구현을 승인할 수 있습니다.");
+    if (!implement && !hasAnswer(answers)) throw new HttpError(400, "답을 고르거나 적으세요.");
     if (event.live) {
       try {
         runner.answer(event.questionId, { answers });
@@ -748,11 +751,25 @@ export function createSessionService({
     if (runner.isRunning(id)) throw new HttpError(409, "이 세션은 이미 실행 중입니다.");
     event.status = "answered";
     event.answers = answers;
+    const previousPermission = session.permission;
+    const previousPlanTurn = session.planTurn;
     try {
-      startTurn(session, answerPrompt(event.questions, answers), session.chainDepth ?? 0, {}, { keepMode: true });
+      let prompt = answerPrompt(event.questions, answers);
+      if (implement) {
+        delete session.planTurn;
+        if (session.agent === "codex" && session.permission === "read-only") session.permission = "workspace-write";
+        if (session.agent === "claude" && session.permission === "plan") session.permission = "acceptEdits";
+        event.implementationApproved = true;
+        prompt += "\n\n[계획 승인] 사용자가 계획을 승인하고 구현을 요청했다. 계획 모드를 끝내고 승인한 계획을 구현하고 검증한다. 파일 수정이 가능한 세션 권한으로 전환했다.";
+      }
+      startTurn(session, prompt, session.chainDepth ?? 0, {}, { keepMode: !implement });
     } catch (err) {
+      session.permission = previousPermission;
+      if (previousPlanTurn === undefined) delete session.planTurn;
+      else session.planTurn = previousPlanTurn;
       event.status = "pending";
       delete event.answers;
+      delete event.implementationApproved;
       throw err;
     }
     broadcast("session", { sessionId: id });

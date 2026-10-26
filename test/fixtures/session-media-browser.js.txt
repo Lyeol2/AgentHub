@@ -147,6 +147,24 @@
   // 같은 렌더러를 쓰는 일반 채팅과 완료 이벤트 없는 가져온 기록도 확인한다.
   const { createConversationView } = await import("/features/sessions/conversation-view.js");
   const history = { id: "imported-history", state: "idle" };
+  const planAnswers = [];
+  const planSession = { id: "plan-session", state: "idle", planTurn: true };
+  const planView = createConversationView({ getSession: () => planSession, onQuestionAnswer: async (...args) => planAnswers.push(args) });
+  const planList = document.createElement("ol");
+  const planQuestion = { kind: "question", questionId: "plan-question", status: "pending", questions: [{ question: "구현 계획", options: [] }] };
+  planView.renderEvents(planList, [planQuestion]);
+  check(planList.querySelector(".q-submit").textContent === "계획 계속", "plan revisions have a separate read-only action");
+  planList.querySelector(".q-implement").click();
+  await until(() => planAnswers.length === 1);
+  check(planAnswers[0][3] === "implement", "explicit implementation approval sends a mode transition even without answer text");
+  delete planSession.planTurn;
+  planView.renderEvents(planList, [{ ...planQuestion, planTurn: true }]);
+  check(planList.querySelector(".q-implement"), "streamed plan question carries its mode before session metadata refresh");
+  planView.renderEvents(planList, [{ ...planQuestion, status: "answered", implementationApproved: true }]);
+  check(planList.textContent.includes("구현 승인") && !planList.textContent.includes("답하지 않음"), "approval remains explicit in saved conversation history");
+  planSession.planTurn = true;
+  planView.renderEvents(planList, [{ ...planQuestion, live: true }]);
+  check(!planList.querySelector(".q-implement"), "live questions cannot change sandbox in the middle of a turn");
   const conversation = createConversationView({ getSession: () => history });
   const list = document.createElement("ol"); list.className = "events chat-events";
   conversation.renderEvents(list, [

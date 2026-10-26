@@ -114,8 +114,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 14px 10px;
+  gap: 8px;
+  padding: 10px;
   background: var(--sidebar);
   min-width: 0;
   min-height: 0;
@@ -146,6 +146,14 @@ body.resizing-sidebar, body.resizing-sidebar * { cursor: col-resize !important; 
 .nav-item.active { background: var(--accent-soft); color: var(--text); }
 .nav-section { display: flex; flex-direction: column; gap: 4px; min-height: 0; }
 .nav-section.grow { flex: 1; }
+.sidebar-lists { display: flex; flex-direction: column; gap: 6px; flex: 1; min-height: 0; overflow-y: auto; }
+.sidebar-lists > .nav-section { flex-shrink: 0; }
+.sidebar .nav-label { flex: none; padding: 0 4px; min-height: 26px; }
+.nav-section-toggle { display: flex; align-items: center; gap: 6px; flex: 1; min-width: 0; padding: 4px; border: 0; background: transparent; color: var(--muted); font-size: 11px; font-weight: 600; text-align: left; }
+.nav-section-toggle:hover { background: var(--hover); color: var(--text); }
+.nav-chevron { display: inline-block; font-size: 16px; line-height: 1; transform: rotate(90deg); }
+.nav-section-toggle[aria-expanded="false"] .nav-chevron { transform: none; }
+.sidebar-lists .nav-section.collapsed, #inbox-section.collapsed { flex: none; min-height: 0; gap: 0; }
 .nav-label {
   display: flex; justify-content: space-between; align-items: center;
   padding: 0 8px; color: var(--faint);
@@ -178,7 +186,17 @@ body.resizing-sidebar, body.resizing-sidebar * { cursor: col-resize !important; 
 .session-item .top { display: flex; gap: 7px; align-items: center; min-width: 0; }
 .session-item .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-item .sub { font-size: 11.5px; color: var(--faint); padding-left: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-foot { display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 10px; }
+.sidebar-foot { position: relative; display: grid; gap: 6px; border-top: 1px solid var(--line); padding-top: 8px; margin-top: auto; }
+.sidebar-tools { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.sidebar-tools .account-box { flex: 1; min-width: 0; padding: 0 4px; }
+.sidebar-tools .account-connect { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-tool { position: relative; display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 4px; flex: none; border-radius: 5px; }
+.sidebar-tool:hover, .sidebar-tool[aria-expanded="true"] { background: var(--hover); color: var(--text); }
+.sidebar-status { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; z-index: 30; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); box-shadow: 0 8px 30px rgb(0 0 0 / .25); max-height: min(260px, 50vh); overflow-y: auto; }
+.sidebar-status-heading { font-size: 11px; font-weight: 600; color: var(--muted); }
+.sidebar-status .update-box { padding: 8px 0 0; }
+.sidebar-status .update-box .line { flex-wrap: wrap; }
+.sidebar-update-indicator { position: absolute; top: 2px; right: 2px; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 .cli-status { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); }
 .cli-status div { display: flex; gap: 7px; align-items: center; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 
@@ -266,10 +284,14 @@ main { display: flex; min-width: 0; min-height: 0; height: 100%; overflow: hidde
 .bar > span.warn { background: var(--warn); }
 .bar > span.danger { background: var(--danger); }
 .limit-empty { color: var(--faint); font-size: 12.5px; }
-.limit-mini { display: grid; gap: 6px; padding: 2px 10px 4px; }
-.limit-mini .item { display: grid; gap: 3px; font-size: 11px; color: var(--muted); cursor: default; }
-.limit-mini .item .line { display: flex; justify-content: space-between; }
-.limit-mini .bar { height: 4px; }
+.limit-mini { display: grid; gap: 5px; padding: 0 4px; }
+.limit-mini:empty { display: none; }
+.limit-mini .item { display: grid; gap: 2px; font-size: 11px; line-height: 1.3; color: var(--muted); cursor: default; }
+.limit-mini .item .line { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 6px; align-items: center; }
+.limit-mini .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.limit-mini .value { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text); }
+.limit-mini .item .reset { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.limit-mini .bar { height: 2px; border: 0; }
 
 /* ── 업데이트 ─────────────────────────────────────────────── */
 .update-box { display: grid; gap: 5px; padding: 6px 10px 2px; font-size: 11.5px; color: var(--muted); }
@@ -848,10 +870,10 @@ button.primary.danger:hover:not(:disabled) { background: var(--danger); filter: 
 .zoom-controls, .history-controls { display: inline-flex; gap: 2px; align-items: center; }
 .zoom-controls #p-zoom-reset { min-width: 52px; font-variant-numeric: tabular-nums; }
 
-/* 창이 낮아도 세션 목록이 아래 상태 칸에 눌려 겹치지 않게 최소 높이를 두고, 아래 칸은 넘치면 스크롤한다. */
+/* 목록은 별도로 스크롤하고 하단 도구는 고정한다. 접은 섹션에는 최소 높이를 남기지 않는다. */
 .sidebar { overflow: hidden; }
 .nav-section.grow { min-height: 110px; overflow: hidden; }
-.sidebar-foot { flex: none; max-height: 42vh; overflow-y: auto; }
+.sidebar-foot { flex: none; }
 
 /* ── 프로젝트 탭 ─────────────────────────────────────────── */
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }

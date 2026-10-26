@@ -32,9 +32,9 @@ export function sessionRoutes(s) {
       });
       res.end(html);
     }],
-    ["GET", "sessions/:id/artifact/content", ({ params, query, res }) => {
+    ["GET", "sessions/:id/artifact/content", ({ params, query, req, res }) => {
       const file = s.artifactContent(params.id, query.get("path"));
-      const inline = file.kind === "image" && query.get("download") !== "1";
+      const inline = ["image", "video"].includes(file.kind) && query.get("download") !== "1";
       const filename = encodeURIComponent(safeAttachmentName(file.name)).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
       const headers = {
         "Content-Type": inline ? file.mimeType : "application/octet-stream",
@@ -44,6 +44,24 @@ export function sessionRoutes(s) {
         "X-Content-Type-Options": "nosniff",
         "Content-Security-Policy": "sandbox; default-src 'none'",
       };
+      // Browser media players request byte ranges for metadata and seeking.
+      if (inline && file.kind === "video") {
+        headers["Accept-Ranges"] = "bytes";
+        const range = req?.headers?.range;
+        if (range) {
+          const size = file.bytes.length;
+          const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+          const start = match?.[1] ? Number(match[1]) : Math.max(0, size - Number(match?.[2]));
+          const end = match?.[1] && match[2] ? Math.min(size - 1, Number(match[2])) : size - 1;
+          if (!match || (!match[1] && !match[2]) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) {
+            res.writeHead(416, { ...headers, "Content-Range": `bytes */${size}`, "Content-Length": 0 });
+            return res.end();
+          }
+          const bytes = file.bytes.subarray(start, end + 1);
+          res.writeHead(206, { ...headers, "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": bytes.length });
+          return res.end(bytes);
+        }
+      }
       res.writeHead(200, headers);
       res.end(file.bytes);
     }],

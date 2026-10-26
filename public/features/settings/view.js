@@ -191,13 +191,12 @@ export function createSettingsView({ openSetup, setupAction, refreshSetup, updat
     const used = expired ? 0 : w.usedPercent;
     const known = typeof used === "number";
     const reset = !expired && w.resetsAt ? untilText(w.resetsAt) : null;
-    return el("div", { class: "item", title: w.resetsAt ? `초기화 ${fmtDate(w.resetsAt)}` : "" },
-      // 초기화까지 남은 시간은 이름 옆에 작게 붙여 사이드바 높이를 늘리지 않는다.
+    const value = known ? `${Math.max(0, 100 - used).toFixed(0)}%` : LIMIT_STATUS[w.status] ?? "정보 없음";
+    return el("div", { class: "item", title: `${AGENT_LABEL[agent]} ${w.label} · ${known ? `${value} 남음` : value}${w.resetsAt ? ` · 초기화 ${fmtDate(w.resetsAt)}` : ""}` },
       el("div", { class: "line" },
-        el("span", {}, `${AGENT_LABEL[agent]} ${w.label}`,
-          reset || expired ? el("span", { class: "reset" }, expired ? " · 초기화됨" : ` · ${reset} 뒤`) : null),
-        // 사용률을 모르면(실행 중 이벤트만 받은 경우) 상태만 보인다.
-        el("span", {}, known ? `${Math.max(0, 100 - used).toFixed(0)}% 남음` : LIMIT_STATUS[w.status] ?? "사용률 모름")),
+        el("span", { class: "name" }, `${agent === "claude" ? "Claude" : "Codex"} ${w.label}`),
+        el("span", { class: "value", "aria-label": known ? `${value} 남음` : value }, value),
+        el("span", { class: "reset", title: "한도 초기화까지 남은 시간" }, expired ? "초기화됨" : reset?.replaceAll(" ", "") || "")),
       el("div", { class: "bar" }, el("span", {
         class: known ? barLevel(used) : w.status === "rejected" ? "danger" : w.status === "allowed_warning" ? "warn" : "",
         style: `width:${known ? Math.min(100, used) : w.status === "rejected" ? 100 : 0}%`,
@@ -256,6 +255,15 @@ export function createSettingsView({ openSetup, setupAction, refreshSetup, updat
       }
     }
     $("update-box").replaceChildren(el("div", { class: "line" }, version, action), note);
+    const attention = ["available", "downloading", "ready", "error"].includes(u.status);
+    const indicator = $("sidebar-update-indicator");
+    if (indicator) indicator.hidden = !attention;
+    const toggle = $("sidebar-status-toggle");
+    if (toggle) {
+      const label = attention ? `앱 상태와 업데이트 · ${action?.textContent || note?.textContent || "확인 필요"}` : "앱 상태와 업데이트";
+      toggle.title = label;
+      toggle.setAttribute("aria-label", label);
+    }
   }
 
   function renderProjects(projects) {

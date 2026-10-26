@@ -8,6 +8,24 @@
     const pointer = (target, type, props = {}) => target.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 4, clientX: 350, clientY: 350, button: 0, ...props }));
     await until(() => $("project-nav").querySelector("button") && $("kpis").children.length === 4);
     check(!$("view-dashboard").hidden, "dashboard bootstrap");
+    const inboxWasHidden = $("inbox-section").hidden;
+    $("inbox-section").hidden = false;
+    for (const toggle of document.querySelectorAll("[data-sidebar-section]")) {
+      const targets = toggle.getAttribute("aria-controls").split(" ").map($);
+      const section = toggle.closest(".nav-section");
+      toggle.click();
+      check(toggle.getAttribute("aria-expanded") === "false" && targets.every(node => node.hidden) && section.getBoundingClientRect().height <= 30, `${toggle.dataset.sidebarSection} collapses its list and releases vertical space`);
+      check(localStorage.getItem("agenthub.sidebarCollapsed." + toggle.dataset.sidebarSection) === "1", `${toggle.dataset.sidebarSection} saves collapsed preference`);
+      toggle.click();
+      check(targets.every(node => !node.hidden), `${toggle.dataset.sidebarSection} reopens without replacing list items`);
+    }
+    $("inbox-section").hidden = inboxWasHidden;
+    await until(() => $("limit-mini").children.length === 3);
+    check($("sidebar-status").hidden && document.querySelector(".sidebar-foot").getBoundingClientRect().height < 125, "usage and account tools occupy a compact footer");
+    $("sidebar-status-toggle").click();
+    check(!$("sidebar-status").hidden && $("sidebar-status-toggle").getAttribute("aria-expanded") === "true", "version and update details open on demand");
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    check($("sidebar-status").hidden && document.activeElement === $("sidebar-status-toggle"), "Escape closes status details and restores focus");
     $("project-nav").querySelector("button").click();
     await until(() => $("p-graph").querySelectorAll(".gcard").length === 2 && $("p-graph").querySelector(".gcmd") && $("p-graph-tabs").querySelector('[data-graph-tab][aria-selected="true"]'));
     check(!$("view-project").hidden, "project navigation and graph rendering");

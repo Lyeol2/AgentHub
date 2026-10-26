@@ -79,7 +79,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     const s = getSession();
     const pending = ev.status === "pending";
     const node = el("li", { class: `ev question ${ev.status}` },
-      el("div", { class: "plan-head" }, el("b", {}, "질문"), el("span", { class: `pill q-${ev.status}` }, QUESTION_STATUS[ev.status] ?? ev.status)),
+      el("div", { class: "plan-head" }, el("b", {}, "질문"), el("span", { class: `pill q-${ev.status}` }, ev.implementationApproved ? "구현 승인" : QUESTION_STATUS[ev.status] ?? ev.status)),
       ev.error ? el("div", { class: "plan-error" }, ev.error) : null);
     if (!ev.questions) return node;
     // 답했거나 지나간 질문은 버튼 없이 질문과 고른 답만 글로 남긴다.
@@ -89,22 +89,24 @@ export function createConversationView({ api, getSession, sessionById, selectSes
         const answer = [...(a?.selected ?? []), a?.text].filter(Boolean).join(", ");
         node.append(el("div", { class: "q-item done" },
           el("div", { class: "q-question" }, q.header ? el("span", { class: "q-header" }, q.header) : null, q.question),
-          el("div", { class: "q-answer" }, answer ? `→ ${answer}` : el("span", { class: "muted" }, "답하지 않음"))));
+          el("div", { class: "q-answer" }, answer ? `→ ${answer}` : el("span", { class: "muted" }, ev.implementationApproved ? "계획을 승인하고 구현을 시작했습니다." : "답하지 않음"))));
       });
       return node;
     }
 
     const picks = ev.questions.map((_, i) => new Set(ev.answers?.[i]?.selected ?? []));
     const texts = [];
-    const submit = async (button) => {
+    const canImplement = (ev.planTurn || s?.planTurn) && !s?.chat && !ev.live;
+    const submit = async (mode) => {
       const answers = ev.questions.map((_, i) => ({ selected: [...picks[i]], text: texts[i].value.trim() }));
-      if (!answers.some((a) => a.selected.length || a.text)) return showError("답을 고르거나 적으세요.", { action: "질문에 답하기" });
-      button.disabled = true;
+      if (mode !== "implement" && !answers.some((a) => a.selected.length || a.text)) return showError("답을 고르거나 적으세요.", { action: "질문에 답하기" });
+      const buttons = [...node.querySelectorAll(".plan-actions button")];
+      buttons.forEach((item) => { item.disabled = true; });
       try {
-        await onQuestionAnswer(s.id, ev.questionId, answers);
+        await onQuestionAnswer(s.id, ev.questionId, answers, mode);
       } catch (err) {
         showError(err, { action: "질문에 답하기" });
-        button.disabled = false;
+        buttons.forEach((item) => { item.disabled = false; });
       }
     };
 
@@ -140,7 +142,8 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     });
     if (pending) {
       node.append(el("div", { class: "plan-actions" },
-        el("button", { class: "primary sm q-submit", onclick: (e) => submit(e.currentTarget) }, "답하기")));
+        el("button", { class: `${canImplement ? "ghost" : "primary"} sm q-submit`, onclick: () => submit() }, canImplement ? "계획 계속" : "답하기"),
+        canImplement ? el("button", { class: "primary sm q-implement", title: "계획 모드를 끝내고 파일 수정을 허용해 구현을 시작합니다.", onclick: () => submit("implement") }, "승인하고 구현") : null));
     }
     return node;
   }

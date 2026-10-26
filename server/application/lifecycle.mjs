@@ -9,11 +9,14 @@ import { processMessageBlocks } from "./messaging.mjs";
 export function createTurnLifecycle({ runner, mailbox, sessions, workflows, chain, notify, issues = null }) {
   function recordQuestions(session, ok) {
     if (session.chat || !ok || AGENTS[session.agent].interactive) return;
-    const found = extractQuestions(lastAnswer(session));
+    const found = extractQuestions(lastAnswer(session)) ?? (session.planTurn && !session.awaitingReply ? {
+      questions: [{ header: "계획 승인", question: "계획대로 구현하려면 ‘승인하고 구현’을 누르세요. 고칠 점이 있으면 적고 ‘계획 계속’을 누르세요.", multiSelect: false, options: [] }],
+    } : null);
     if (!found) return;
     const event = {
       kind: "question", questionId: randomBytes(4).toString("hex"),
       status: "pending", text: "질문",
+      ...(session.planTurn ? { planTurn: true } : {}),
     };
     if (found.error) {
       event.status = "invalid";
