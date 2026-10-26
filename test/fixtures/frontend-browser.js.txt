@@ -59,6 +59,10 @@
     pointer(window, "pointermove", { clientX: 500, clientY: 450 });
     check(canvas.style.left === canceledX && !$("p-graph").classList.contains("panning"), "canceled pan removes gesture listeners");
     check(graphStaysFixed(), "pan does not resize the graph panel");
+    // Cancellation may apply a pending project load and replace the graph nodes.
+    canvas = $("p-graph").querySelector(".graph-canvas");
+    firstCard = canvas.querySelector('.gcard[data-id="s1"]');
+    command = canvas.querySelector(".gcmd");
     const cardRect = firstCard.getBoundingClientRect();
     pointer(firstCard, "pointerdown", { clientX: cardRect.left + 15, clientY: cardRect.top + 15 });
     pointer(window, "pointermove", { clientX: cardRect.left + 15, clientY: graphRect.bottom - cardRect.height + 5 });

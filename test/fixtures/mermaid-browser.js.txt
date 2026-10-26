@@ -1,0 +1,29 @@
+(async () => {
+  const { renderMarkdown } = await import('/markdown.js');
+  const checks = [];
+  const check = (value, name) => { if (!value) throw Error(name); checks.push(name); };
+  const block = (source, close = true) => renderMarkdown('```mermaid\n' + source + (close ? '\n```' : ''));
+  const add = (source) => { const div = document.createElement('div'); div.innerHTML = block(source); document.body.append(div); return div.querySelector('mermaid-diagram'); };
+  const ready = async (node) => {
+    const deadline = Date.now() + 12000;
+    while (!node.shadowRoot || node.shadowRoot.querySelector('.status').textContent.includes('그리는 중')) {
+      if (Date.now() > deadline) throw Error('Mermaid timeout');
+      await new Promise(resolve => setTimeout(resolve, 30));
+    }
+    return node.shadowRoot;
+  };
+  check(!block('graph TD\nA-->B', false).includes('<mermaid-diagram>'), 'incomplete blocks stay code');
+  const flow = add('flowchart LR\nA[요청] --> B[검토] --> C[완료]');
+  const root = await ready(flow);
+  check(root.querySelector('svg')?.textContent.includes('검토'), 'Korean flowchart renders');
+  check(root.querySelector('svg').getBoundingClientRect().height > 20, 'SVG has visible dimensions');
+  check(root.querySelector('pre').textContent.includes('A[요청]') && !root.querySelector('details').open, 'original source remains available');
+  const sequence = await ready(add('sequenceDiagram\nparticipant A as 사용자\nparticipant B as AgentHub\nA->>B: 요청\nB-->>A: 결과'));
+  check(!!sequence.querySelector('svg'), 'sequence diagram renders');
+  const bad = await ready(add('this is not a diagram'));
+  check(bad.querySelector('details').open && bad.querySelector('.diagram').hidden, 'syntax errors preserve original code');
+  const attack = await ready(add('flowchart TD\nA["<img src=x onerror=alert(1)>"]\nclick A "javascript:alert(1)"'));
+  check(!attack.querySelector('script,img,foreignObject,a,[onerror]'), 'active diagram content is removed');
+  check(!document.querySelector('body > svg'), 'temporary render SVGs are cleaned up');
+  return checks;
+})()

@@ -5,6 +5,7 @@
 import { tokenizeReportInline, isLocalPreviewUrl } from "./report-references.js";
 import { mathAt, isEscaped } from "./math-syntax.js";
 import { renderMath } from "./math.js";
+import "./mermaid.js";
 
 const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 const escapeHtml = (text) => text.replace(/[&<>"']/g, (c) => ESCAPES[c]);
@@ -167,7 +168,12 @@ export function renderMarkdown(src, options = {}) {
       const body = [];
       i++;
       while (i < lines.length && !lines[i].trim().startsWith(fence[1])) body.push(lines[i++]);
+      const closed = i < lines.length;
       i++; // 닫는 줄
+      if (fence[2].toLowerCase() === "mermaid" && closed) {
+        out.push(`<mermaid-diagram><pre><code class="lang-mermaid">${escapeHtml(body.join("\n"))}</code></pre></mermaid-diagram>`);
+        continue;
+      }
       if (fence[2].toLowerCase() === "math") {
         out.push(renderMath({ math: body.join("\n"), display: true }));
         continue;
