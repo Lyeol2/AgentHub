@@ -8,6 +8,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-artifact-service-")
 process.env.AGENTHUB_DATA = path.join(root, "config");
 const { createSessionService } = await import("../server/application/sessions.mjs");
 const { buildBundle, parseBundle } = await import("../server/session-bundle.mjs");
+const codex = await import("../server/agents/codex.mjs");
 test.after(() => {
   assert.equal(path.dirname(path.resolve(root)), path.resolve(os.tmpdir()));
   assert.ok(path.basename(root).startsWith("agenthub-artifact-service-"));
@@ -20,7 +21,7 @@ function fixture(t) {
   const calls = { sends: [], injected: [], queued: [] };
   const runner = {
     isRunning: () => session.state === "running", canInject: () => true,
-    send: (s, prompt, cli, input, meta) => { calls.sends.push({ prompt, input, meta }); s.events.push({ kind: "user", text: prompt, ...meta }); },
+    send: (s, prompt, cli, input, meta) => { if (calls.fail) throw Error("fixture start failed"); calls.sends.push({ prompt, input, meta, policy: codex.permissionSettings(s) }); s.events.push({ kind: "user", text: prompt, ...meta }); },
     inject: (s, prompt, meta, input) => { calls.injected.push({ prompt, input, meta }); s.events.push({ kind: "user", text: prompt, ...meta, injected: true }); },
   };
   const otherSession = { id: "other-session", projectPath: cwd }, otherTask = { id: "task-123", projectPath: cwd };
@@ -28,12 +29,49 @@ function fixture(t) {
     config: {}, dataDir: path.join(cwd, "data"), store: { get: (id) => id === session.id ? session : id === otherSession.id ? otherSession : null },
     runner, chain: { enqueue: (s, prompt, meta) => calls.queued.push({ prompt, meta }) },
     mcpDir: path.join(cwd, "mcp"), cliPaths: () => ({ codex: "unused" }),
-    projects: { ensureProject() {}, projectSessions: () => [session] },
+    projects: { ensureProject() {}, projectSessions: () => [session] }, notify() {},
     tasks: () => ({ get: (id) => id === otherTask.id ? otherTask : null }),
   });
   const file = path.join(cwd, "source.js"); fs.writeFileSync(file, "const example = true;");
   return { session, service, calls, file, otherSession, otherTask };
 }
+
+test("session plan approval: revisions remain read-only and implementation restarts with write permission", (t) => {
+  for (const permission of ["read-only", "workspace-write", "auto-review", "danger-full-access"]) {
+    const { session, service, calls } = fixture(t);
+    Object.assign(session, { chat: false, permission });
+    service.sendMessage(session.id, { prompt: "/plan 기능 구현" });
+    assert.equal(calls.sends.at(-1).policy.sandbox, "read-only");
+    const question = { kind: "question", questionId: "plan", status: "pending", questions: [{ question: "계획 검토", options: [] }] };
+    session.events.push(question);
+    service.answerQuestion(session.id, "plan", { answers: [{ text: "검증 단계도 추가해 줘" }] });
+    assert.equal(calls.sends.at(-1).policy.sandbox, "read-only");
+    question.status = "pending";
+    service.answerQuestion(session.id, "plan", { mode: "implement" });
+    assert.equal(session.planTurn, undefined);
+    assert.equal(question.implementationApproved, true);
+    assert.deepEqual(calls.sends.at(-1).policy, codex.permissionSettings({ permission: permission === "read-only" ? "workspace-write" : permission }));
+    assert.match(calls.sends.at(-1).input, /\[계획 승인\]/);
+  }
+});
+
+test("session plan approval: invalid transitions and failed starts do not grant write access", (t) => {
+  const { session, service, calls } = fixture(t);
+  Object.assign(session, { chat: false, permission: "read-only", planTurn: true });
+  const question = { kind: "question", questionId: "plan", status: "pending", questions: [{ question: "계획", options: [] }] };
+  session.events.push(question);
+  calls.fail = true;
+  assert.throws(() => service.answerQuestion(session.id, "plan", { mode: "implement" }), { status: 409 });
+  assert.equal(session.planTurn, true);
+  assert.equal(session.permission, "read-only");
+  assert.equal(question.status, "pending");
+  assert.equal(question.implementationApproved, undefined);
+  for (const patch of [{ live: true }, { live: false }]) {
+    Object.assign(question, patch);
+    if (!patch.live) delete session.planTurn;
+    assert.throws(() => service.answerQuestion(session.id, "plan", { mode: "implement" }), { status: 409 });
+  }
+});
 
 test("session artifacts service: normal, steering and queued messages preserve validated references", (t) => {
   const { session, service, calls, file } = fixture(t);

@@ -338,9 +338,14 @@ test("keep-alive: 모두 허용 세션을 /plan으로 시작해도 같은 CLI에
   assert.equal(child.args[child.args.indexOf("--permission-mode") + 1], "plan");
   assert.ok(child.args.includes("--allow-dangerously-skip-permissions"));
   init(child);
+  child.emit_({ type: "control_request", request_id: "plan-approval", request: { subtype: "can_use_tool", tool_name: "ExitPlanMode", input: { plan: "구현 계획" } } });
+  f.runner.answer("plan-approval", { decision: "deny", message: "계획 보완" });
+  assert.equal(f.session.planTurn, true);
+  child.emit_({ type: "control_request", request_id: "plan-approval-2", request: { subtype: "can_use_tool", tool_name: "ExitPlanMode", input: { plan: "보완한 계획" } } });
+  f.runner.answer("plan-approval-2", { decision: "allow" });
+  assert.equal(f.session.planTurn, undefined);
   result(child);
   await tick();
-  delete f.session.planTurn;
   f.runner.send(f.session, "구현", "fake-cli");
   await tick();
   assert.equal(f.children.length, 1);

@@ -45,6 +45,16 @@ function world(t) {
 
 const block = (type, value) => "```agenthub-" + type + "\n" + JSON.stringify(value) + "\n```";
 
+test("lifecycle: a completed Codex plan waits for implementation approval even without a question block", async (t) => {
+  const { source, runner, finish } = world(t);
+  source.planTurn = true;
+  await finish(source, "1. 구현 파일 수정\n2. 테스트 실행");
+  assert.equal(source.waiting, true);
+  assert.equal(source.events.at(-1).kind, "question");
+  assert.match(source.events.at(-1).questions[0].question, /승인하고 구현/);
+  assert.deepEqual(runner.sent, []);
+});
+
 test("lifecycle: 유효한 질문은 자동 연결을 멈추고 잘못된 질문은 실행을 막지 않는다", async (t) => {
   const waiting = world(t);
   await waiting.finish(waiting.source, block("question", { questions: [{
