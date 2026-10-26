@@ -3,6 +3,14 @@ import assert from "node:assert/strict";
 import { renderMarkdown } from "../public/markdown.js";
 import { collectReportReferences } from "../public/report-references.js";
 
+test("markdown: only closed Mermaid fences become diagrams and their source stays escaped", () => {
+  assert.match(renderMarkdown('```mermaid\ngraph TD\nA-->B\n```'), /<mermaid-diagram>/);
+  assert.doesNotMatch(renderMarkdown('```mermaid\ngraph TD\nA-->'), /<mermaid-diagram>/);
+  const html = renderMarkdown('```mermaid\n</code><script>alert(1)</script>\n```');
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;/);
+});
+
 test("markdown: 제목·굵게·기울임·코드", () => {
   assert.equal(renderMarkdown("## 요약"), "<h2>요약</h2>");
   assert.equal(renderMarkdown("**굵게** *기울임* `x < y`"), "<p><strong>굵게</strong> <em>기울임</em> <code>x &lt; y</code></p>");
