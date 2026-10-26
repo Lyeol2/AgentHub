@@ -2,6 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { collectReportReferences, classifyReportTarget, tokenizeReportInline, isLocalPreviewUrl } from "../public/report-references.js";
 
+test("report references: encoded local links and direct media URLs retain the correct target and type", () => {
+  const refs = collectReportReferences("![화면](docs/%ED%99%94%EB%A9%B4%20%231.png) [영상](<file:///C:/My%20Clips/demo.webm>) [원본](https://example.com/screen.png?v=1) [재생](https://example.com/demo.mp4?token=example)");
+  assert.deepEqual(refs.map((ref) => [ref.path || ref.url, ref.kind]), [
+    ["docs/화면 #1.png", "image"], ["C:/My Clips/demo.webm", "video"],
+    ["https://example.com/screen.png?v=1", "image"], ["https://example.com/demo.mp4?token=example", "video"],
+  ]);
+  assert.equal(classifyReportTarget("out/literal%20.png").path, "out/literal%20.png");
+  assert.equal(collectReportReferences("[literal](out/literal%2520.png)")[0].path, "out/literal%20.png");
+  assert.equal(collectReportReferences("![bad](out/bad%00.png)").length, 0);
+  assert.equal(collectReportReferences("[영상](My%20Clips/demo.mp4)")[0].path, "My Clips/demo.mp4");
+  assert.equal(collectReportReferences("[완료](out/100%.png)")[0].path, "out/100%.png");
+  assert.equal(collectReportReferences("<file:///C:/My%20Clips/demo.webm>")[0].path, "C:/My Clips/demo.webm");
+});
+
 test("report references: local Markdown paths retain spaces, parentheses, Korean and line numbers", () => {
   const source = String.raw`[최종 보고서](C:/My Reports/검증 (최종).md:12) · [화면](<C:\Users\frog1\My Screens\미리보기 (2).png>)`;
   assert.deepEqual(collectReportReferences(source), [

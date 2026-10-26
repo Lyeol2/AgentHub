@@ -35,6 +35,7 @@ dialog.report-preview[open] { display: flex; flex-direction: column; }
 .report-frame { display: block; border: 1px solid var(--line); border-radius: 5px; background: white; width: 100%; height: max(420px, calc(100dvh - 230px)); }
 .report-image-viewport { overflow: auto; min-height: 200px; display: grid; place-items: start center; }
 .report-full-image { display: block; object-fit: contain; max-width: 100%; max-height: calc(100dvh - 240px); }
+.report-video { display: block; width: 100%; max-height: calc(100dvh - 240px); background: #111; }
 .report-scale { font-size: 11px; min-width: 40px; text-align: center; }
 .report-copy-buffer { position: fixed; opacity: 0; width: 1px; height: 1px; }
 @media (max-width: 600px) {

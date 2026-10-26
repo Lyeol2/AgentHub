@@ -47,9 +47,9 @@ function inline(value, options = {}) {
     const ref = token.reference;
     if (!ref) { html += placeholder(escapeHtml(token.raw)); continue; }
     const label = emphasis(escapeHtml((token.mention ? "@" : "") + ref.label));
-    if (options.sessionId && (ref.path || ref.sessionId || ref.taskId || ref.kind === "image" || (ref.url && isLocalPreviewUrl(ref.url)))) {
+    if (options.sessionId && (ref.path || ref.sessionId || ref.taskId || ["image", "video"].includes(ref.kind) || (ref.url && isLocalPreviewUrl(ref.url)))) {
       const attr = ref.path ? ["path", ref.path] : ref.sessionId ? ["session", ref.sessionId] : ref.taskId ? ["task", ref.taskId] : ["url", ref.url];
-      html += placeholder(`<a href="#" class="report-ref" data-report-${attr[0]}="${escapeHtml(attr[1])}"${ref.kind === "image" ? ' data-report-image="true"' : ""}>${label}</a>`);
+      html += placeholder(`<a href="#" class="report-ref" data-report-${attr[0]}="${escapeHtml(attr[1])}"${ref.kind === "image" ? ' data-report-image="true"' : ref.kind === "video" ? ' data-report-video="true"' : ""}>${label}</a>`);
     } else if (ref.url && /^https?:\/\//i.test(ref.url) && !token.image) {
       html += placeholder(`<a href="${escapeHtml(ref.url)}" target="_blank" rel="noreferrer">${label}</a>`);
     } else html += placeholder(escapeHtml(token.raw));

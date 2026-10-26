@@ -2,10 +2,11 @@
 // this parser so that a path shown in a card is the path its inline link opens.
 import { mathAt } from "./math-syntax.js";
 const IMAGE_EXT = /\.(?:png|jpe?g|gif|webp|avif|bmp|ico)$/i;
+const VIDEO_EXT = /\.(?:mp4|webm|mov|m4v|ogv)$/i;
 const MARKDOWN_EXT = /\.(?:md|markdown|mdown)$/i;
 const HTML_EXT = /\.(?:html?|xhtml)$/i;
 const TEXT_EXT = /\.(?:txt|log|json|jsonl|csv|tsv|ya?ml|xml|svg|toml|ini|cfg|conf|js|mjs|cjs|jsx|ts|tsx|css|scss|py|sh|ps1|bat|cmd|c|h|cpp|hpp|cs|java|go|rs|sql|diff|patch)$/i;
-const FILE_EXT = "(?:png|jpe?g|gif|webp|avif|bmp|svg|ico|tiff?|md|markdown|mdown|html?|xhtml|txt|log|jsonl?|csv|tsv|ya?ml|xml|toml|ini|cfg|conf|[cm]?js|jsx|tsx?|css|scss|py|sh|ps1|bat|cmd|cpp|hpp|cs|java|go|rs|sql|diff|patch|pdf|docx?|xlsx?|pptx?|zip|tar|gz|7z|mp[34]|wav|ogg|webm|mov)";
+const FILE_EXT = "(?:png|jpe?g|gif|webp|avif|bmp|svg|ico|tiff?|md|markdown|mdown|html?|xhtml|txt|log|jsonl?|csv|tsv|ya?ml|xml|toml|ini|cfg|conf|[cm]?js|jsx|tsx?|css|scss|py|sh|ps1|bat|cmd|cpp|hpp|cs|java|go|rs|sql|diff|patch|pdf|docx?|xlsx?|pptx?|zip|tar|gz|7z|mp[34]|wav|ogg|webm|mov|m4v|ogv)";
 const FILE_END = "(?=$|[\\s)\\]},;!?·]|\\.(?=$|\\s))";
 const ABSOLUTE_FILE = new RegExp(`^(?:[a-z]:[\\\\/]|\\\\\\\\[^\\\\/\\s]+[\\\\/]|/|\\.{1,2}[\\\\/])[^<>\\r\\n\"'|]*?\\.${FILE_EXT}(?::\\d+(?::\\d+)?)?${FILE_END}`, "i");
 const RELATIVE_FILE = new RegExp(`^(?:[^\\s<>\"'()\\[\\],;:|/\\\\]+[\\\\/])+[^\\s<>\"'()\\[\\],;:|/\\\\]+\\.${FILE_EXT}(?::\\d+(?::\\d+)?)?${FILE_END}`, "i");
@@ -18,8 +19,9 @@ function basename(path) {
 }
 
 function pathKind(path) {
-  const name = path.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L\d+)?)$/, "").split(/[?#]/)[0];
+  const name = path.replace(/(?::\d+(?::\d+)?|#L\d+(?:-L\d+)?)$/, "");
   if (IMAGE_EXT.test(name)) return "image";
+  if (VIDEO_EXT.test(name)) return "video";
   if (MARKDOWN_EXT.test(name)) return "markdown";
   if (HTML_EXT.test(name)) return "html";
   if (TEXT_EXT.test(name)) return "text";
@@ -34,7 +36,7 @@ export function isLocalPreviewUrl(value) {
 }
 
 /** Accept only explicit paths, web URLs, and the two supported AgentHub URIs. */
-export function classifyReportTarget(value, { image = false, label } = {}) {
+export function classifyReportTarget(value, { image = false, label, decodePath = false } = {}) {
   if (typeof value !== "string") return null;
   let target = value.trim();
   if (!target || CONTROL.test(target)) return null;
@@ -51,8 +53,10 @@ export function classifyReportTarget(value, { image = false, label } = {}) {
     try { url = new URL(target); } catch { return null; }
     if (!/^(?:http|https):$/.test(url.protocol) || url.username || url.password) return null;
     // Images supplied by an answer are loaded only after an explicit preview click.
-    if (image && url.protocol !== "https:" && !isLocalPreviewUrl(target)) return null;
-    return { url: target, label: label || target, kind: image ? "image" : "web" };
+    const kind = pathKind(url.pathname);
+    const mediaKind = kind === "video" ? "video" : image || kind === "image" ? "image" : null;
+    if (mediaKind && url.protocol !== "https:" && !isLocalPreviewUrl(target)) return null;
+    return { url: target, label: label || target, kind: mediaKind || "web" };
   }
   if (image && SAFE_ATTACHMENT.test(target)) return { url: target, label: label || "첨부 이미지", kind: "image" };
   if (/^file:\/\//i.test(target)) {
@@ -63,6 +67,9 @@ export function classifyReportTarget(value, { image = false, label } = {}) {
       if (url.hostname && url.hostname !== "localhost") target = `//${url.hostname}${target}`;
       else if (/^\/[a-z]:\//i.test(target)) target = target.slice(1);
     } catch { return null; }
+  } else if (decodePath) {
+    // Markdown destinations are URL-encoded. Plain filesystem paths stay literal.
+    try { target = decodeURIComponent(target); } catch { /* A literal percent sign can be part of a filename. */ }
   }
   if (CONTROL.test(target) || /[<>"'|]/.test(target)) return null;
   const absolute = /^(?:[a-z]:[\\/]|[\\/]|\.{1,2}[\\/])/i.test(target);
@@ -70,7 +77,7 @@ export function classifyReportTarget(value, { image = false, label } = {}) {
   const withoutLine = target.replace(/:\d+(?::\d+)?$/, "");
   if (/^[a-z][a-z\d+.-]*:/i.test(withoutLine) && !/^[a-z]:[\\/]/i.test(withoutLine)) return null;
   if (withoutLine.replace(/^[a-z]:/i, "").includes(":")) return null;
-  if (!absolute && !/^(?:[^\s<>:"'|]+[\\/])*[^\\/<>:"'|]+\.[a-z\d]{1,12}(?::\d+(?::\d+)?)?$/i.test(target)) return null;
+  if (!absolute && !/^(?:[^\\/<>:"'|]+[\\/])*[^\\/<>:"'|]+\.[a-z\d]{1,12}(?::\d+(?::\d+)?)?$/i.test(target)) return null;
   if (!absolute && /^(?:www\.)|^[\w-]+\.(?:com|org|net|dev|io)(?:\/|$)/i.test(target)) return null;
   if (!/[\p{L}\p{N}]/u.test(target)) return null;
   return { path: target, label: label || basename(target), kind: pathKind(target) };
@@ -112,7 +119,7 @@ function markdownAt(text, start) {
     if (!/^[a-z]:[\\/]/i.test(target)) target = target.replace(/\\([()])/g, "$1");
   }
   const label = text.slice(open + 1, close).replace(/\\([\[\]])/g, "$1");
-  return { start, end: end + 1, raw: text.slice(start, end + 1), target, label, image, reference: classifyReportTarget(target, { image, label }) };
+  return { start, end: end + 1, raw: text.slice(start, end + 1), target, label, image, reference: classifyReportTarget(target, { image, label, decodePath: true }) };
 }
 
 function codeAt(text, start) {
@@ -159,7 +166,7 @@ export function tokenizeReportInline(source, { references = [] } = {}) {
     const markdown = markdownAt(text, i);
     if (markdown) { tokens.push(markdown); i = markdown.end; continue; }
     const previous = i ? text[i - 1] : "";
-    const boundary = !previous || /[\s([{>：:]/.test(previous);
+    const boundary = !previous || /[\s([{<>：:]/.test(previous);
     if (!boundary) { i++; continue; }
     const mention = text[i] === "@";
     const start = i + Number(mention);
@@ -187,6 +194,7 @@ export function tokenizeReportInline(source, { references = [] } = {}) {
       }
     }
     if (/^https?:\/\//i.test(tail)) value = trimUrl(tail.match(/^https?:\/\/[^\s<>"']+/i)[0]);
+    else if (/^file:\/\//i.test(tail)) value = trimUrl(tail.match(/^file:\/\/[^\s<>"']+/i)[0]);
     else if (/^agenthub:\/\//i.test(tail)) value = tail.match(/^agenthub:\/\/(?:session|task)\/[^\s<>"'()[\],;!?]+/i)?.[0];
     else value = tail.match(ABSOLUTE_FILE)?.[0] || tail.match(RELATIVE_FILE)?.[0] || (mention && tail.match(MENTION_FILE)?.[0]);
     if (!value) { i++; continue; }

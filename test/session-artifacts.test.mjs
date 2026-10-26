@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { collectReportReferences } from "../public/report-references.js";
 import {
   readSessionArtifact, readSessionArtifactContent, resolveSessionArtifact,
   validateArtifactReferences, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TEXT_BYTES,
@@ -26,6 +28,52 @@ function fixture(t) {
   };
   return { root, project, cwd, outside, session, write };
 }
+
+test("session artifacts: encoded and file-URL transcript links authorize the exact external media file", (t) => {
+  const { session, outside, write } = fixture(t);
+  const file = write("화면 #1.png", Buffer.from([1, 2]), outside);
+  const neighbour = write("화면 #2.png", Buffer.from([3, 4]), outside);
+  for (const link of [pathToFileURL(file).href, encodeURI(file.replace(/\\/g, "/")).replace(/#/g, "%23")]) {
+    session.events = [{ kind: "text", text: `![화면](${link})` }];
+    const ref = collectReportReferences(session.events[0].text)[0];
+    assert.equal(readSessionArtifact(session, ref.path).path, file);
+    assert.throws(() => readSessionArtifact(session, neighbour), { status: 403 });
+  }
+});
+
+test("session artifacts: video metadata and bounded HTML media assets are preserved", (t) => {
+  const { session, write } = fixture(t);
+  write("clip.webm", Buffer.from([1, 2, 3]));
+  assert.equal(readSessionArtifact(session, "clip.webm").kind, "video");
+  assert.equal(readSessionArtifactContent(session, "clip.webm").mimeType, "video/webm");
+  write("video.html", '<video controls src="clip.webm"></video>');
+  const result = readSessionArtifact(session, "video.html");
+  assert.match(result.previewHtml, /src="data:video\/webm;base64,AQID"/);
+  assert.equal(result.previewWarnings, undefined);
+});
+
+test("session artifact routes: video playback supports full, partial and suffix byte requests", (t) => {
+  const { session, write } = fixture(t);
+  write("clip.mp4", Buffer.from([0, 1, 2, 3, 4, 5]));
+  const handler = sessionRoutes({ artifactContent: (_, file) => readSessionArtifactContent(session, file) }).find((route) => route[1] === "sessions/:id/artifact/content")[2];
+  const request = (range, download = false) => {
+    const response = {};
+    handler({ params: { id: session.id }, query: new URLSearchParams({ path: "clip.mp4", ...(download ? { download: "1" } : {}) }), req: { headers: { range } }, res: {
+      writeHead: (status, headers) => Object.assign(response, { status, headers }), end: (body) => { response.body = body; },
+    } });
+    return response;
+  };
+  assert.equal(request().headers["Content-Type"], "video/mp4");
+  assert.equal(request().status, 200);
+  for (const [range, bytes, contentRange] of [["bytes=1-3", [1, 2, 3], "bytes 1-3/6"], ["bytes=4-", [4, 5], "bytes 4-5/6"], ["bytes=-2", [4, 5], "bytes 4-5/6"]]) {
+    const response = request(range);
+    assert.equal(response.status, 206);
+    assert.equal(response.headers["Content-Range"], contentRange);
+    assert.deepEqual([...response.body], bytes);
+  }
+  for (const range of ["bytes=9-", "bytes=4-2", "bytes=-0", "bytes=-", "bytes=0-1,3-4", "garbage"]) assert.equal(request(range).status, 416, range);
+  assert.equal(request(undefined, true).headers["Content-Type"], "application/octet-stream");
+});
 
 test("session artifacts: relative working files and absolute original-project files have typed metadata", (t) => {
   const { session, project, write } = fixture(t);

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { HttpError } from "./application/errors.mjs";
+import { collectReportReferences } from "../public/report-references.js";
 
 export const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
 export const MAX_ARTIFACT_TEXT_BYTES = 512 * 1024;
@@ -9,7 +10,8 @@ const MAX_PREVIEW_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEW_TOTAL_BYTES = 24 * 1024 * 1024;
 const TEXT_EXTENSIONS = new Set("txt text csv tsv json jsonl ndjson xml svg css scss less js mjs cjs jsx ts tsx py rb go rs java kt swift c h cpp hpp cs sh bash zsh ps1 bat cmd sql yaml yml toml ini cfg conf log env gitignore gitattributes dockerfile makefile".split(" "));
 const IMAGE_MIMES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif", ".bmp": "image/bmp", ".ico": "image/x-icon" };
-const ASSET_MIMES = { ...IMAGE_MIMES, ".svg": "image/svg+xml", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf" };
+const VIDEO_MIMES = { ".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime", ".m4v": "video/mp4", ".ogv": "video/ogg" };
+const ASSET_MIMES = { ...IMAGE_MIMES, ...VIDEO_MIMES, ".svg": "image/svg+xml", ".css": "text/css", ".js": "text/javascript", ".mjs": "text/javascript", ".woff": "font/woff", ".woff2": "font/woff2", ".ttf": "font/ttf", ".otf": "font/otf" };
 const comparePath = (value) => process.platform === "win32" ? value.toLowerCase() : value;
 const pathKey = (value) => comparePath(path.resolve(value).replace(/\\/g, "/"));
 const within = (root, target) => {
@@ -48,6 +50,13 @@ function mentionedPath(session, target, resolveAttachment) {
       } catch { /* A removed attachment does not grant access. */ }
     }
     if ((event.references ?? []).some((reference) => typeof reference?.path === "string" && path.isAbsolute(reference.path) && pathKey(reference.path) === key)) return true;
+    // Use the same decoded destinations as the UI for file:// and escaped Markdown links.
+    for (const ref of collectReportReferences(String(event.text ?? ""))) {
+      if (!ref.path || !path.isAbsolute(ref.path)) continue;
+      try {
+        if (pathKey(localPath(ref.path, session.cwd || session.projectPath).target) === key) return true;
+      } catch { /* Invalid references never grant file access. */ }
+    }
     const text = comparePath(String(event.text ?? ""));
     for (const needle of needles) {
       let offset = 0;
@@ -65,6 +74,7 @@ function mentionedPath(session, target, resolveAttachment) {
 function classify(file) {
   const extension = path.extname(file).toLowerCase();
   if (IMAGE_MIMES[extension]) return { kind: "image", mimeType: IMAGE_MIMES[extension] };
+  if (VIDEO_MIMES[extension]) return { kind: "video", mimeType: VIDEO_MIMES[extension] };
   if ([".md", ".markdown", ".mdown"].includes(extension)) return { kind: "markdown", mimeType: "text/markdown" };
   if ([".html", ".htm"].includes(extension)) return { kind: "html", mimeType: "text/html" };
   if (TEXT_EXTENSIONS.has(extension.slice(1)) || TEXT_EXTENSIONS.has(path.basename(file).replace(/^\./, "").toLowerCase())) return { kind: "text", mimeType: extension === ".svg" ? "image/svg+xml" : "text/plain" };
@@ -178,7 +188,7 @@ function htmlPreview(session, file, source, options) {
     .replace(/\b(src|poster)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (whole, name, double, single, bare) => {
       const url = double ?? single ?? bare;
       if (/^data:/i.test(url)) return whole;
-      const item = asset(url, file.path, /^image\//);
+      const item = asset(url, file.path, name.toLowerCase() === "src" && /^<(?:video|source)\b/i.test(tag) ? /^(?:image|video)\// : /^image\//);
       return `${name}="${item ? escapeAttribute(dataUrl(item)) : "data:,"}"`;
     }));
   html = html.replace(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/gi, (_, double, single) => `style="${escapeAttribute(css(double ?? single, file.path))}"`);
