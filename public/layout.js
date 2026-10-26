@@ -105,3 +105,37 @@ function syncLayout() {
 window.addEventListener("resize", syncLayout);
 narrowScreen.addEventListener("change", syncLayout);
 applyWidth();
+
+// Keep list visibility separate from data refreshes and account connection state.
+for (const toggle of document.querySelectorAll("[data-sidebar-section]")) {
+  const key = "agenthub.sidebarCollapsed." + toggle.dataset.sidebarSection;
+  const section = toggle.closest(".nav-section");
+  const targets = toggle.getAttribute("aria-controls").split(" ").map((id) => document.getElementById(id));
+  const apply = (collapsed) => {
+    toggle.setAttribute("aria-expanded", String(!collapsed));
+    section.classList.toggle("collapsed", collapsed);
+    targets.forEach((target) => { target.hidden = collapsed; });
+  };
+  try { apply(localStorage.getItem(key) === "1"); } catch { apply(false); }
+  toggle.addEventListener("click", () => {
+    const collapsed = toggle.getAttribute("aria-expanded") === "true";
+    apply(collapsed);
+    try { localStorage.setItem(key, collapsed ? "1" : "0"); } catch {}
+  });
+}
+
+const statusToggle = document.getElementById("sidebar-status-toggle");
+const statusPanel = document.getElementById("sidebar-status");
+function showStatus(open) {
+  statusPanel.hidden = !open;
+  statusToggle.setAttribute("aria-expanded", String(open));
+}
+statusToggle.addEventListener("click", () => showStatus(statusPanel.hidden));
+document.addEventListener("click", (event) => {
+  if (!statusPanel.contains(event.target) && !statusToggle.contains(event.target)) showStatus(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || statusPanel.hidden) return;
+  showStatus(false);
+  statusToggle.focus();
+});

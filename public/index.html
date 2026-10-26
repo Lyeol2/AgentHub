@@ -33,35 +33,42 @@
       </button>
     </nav>
 
+    <div class="sidebar-lists">
     <div class="nav-section" id="inbox-section" hidden>
-      <div class="nav-label">받은 작업 <span class="tab-count" id="inbox-count"></span> <button class="icon-btn" id="inbox-refresh" title="받은 작업 새로고침">↻</button></div>
+      <div class="nav-label"><button type="button" class="nav-section-toggle" data-sidebar-section="inbox" aria-expanded="true" aria-controls="inbox-list"><span class="nav-chevron" aria-hidden="true">›</span>받은 작업 <span class="tab-count" id="inbox-count"></span></button><button class="icon-btn" id="inbox-refresh" title="받은 작업 새로고침">↻</button></div>
       <nav id="inbox-list" class="session-list inbox-list" aria-label="받은 작업"></nav>
     </div>
 
     <div class="nav-section">
-      <div class="nav-label">프로젝트 <button class="icon-btn" id="add-project-nav" title="프로젝트 직접 추가">+</button></div>
+      <div class="nav-label"><button type="button" class="nav-section-toggle" data-sidebar-section="projects" aria-expanded="true" aria-controls="project-nav"><span class="nav-chevron" aria-hidden="true">›</span>프로젝트</button><button class="icon-btn" id="add-project-nav" title="프로젝트 직접 추가">+</button></div>
       <div id="project-nav" class="project-nav"></div>
     </div>
 
     <div class="nav-section">
-      <div class="nav-label">채팅 <button class="icon-btn" id="open-chat" title="새 채팅">+</button></div>
+      <div class="nav-label"><button type="button" class="nav-section-toggle" data-sidebar-section="chats" aria-expanded="true" aria-controls="chat-list"><span class="nav-chevron" aria-hidden="true">›</span>채팅</button><button class="icon-btn" id="open-chat" title="새 채팅">+</button></div>
       <nav id="chat-list" class="session-list chat-list" aria-label="채팅 목록"></nav>
     </div>
 
     <div class="nav-section grow">
-      <div class="nav-label">세션 <button class="icon-btn" id="open-new" title="새 세션">+</button></div>
+      <div class="nav-label"><button type="button" class="nav-section-toggle" data-sidebar-section="sessions" aria-expanded="true" aria-controls="session-filter session-list"><span class="nav-chevron" aria-hidden="true">›</span>세션</button><button class="icon-btn" id="open-new" title="새 세션">+</button></div>
       <input id="session-filter" class="filter" placeholder="세션 검색">
       <nav id="session-list" class="session-list" aria-label="세션 목록"></nav>
     </div>
+    </div>
 
     <footer class="sidebar-foot">
+      <div id="limit-mini" class="limit-mini" aria-label="남은 사용 한도"></div>
+      <div class="sidebar-tools">
       <div id="account-box" class="account-box"></div>
-      <div id="limit-mini" class="limit-mini"></div>
-      <div id="update-box" class="update-box"></div>
-      <button id="open-settings" class="nav-item">
+      <button id="open-settings" class="nav-item sidebar-tool" title="설정" aria-label="설정">
         <svg viewBox="0 0 24 24"><path d="M19.4 13a7.6 7.6 0 0 0 0-2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-1.7-1L15 3.5h-4l-.4 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.4 2 1.6a7.6 7.6 0 0 0 0 2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 1.7 1l.4 2.5h4l.4-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.4zM13 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" transform="translate(-1 0)"/></svg>
-        설정
       </button>
+      <button type="button" id="sidebar-status-toggle" class="sidebar-tool icon-btn" aria-expanded="false" aria-controls="sidebar-status" aria-label="앱 상태와 업데이트" title="앱 상태와 업데이트">⋯<span id="sidebar-update-indicator" class="sidebar-update-indicator" hidden></span></button>
+      </div>
+      <section id="sidebar-status" class="sidebar-status" aria-label="앱 상태와 업데이트" hidden>
+        <div class="sidebar-status-heading">앱 상태 · 업데이트</div>
+        <div id="update-box" class="update-box"></div>
+      </section>
     </footer>
   </aside>
 
