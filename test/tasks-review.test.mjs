@@ -6,6 +6,41 @@ import { createTaskService } from "../server/application/tasks.mjs";
 import { DEFAULT_GITFLOW_SETTINGS } from "../server/gitflow-settings.mjs";
 import { fixture } from "../test-support/tasks-fixture.mjs";
 
+test("task review: behind PR creation, updates and merge preserve the source head", async (t) => {
+  const f = fixture(t); const { task } = await f.create();
+  f.commit(task.cwd, "mine.txt");
+  f.git(f.repo, "switch", "-q", "develop"); f.commit(f.repo, "base-update.txt"); f.git(f.repo, "push", "-q", "origin", "develop");
+  const target = f.git(f.repo, "rev-parse", "develop");
+  let reviewed = await f.service.review(task.id);
+  assert.equal(reviewed.task.freshness.behind, true);
+  await f.service.finish(task.id, { expectedHead: reviewed.head, reviewToken: reviewed.token });
+  assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), reviewed.head);
+  assert.equal(f.git(f.repo, "rev-parse", "develop"), target);
+  f.commit(task.cwd, "more.txt");
+  reviewed = await f.service.review(task.id);
+  await f.service.finish(task.id, { expectedHead: reviewed.head, reviewToken: reviewed.token, verification: "tested" });
+  assert.equal(f.state.pulls.length, 1);
+  assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), reviewed.head);
+  reviewed = await f.service.review(task.id);
+  await f.service.mergePull(task.id, { expectedHead: reviewed.head, reviewToken: reviewed.token, expectedPullHead: reviewed.head, method: "merge" });
+  assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), reviewed.head);
+  assert.equal(fs.existsSync(path.join(task.cwd, "base-update.txt")), false);
+  assert.equal(f.service.get(task.id).state, "merged");
+});
+
+test("task review: PR publishing allows missing main changes and conflicts without integrating them", async (t) => {
+  const f = fixture(t); const { task } = await f.create();
+  f.change(task.cwd, "base.txt", "feature\n"); f.git(task.cwd, "add", "."); f.git(task.cwd, "commit", "-qm", "feature");
+  f.commit(f.repo, "main-only.txt"); f.git(f.repo, "push", "-q", "origin", "main");
+  f.git(f.repo, "switch", "-q", "develop"); f.change(f.repo, "base.txt", "develop\n"); f.git(f.repo, "add", "."); f.git(f.repo, "commit", "-qm", "develop"); f.git(f.repo, "push", "-q", "origin", "develop");
+  const reviewed = await f.service.review(task.id);
+  assert.equal(reviewed.task.freshness.mainMissing, true);
+  await f.service.finish(task.id, { expectedHead: reviewed.head, reviewToken: reviewed.token });
+  assert.equal(f.git(task.cwd, "rev-parse", "HEAD"), reviewed.head);
+  assert.equal(f.git(task.cwd, "show", "HEAD:base.txt"), "feature");
+  assert.equal(f.service.get(task.id).state, "review");
+});
+
 test("task review: selected commit preserves other staged files and rejects stale previews", async (t) => {
   const f = fixture(t); const { task } = await f.create();
   f.change(task.cwd, "chosen.txt", "chosen\n"); f.change(task.cwd, "staged.txt", "keep staged\n");
@@ -32,7 +67,8 @@ test("task review: dirty and behind work can commit, integrate, review and publi
   assert.equal(review.task.freshness.behind, true);
   await f.service.commitReview(task.id, { expectedHead: review.head, reviewToken: review.token, files: ["local.txt"], message: "local" });
   review = await f.service.review(task.id);
-  await f.service.sync(task.id, { expectedHead: review.head, reviewToken: review.token });
+  const synced = await f.service.sync(task.id, { expectedHead: review.head, reviewToken: review.token });
+  assert.equal(synced.task.verification, '');
   const stale = review; review = await f.service.review(task.id);
   assert.equal(review.clean, true); assert.equal(review.task.freshness.behind, false);
   await assert.rejects(f.service.finish(task.id, { expectedHead: stale.head, reviewToken: stale.token }), error => error.reason === "task-stale-review");

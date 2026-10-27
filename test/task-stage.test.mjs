@@ -16,7 +16,7 @@ test("단계 판정: 갓 만든 작업은 작업 단계이고 마무리는 이�
   assert.equal(p.nodes.find((n) => n.key === "folder").sub, ".agenthub/login-ui");
   assert.equal(p.nodes.find((n) => n.key === "commit").sub, "아직 없음");
   assert.equal(p.nodes.find((n) => n.key === "pr").sub, "→ develop");
-  const finish = action(p, "finish", "마무리");
+  const finish = action(p, "finish", "크리에이트 PR");
   assert.equal(finish.primary, true); assert.equal(finish.disabled, true); assert.match(finish.reason, /변경이 없습니다/);
   assert.equal(action(p, "open-session").label, "세션 열기");
   assert.equal(p.stateLabel, "진행 중");
@@ -26,14 +26,14 @@ test("단계 판정: 세션 실행 중이면 작업 단계에 머물고 마무�
   const p = buildTaskPipeline(task(), status({ dirty: 3 }), { sessions: 2, running: 1 });
   assert.equal(p.current, "work");
   assert.equal(p.nodes.find((n) => n.key === "work").sub, "세션 2개 · 실행 중");
-  assert.match(action(p, "finish", "마무리").reason, /세션이 작업 중/);
+  assert.match(action(p, "finish", "크리에이트 PR").reason, /세션이 작업 중/);
 });
 
 test("단계 판정: 커밋하지 않은 변경은 커밋 단계, 커밋을 마치면 PR 단계로 넘어간다", () => {
   let p = buildTaskPipeline(task(), status({ dirty: 3 }), { running: 0 });
   assert.equal(p.current, "commit");
   assert.equal(p.nodes.find((n) => n.key === "commit").sub, "변경 3개 · 커밋 전");
-  assert.equal(action(p, "finish", "마무리").disabled, false);
+  assert.equal(action(p, "finish", "크리에이트 PR").disabled, false);
   p = buildTaskPipeline(task(), status({ commits: 3 }), {});
   assert.equal(p.current, "pr");
   assert.equal(states(p).commit, "done");
@@ -47,7 +47,7 @@ test("단계 판정: PR이 열리면 검토 대기, 병합되면 대상 브랜�
   let p = buildTaskPipeline(task({ state: "review", pull }), status({ commits: 3 }), { sessionId: "s1" });
   assert.equal(p.current, "pr"); assert.equal(p.stateLabel, "검토 대기");
   assert.equal(p.nodes.find((n) => n.key === "pr").sub, "#13 검토 대기");
-  assert.deepEqual(p.actions.map((a) => a.label), ["세션 열기", "PR 열기", "병합 검토"]);
+  assert.deepEqual(p.actions.map((a) => a.label), ["세션 열기", "PR 열기", "업데이트 PR", "리뷰 머지"]);
   p = buildTaskPipeline(task({ state: "merged", pull: { ...pull, state: "MERGED" } }), status({ commits: 12, shortHead: "9d75b8f" }), { sessionId: "s1" });
   assert.equal(p.current, "target"); assert.equal(p.stateLabel, "완료");
   assert.deepEqual(states(p), { base: "done", branch: "done", folder: "done", work: "done", commit: "done", pr: "done", target: "done" });
@@ -56,19 +56,19 @@ test("단계 판정: PR이 열리면 검토 대기, 병합되면 대상 브랜�
   assert.equal(action(p, "cleanup").disabled, false);
 });
 
-test("단계 판정: 기준 브랜치가 앞서면 기준 노드에 경고하고 기준 반영을 먼저 권한다", () => {
+test("단계 판정: 기준 브랜치가 앞서도 PR 생성·병합 검토를 허용하고 최신화는 별도로 제공한다", () => {
   let p = buildTaskPipeline(task({ freshness: { state: "needs-update" } }), status({ commits: 1 }), {});
   assert.equal(p.nodes[0].state, "warn");
-  assert.equal(action(p, "sync").primary, true); assert.equal(action(p, "finish", "마무리"), undefined);
+  assert.equal(action(p, "sync").primary, false); assert.equal(action(p, "finish", "크리에이트 PR").disabled, false);
   p = buildTaskPipeline(task({ freshness: { state: "needs-update" } }), status({ dirty: 2 }), {});
   assert.match(action(p, "sync").reason, /커밋하지 않은 변경/);
   p = buildTaskPipeline(task({ state: "review", pull: { number: 2, state: "OPEN" }, freshness: { state: "needs-update" } }), status({ commits: 1 }), {});
-  assert.match(action(p, "merge").reason, /develop의 새 변경/);
+  assert.equal(action(p, "merge").disabled, false);
 });
 
 test("단계 판정: 결과를 모르는 요청이 있으면 쓰기 동작을 모두 막는다", () => {
   const p = buildTaskPipeline(task({ pendingAction: { action: "push" } }), status({ commits: 1 }), {});
-  assert.match(action(p, "finish", "마무리").reason, /최신 상태 확인/);
+  assert.match(action(p, "finish", "크리에이트 PR").reason, /최신 상태 확인/);
   assert.match(action(p, "finish", "변경 보기").reason, /최신 상태 확인/);
 });
 
@@ -97,32 +97,31 @@ test("단계 판정: 로컬 반영 방식과 원본 폴더 작업을 구분해 �
 test("단계 판정: 작업 폴더가 사라지면 경고하고 작업을 진행하지 않는다", () => {
   const p = buildTaskPipeline(task(), status({ folder: false, dirty: null, commits: null }), {});
   assert.equal(p.nodes.find((n) => n.key === "folder").state, "warn");
-  assert.match(action(p, "finish", "마무리").reason, /작업 폴더가 없습니다/);
+  assert.match(action(p, "finish", "크리에이트 PR").reason, /작업 폴더가 없습니다/);
 });
 
 test("단계 판정: main 변경이 develop에 없으면 기준 반영 대신 해야 할 일을 안내한다", () => {
   let p = buildTaskPipeline(task({ freshness: { state: "needs-update", mainMissing: true } }), status({ commits: 1 }), {});
   assert.equal(p.mainMissing, true);
   assert.equal(action(p, "sync"), undefined);
-  assert.equal(action(p, "refresh").primary, true);
-  assert.match(action(p, "finish", "마무리").reason, /main의 변경을 develop에 먼저/);
-  assert.match(p.notice, /Git 탭에서 main을 develop에 병합/);
+  assert.equal(action(p, "finish", "크리에이트 PR").disabled, false);
+  assert.match(p.notice, /PR 생성·갱신은 가능/);
   assert.equal(p.nodes[0].sub, "main 미반영");
   // 상태 조회가 지금 다시 따진 결과가 저장된 결과보다 우선한다.
   p = buildTaskPipeline(task({ freshness: { state: "needs-update", mainMissing: true } }), status({ commits: 1, freshness: { state: "current", mainMissing: false } }), {});
   assert.equal(p.mainMissing, false); assert.equal(p.behind, false); assert.equal(p.notice, "");
-  assert.equal(action(p, "finish", "마무리").primary, true);
+  assert.equal(action(p, "finish", "크리에이트 PR").primary, true);
   // 긴급 수정은 main에서 출발하므로 안내하지 않는다.
   p = buildTaskPipeline(task({ type: "hotfix", branch: "hotfix/x", baseBranch: "main", targetBranch: "main", freshness: { state: "current", mainMissing: true } }), status({ commits: 1 }), {});
   assert.equal(p.mainMissing, false);
 });
 
-test("단계 판정: 원격 작업 브랜치가 앞서면 원격 변경 합치기를 먼저 권한다", () => {
+test("단계 판정: 원격 작업 브랜치가 앞서도 검토 화면은 열 수 있고 최신화는 별도 선택한다", () => {
   let p = buildTaskPipeline(task(), status({ commits: 1, remoteAhead: true }), {});
-  assert.equal(action(p, "sync", "원격 변경 합치기").primary, true);
-  assert.equal(action(p, "finish", "마무리"), undefined);
+  assert.equal(action(p, "sync", "업데이트 프롬 develop").primary, false);
+  assert.equal(action(p, "finish", "크리에이트 PR").disabled, false);
   p = buildTaskPipeline(task({ state: "review", pull: { number: 2, state: "OPEN" } }), status({ commits: 1, remoteAhead: true }), {});
-  assert.match(action(p, "merge").reason, /원격 작업 브랜치의 새 커밋/);
+  assert.equal(action(p, "merge").disabled, false);
 });
 
 test("단계 판정: 푸시 안 된 커밋은 배지와 원격에 백업으로 알린다", () => {

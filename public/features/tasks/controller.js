@@ -435,7 +435,6 @@ export function createTasksController({
       const blocked = uncertainTasks.has(task.id) || Boolean(task.pendingAction);
       if (task.state === 'working' || task.state === 'review') {
         secondary.append(actionButton(connected.length ? '세션 추가' : '새 세션', 'new-session', task, { disabled: blocked }));
-        if (task.state === 'review') secondary.append(actionButton('PR 업데이트', 'finish', task, { disabled: blocked }));
       }
       if (task.state !== 'cleaned') secondary.append(actionButton('최신 상태 확인', 'refresh', task));
       secondary.append(...workspace.menu(task, actionButton));
@@ -1179,6 +1178,11 @@ export function createTasksController({
   // 되돌리기 어려운 작업 동작 전에 바뀌는 것과 남는 것을 보여 주고 확인을 받는다.
   async function confirmTaskAction(action, task) {
     const develop = task.gitflow?.develop || DEFAULT_GITFLOW.develop, main = task.gitflow?.main || DEFAULT_GITFLOW.main;
+    if (action === 'sync') {
+      return (await confirmAction({ title: `업데이트 프롬 ${task.targetBranch}`, subject: task.title,
+        changes: [`${task.remote || 'origin'}/${task.targetBranch} → ${task.branch}`, `원격 작업 브랜치 ${task.remote || 'origin'}/${task.branch}의 추가 커밋도 합칩니다.`, ...(task.finishMode === 'local' ? [`로컬 ${task.targetBranch}의 추가 커밋도 합칩니다.`] : [])],
+        keeps: ['대상 브랜치와 PR은 변경하지 않습니다.'], warnings: ['작업 브랜치의 파일과 커밋이 바뀔 수 있습니다. 반영 후 다시 검증하세요.'], confirmLabel: '업데이트' })).ok;
+    }
     if (action === 'cleanup' && task.state === 'cleaned') return true; // 정리 뒤 남은 폴더만 다시 지운다.
     if (action === 'cleanup') {
       const changes = [], keeps = ['작업·대화 기록', task.pull?.number ? `PR #${task.pull.number}` : ''];
