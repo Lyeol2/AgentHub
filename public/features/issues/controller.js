@@ -7,6 +7,13 @@ const INBOX_INTERVAL = 3 * 60_000;
 const DETAIL_INTERVAL = 15_000;
 const BODY_TEMPLATE = "## 할 일\n\n\n## 기대 결과\n\n\n## 재현·확인 방법\n\n";
 const AGENTS = [["claude", "Claude"], ["codex", "Codex"]];
+// 새 세션 창에서 마지막으로 고른 AI(채팅이었어도 그 AI). 없으면 Codex.
+function lastAgent() {
+  let kind = "";
+  try { kind = String(JSON.parse(localStorage.getItem("agenthub.newSession") ?? "{}")?.kind ?? ""); } catch { /* 기본값 */ }
+  kind = kind.replace(/-chat$/, "");
+  return AGENTS.some(([value]) => value === kind) ? kind : "codex";
+}
 const NAME_KEY = "agenthub-team-names";
 const NAME_MAX = 40;
 const VIEW_KEY = "agenthub.issueView";
@@ -278,6 +285,7 @@ export function createIssuesController({ api, account, connectAccount, goProject
     }
     if (open && mine) {
       const agent = el("select", { "aria-label": "세션 AI", "data-issue-action": "1" }, ...AGENTS.map(([value, label]) => el("option", { value }, label)));
+      agent.value = lastAgent();
       if (startTask) actions.append(button("작업으로 시작", () => startAsTask(s), "primary sm", "작업 탭의 새 작업으로 만듭니다. 브랜치·작업 폴더를 준비하고 이 이슈를 작업에 연결합니다"));
       actions.append(agent,
         button("세션으로 시작", () => start(s, { agent: agent.value }), startTask ? "ghost sm" : "primary sm", "세션 하나를 만들고 이슈 내용을 첫 요청으로 보냅니다"),

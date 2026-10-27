@@ -411,6 +411,18 @@ test("새 세션 창은 마지막으로 고른 종류·AI별 권한·모델·워
   assert.equal(JSON.parse(store.get("agenthub.newSession")).permission.claude, "bypassPermissions");
 });
 
+test("새 세션 창은 마지막이 채팅이어도 그 AI를 고르고, 처음 열면 Codex를 고른다", async (t) => {
+  withStorage(t, { "agenthub.newSession": { kind: "codex-chat" } });
+  const h = setup();
+  h.get("new-agent").value = "claude";
+  await h.controller.openNew("C:/repo");
+  assert.equal(h.get("new-agent").value, "codex");
+  globalThis.localStorage.setItem("agenthub.newSession", "{}");
+  h.get("new-agent").value = "claude";
+  await h.controller.openNew("C:/repo");
+  assert.equal(h.get("new-agent").value, "codex");
+});
+
 test("새 세션 창은 프로젝트 기본값을 마지막 선택보다 먼저 쓰고, 체크하면 프로젝트 기본값으로 저장한다", async (t) => {
   withStorage(t, { "agenthub.newSession": { kind: "claude", permission: { codex: "read-only" }, isolate: true } });
   const h = setup();
