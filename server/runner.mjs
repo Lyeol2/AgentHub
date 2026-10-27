@@ -35,6 +35,9 @@ const INJECT_GRACE_MS = 4000;
 export const INTERRUPT_GRACE_MS = 10000;
 const STOP_TASK_TIMEOUT_MS = 10000;
 const PERMISSION_MODE_TIMEOUT_MS = 10000;
+// CLI 프로세스가 끝난 뒤 출력 파이프를 닫기까지 기다리는 시간(중지했을 때 / 그 밖)
+const EXIT_PIPE_STOP_MS = 500;
+const EXIT_PIPE_MS = 2000;
 // 하위 작업이 모두 끝나면 CLI가 곧바로 결과를 정리하는 턴을 시작하는 경우가 많다. 그동안 대기로 깜빡이지 않게 잠시 기다린다.
 const BACKGROUND_SETTLE_MS = 2000;
 // 턴을 마친 CLI를 띄워 두는 기본값. 서버 설정(config.cliKeepAlive)으로 바꾼다. idleMinutes가 0이면 백그라운드 작업이 없을 때 바로 닫는다.
@@ -522,10 +525,13 @@ export class Runner extends EventEmitter {
       this.append(session, { kind: "error", text: `실행 실패: ${missingFolder(err, session.cwd) ?? err.message}` });
     });
 
-    // 멈춘 CLI가 남긴 하위 프로세스가 출력 파이프를 잡고 있으면 close가 오지 않는다. 종료 뒤 잠시 기다려 파이프를 닫는다.
+    // CLI가 남긴 하위 프로세스(git이 띄운 자격 증명 도우미·백그라운드 명령 등)가 출력 파이프를 잡고 있으면 close가 오지 않아
+    // 답을 다 하고도 세션이 계속 실행 중으로 남는다. CLI가 끝나면 남은 출력을 읽을 만큼 기다렸다가 파이프를 닫는다.
     child.on("exit", () => {
-      if (!session.stopRequested) return;
-      const timer = setTimeout(() => { child.stdout?.destroy?.(); child.stderr?.destroy?.(); }, 500);
+      const timer = setTimeout(() => {
+        if (child.closed) return;
+        child.stdout?.destroy?.(); child.stderr?.destroy?.();
+      }, session.stopRequested ? EXIT_PIPE_STOP_MS : EXIT_PIPE_MS);
       timer.unref?.();
     });
 

@@ -238,7 +238,7 @@ test("native images: Claude streams base64 and Runner keeps server filesystem pa
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-function runnerFixture({ missing = false, activeWriter = false, forkError = null } = {}) {
+function runnerFixture({ missing = false, activeWriter = false, forkError = null, holdPipe = false } = {}) {
   const session = { id: "runtime", agent: "codex", cwd: process.cwd(), permission: "workspace-write", state: "idle", events: [], agentSessionId: missing ? "deleted" : activeWriter ? "previous" : null };
   const children = [];
   const runner = new Runner({ touch() {}, get: () => session }, { spawn() {
@@ -260,7 +260,11 @@ function runnerFixture({ missing = false, activeWriter = false, forkError = null
         if (message.method === "turn/interrupt") child.send("turn/completed", { turn: { id: "turn", status: "interrupted" } });
       });
     });
-    child.stdin.on("finish", () => queueMicrotask(() => child.emit("close", 0, null)));
+    // holdPipe: Codex는 끝났지만 남은 하위 프로세스가 출력 파이프를 잡아 close가 오지 않는 경우
+    if (holdPipe) {
+      child.stdin.on("finish", () => queueMicrotask(() => child.emit("exit", 0, null)));
+      child.stdout.on("close", () => child.emit("close", 0, null));
+    } else child.stdin.on("finish", () => queueMicrotask(() => child.emit("close", 0, null)));
     return child;
   } });
   return { runner, session, children };
@@ -281,6 +285,16 @@ test("runner app-server integration: complete a native image turn and persist it
   assert.equal(f.session.agentSessionId, "thread"); assert.deepEqual(f.session.cliSessionIds, ["thread"]);
   assert.equal(f.session.events[0].attachments[0].path, undefined);
   assert.equal(f.session.events.find((event) => event.kind === "text").text, "사진의 설명");
+  assert.equal(f.runner.isRunning(f.session.id), false);
+});
+
+test("runner app-server integration: a finished turn ends even when a leftover child process holds the output pipe", async () => {
+  const f = runnerFixture({ holdPipe: true }); const ended = new Promise((resolve) => f.runner.once("turnEnd", (...args) => resolve(args)));
+  f.runner.send(f.session, "커밋해 줘", "fake-codex"); await tick(); const child = f.children[0];
+  child.send("item/completed", { item: { type: "agentMessage", text: "커밋했습니다." } });
+  child.send("turn/completed", { turn: { id: "turn", status: "completed" } });
+  const [, ok] = await ended;
+  assert.equal(ok, true); assert.equal(f.session.state, "idle");
   assert.equal(f.runner.isRunning(f.session.id), false);
 });
 
