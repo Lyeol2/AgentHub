@@ -1110,10 +1110,10 @@
 
   <dialog id="finish-task-dialog" class="task-dialog" aria-labelledby="task-finish-heading">
     <form id="finish-task-form" class="dialog-form">
-      <h3 id="task-finish-heading">변경 검토 및 반영</h3>
+      <h3 id="task-finish-heading">리뷰 체인지</h3>
       <p class="hint task-finish-summary" id="task-finish-summary"></p>
       <div id="task-finish-steps" class="task-finish-steps" aria-label="작업 반영 단계"></div>
-      <label>반영 방식 <select id="task-finish-mode"><option value="pr">게시하고 PR 만들기</option><option value="local">로컬 대상 브랜치에 반영</option></select></label>
+      <label>반영 방식 <select id="task-finish-mode"><option value="pr">크리에이트 / 업데이트 PR</option><option value="local">머지 투 타깃 (로컬)</option></select></label>
       <div id="task-finish-files" class="task-review-files"></div>
       <pre id="task-finish-diff" class="task-review-diff" hidden></pre>
       <div id="task-finish-commit-fields" hidden><label>커밋 메시지 <input id="task-finish-message" maxlength="2000" placeholder="예: fix: 로그인 버튼 수정"></label></div>
@@ -1125,7 +1125,7 @@
       <label id="task-finish-verify-row" class="task-finish-check" hidden><input id="task-finish-verified" type="checkbox">현재 커밋의 변경과 검증 결과를 확인했습니다</label>
       <p class="hint" id="task-finish-hint" aria-live="polite"></p>
       <p class="error" id="task-finish-error" role="alert"></p>
-      <menu><button type="button" class="ghost" id="task-finish-refresh">다시 확인</button><button type="button" class="ghost" id="task-finish-cancel">닫기</button><button type="submit" class="primary" id="task-finish-submit" disabled>변경 검토</button></menu>
+      <menu><button type="button" class="ghost" id="task-finish-refresh">리체크</button><button type="submit" class="ghost" id="task-finish-sync" hidden>업데이트 프롬 기준 브랜치</button><button type="submit" class="ghost" id="task-finish-commit" hidden>커밋 셀렉티드</button><button type="button" class="ghost" id="task-finish-cancel">닫기</button><button type="submit" class="primary" id="task-finish-submit" disabled>크리에이트 PR</button></menu>
     </form>
   </dialog>
 

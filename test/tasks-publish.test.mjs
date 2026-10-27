@@ -26,20 +26,20 @@ test("작업 반영: 원격 작업 브랜치의 새 커밋은 기준 반영이 �
   assert.equal(done.task.state, "review");
 });
 
-test("작업 반영: 푸시 직후 기준이 움직이면 푸시됐음을 알리고 PR은 만들지 않는다", async (t) => {
+test("작업 반영: 푸시 직후 기준이 움직여도 작업 브랜치에 합치지 않고 PR을 만든다", async (t) => {
   const f = fixture(t);
   const { task } = await f.create();
   f.change(task.cwd);
   // 푸시 순간에 다른 사람이 develop을 올린 것처럼 만든다.
   f.state.afterPush = () => { f.state.afterPush = null; f.git(f.repo, "switch", "-q", "develop"); f.commit(f.repo, "dev.txt"); f.git(f.repo, "push", "-q", "origin", "develop"); f.git(f.repo, "switch", "-q", "main"); };
-  await assert.rejects(f.service.finish(task.id), (error) => error.reason === "task-pushed-behind" && /원격에 푸시했습니다/.test(error.message) && /PR은 아직/.test(error.message) && /기준 반영/.test(error.hint));
+  await f.service.finish(task.id);
   const saved = f.service.get(task.id);
   const head = f.git(task.cwd, "rev-parse", "HEAD");
   assert.equal(f.git(f.repo, "ls-remote", f.remote, `refs/heads/${task.branch}`).split(/\s+/)[0], head);
-  assert.equal(saved.publishedHead, head); assert.equal(saved.pull, null); assert.equal(saved.errorReason, "task-pushed-behind");
-  assert.equal(f.state.writes.includes("pull"), false);
-  await f.service.sync(task.id);
-  assert.equal((await f.service.finish(task.id)).task.state, "review");
+  assert.equal(saved.publishedHead, head); assert.equal(saved.state, "review");
+  assert.equal(saved.freshness.behind, true);
+  assert.equal(f.state.writes.includes("pull"), true);
+  assert.equal(fs.existsSync(path.join(task.cwd, "dev.txt")), false);
 });
 
 test("작업 반영: 카드 상태는 푸시 안 된 커밋 수와 지금 HEAD 기준 최신 여부를 알려 준다", async (t) => {
@@ -79,7 +79,7 @@ test("작업 반영: 원격에 백업은 작업 브랜치만 푸시하고 대상
   f.git(f.repo, "switch", "-q", "-c", "elsewhere", head); f.commit(f.repo, "elsewhere.txt");
   f.git(f.repo, "push", "-q", f.remote, `elsewhere:refs/heads/${task.branch}`); f.git(f.repo, "switch", "-q", "main");
   f.commit(task.cwd, "b.txt");
-  await assert.rejects(f.service.backup(task.id), (error) => error.reason === "git-push-rejected" && /원격 변경 합치기/.test(error.hint));
+  await assert.rejects(f.service.backup(task.id), (error) => error.reason === "git-push-rejected" && /업데이트 프롬 develop/.test(error.hint));
 });
 
 test("작업 반영: 원본 폴더가 작업 브랜치를 벗어나면 그 폴더의 Git 동작을 막지 않고 정리는 기록만 정리로 안내한다", async (t) => {

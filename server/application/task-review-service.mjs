@@ -8,7 +8,7 @@ import { fileDiff, parseStatus } from "../gitpanel.mjs";
 import { clone, now, remoteFingerprint, recordError, FRESHNESS_MAX_AGE } from "./task-domain.mjs";
 
 /** Read/review task state and integrate upstream changes under the shared mutation policy. */
-export function createTaskReviewService({ assertActive, busy, config, externalWrite, finishModeFor, get, hasFolder, isBusy, locked, mutate, offBranch, save, selectFinishMode, taskSessions, taskSettings }) {
+export function createTaskReviewService({ assertActive, busy, config, externalWrite, finishModeFor, get, github, hasFolder, isBusy, locked, mutate, offBranch, save, selectFinishMode, taskSessions, taskSettings }) {
   // refresh: 사용자가 최신 상태 확인을 눌렀다. 그때는 방금 받은 fetch도 다시 쓰지 않는다.
   async function context(projectPath, { refresh = false } = {}) {
     if (!projectPath) throw new HttpError(400, "프로젝트를 선택하세요.");
@@ -48,17 +48,14 @@ export function createTaskReviewService({ assertActive, busy, config, externalWr
   // main→develop 미반영은 작업 브랜치에서 풀 수 없다. 해야 할 일을 함께 알린다.
   const developBehindHint = (task) => { const { main, develop } = taskSettings(task);
     return `Git 탭에서 ${main}을 ${develop}에 병합해 원격에 푸시하거나, GitHub에서 ${main} → ${develop} PR을 만들어 병합하세요. 그다음 작업 카드의 최신 상태 확인을 누르면 이어서 진행할 수 있습니다.`; };
-  function requireFresh(task, { pushed = null } = {}) {
-    const done = pushed ? `작업 브랜치는 원격에 푸시했습니다(${task.remote}/${task.branch} · ${pushed.slice(0, 7)}). 결과는 원격에 저장됐지만 ` : "";
+  function requireFresh(task) {
     if (task.type !== "hotfix" && task.freshness.mainMissing) {
       const { main, develop } = taskSettings(task);
-      throw new HttpError(409, `${done}${main}의 변경이 ${develop}에 아직 없습니다. 기능 브랜치에 ${main}을 직접 병합하지 않으므로 ${develop}에 먼저 반영해야 합니다.${pushed ? " PR은 아직 만들지 않았습니다." : ""}`,
+      throw new HttpError(409, `${main}의 변경이 ${develop}에 아직 없습니다. 로컬 반영 전에 ${develop}에 먼저 반영해야 합니다.`,
         "gitflow-develop-behind", { hint: developBehindHint(task) });
     }
     if (task.freshness.behind) {
-      if (pushed) throw new HttpError(409, `${done}그사이 기준 브랜치(${task.targetBranch})가 바뀌어 PR은 아직 만들지 않았습니다.`, "task-pushed-behind",
-        { hint: "기준 반영을 누른 뒤 마무리를 다시 누르면 반영한 커밋을 푸시하고 PR을 만듭니다." });
-      throw new HttpError(409, "기준 브랜치가 변경됐습니다. 기준 반영으로 최신 변경을 합친 뒤 작업을 마무리하세요.", "task-behind");
+      throw new HttpError(409, `대상 브랜치가 변경됐습니다. '업데이트 프롬 ${task.targetBranch}'으로 최신 변경을 합친 뒤 로컬 반영하세요.`, "task-behind");
     }
   }
   async function review(id) {
@@ -70,7 +67,13 @@ export function createTaskReviewService({ assertActive, busy, config, externalWr
       const localBehind = !!localTargetHead && !await taskAncestor(task.cwd, localTargetHead, snapshot.head);
       const commits = (await taskGit(task.cwd, ["log", "--format=%H%x00%s", "-n", "100", `${task.freshness.targetSha}..${snapshot.head}`]))
         .trim().split(/\r?\n/).filter(Boolean).map((line) => { const [hash, subject] = line.split("\0"); return { hash, subject }; });
-      return { task: clone(task), ...snapshot, localTargetHead, localBehind, commits, finishMode: task.finishMode || "pr" };
+      const reviewedTask = clone(task);
+      if (task.pull) {
+        const { pull } = await github.detail(task.cwd, task.pull.number, { remote: task.remote });
+        if (pull.headRefName !== task.branch || pull.baseRefName !== task.targetBranch) throw new HttpError(409, "작업과 PR의 브랜치가 일치하지 않습니다.", "task-pull");
+        reviewedTask.pull = pull;
+      }
+      return { task: reviewedTask, ...snapshot, localTargetHead, localBehind, commits, finishMode: task.finishMode || "pr" };
     });
   }
   // 카드의 단계 표시용 가벼운 상태. 네트워크 없이 로컬 Git만 읽고 작업 기록은 바꾸지 않는다.
@@ -207,6 +210,7 @@ export function createTaskReviewService({ assertActive, busy, config, externalWr
       // 원격 작업 브랜치만 합친 경우에도 main→develop 미반영은 그대로 남아 있으므로 해야 할 일을 알린다.
       if (developBehind) { task.finishProgress = { ...task.finishProgress, sync: { at: now(), head: await assertTaskWorktree(task) } }; save(task); requireFresh(task); }
       task.finishProgress = { ...task.finishProgress, sync: { at: now(), head: await assertTaskWorktree(task) } };
+      task.verification = '';
       save(task);
       return { task: clone(task) };
     });

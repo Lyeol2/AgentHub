@@ -105,6 +105,15 @@ async function browser(temp, url, expression) {
     await command("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     await command("Runtime.evaluate", { expression: showCards, awaitPromise: true });
     await fs.writeFile(path.join(output, "cards.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+    await command("Runtime.evaluate", { expression: "document.querySelector('[data-task-action=merge]').click()" });
+    const ready = await command("Runtime.evaluate", { expression: "new Promise((resolve, reject) => { const end = Date.now() + 5000; const timer = setInterval(() => { if (document.getElementById('finish-task-dialog').open && !document.getElementById('task-finish-refresh').disabled) { clearInterval(timer); resolve(true); } else if (Date.now() > end) { clearInterval(timer); reject(Error('merge review did not load')); } }, 25); })", awaitPromise: true });
+    assert.ok(!ready.exceptionDetails);
+    await fs.writeFile(path.join(output, "merge-review.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
+    await command("Emulation.setDeviceMetricsOverride", { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    const reviewFit = await command("Runtime.evaluate", { expression: "new Promise(resolve => requestAnimationFrame(() => { const d = document.getElementById('finish-task-dialog'); const r = d.getBoundingClientRect(); resolve(r.left >= 0 && r.right <= innerWidth && d.scrollWidth <= d.clientWidth && [...d.querySelectorAll('menu button')].filter(b => !b.hidden).every(b => { const x = b.getBoundingClientRect(); return x.left >= r.left && x.right <= r.right; })); }))", awaitPromise: true, returnByValue: true });
+    assert.equal(reviewFit.result.value, true, "Separate PR and update actions fit mobile review dialog");
+    await command("Runtime.evaluate", { expression: "document.getElementById('task-finish-submit').scrollIntoView({block:'end'})" });
+    await fs.writeFile(path.join(output, "merge-review-mobile.png"), Buffer.from((await command("Page.captureScreenshot", { format: "png" })).data, "base64"));
     return { checks: result.result.value, errors, mobile: mobile.result.value, existingBranchPreview };
   } finally {
     socket?.close(); child.kill();

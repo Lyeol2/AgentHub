@@ -1,4 +1,6 @@
 #finish-task-dialog { width: min(800px, calc(100vw - 32px)); }
+#finish-task-dialog menu { flex-wrap: wrap; }
+#finish-task-dialog menu button { overflow-wrap: anywhere; white-space: normal; }
 .task-finish-steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 4px 0 12px; }
 .task-finish-steps span { padding: 5px 9px; border: 1px solid var(--border); border-radius: 6px; font-size: 12px; }
 .task-finish-steps [data-done="true"] { color: var(--ok, #33c98c); border-color: color-mix(in srgb, var(--ok, #33c98c) 55%, transparent); }
@@ -12,5 +14,6 @@
 .task-review-diff { max-height: 280px; overflow: auto; font-size: 12px; white-space: pre; padding: 12px; background: var(--bg); }
 .task-review-commits { max-height: 140px; overflow: auto; overflow-wrap: anywhere; font-size: 12px; }
 .task-finish-check { display: flex !important; align-items: flex-start; gap: 8px; }
+.task-finish-check[hidden] { display: none !important; }
 .task-finish-check input { flex-shrink: 0; margin-top: 4px; }
 @media (max-width: 600px) { .task-review-file { align-items: flex-start; } #finish-task-dialog menu { flex-wrap: wrap; } }

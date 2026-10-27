@@ -105,8 +105,8 @@ export function buildTaskPipeline(task, status = null, ctx = {}) {
     : active
       ? `원본 폴더가 ${status?.currentBranch || '다른 브랜치'}에 있어 이 작업은 대기 중입니다. 원본 폴더에서는 한 번에 한 작업만 진행합니다. 이어 하려면 '이 작업으로 전환'을 누르세요. 커밋하지 않은 변경이 있거나 세션이 실행 중이면 전환하지 않습니다.`
       : `원본 폴더가 작업 브랜치(${task.branch})를 벗어나 ${status?.currentBranch || '다른 브랜치'}에 있습니다. 원본 폴더의 Git 작업은 막지 않습니다.`;
-  const notice = offBranch ? offGuide : mainMissing ? developGuide : '';
-  const syncLabel = remoteAhead && !behind ? '원격 변경 합치기' : '기준 반영';
+  const notice = offBranch ? offGuide : mainMissing ? (local ? developGuide : `${names.main}의 변경이 ${names.develop}에 아직 없습니다. PR 생성·갱신은 가능하며, 병합 조건은 GitHub에서 확인합니다.`) : '';
+  const syncLabel = `업데이트 프롬 ${target}`;
   const dirtyReason = dirty > 0 ? '커밋하지 않은 변경이 있습니다. 먼저 커밋하세요.' : '';
   if (offBranch) {
     if (pull?.url) actions.push({ id: 'pull-link', label: finished ? 'PR 보기' : 'PR 열기', url: pull.url, primary: false, disabled: false, reason: '' });
@@ -118,24 +118,20 @@ export function buildTaskPipeline(task, status = null, ctx = {}) {
     if (pull?.url) actions.push({ id: 'pull-link', label: 'PR 열기', url: pull.url, primary: false, disabled: false, reason: '' });
     add('finish', '변경 보기', { reason: waitReason || (folderMissing ? '작업 폴더가 없습니다.' : '') });
     if (unpushed > 0) add('backup', '원격에 백업', { reason: waitReason || (folderMissing ? '작업 폴더가 없습니다.' : '') });
-    if (mainMissing) {
+    if (mainMissing && local) {
       if (remoteAhead) add('sync', '원격 변경 합치기', { reason: waitReason || runReason || dirtyReason });
       add('refresh', '반영 후 다시 확인', { primary: true, reason: waitReason });
       add('finish', '마무리', { reason: `${names.main}의 변경을 ${names.develop}에 먼저 반영해야 합니다.` });
-    } else if (behind || remoteAhead) add('sync', syncLabel, { primary: true, reason: waitReason || runReason || dirtyReason });
-    else add('finish', '마무리', { primary: true, reason: waitReason || (folderMissing ? '작업 폴더가 없습니다.' : '') || runReason
-      || (status && !dirty && !commits ? '아직 변경이 없습니다. 세션에서 작업을 진행하세요.' : '') });
+    } else {
+      if ((behind && !mainMissing) || remoteAhead) add('sync', syncLabel, { primary: false, reason: waitReason || runReason || dirtyReason });
+      add('finish', local ? '마무리' : task.pull ? '업데이트 PR' : '크리에이트 PR', { primary: true, reason: waitReason || (folderMissing ? '작업 폴더가 없습니다.' : '') || runReason
+        || (status && !dirty && !commits ? '아직 변경이 없습니다. 세션에서 작업을 진행하세요.' : '') });
+    }
   } else if (state === 'review') {
     if (pull?.url) actions.push({ id: 'pull-link', label: 'PR 열기', url: pull.url, primary: false, disabled: false, reason: '' });
-    if (mainMissing) {
-      if (remoteAhead) add('sync', '원격 변경 합치기', { reason: waitReason || runReason });
-      add('refresh', '반영 후 다시 확인', { primary: true, reason: waitReason });
-      add('merge', '병합 검토', { reason: `${names.main}의 변경을 ${names.develop}에 먼저 반영해야 합니다.` });
-    } else {
-      if (behind || remoteAhead) add('sync', syncLabel, { primary: true, reason: waitReason || runReason });
-      add('merge', '병합 검토', { primary: !(behind || remoteAhead), reason: waitReason || runReason
-        || (behind ? `${target}의 새 변경을 먼저 반영하세요.` : remoteAhead ? '원격 작업 브랜치의 새 커밋을 먼저 합치세요.' : '') });
-    }
+    if ((behind && !mainMissing) || remoteAhead) add('sync', syncLabel, { reason: waitReason || runReason || dirtyReason });
+    add('finish', '업데이트 PR', { reason: waitReason || runReason || (folderMissing ? '작업 폴더가 없습니다.' : '') });
+    add('merge', '리뷰 머지', { primary: true, reason: waitReason || runReason || (folderMissing ? '작업 폴더가 없습니다.' : '') });
   } else if (finished) {
     if (pull?.url) actions.push({ id: 'pull-link', label: 'PR 보기', url: pull.url, primary: false, disabled: false, reason: '' });
     if (state === 'merged') {

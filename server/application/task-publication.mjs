@@ -212,7 +212,7 @@ export function createTaskPublication({ assertActive, assertIdle, freshness, get
   // 원격 작업 브랜치에 로컬에 없는 커밋이 있어 거절된 푸시는 작업 카드에서 풀 수 있는 방법을 알린다.
   const pushRejected = (task, error) => error.reason !== "git-push-rejected" ? error
     : new HttpError(409, `원격 작업 브랜치 ${task.remote}/${task.branch}에 이 폴더에 없는 커밋이 있어 푸시가 거절됐습니다.`, "git-push-rejected",
-      { hint: "작업 카드의 '원격 변경 합치기'(또는 기준 반영)를 누르면 원격 작업 브랜치의 새 커밋을 먼저 합칩니다. 그다음 다시 푸시하세요.", raw: error.raw });
+      { hint: `작업 카드의 '업데이트 프롬 ${task.targetBranch}'에서 방향을 확인하면 원격 작업 브랜치의 새 커밋도 합칩니다. 그다음 업데이트 PR이나 푸시를 다시 실행하세요.`, raw: error.raw });
   // 결과를 모르는 백업 푸시가 원격에 닿았는지 본다. 닿았으면 게시한 커밋으로 기록한다.
   async function backedUp(task, sha) {
     const remote = (await taskGit(task.projectPath, [...githubCredentialArgs(), "ls-remote", "--heads", task.remote, `refs/heads/${task.branch}`])).trim().split(/\s+/)[0];
@@ -264,8 +264,8 @@ export function createTaskPublication({ assertActive, assertIdle, freshness, get
       task.finishMode = mode;
       save(task);
       await freshness(task);
-      requireFresh(task);
       if (mode === "local") {
+        requireFresh(task);
         if (await taskDirty(task)) {
           await taskGit(task.cwd, ["add", "--all", "--", "."], { write: true });
           await externalWrite(task, "commit", await taskRef(task.cwd, "HEAD"), () => taskGit(task.cwd, ["commit", "-m", message], { write: true }));
@@ -281,14 +281,13 @@ export function createTaskPublication({ assertActive, assertIdle, freshness, get
       }
       if (!existing && !await taskDirty(task) && !(await taskGit(task.cwd, ["diff", "--name-only", task.freshness.targetSha, "HEAD"])).trim())
         throw new HttpError(409, "기준 브랜치와 다른 변경이 없습니다.", "task-empty");
-      if (task.type !== "hotfix") { await ensureDevelop(task, target); requireFresh(task); }
+      if (task.type !== "hotfix") await ensureDevelop(task, target);
       if (await taskDirty(task)) {
         await taskGit(task.cwd, ["add", "--all", "--", "."], { write: true });
         await externalWrite(task, "commit", await taskRef(task.cwd, "HEAD"), () => taskGit(task.cwd, ["commit", "-m", message], { write: true }));
       }
       const head = await assertTaskWorktree(task);
       await freshness(task);
-      requireFresh(task);
       if (!existing && !(await taskGit(task.cwd, ["diff", "--name-only", task.freshness.targetSha, head])).trim())
         throw new HttpError(409, "기준 브랜치와 다른 변경이 없습니다.", "task-empty");
       const args = { remote: task.remote, repo: target.repo, branch: task.branch, head: task.branch, expectedHead: head };
@@ -296,10 +295,8 @@ export function createTaskPublication({ assertActive, assertIdle, freshness, get
       task.publishedHead = head;
       task.finishProgress = { ...task.finishProgress, push: { at: now(), head } };
       save(task);
-      // Recheck the base after publication; a moving target must be integrated before opening the PR.
-      // 이때 멈춰도 푸시는 끝났으므로 결과가 원격에 저장됐음을 함께 알린다.
+      // 대상의 최신 상태는 표시용으로 갱신한다. PR 생성·갱신은 대상 병합을 요구하지 않는다.
       await freshness(task);
-      requireFresh(task, { pushed: head });
       // 연결한 이슈는 PR이 기본 브랜치에 병합될 때 GitHub가 닫는다.
       const issueLine = task.issue && task.issue.repo.toLowerCase() === target.repo.toLowerCase() ? `\n관련 이슈: Closes #${task.issue.number}` : "";
       const text = [`## 작업\n${description || task.title}`, `## 검증\n${verification || "검증 결과를 입력하지 않았습니다."}`,
@@ -336,7 +333,7 @@ export function createTaskPublication({ assertActive, assertIdle, freshness, get
       if (!snapshot.clean) throw new HttpError(409, "커밋하지 않은 변경이 있습니다. PR 업데이트를 먼저 완료하세요.", "task-dirty");
       await assertTaskGitIdle(task);
       await freshness(task);
-      requireFresh(task);
+      // 실제 병합 조건(충돌·검사·리뷰·최신화 정책)은 GitHub에서 검사한다.
       const target = await githubTarget(task);
       const pull = (await github.detail(task.cwd, task.pull.number, { remote: task.remote })).pull;
       setPull(task, pull);
