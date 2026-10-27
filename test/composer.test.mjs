@@ -80,8 +80,30 @@ test("고른 파일은 파일 이름으로 줄여 보이고 보낼 때 전체 �
   refs.set("graph/view.js", "public/features/graph/view.js");
   refs.set("my notes.md", "docs/my notes.md");
   const text = '@view.js 와 @graph/view.js, @"my notes.md" 그리고 메일@view.js @view.jsx';
-  assert.deepEqual(refMatches(text, refs).map((m) => m.token), ["view.js", "my notes.md"]);
+  assert.deepEqual(refMatches(text, refs).map((m) => m.token), ["view.js", "graph/view.js", "my notes.md"]);
   assert.equal(expandRefs("@view.js 고치고 @graph/view.js 보기\n@\"my notes.md\"", refs),
     '@public/features/git/view.js 고치고 @public/features/graph/view.js 보기\n@"docs/my notes.md"');
   assert.equal(expandRefs("참조 없음", new Map()), "참조 없음");
+});
+
+test("고른 참조 뒤에 조사를 붙여도 참조로 남고, 공백 있는 이름은 따옴표 없이 보인다", () => {
+  const refs = new Map();
+  const token = refToken("Assets/UI/Tutorial Canvas.prefab", refs);
+  assert.equal(token, "Tutorial Canvas.prefab");
+  refs.set(token, "Assets/UI/Tutorial Canvas.prefab");
+  refs.set("app.js", "src/app.js");
+  const text = `@${token}에 @app.js를 연결, @app.jsx 와 @app.js.map은 아님`;
+  assert.deepEqual(refMatches(text, refs).map((m) => m.token), [token, "app.js"]);
+  assert.equal(expandRefs(text, refs), '@"Assets/UI/Tutorial Canvas.prefab"에 @"src/app.js"를 연결, @app.jsx 와 @app.js.map은 아님');
+  assert.equal(expandRefs("@app.js 보기", refs), "@src/app.js 보기");
+});
+
+test("파일을 고르면 커서 뒤에 쓴 글을 지우지 않는다", () => {
+  const before = "@Tut", text = `${before}에 넣기`;
+  assert.deepEqual(applyCompletion(text, completionTrigger(text, before.length), "Tutorial Canvas.prefab"),
+    { text: "@Tutorial Canvas.prefab에 넣기", caret: 23 });
+  const word = "@ap", glued = `${word}pending 메모`;
+  assert.equal(applyCompletion(glued, completionTrigger(glued, word.length), "app.js").text, "@app.js pending 메모");
+  const quoted = '@"my no"';
+  assert.equal(applyCompletion(quoted, completionTrigger(quoted, 7), "my notes.md").text, '@"my notes.md" ');
 });

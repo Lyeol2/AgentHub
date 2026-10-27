@@ -33,12 +33,14 @@ export function completionTrigger(text, caret = text.length) {
   return null;
 }
 
-// 고른 항목으로 커서가 있는 낱말을 바꾼다. 폴더는 이어서 고를 수 있게 공백을 붙이지 않는다.
+// 고른 항목으로 커서 앞의 검색어를 바꾼다. 커서 뒤에 이미 쓴 글은 지우지 않는다(따옴표로 연 검색어의 닫는 따옴표만 뗀다).
+// 폴더는 이어서 고를 수 있게, 뒤에 조사 같은 글이 붙어 있으면 그대로 붙어 있게 공백을 넣지 않는다.
 export function applyCompletion(text, trigger, value) {
-  const after = text.slice(trigger.end).replace(/^[^\s"]*"?/, "");
+  let after = text.slice(trigger.end);
+  if (trigger.type === "file" && text[trigger.start + 1] === '"') after = after.replace(/^"/, "");
   const insert = trigger.type === "command" ? `/${value}`
-    : /\s/.test(value) ? `@"${value}"` : `@${value}`;
-  const space = value.endsWith("/") || /^\s/.test(after) ? "" : " ";
+    : SPACE.test(value) ? `@"${value}"` : `@${value}`;
+  const space = value.endsWith("/") || (after && !/^[\w./\\-]/.test(after)) ? "" : " ";
   const next = text.slice(0, trigger.start) + insert + space + after;
   return { text: next, caret: trigger.start + insert.length + space.length };
 }
@@ -70,24 +72,28 @@ export function builtinCommand(text) {
 // ── 고른 파일 참조 ───────────────────────────────────────────────
 // 자동 완성으로 고른 파일은 작성창에 "@파일이름"으로만 보이고, 보낼 때 전체 경로로 바꾼다.
 // 이름이 같은 다른 파일을 이미 골랐으면 겹치지 않을 만큼 상위 폴더를 붙인다.
+// 이름의 공백은 줄바꿈 없는 공백(U+00A0)으로 바꿔 따옴표 없이 "@Tutorial Canvas.prefab"처럼 보이게 한다.
+export const NBSP = " ";
+const SPACE = /[^\S ]/; // 줄바꿈 없는 공백을 뺀 공백
 export function refToken(file, refs = new Map()) {
   const parts = String(file).split("/").filter(Boolean);
   for (let n = 1; n <= parts.length; n++) {
-    const token = parts.slice(-n).join("/");
+    const token = parts.slice(-n).join("/").replace(/[^\S\r\n]/g, NBSP);
     const taken = refs.get(token);
     if (!taken || taken === file) return token;
   }
   return file;
 }
 
-const refWord = (token) => (/\s/.test(token) ? `@"${token}"` : `@${token}`);
+const refWord = (token) => (SPACE.test(token) ? `@"${token}"` : `@${token}`);
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// text 안의 고른 참조 위치. 긴 이름부터 맞추고 낱말 경계(줄 처음·공백)에서만 찾는다.
+// text 안의 고른 참조 위치. 긴 이름부터 맞추고 앞은 줄 처음·공백에서만 찾는다.
+// 뒤에는 조사·문장 부호가 붙어도 된다("@app.js에"). 영문·숫자·경로 글자가 이어지면 다른 이름으로 본다.
 export function refMatches(text, refs = new Map()) {
   const tokens = [...refs.keys()].sort((a, b) => b.length - a.length);
   if (!tokens.length) return [];
-  const pattern = new RegExp(`(^|\\s)(${tokens.map((t) => escapeRegExp(refWord(t))).join("|")})(?=\\s|$)`, "g");
+  const pattern = new RegExp(`(^|\\s)(${tokens.map((t) => escapeRegExp(refWord(t))).join("|")})(?![\\w./\\\\-])`, "g");
   const found = [];
   for (const m of String(text ?? "").matchAll(pattern)) {
     const word = m[2];
@@ -102,7 +108,9 @@ export function expandRefs(text, refs = new Map()) {
   let result = "";
   let last = 0;
   for (const m of refMatches(text, refs)) {
-    result += text.slice(last, m.start) + refWord(m.file);
+    // 뒤에 글이 붙어 있으면 CLI·서버가 경로 끝을 알 수 있게 따옴표로 감싼다.
+    const glued = m.end < text.length && !/\s/.test(text[m.end]);
+    result += text.slice(last, m.start) + (glued ? `@"${m.file}"` : refWord(m.file));
     last = m.end;
   }
   return result + String(text ?? "").slice(last);

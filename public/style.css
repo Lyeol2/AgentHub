@@ -1255,6 +1255,9 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .complete-name { flex: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .complete-desc { flex: 1; min-width: 0; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .complete-tag { flex: none; font-size: 10.5px; color: var(--faint); }
+/* 파일 이름은 자르지 않는다. 목록보다 길면 줄을 바꾸고, 남는 폭은 경로가 쓴다. */
+.complete-name.complete-file { flex: 0 1 auto; max-width: none; overflow: visible; text-overflow: clip; white-space: normal; overflow-wrap: anywhere; }
+.complete-path { color: var(--faint); font-size: 11.5px; }
 /* 고른 파일 참조는 "@파일이름"만 파란 글씨로 보인다. 작성창 글자를 숨기고 뒤의 판이 같은 자리에 그린다. */
 .ref-field { position: relative; display: flex; flex: auto; min-width: 0; }
 .ref-field > textarea { position: relative; flex: 1; width: 100%; }

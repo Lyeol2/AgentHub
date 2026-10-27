@@ -88,6 +88,10 @@
   check(textarea.value === "/code-review " && submitted === 0 && menu.hidden, "Enter inserts the skill without sending");
   type("검토 @src/a");
   await until(() => !menu.hidden && menu.textContent.includes("src/app.js"));
+  const fileRow = [...menu.children].find((node) => node.querySelector(".complete-path")?.textContent === "src/app.js");
+  check(fileRow?.querySelector(".complete-file")?.textContent === "app.js"
+    && fileRow.querySelector(".complete-file").compareDocumentPosition(fileRow.querySelector(".complete-path")) === Node.DOCUMENT_POSITION_FOLLOWING
+    && getComputedStyle(fileRow.querySelector(".complete-file")).textOverflow !== "ellipsis", "file rows show the whole name first and the full path after it");
   key("Enter");
   check(textarea.value === "검토 @app.js " && submitted === 0, "Enter inserts the file reference by its name");
   const chip = textarea.parentElement.querySelector(".ref-mirror .ref-chip");
@@ -101,7 +105,35 @@
   type("@my no");
   await until(() => !menu.hidden && menu.textContent.includes("docs/my notes.md"));
   key("Enter");
-  check(textarea.value === '@"my notes.md" ', "a query with a space keeps searching and inserts the quoted file");
+  check(textarea.value === "@my notes.md ", "a query with a space keeps searching and inserts the file name without quotes");
+  check(completion.expand(textarea.value.trim()) === '@"docs/my notes.md"', "a spaced file name is quoted only when sending");
+  // 조사를 붙여도 참조로 남고, 보낼 때는 따옴표로 감싼 전체 경로가 된다.
+  type("@my notes.md에 적기");
+  await tick();
+  check(textarea.parentElement.querySelector(".ref-mirror .ref-chip")?.textContent === "@my notes.md", "a particle glued after a reference keeps the highlight");
+  check(completion.expand(textarea.value) === '@"docs/my notes.md"에 적기', "a glued reference is sent as a quoted full path");
+  // 커서 뒤에 이미 쓴 글은 파일을 골라도 지워지지 않는다.
+  textarea.value = "@src/a 다음 글자"; textarea.setSelectionRange(6, 6); textarea.dispatchEvent(new Event("input"));
+  await until(() => !menu.hidden && menu.textContent.includes("src/app.js"));
+  key("Enter");
+  check(textarea.value === "@app.js 다음 글자", "choosing a file keeps the text after the caret");
+  // 참조를 복사해 붙여넣으면 파란 참조가 그대로 남는다. 다른 앱에는 보통 공백으로 간다.
+  const clip = () => { const store = new Map(); return { store, setData: (t, v) => store.set(t, v), getData: (t) => store.get(t) ?? "" }; };
+  type("@my notes.md에 적기");
+  textarea.setSelectionRange(0, textarea.value.length);
+  const copied = clip();
+  const copyEvent = new Event("cut", { bubbles: true, cancelable: true }); copyEvent.clipboardData = copied;
+  textarea.dispatchEvent(copyEvent);
+  check(textarea.value === "" && copied.store.get("text/plain") === "@my notes.md에 적기", "cutting a reference leaves plain spaces for other apps");
+  const pasteEvent = new Event("paste", { bubbles: true, cancelable: true }); pasteEvent.clipboardData = copied;
+  textarea.dispatchEvent(pasteEvent);
+  await tick();
+  check(textarea.value === "@my notes.md에 적기" && textarea.parentElement.querySelector(".ref-mirror .ref-chip")?.textContent === "@my notes.md"
+    && completion.expand(textarea.value) === '@"docs/my notes.md"에 적기', "pasting a copied reference restores the highlighted reference");
+  // 참조 바로 뒤의 Backspace는 참조를 통째로 지운다.
+  textarea.setSelectionRange(12, 12);
+  key("Backspace");
+  check(textarea.value === "에 적기", "Backspace right after a reference removes the whole reference");
   type("@없는 파일");
   await new Promise((resolve) => setTimeout(resolve, 150));
   type("@없는 파일 이름도");
