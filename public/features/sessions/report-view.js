@@ -1,6 +1,6 @@
 import { el } from "../../shared/dom.js";
 import { renderMarkdown } from "../../markdown.js";
-import { collectReportReferences, classifyReportTarget } from "../../report-references.js";
+import { collectReportReferences, classifyReportTarget, trimUrl } from "../../report-references.js";
 
 const KIND = { image: "화면·이미지", video: "영상", markdown: "보고서", text: "검증 기록·텍스트", html: "화면", file: "파일", web: "실행 화면", session: "세션", task: "작업" };
 const STATUS = { passed: "검증 통과", failed: "검증 실패", "not-run": "검증 미실행" };
@@ -12,6 +12,23 @@ const absolute = (value) => /^(?:[a-z]:[\\/]|\/|file:)/i.test(value);
 function relativeTo(value, documentPath) {
   if (!documentPath || absolute(value)) return value;
   return documentPath.replace(/\\/g, "/").replace(/[^/]*$/, "") + value;
+}
+
+// 마크다운이 아닌 글(보낸 요청·세션 메시지·상태 줄)의 http(s)·www. 주소를 새 창 링크로 만들어 node에 붙인다.
+// 앞이 영문·숫자면 낱말 중간으로 보고 건너뛴다. 끝의 문장 부호와 짝 없는 닫는 괄호는 주소에서 뺀다.
+const URL_IN_TEXT = /(?<![A-Za-z0-9@.\/])(?:https?:\/\/|www\.)[^\s<>"']+/gi;
+export function appendLinkedText(node, text) {
+  const value = String(text ?? "");
+  let last = 0;
+  for (const match of value.matchAll(URL_IN_TEXT)) {
+    const url = trimUrl(match[0]);
+    if (!/^(?:https?:\/\/|www\.[^.\s]+\.[^\s]+)/i.test(url)) continue;
+    node.append(value.slice(last, match.index),
+      el("a", { href: /^www\./i.test(url) ? `https://${url}` : url, target: "_blank", rel: "noreferrer", class: "text-link" }, url));
+    last = match.index + url.length;
+  }
+  node.append(value.slice(last));
+  return node;
 }
 
 export function isLocalPreviewUrl(value, origin = globalThis.location?.origin) {
@@ -271,14 +288,16 @@ export function createReportView({ api, getSession, sessionById = () => null, se
     const refs = references.filter((ref) => ref && typeof ref.path === "string" && typeof ref.label === "string");
     const matches = [];
     for (const ref of refs) {
-      const words = [/\s/.test(ref.path) ? `@"${ref.path}"` : `@${ref.path}`, ref.path];
+      // 뒤에 글이 붙은 참조는 공백이 없어도 따옴표로 감싸 보낸다.
+      const words = [`@"${ref.path}"`, ...(/\s/.test(ref.path) ? [] : [`@${ref.path}`]), ref.path];
       for (const word of words) {
         let start = text.indexOf(word);
         while (start !== -1) {
           const before = start ? text[start - 1] : "";
           const after = text.slice(start + word.length);
           const startsWord = !before || /[\s([<{"']/.test(before);
-          const endsWord = !after || /^[\s)\]}>"',;!?]/.test(after) || /^\.(?:\s|$)/.test(after);
+          // 따옴표로 감싼 참조는 뒤에 조사가 붙어도 된다("@\"경로\"에").
+          const endsWord = !after || word.endsWith('"') || /^[\s)\]}>"',;!?]/.test(after) || /^\.(?:\s|$)/.test(after);
           if (startsWord && endsWord) matches.push({ start, end: start + word.length, ref });
           start = text.indexOf(word, start + word.length);
         }
@@ -288,14 +307,14 @@ export function createReportView({ api, getSession, sessionById = () => null, se
     let end = 0;
     for (const match of matches) {
       if (match.start < end) continue;
-      node.append(text.slice(end, match.start));
+      appendLinkedText(node, text.slice(end, match.start));
       const { ref } = match;
       const target = classifyReportTarget(ref.path);
       const attrs = target?.sessionId ? { "data-report-session": target.sessionId } : target?.taskId ? { "data-report-task": target.taskId } : { "data-report-path": ref.path };
       node.append(el("a", { href: "#", class: "report-ref mention-chip", title: ref.path, ...attrs }, `@${ref.label}`));
       end = match.end;
     }
-    node.append(text.slice(end));
+    appendLinkedText(node, text.slice(end));
     enhance(node, text, { references, showCards: false });
   }
 

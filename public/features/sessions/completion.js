@@ -1,8 +1,12 @@
 import { el } from "../../shared/dom.js";
-import { completionTrigger, applyCompletion, filterCommands, refToken, refMatches, expandRefs, BUILTIN_COMMANDS } from "../../composer.js";
+import { completionTrigger, applyCompletion, filterCommands, refToken, refMatches, expandRefs, NBSP, BUILTIN_COMMANDS } from "../../composer.js";
 
 const SKILL_TTL = 10_000;
+const REFS_MIME = "application/x-agenthub-refs";
+let clipboardRefs = null; // 마지막으로 복사한 { text, map } — 작성창끼리 같이 쓴다.
 const SCOPE_LABEL = { project: "프로젝트 스킬", claude: "Claude 스킬", personal: "개인 스킬" };
+// "a/b/c.txt" → "c.txt", 폴더 "a/b/" → "b/"
+const fileName = (value) => (value.endsWith("/") ? `${value.slice(0, -1).split("/").pop()}/` : value.split("/").pop());
 
 // 세션 작성창의 "@" 파일 참조와 "/" 명령 자동 완성.
 // ↑↓로 고르고 Enter·Tab으로 넣는다. Esc는 목록만 닫는다(작업 일시중지로 넘어가지 않는다).
@@ -77,7 +81,10 @@ export function createCompletion({ textarea, api, getSession, onBuiltin, getRefe
     menu.replaceChildren(...state.items.map((item, i) => {
       const active = i === state.index;
       const parts = item.type === "file"
-        ? [el("span", { class: "complete-icon", "aria-hidden": "true" }, item.value.endsWith("/") ? "📁" : "📄"), el("span", { class: "complete-name mono" }, item.value)]
+        // 파일 이름은 잘리지 않게 앞에 두고, 전체 경로는 뒤에 흐린 글씨로 보인다.
+        ? [el("span", { class: "complete-icon", "aria-hidden": "true" }, item.value.endsWith("/") ? "📁" : "📄"),
+          el("span", { class: "complete-name complete-file mono" }, fileName(item.value)),
+          el("span", { class: "complete-desc complete-path mono", title: item.value }, item.value)]
         : item.type === "session" || item.type === "task"
         ? [el("span", { class: "complete-icon", "aria-hidden": "true" }, item.type === "session" ? "◉" : "☑"),
           el("span", { class: "complete-name" }, item.value),
@@ -220,7 +227,60 @@ export function createCompletion({ textarea, api, getSession, onBuiltin, getRefe
       if (seen.has(match.file)) return false;
       seen.add(match.file);
       return true;
-    }).map((match) => ({ label: match.token, path: match.file }));
+    }).map((match) => ({ label: match.token.replaceAll(NBSP, " "), path: match.file }));
   };
+
+  // 복사·잘라내기에 고른 참조를 함께 담아, 붙여넣으면 (다른 세션 작성창이라도) 다시 파란 참조가 된다.
+  // 다른 앱에는 줄바꿈 없는 공백을 보통 공백으로 바꾼 글이 간다. 앱 안에서는 전용 형식으로 원래 글과 참조를 넘긴다.
+  // 전용 형식을 못 쓰는 환경이면 마지막으로 복사한 글과 같은 글을 붙여넣을 때 되살린다.
+  const carry = (e) => {
+    const refs = sessionRefs();
+    const { selectionStart: from, selectionEnd: to, value } = textarea;
+    if (!refs || from === to || !e.clipboardData) return;
+    const picked = refMatches(value, refs).filter((m) => m.start >= from && m.end <= to);
+    if (!picked.length) return;
+    const text = value.slice(from, to);
+    const plain = text.replaceAll(NBSP, " ");
+    const map = Object.fromEntries(picked.map((m) => [m.token, m.file]));
+    clipboardRefs = { text, plain, map };
+    e.preventDefault();
+    e.clipboardData.setData("text/plain", plain);
+    try { e.clipboardData.setData(REFS_MIME, JSON.stringify({ text, map })); } catch { /* 전용 형식을 못 쓰면 글만 복사한다 */ }
+    if (e.type === "cut") {
+      textarea.setRangeText("", from, to, "start");
+      textarea.dispatchEvent(new Event("input"));
+    }
+  };
+  textarea.addEventListener("copy", carry);
+  textarea.addEventListener("cut", carry);
+  textarea.addEventListener("paste", (e) => {
+    const id = getSession()?.id;
+    if (!id || !e.clipboardData) return;
+    let payload = null;
+    try { payload = JSON.parse(e.clipboardData.getData(REFS_MIME) || "null"); } catch { payload = null; }
+    if (!payload && clipboardRefs && e.clipboardData.getData("text/plain") === clipboardRefs.plain) payload = clipboardRefs;
+    if (!payload || typeof payload.text !== "string" || !payload.map || typeof payload.map !== "object") return;
+    if (!refsBySession.has(id)) refsBySession.set(id, new Map());
+    const refs = refsBySession.get(id);
+    // 같은 이름이 이미 다른 파일을 가리키면 덮어쓰지 않는다.
+    for (const [token, file] of Object.entries(payload.map)) {
+      if (token && typeof file === "string" && file && !refs.has(token)) refs.set(token, file);
+    }
+    e.preventDefault();
+    textarea.setRangeText(payload.text, textarea.selectionStart, textarea.selectionEnd, "end");
+    textarea.dispatchEvent(new Event("input"));
+  });
+  // 참조 바로 뒤에서 Backspace, 바로 앞에서 Delete를 누르면 참조를 통째로 지운다.
+  textarea.addEventListener("keydown", (e) => {
+    if ((e.key !== "Backspace" && e.key !== "Delete") || e.isComposing || e.ctrlKey || e.altKey || e.metaKey) return;
+    const { selectionStart: from, selectionEnd: to, value } = textarea;
+    const refs = sessionRefs();
+    if (from !== to || !refs) return;
+    const hit = refMatches(value, refs).find((m) => (e.key === "Backspace" ? m.end === from : m.start === from));
+    if (!hit) return;
+    e.preventDefault();
+    textarea.setRangeText("", hit.start, hit.end, "start");
+    textarea.dispatchEvent(new Event("input"));
+  });
   return { close, isOpen: () => !menu.hidden, expand, references, sync: paint };
 }

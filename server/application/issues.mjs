@@ -197,7 +197,7 @@ export function createIssueService({ config, store, sessions, links, notify, cli
       if (issue.state !== "open") throw new HttpError(409, "열린 작업만 시작할 수 있습니다.");
       const prompt = issuePrompt(found);
       const label = ("#" + issue.number + " " + issue.title).slice(0, 100);
-      const summary = await sessions.create({ projectPath: dir, agent: body.agent ?? "claude", permission: body.permission, title: label });
+      const summary = await sessions.create({ projectPath: dir, agent: body.agent ?? "codex", permission: body.permission, title: label });
       sessions.startTurn(sessions.getSession(summary.id), prompt);
       const created = [summary];
       const previous = links.find(issue.repo, issue.number);

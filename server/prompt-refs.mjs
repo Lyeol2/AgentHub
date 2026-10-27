@@ -58,31 +58,36 @@ export async function projectFiles(cwd, { now = Date.now() } = {}) {
   return all;
 }
 
+// 띄어쓰기·_·-는 무시하고 맞춘다("Tutorial Canvas" → TutorialCanvas.prefab, Tutorial_Canvas.prefab).
+const looseKey = (text) => text.replace(/[\s_-]+/g, "");
+const subsequence = (text, q) => {
+  let i = 0;
+  for (const ch of text) if (ch === q[i] && ++i === q.length) return true;
+  return false;
+};
+
 // 이름이 query로 시작하면 가장 앞, 이름에 있으면 다음, 경로에 있으면 그다음, 글자가 차례로 들어 있으면 마지막이다.
-// 띄어쓰기가 있으면 그대로 맞춰 보고, 안 맞으면 나눈 낱말이 모두 경로에 들어 있는 파일을 찾는다.
+// 띄어쓰기는 무시하고 맞춰 보고, 띄어 쓴 낱말이 따로 떨어져 있어도 모두 들어 있으면 찾는다.
 export function rankFiles(files, query, limit = 30) {
   const q = String(query ?? "").replace(/\\/g, "/").toLowerCase().trim();
+  const key = looseKey(q);
   const terms = q.split(/\s+/).filter(Boolean);
   const scored = [];
   for (const file of files) {
     const lower = file.toLowerCase();
     const name = lower.replace(/\/$/, "").split("/").pop();
+    const nameKey = looseKey(name);
+    const pathKey = looseKey(lower);
     let score;
     if (!q) score = file.split("/").length * 10 + (file.endsWith("/") ? 0 : 5);
-    else if (terms.length > 1 && !lower.includes(q)) {
-      if (!terms.every((term) => lower.includes(term))) continue;
-      score = terms.every((term) => name.includes(term)) ? 2 : 3;
-    }
-    else if (name.startsWith(q)) score = 0;
-    else if (lower.startsWith(q)) score = 1;
-    else if (name.includes(q)) score = 2;
-    else if (lower.includes(q)) score = 3;
-    else {
-      let i = 0;
-      for (const ch of lower) if (ch === q[i]) i++;
-      if (i < q.length) continue;
-      score = 4;
-    }
+    else if (!key) continue;
+    else if (name.startsWith(q) || nameKey.startsWith(key)) score = 0;
+    else if (lower.startsWith(q) || pathKey.startsWith(key)) score = 1;
+    else if (nameKey.includes(key) || terms.every((term) => name.includes(term))) score = 2;
+    else if (pathKey.includes(key) || terms.every((term) => lower.includes(term))) score = 3;
+    else if (subsequence(nameKey, key)) score = 4;
+    else if (subsequence(pathKey, key)) score = 5;
+    else continue;
     scored.push({ file, score });
   }
   scored.sort((a, b) => a.score - b.score || a.file.length - b.file.length || a.file.localeCompare(b.file));

@@ -150,11 +150,10 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       ...projects.map((p) => el("option", { value: p.path }, `${p.name} — ${p.path}`)));
     const match = projectPath && projects.find((p) => samePath(p.path, projectPath));
     if (match) $("new-project").value = match.path;
-    // 종류: 지정한 종류 → 프로젝트 기본 AI → 마지막에 고른 코딩 에이전트. 일반 채팅은 지정했을 때만 연다.
-    const last = loadNewSessionPrefs().kind;
+    // 종류: 지정한 종류 → 프로젝트 기본 AI → 마지막에 고른 AI(채팅이었어도 그 AI) → Codex. 일반 채팅은 지정했을 때만 연다.
+    const last = String(loadNewSessionPrefs().kind ?? "").replace(/-chat$/, "");
     if (kind) $("new-agent").value = kind;
-    else $("new-agent").value = [projectDefaults().agent, last].find((value) => ["claude", "codex"].includes(value))
-      ?? ($("new-agent").value.endsWith("-chat") ? "claude" : $("new-agent").value || "claude");
+    else $("new-agent").value = [projectDefaults().agent, last].find((value) => ["claude", "codex"].includes(value)) ?? "codex";
     $("new-error").textContent = "";
     $("new-orchestrator").checked = orchestrator;
     if ($("new-save-defaults")) $("new-save-defaults").checked = false;

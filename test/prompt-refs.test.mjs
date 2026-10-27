@@ -84,4 +84,9 @@ test("@자동 완성: 이름이 맞는 파일을 앞에 둔다", async (t) => {
   assert.deepEqual(rankFiles(["a/b/c.js", "x.js"], "", 1), ["x.js"]);
   assert.deepEqual(rankFiles(["docs/my notes.md", "src/notes/my-list.js", "src/other.js"], "my notes"), ["docs/my notes.md", "src/notes/my-list.js"]);
   assert.deepEqual(rankFiles(["src/task-view.js", "test/view.js"], "task view "), ["src/task-view.js"]);
+  // 띄어쓰기는 무시한다. 단어 중간에 띄어 써도, 이름 쪽이 경로 쪽보다 앞선다.
+  const unity = ["Assets/Tutorial/Canvas/readme.md", "Assets/UI/Game/TutorialCanvas.prefab", "Assets/UI/Tutorial_Canvas.mat", "Assets/Other.cs"];
+  assert.deepEqual(rankFiles(unity, "Tutorial Canvas"), ["Assets/UI/Tutorial_Canvas.mat", "Assets/UI/Game/TutorialCanvas.prefab", "Assets/Tutorial/Canvas/readme.md"]);
+  assert.deepEqual(rankFiles(unity, "Tutori alCan").slice(0, 2), ["Assets/UI/Tutorial_Canvas.mat", "Assets/UI/Game/TutorialCanvas.prefab"]);
+  assert.deepEqual(rankFiles(unity, "tut cnv"), ["Assets/UI/Tutorial_Canvas.mat", "Assets/UI/Game/TutorialCanvas.prefab", "Assets/Tutorial/Canvas/readme.md"]);
 });
