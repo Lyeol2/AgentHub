@@ -119,7 +119,7 @@ $$
   const session = (id, title) => ({ id, title, agent: "codex", permission: "workspace-write", projectPath: project, projectName: "미리보기", cwd: project, state: "idle", worktree: null, skills: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), events: [] });
   const first = session("report-qa", "보고서 미리보기 QA"), second = session("report-other", "참조 세션");
   first.events = [
-    { seq: 0, kind: "user", text: "@docs/result.md 결과를 확인해 주세요. docs/result.md.map은 별도 파일입니다.", references: [{ label: "result.md", path: "docs/result.md" }] },
+    { seq: 0, kind: "user", text: "@docs/result.md 결과를 확인해 주세요. docs/result.md.map은 별도 파일입니다. 안내는 https://example.com/guide 에 있고 @\"docs/result.md\"에도 적었습니다.", references: [{ label: "result.md", path: "docs/result.md" }] },
     { seq: 1, kind: "text", text: `검증 통과 · [최종 보고서](docs/result.md)\n\n![화면 미리보기](${encodeURI("docs/화면 (완료).png")}) · [다음 화면](docs/두번째.png)\n\n[HTML 화면](docs/index.html) · [실행 화면](${liveUrl})\n\n[검증 기록](docs/missing.md) · [영상 재생](${encodeURI("docs/영상 데모.webm")})\n\n[참조 세션](agenthub://session/report-other) · [없는 작업](agenthub://task/missing-task)` },
     { seq: 2, kind: "result", text: "완료" },
   ];
@@ -135,7 +135,8 @@ $$
   await withBrowser(temp, `http://127.0.0.1:${hub.port}/`, async ({ command, evaluate, errors }) => {
     await evaluate(until("document.querySelectorAll('#s-events .report-card').length===7"));
     assert.equal(await evaluate("document.querySelector('#s-events .mention-chip').textContent"), "@result.md");
-    assert.equal(await evaluate("document.querySelectorAll('#s-events .mention-chip').length"), 1);
+    assert.equal(await evaluate("document.querySelectorAll('#s-events .mention-chip').length"), 2, "a quoted reference with a glued particle is still a chip");
+    assert.equal(await evaluate("[...document.querySelectorAll('#s-events li.ev.user a.text-link')].map((a) => a.href + '|' + a.target).join()"), "https://example.com/guide|_blank", "a URL in a sent request is a link");
     assert.equal(await evaluate("document.querySelectorAll('.report-verification.passed').length"), 1);
     await evaluate(until("[...document.querySelectorAll('.report-card-state')].some(x=>x.textContent==='파일을 찾을 수 없음')"));
     await evaluate(until("document.querySelector('.report-thumbnail img').naturalWidth===1"));

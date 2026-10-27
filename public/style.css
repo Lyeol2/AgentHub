@@ -666,6 +666,8 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .md strong { font-weight: 650; }
 .md a { color: var(--accent); text-decoration: none; }
 .md a:hover { text-decoration: underline; }
+a.text-link { color: var(--accent); text-decoration: none; overflow-wrap: anywhere; }
+a.text-link:hover { text-decoration: underline; }
 .md code { font-family: var(--mono); font-size: .9em; padding: 1px 5px; border-radius: 4px; background: var(--code-bg); border: 1px solid var(--line); }
 .md pre { margin: 0 0 .8em; padding: 10px 12px; border-radius: 6px; background: var(--code-bg); border: 1px solid var(--line); overflow-x: auto; }
 .md pre code { padding: 0; border: 0; background: none; font-size: 12px; line-height: 1.5; white-space: pre; }

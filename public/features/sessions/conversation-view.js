@@ -10,7 +10,7 @@ export const USER_FOLD_CHARS = 600;
 export function longUserText(text = "") {
   return text.length > USER_FOLD_CHARS || text.split("\n").length > USER_FOLD_LINES;
 }
-import { createReportView } from "./report-view.js";
+import { createReportView, appendLinkedText } from "./report-view.js";
 import { showError } from "../../shared/error-report.js";
 import { SUBTASK_STATUS } from "../../shared/subtasks.js";
 
@@ -474,7 +474,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
         el("details", {},
           el("summary", {}, "✉ ", el("a", { href: "#", onclick: (e) => { e.preventDefault(); if (sessionById(ev.to)) selectSession(ev.to); } }, ev.toTitle),
             `에게 보낸 메시지 · ${MESSAGE_VIA[ev.via] ?? ""}`),
-          el("div", { class: "handoff-body" }, ev.text)));
+          appendLinkedText(el("div", { class: "handoff-body" }), ev.text)));
     }
     if (ev.kind === "user" && ev.from) {
       // 연결된 세션에서 넘어온 요청은 접어서 보여 준다.
@@ -486,11 +486,11 @@ export function createConversationView({ api, getSession, sessionById, selectSes
         el("details", {},
           el("summary", {}, el("a", { href: "#", onclick: open }, `${ev.message || ev.reply ? "✉" : "↳"} ${ev.fromTitle}`),
             ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
-          el("div", { class: "handoff-body" }, ev.text)));
+          appendLinkedText(el("div", { class: "handoff-body" }), ev.text)));
     }
     const node = el("li", { class: cls, ...(ev.kind === "user" && Number.isInteger(ev.seq) ? { "data-seq": ev.seq } : {}) });
     if (ev.kind === "user") renderUserText(node, ev);
-    else node.append(ev.text ?? "");
+    else appendLinkedText(node, ev.text ?? "");
     if (ev.attachments?.length) node.append(renderAttachmentLinks(ev.attachments));
     const delivery = deliveryBadge(ev);
     if (delivery) node.append(delivery);

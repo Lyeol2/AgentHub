@@ -190,3 +190,10 @@ $$`);
   const slashes = "\\".repeat(100000);
   assert.equal(renderMarkdown(slashes), "<p>" + slashes + "</p>");
 });
+
+test("markdown: www·꺾쇠·한글 뒤 주소도 새 창 링크가 되고 낱말 중간 주소는 그대로 둔다", () => {
+  assert.equal(renderMarkdown("www.example.com 확인"), '<p><a href="https://www.example.com" target="_blank" rel="noreferrer">www.example.com</a> 확인</p>');
+  assert.equal(renderMarkdown("<https://a.com/x>"), '<p><a href="https://a.com/x" target="_blank" rel="noreferrer">https://a.com/x</a></p>');
+  assert.equal(renderMarkdown("여기https://a.com 봐"), '<p>여기<a href="https://a.com" target="_blank" rel="noreferrer">https://a.com</a> 봐</p>');
+  assert.equal(renderMarkdown("abchttps://a.com me@www.a.com"), "<p>abchttps://a.com me@www.a.com</p>");
+});

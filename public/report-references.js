@@ -131,7 +131,7 @@ function codeAt(text, start) {
   return { start, end: end + ticks.length, raw: text.slice(start, end + ticks.length), code: text.slice(start + ticks.length, end) };
 }
 
-function trimUrl(value) {
+export function trimUrl(value) {
   let url = value.replace(/[.,;!?·]+$/, "");
   for (const [open, close] of [["(", ")"], ["[", "]"], ["{", "}"]]) {
     while (url.endsWith(close) && url.split(close).length > url.split(open).length) url = url.slice(0, -1);
@@ -166,8 +166,16 @@ export function tokenizeReportInline(source, { references = [] } = {}) {
     const markdown = markdownAt(text, i);
     if (markdown) { tokens.push(markdown); i = markdown.end; continue; }
     const previous = i ? text[i - 1] : "";
-    const boundary = !previous || /[\s([{<>：:]/.test(previous);
+    // 웹 주소는 한글 바로 뒤에 붙어 있어도("여기https://…") 링크로 본다. 영문·숫자·경로 글자 뒤면 낱말 중간이다.
+    const boundary = !previous || /[\s([{<>：:]/.test(previous)
+      || (/^(?:https?:\/\/|www\.)/i.test(text.slice(i, i + 8)) && !/[A-Za-z0-9_./\\@-]/.test(previous));
     if (!boundary) { i++; continue; }
+    // 마크다운 자동 링크 "<https://…>"는 괄호 없이 주소만 보인다.
+    const angled = text[i] === "<" && text.slice(i).match(/^<(https?:\/\/[^\s<>"']+)>/i);
+    if (angled) {
+      const reference = classifyReportTarget(angled[1]);
+      if (reference) { tokens.push({ start: i, end: i + angled[0].length, raw: angled[0], reference }); i += angled[0].length; continue; }
+    }
     const mention = text[i] === "@";
     const start = i + Number(mention);
     const tail = text.slice(start);
@@ -192,6 +200,12 @@ export function tokenizeReportInline(source, { references = [] } = {}) {
           continue;
         }
       }
+    }
+    if (!mention && /^www\.[^.\s<>"']+\.[^\s<>"']+/i.test(tail)) {
+      // "www.example.com"은 https 주소로 연다. 글에는 쓴 그대로 보인다.
+      const web = trimUrl(tail.match(/^www\.[^\s<>"']+/i)[0]);
+      const reference = classifyReportTarget(`https://${web}`, { label: web });
+      if (reference) { tokens.push({ start: i, end: i + web.length, raw: web, reference }); i += web.length; continue; }
     }
     if (/^https?:\/\//i.test(tail)) value = trimUrl(tail.match(/^https?:\/\/[^\s<>"']+/i)[0]);
     else if (/^file:\/\//i.test(tail)) value = trimUrl(tail.match(/^file:\/\/[^\s<>"']+/i)[0]);
