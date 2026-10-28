@@ -145,6 +145,17 @@ export function createSettingsController({ api, goDashboard, loadProjects, rende
   // 지금부터 그 시각까지 남은 시간("2시간 13분", "40분", "3일 4시간")
 
   $("refresh-limits").addEventListener("click", () => loadLimits(true));
+  // ⋯ 메뉴의 새로고침. 다시 읽는 동안은 버튼을 막아 같은 조회가 겹치지 않게 한다.
+  const sidebarRefresh = $("sidebar-refresh-limits");
+  sidebarRefresh.addEventListener("click", async () => {
+    sidebarRefresh.disabled = true;
+    sidebarRefresh.textContent = "사용량 확인 중…";
+    try { await loadLimits(true); }
+    finally {
+      sidebarRefresh.disabled = false;
+      sidebarRefresh.textContent = "사용량 새로고침";
+    }
+  });
   setInterval(loadLimits, 60_000);
 
   // ── 업데이트 ────────────────────────────────────────────────────

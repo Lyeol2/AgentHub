@@ -24,6 +24,10 @@
     check($("sidebar-status").hidden && document.querySelector(".sidebar-foot").getBoundingClientRect().height < 125, "usage and account tools occupy a compact footer");
     $("sidebar-status-toggle").click();
     check(!$("sidebar-status").hidden && $("sidebar-status-toggle").getAttribute("aria-expanded") === "true", "version and update details open on demand");
+    $("sidebar-refresh-limits").click();
+    check($("sidebar-refresh-limits").disabled, "usage refresh blocks repeated clicks while loading");
+    await until(async () => !$("sidebar-refresh-limits").disabled && (await fixtureRequests()).some((request) => request.path === "/api/limits" && request.search === "?fresh=1"));
+    check(!$("sidebar-status").hidden && $("limit-mini").children.length === 3, "more menu refreshes usage without closing");
     document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     check($("sidebar-status").hidden && document.activeElement === $("sidebar-status-toggle"), "Escape closes status details and restores focus");
     $("project-nav").querySelector("button").click();
