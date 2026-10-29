@@ -87,8 +87,8 @@ export function createCommandService({ commands, chain, links, store, projects, 
       const targetId = graphTabs.resolve(command.projectPath, body.tabId);
       if (targetId !== graphTabs.tabFor(command)) throw new HttpError(400, "노드는 탭 이동 메뉴로 옮기세요.");
     }
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification", "finishMode", "pushTarget"].some((key) => body[key] !== undefined);
-    if (editing && ["git", "task", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching", "scheduled"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification", "finishMode", "pushTarget", "provider", "steps", "preset", "inputMode", "imagePath", "options", "outputDir", "pollSec", "timeoutMin"].some((key) => body[key] !== undefined);
+    if (editing && ["git", "task", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "gen3d", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching", "scheduled"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
     try {
       if (editing) fields = checkCommand(body, command);
@@ -134,7 +134,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
       catch (error) { throw new HttpError(400, error.message); }
     }
     const origin = links.list().filter((link) => link.to === id).map((link) => store.get(link.from)).find(Boolean) ?? null;
-    const pending = chain.runCommand(command, { origin, depth: 0, values: body.values });
+    const pending = chain.runCommand(command, { origin, depth: 0, values: body.values, resume: body.resume === true });
     if (["button", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in"].includes(commandKind(command))) {
       try { await pending; }
       catch (error) { throw new HttpError(400, error.message); }

@@ -4,6 +4,9 @@ import { inputValues, renderTemplate, transformResult } from "./flow-nodes.mjs";
 import { createFileWatch } from "./file-watch.mjs";
 import { hookVariables, sendWebhook } from "./webhooks.mjs";
 import { ScheduledNodes } from "./scheduled-nodes.mjs";
+import { runGen3d, GEN3D_STEPS } from "./gen3d.mjs";
+
+const GEN3D_HISTORY_MAX = 20;
 
 // A flow is one invocation, shared by all of its branches. Results are immutable
 // snapshots so another invocation of a member cannot replace a join's inputs.
@@ -289,6 +292,7 @@ export class WorkflowRuntime {
     let resume = null;
     let request = null;
     let httpStatus = null;
+    let gen3d = null;
     c.controls?.begin(node, flow, kind === "input" ? JSON.stringify(flow.variables, null, 2) : options.prompt ?? "", options);
     c.runs.set(node.id, { stop: () => { stopped = true; this.cancel(flow); clearTimeout(timer); resume?.(); request?.abort(); } });
     c.commands.update(node, { state: "running", queued: this.queueInfo(node.id), live: { startedAt: new Date(started).toISOString(), cwd: node.projectPath, tail: "" } });
@@ -314,6 +318,28 @@ export class WorkflowRuntime {
         text = ok ? response.text || `HTTP ${response.status} ${response.statusText}`.trim()
           : `HTTP ${response.status} ${response.statusText}`.trim() + (response.text ? `\n${response.text}` : "");
       }
+      else if (kind === "gen3d") {
+        const input = options.prompt ?? "";
+        request = new AbortController();
+        // 실패한 실행을 이어 하면 성공한 단계는 다시 만들지 않는다(크레딧 절약).
+        const previous = options.resume && node.lastRun?.gen3d && !node.lastRun.ok ? node.lastRun.gen3d : null;
+        try {
+          const result = await runGen3d(node, {
+            input, projectPath: node.projectPath, keys: c.gen3d?.keys ?? { get: () => ({}) }, fetch: c.gen3d?.fetch, sleep: c.gen3d?.sleep, signal: request.signal, resume: previous, runId: flow.id,
+            render: (template) => renderTemplate(template, { ...flow.variables, input, output: input }),
+            onProgress: ({ step, progress, reused }) => {
+              const label = `${GEN3D_STEPS[step]} ${reused ? "· 앞선 결과 사용" : progress === null ? "진행 중" : `${Math.round(progress)}%`}`;
+              c.commands.update(node, { live: { ...(node.live ?? {}), tail: label, gen3d: { step, progress } } });
+              c.notify("commands");
+            },
+          });
+          text = result.text;
+          gen3d = result.record;
+        } catch (error) {
+          gen3d = error.record ?? null;
+          throw error;
+        }
+      }
       else if (kind === "repeat") {
         const iteration = (flow.repeats[node.id] ?? 0) + 1;
         flow.repeats[node.id] = iteration;
@@ -331,8 +357,11 @@ export class WorkflowRuntime {
       originId: options.origin?.id ?? null, originTitle: options.origin?.title ?? null,
       runId: flow.id, tail: outputTail(text), outputText: text.slice(0, 200_000),
       ...(kind === "repeat" ? { iteration: Math.min(flow.repeats[node.id], node.maxIterations), exhausted } : {}),
-      ...(kind === "webhook" ? { httpStatus } : {}) };
-    c.commands.update(node, { state: stopped ? "idle" : ok ? "success" : "error", live: null, lastRun });
+      ...(kind === "webhook" ? { httpStatus } : {}),
+      ...(kind === "gen3d" && gen3d ? { gen3d } : {}) };
+    c.commands.update(node, { state: stopped ? "idle" : ok ? "success" : "error", live: null, lastRun,
+      // 3D 생성 노드는 실행마다 결과(단계별 파일·썸네일)를 기록에 쌓는다.
+      ...(kind === "gen3d" && gen3d ? { history: [{ ...gen3d, ok: ok && !stopped, stopped }, ...(node.history ?? [])].slice(0, GEN3D_HISTORY_MAX) } : {}) });
     c.notify("commands");
     c.controls?.finish(node, flow, { ok, output: text, stopped });
     if (stopped || flow.cancelled || c.disposed) return;

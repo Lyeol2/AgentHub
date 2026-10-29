@@ -23,7 +23,7 @@ export class CommandStore {
       c.queued = null;
     } else if (c.state === "running") {
       c.state = "error";
-      if (["input", "repeat", "transform", "notify", "webhook", "group"].includes(c.kind)) {
+      if (["input", "repeat", "transform", "notify", "webhook", "gen3d", "group"].includes(c.kind)) {
         c.lastRun = { ...c.live, ok: false, exitCode: 1, stopped: true, tail: "앱이 종료되어 흐름 실행이 중단되었습니다. 다시 실행하세요." };
         c.live = null;
         c.queued = null;
