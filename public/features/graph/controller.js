@@ -639,14 +639,16 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
       const halfWidth = linkLabel(link).length * 4 + 10;
       const mid = placeLabel(edge.mid, halfWidth);
       const path = document.createElementNS(SVG_NS, "path");
-      const live = (sessionById(link.from) ?? commandById(link.from))?.state === "running";
+      // 요청 시 부르기 연결은 턴이 끝나도 넘기지 않으므로 실행 중에도 흐름 표시를 하지 않는다.
+      const call = link.when === "call";
+      const live = !call && (sessionById(link.from) ?? commandById(link.from))?.state === "running";
       path.setAttribute("d", d);
-      path.setAttribute("class", `edge${link.enabled ? "" : " off"}${live ? " live" : ""}${link.pending ? " gated" : ""}`);
+      path.setAttribute("class", `edge${link.enabled ? "" : " off"}${live ? " live" : ""}${link.pending ? " gated" : ""}${call ? " call" : ""}`);
       path.setAttribute("marker-end", "url(#arrow)");
       g.svg.append(path);
       const label = link.pending ? gateLabel(link)
         : el("button", { class: `edge-label${link.enabled ? "" : " off"}${link.approve ? " gate" : ""}`, type: "button", "data-link": link.id },
-          linkLabel(link));
+          call ? `📞 ${linkLabel(link)}` : linkLabel(link));
       label.style.left = `${mid.x}px`;
       label.style.top = `${mid.y}px`;
       g.canvas.append(label);
@@ -1017,7 +1019,10 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
   function renderLinkConditions(source = commandById(ui.editingLink?.from)) {
     const select = $("link-when");
     const value = select.value;
-    select.replaceChildren(...(data.status?.linkConditions ?? []).filter((c) => !resultOnlyOutputs(source) || ["success", "error", "always", "manual"].includes(c.id)).map((c) => el("option", { value: c.id }, c.label)));
+    // 요청 시 부르기는 세션끼리만 쓴다(명령 노드에서 나가는 연결에는 보이지 않는다).
+    select.replaceChildren(...(data.status?.linkConditions ?? [])
+      .filter((c) => (!resultOnlyOutputs(source) || ["success", "error", "always", "manual"].includes(c.id)) && (c.id !== "call" || !source))
+      .map((c) => el("option", { value: c.id }, c.label)));
     if (value) select.value = value;
   }
 

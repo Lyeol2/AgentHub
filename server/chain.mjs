@@ -12,7 +12,7 @@ import { WorkflowRuntime } from "./workflow-runtime.mjs";
 import { RunControls } from "./run-controls.mjs";
 import { renderTemplate } from "./flow-nodes.mjs";
 
-import { canContact } from "./policies/messaging.mjs";
+import { canContact, canCall } from "./policies/messaging.mjs";
 import { MAX_HOPS, lastAnswer, verdictLine, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
 export { CONDITIONS, CONDITION_LABELS, MAX_HOPS, lastAnswer, verdictLine, keywordList, hasKeyword, matches, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
 
@@ -800,9 +800,9 @@ export class Chain {
 
   // 메시지를 보낸 뒤 연결이 지워지거나 꺼졌으면 대기열에서도 전달하지 않는다.
   canDeliver(session, item) {
-    if (!item.meta.message && !item.meta.reply) return true;
+    if (!item.meta.message && !item.meta.reply && !item.meta.call) return true;
     const source = this.store.get(item.meta.from);
-    return canContact(this.links.list?.() ?? [], source, session);
+    return (item.meta.call ? canCall : canContact)(this.links.list?.() ?? [], source, session);
   }
 
   // 일시중지한 세션은 재개할 때까지 쌓아 두기만 한다.

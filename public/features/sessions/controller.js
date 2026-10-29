@@ -585,10 +585,38 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       }),
       s.chat ? null : item("스킬 장착…", () => openEquipDialog(s)),
       s.chat ? null : item("팀원에게 넘기기…", () => sendSessionToTeam(s), { title: "세션 요약으로 GitHub 이슈를 만들어 팀원에게 작업을 보냅니다" }),
+      s.chat ? null : item("부를 세션 추가…", () => openCallMenu(e, s), { title: "사용자가 요청할 때만 이 세션이 고른 세션을 불러 일을 맡길 수 있게 \"요청 시 부르기\" 연결을 만듭니다" }),
       el("hr"),
       item("삭제", () => confirmDeleteSession(s), { danger: true }));
     document.body.append(menu);
     // 화면 밖으로 나가지 않게 놓는다.
+    const { width, height } = menu.getBoundingClientRect();
+    menu.style.left = `${Math.min(e.clientX, innerWidth - width - 8)}px`;
+    menu.style.top = `${Math.min(e.clientY, innerHeight - height - 8)}px`;
+  }
+
+  // "요청 시 부르기" 연결을 만들 세션을 고른다. 같은 프로젝트의 다른 프로젝트 세션만 보인다.
+  function openCallMenu(e, s) {
+    closeContextMenu();
+    const linked = new Set(data.links.filter((l) => l.from === s.id && l.when === "call").map((l) => l.to));
+    const candidates = data.sessions.filter((other) => other.id !== s.id && !other.chat && samePath(other.projectPath, s.projectPath));
+    const pick = (other) => el("button", {
+      type: "button", class: "menu-item", role: "menuitem",
+      ...(linked.has(other.id) ? { disabled: "", title: "이미 부를 수 있습니다" } : {}),
+      onclick: async () => {
+        closeContextMenu();
+        try {
+          await api("POST", "/api/links", { from: s.id, to: other.id, when: "call", keyword: "", enabled: true });
+          await loadLinks();
+        } catch (err) {
+          showError(err, { action: "부를 세션 추가" });
+        }
+      },
+    }, `${other.title}${linked.has(other.id) ? " · 연결됨" : ""}`);
+    const menu = el("div", { class: "context-menu", role: "menu" },
+      el("div", { class: "menu-title" }, `${s.title}이(가) 부를 세션`),
+      ...(candidates.length ? candidates.map(pick) : [el("div", { class: "menu-item", "aria-disabled": "true" }, "같은 프로젝트에 다른 세션이 없습니다")]));
+    document.body.append(menu);
     const { width, height } = menu.getBoundingClientRect();
     menu.style.left = `${Math.min(e.clientX, innerWidth - width - 8)}px`;
     menu.style.top = `${Math.min(e.clientY, innerHeight - height - 8)}px`;

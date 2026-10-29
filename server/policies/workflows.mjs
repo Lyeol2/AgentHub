@@ -1,5 +1,5 @@
 // 연결 조건과 넘길 내용을 계산하는 순수 규칙. 실행·저장 부작용이 없다.
-export const CONDITIONS = ["success", "keyword", "error", "always", "otherwise", "manual"];
+export const CONDITIONS = ["success", "keyword", "error", "always", "otherwise", "manual", "call"];
 // 화면의 조건 선택지(보이는 순서). 서버가 내려 주고 같은 목록으로 검사한다.
 export const CONDITION_LABELS = {
   keyword: "답변 마지막 줄에 키워드가 있으면",
@@ -8,6 +8,7 @@ export const CONDITION_LABELS = {
   otherwise: "다른 연결이 모두 안 맞으면 (그 외)",
   always: "턴이 끝날 때마다",
   manual: "수동으로만",
+  call: "사용자가 요청하면 부르기",
 };
 // 자동으로 이어지는 최대 단계. 서로를 가리키는 연결이 끝없이 돌지 않게 막는다.
 export const MAX_HOPS = 8;
