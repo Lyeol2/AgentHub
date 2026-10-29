@@ -343,16 +343,17 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
         ["작업 마무리", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "finish" }))]]],
       ["흐름 제어", [node("새 반복 제어", "repeat"), node("새 결과 가공", "transform"), collect]],
       ["출력", [node("새 알림", "notify"), node("새 웹훅 보내기", "webhook"), node("새 Markdown 출력", "markdown")]],
-      // 단계 노드는 하나씩, 통합 노드는 여러 단계를 이어 실행한다.
+      // 통합 노드는 여러 단계를 이어 실행하고, 단계 노드는 한 단계씩 나눠 쓴다.
       ["3D 생성", [
-        ...[["3D 모양 만들기", ["generate"]], ["3D 다듬기", ["refine"]], ["3D 질감", ["texture"]], ["3D 형태 정리", ["remesh"]], ["3D 뼈대", ["rig"]], ["3D 움직임", ["animate"]]]
-          .map(([label, steps]) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, "gen3d", { connectWhen, connectKeyword, gen3d: { steps } }))]),
-        ["3D 통합 (모양→다듬기→형태 정리)", inProject(() => openCommandDialog(null, pos, connectFrom, "gen3d", { connectWhen, connectKeyword, gen3d: { steps: ["generate", "refine", "remesh"] } }))]]],
+        ["3D 통합 (모양→다듬기→형태 정리)", inProject(() => openCommandDialog(null, pos, connectFrom, "gen3d", { connectWhen, connectKeyword, gen3d: { steps: ["generate", "refine", "remesh"] } }))],
+        { submenu: "단계 노드", items: [["3D 모양 만들기", ["generate"]], ["3D 다듬기", ["refine"]], ["3D 질감", ["texture"]], ["3D 형태 정리", ["remesh"]], ["3D 뼈대", ["rig"]], ["3D 움직임", ["animate"]]]
+          .map(([label, steps]) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, "gen3d", { connectWhen, connectKeyword, gen3d: { steps } }))]) }]],
     ];
     const selected = !connectFrom ? nodeGroups.selectedEntries() : [];
     openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [
       ...selected, ...(selected.length ? [null] : []),
-      ...sections.filter(([, items]) => items.length).flatMap(([title, items]) => [title, ...items]),
+      // 항목이 하나뿐인 묶음은 바로 보이고, 나머지는 마우스를 올리면 옆에 펼친다.
+      ...sections.filter(([, items]) => items.length).map(([title, items]) => (items.length === 1 ? items[0] : { submenu: title, items })),
       null,
       ...(!connectFrom && openGroupTemplates ? [["그룹 템플릿 추가", inProject(() => openGroupTemplates(pos))]] : []),
       ["스킬 관리", inProject(() => openSkillsManager())],
