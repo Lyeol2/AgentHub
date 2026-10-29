@@ -53,7 +53,7 @@ export function createApiHandler({ services, events }) {
       if (!matches) continue;
       const body = ["POST", "PUT"].includes(req.method) ? await readJson(req, { maxBytes: route.maxBodyBytes }) : {};
       const result = await route.run({ params, query: url.searchParams, body, req, res });
-      if (res.writableEnded) return;
+      if (res.writableEnded || res.headersSent) return;
       return send(res, 200, result);
     }
     throw new HttpError(404, "없는 API입니다.");

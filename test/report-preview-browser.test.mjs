@@ -110,7 +110,8 @@ $$
     fs.writeFile(path.join(project, "docs", "nested.txt"), "연결 문서의 본문"),
     fs.writeFile(path.join(project, "docs", "preview.css"), "#local-result{color:rgb(20, 90, 180)}"),
     fs.writeFile(path.join(project, "docs", "preview.js"), "document.getElementById('local-result').textContent='HTML 스크립트 동작'; document.body.dataset.ran='yes';"),
-    fs.writeFile(path.join(project, "docs", "index.html"), '<!doctype html><html><head><link rel="stylesheet" href="preview.css"></head><body><h1 id="local-result">로컬 HTML</h1><script src="preview.js"></script></body></html>'),
+    fs.writeFile(path.join(project, "docs", "index.html"), '<!doctype html><html><head><link rel="stylesheet" href="preview.css"></head><body><h1 id="local-result">로컬 HTML</h1><video id="clip" src="clip.webm"></video><script src="preview.js"></script></body></html>'),
+    fs.writeFile(path.join(project, "docs", "clip.webm"), Buffer.from([1, 2, 3, 4])),
   ]);
   const app = http.createServer((_req, res) => { res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" }); res.end('<h1 id="live-app">실행 중인 앱</h1><script>document.body.dataset.live="yes"</script>'); });
   await new Promise((resolve) => app.listen(0, "127.0.0.1", resolve));
@@ -215,6 +216,10 @@ $$
     };
     const html = await frameState("/artifact/preview", "document.body.dataset.ran==='yes' && ({text:document.querySelector('#local-result').textContent,color:getComputedStyle(document.querySelector('#local-result')).color,isolated:(()=>{try{return !parent.document}catch{return true}})()})");
     assert.equal(html.text, "HTML 스크립트 동작"); assert.equal(html.color, "rgb(20, 90, 180)"); assert.equal(html.isolated, true);
+    // 페이지 안의 영상은 미리보기 전용 임시 주소로 바뀌고, 그 주소는 요청한 구간만 돌려준다.
+    const clip = await frameState("/artifact/preview", "document.querySelector('#clip')?.getAttribute('src')");
+    assert.match(clip, /^\/preview-media\/[0-9a-f]{48}$/);
+    assert.deepEqual(await evaluate(`fetch(${JSON.stringify(clip)}, { headers: { Range: "bytes=1-2" } }).then(async (r) => [r.status, r.headers.get("content-range"), [...new Uint8Array(await r.arrayBuffer())]])`), [206, "bytes 1-2/4", [2, 3]]);
     await evaluate("document.querySelector('.report-preview').close(); [...document.querySelectorAll('.report-card-open')].find(x=>x.textContent==='실행 화면').click()");
     assert.equal(await frameState(liveUrl, "document.body.dataset.live==='yes' && document.querySelector('#live-app').textContent"), "실행 중인 앱");
     await evaluate("document.querySelector('.report-preview').close(); [...document.querySelectorAll('.report-card-open')].find(x=>x.textContent==='검증 기록').click()");

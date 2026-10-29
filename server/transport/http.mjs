@@ -3,6 +3,7 @@ import http from "node:http";
 import path from "node:path";
 import { HttpError } from "../application/errors.mjs";
 import { hintFor } from "../application/error-hints.mjs";
+import { openPreviewMedia, sendFileRange } from "../session-artifacts.mjs";
 
 export function send(res, status, body) {
   res.writeHead(status, {
@@ -103,6 +104,13 @@ export function createHttpServer({ getPort, publicDir, handleApi, handleMcp, rec
       // Decide on the normalized path so "/mcp/../api/..." cannot borrow the MCP exemption.
       const url = new URL(req.url, `http://${req.headers.host}`);
       const mcp = url.pathname.match(/^\/mcp\/([0-9a-f]{48})$/);
+      // HTML 미리보기(출처 없는 격리 화면)의 영상: 미리보기를 만들 때 발급한 비밀 주소의 파일 하나만 읽기로 보낸다.
+      const media = url.pathname.match(/^\/preview-media\/([0-9a-f]{48})$/);
+      if (media) {
+        if (req.method !== "GET" && req.method !== "HEAD") return forbid();
+        const item = openPreviewMedia(media[1]);
+        return sendFileRange(req, res, item.realPath, { "Content-Type": item.mimeType, "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff", "Cross-Origin-Resource-Policy": "cross-origin" });
+      }
       const api = url.pathname.startsWith("/api/");
       // Local Host validation prevents DNS rebinding. Every API call must come from the app
       // page, and writes also need the custom header; CLI MCP requests instead use a secret
