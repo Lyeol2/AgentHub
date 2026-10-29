@@ -2,8 +2,10 @@
 // 단계마다 서비스에 작업을 만들고, 끝날 때까지 상태를 확인하고, 결과 파일을 프로젝트 출력 폴더에 받는다.
 // 다음 노드에는 "3D 모델" 정보(JSON)를 넘긴다. 같은 서비스의 다음 단계는 파일을 다시 올리지 않고 작업 ID로 이어 간다.
 // API 키는 data 폴더의 별도 파일(gen3d-keys.json)에만 두고 화면·기록·노드 설정에는 남기지 않는다.
+// Meshy는 기본으로 공식 CLI(meshy-cli)에 로그인한 계정으로 실행하고, 설정에서 API 키 방식으로 바꿀 수 있다.
 import fs from "node:fs";
 import path from "node:path";
+import { MESHY_CLI, meshyCliTools, findMeshyCli, openMeshyLogin } from "./gen3d-meshy-cli.mjs";
 
 // 화면에 보이는 단계 이름. 실행 순서도 이 순서다.
 export const GEN3D_STEPS = {
@@ -18,9 +20,9 @@ export const GEN3D_STEPS = {
 const ORDER = Object.keys(GEN3D_STEPS);
 
 export const GEN3D_PROVIDERS = {
-  meshy: { label: "Meshy", baseUrl: "https://api.meshy.ai", env: "MESHY_API_KEY", steps: ["generate", "refine", "texture", "remesh", "rig", "animate"] },
+  meshy: { label: "Meshy", baseUrl: "https://api.meshy.ai", env: "MESHY_API_KEY", modes: ["cli", "api"], steps: ["generate", "refine", "texture", "remesh", "rig", "animate"] },
   // Tripo는 V2 OpenAPI 기준이다. V3 주소를 쓰려면 설정에서 주소를 바꾼다.
-  tripo: { label: "Tripo", baseUrl: "https://api.tripo3d.ai/v2/openapi", env: "TRIPO_API_KEY", steps: ["generate", "refine", "texture", "remesh", "rig", "animate", "convert"] },
+  tripo: { label: "Tripo", baseUrl: "https://api.tripo3d.ai/v2/openapi", env: "TRIPO_API_KEY", modes: ["api"], steps: ["generate", "refine", "texture", "remesh", "rig", "animate", "convert"] },
 };
 
 // 통합 노드의 바로 쓰는 묶음. 고른 서비스가 지원하지 않는 단계는 빠진다.
@@ -107,22 +109,35 @@ export class Gen3dKeys {
     const provider = GEN3D_PROVIDERS[id];
     if (!provider) fail("알 수 없는 3D 생성 도구입니다.");
     const saved = this.read()[id] ?? {};
-    return { apiKey: saved.apiKey || this.env[provider.env] || "", baseUrl: saved.baseUrl || provider.baseUrl };
+    const mode = provider.modes.includes(saved.mode) ? saved.mode : provider.modes[0];
+    return { apiKey: saved.apiKey || this.env[provider.env] || "", baseUrl: saved.baseUrl || provider.baseUrl, mode, cliPath: saved.cliPath ?? "" };
   }
 
-  // 화면에는 키가 있는지와 주소만 보인다.
+  // 화면에는 키가 있는지와 주소·작동 방식만 보인다. CLI 방식은 CLI를 찾았으면 실행할 수 있다(로그인은 연결 확인으로 본다).
   list() {
     return Object.entries(GEN3D_PROVIDERS).map(([id, provider]) => {
-      const { apiKey, baseUrl } = this.get(id);
-      return { id, label: provider.label, configured: !!apiKey, baseUrl, defaultBaseUrl: provider.baseUrl, steps: provider.steps };
+      const { apiKey, baseUrl, mode, cliPath } = this.get(id);
+      const cli = provider.modes.includes("cli") ? { found: !!findMeshyCli(cliPath, { env: this.env }), path: cliPath } : null;
+      return { id, label: provider.label, mode, modes: provider.modes, hasKey: !!apiKey, configured: mode === "cli" ? !!cli?.found : !!apiKey, cli, baseUrl, defaultBaseUrl: provider.baseUrl, steps: provider.steps };
     });
   }
 
   // apiKey: 빈 문자열이면 지운다. undefined면 그대로 둔다. baseUrl: 빈 문자열이면 기본 주소로 되돌린다.
-  set(id, { apiKey, baseUrl } = {}) {
+  // mode: "cli" | "api"(지원하는 도구만), cliPath: 비우면 PATH에서 찾는다.
+  set(id, { apiKey, baseUrl, mode, cliPath } = {}) {
     if (!GEN3D_PROVIDERS[id]) fail("알 수 없는 3D 생성 도구입니다.");
     const all = this.read();
     const next = { ...(all[id] ?? {}) };
+    if (mode !== undefined) {
+      if (!GEN3D_PROVIDERS[id].modes.includes(mode)) fail(`${GEN3D_PROVIDERS[id].label}은(는) 이 작동 방식을 지원하지 않습니다.`);
+      next.mode = mode;
+    }
+    if (cliPath !== undefined) {
+      const value = String(cliPath).trim();
+      if (value.length > 1000 || /[\r\n]/.test(value)) fail("CLI 경로가 올바르지 않습니다.");
+      if (value && !fs.existsSync(value)) fail(`CLI 경로에 파일이 없습니다: ${value}`);
+      if (value) next.cliPath = value; else delete next.cliPath;
+    }
     if (apiKey !== undefined) {
       const key = String(apiKey).trim();
       if (key.length > 500 || /\s/.test(key)) fail("API 키 형식이 올바르지 않습니다.");
@@ -360,7 +375,9 @@ function readImage(value, projectPath) {
 // resume: 앞선 실행의 단계 결과. 성공한 단계는 다시 만들지 않고 이어서 실행한다.
 export async function runGen3d(node, { input = "", render = (template) => template, projectPath, keys, fetch = globalThis.fetch, signal, sleep = abortableSleep, now = Date.now, onProgress = () => {}, resume = null, runId = String(now()) }) {
   const provider = node.provider;
-  const adapter = ADAPTERS[provider];
+  const settings = keys.get(provider);
+  const viaCli = provider === "meshy" && settings.mode === "cli";
+  const adapter = viaCli ? MESHY_CLI : ADAPTERS[provider];
   const upstream = parseModel(input);
   const steps = node.steps;
   const outputRoot = path.resolve(projectPath, node.outputDir || "output/3d");
@@ -382,10 +399,13 @@ export async function runGen3d(node, { input = "", render = (template) => templa
     } else if (!prompt) fail("만들 모델을 설명하는 글을 입력하세요.");
   }
   let current = steps[0];
-  const tools = client(provider, keys.get(provider), {
-    fetch, signal, sleep, now, pollMs: (node.pollSec ?? 5) * 1000, timeoutMs: (node.timeoutMin ?? 30) * 60_000,
-    onProgress: (state) => onProgress({ step: current, progress: state.progress ?? null }),
-  });
+  const timeoutMs = (node.timeoutMin ?? 30) * 60_000;
+  const tools = viaCli
+    ? meshyCliTools(settings, { signal, timeoutMs, onProgress: (state) => onProgress({ step: current, progress: state.progress ?? null }) })
+    : client(provider, settings, {
+      fetch, signal, sleep, now, pollMs: (node.pollSec ?? 5) * 1000, timeoutMs,
+      onProgress: (state) => onProgress({ step: current, progress: state.progress ?? null }),
+    });
   try {
     for (const step of steps) {
       current = step;
@@ -398,21 +418,23 @@ export async function runGen3d(node, { input = "", render = (template) => templa
         continue;
       }
       onProgress({ step, progress: 0 });
+      const dir = path.join(runDir, `${ORDER.indexOf(step) + 1}-${step}`);
+      ctx.dir = dir;
       const result = await adapter.step(step, ctx, tools);
       if (result.skipped) {
         record.steps.push({ step, status: "skipped", note: result.skipped, model });
         continue;
       }
-      const dir = path.join(runDir, `${ORDER.indexOf(step) + 1}-${step}`);
-      const files = {};
-      for (const [format, url] of Object.entries(result.outputs ?? {})) {
+      // CLI는 파일을 이미 받아 두고 경로를 돌려준다. API는 주소를 받아 여기서 내려받는다.
+      const files = { ...(result.files ?? {}) };
+      for (const [format, url] of Object.entries(result.files ? {} : result.outputs ?? {})) {
         if (!url) continue;
         const ext = GEN3D_FORMATS.includes(format) ? format : extensionOf(url, format);
         files[format] = await download(url, dir, `model.${ext}`, { fetch, signal });
       }
       if (!Object.keys(files).length) fail(`${GEN3D_STEPS[step]} 결과에 받을 파일이 없습니다.`);
-      let thumbnail = null;
-      if (result.thumbnail) {
+      let thumbnail = result.files ? result.thumbnail ?? null : null;
+      if (result.thumbnail && !result.files) {
         try { thumbnail = await download(result.thumbnail, dir, `thumbnail.${extensionOf(result.thumbnail, "png")}`, { fetch, signal }); }
         catch { /* 썸네일이 없어도 모델은 쓴다. */ }
       }
@@ -421,9 +443,10 @@ export async function runGen3d(node, { input = "", render = (template) => templa
         taskIds: { ...(model?.taskIds ?? {}), [step]: result.taskId },
         stage: result.stage ?? model?.stage ?? null,
         format: files[node.options?.format] ? node.options.format : Object.keys(files)[0],
-        files, thumbnail: thumbnail ?? model?.thumbnail ?? null, thumbnailUrl: result.thumbnail ?? model?.thumbnailUrl ?? null,
+        files, thumbnail: thumbnail ?? model?.thumbnail ?? null, thumbnailUrl: (result.files ? null : result.thumbnail) ?? model?.thumbnailUrl ?? null,
         rigged: !!(result.rigged || model?.rigged), animated: !!(result.animated || model?.animated),
         ...(result.extra?.basicAnimations ? { basicAnimations: result.extra.basicAnimations } : model?.basicAnimations ? { basicAnimations: model.basicAnimations } : {}),
+        ...(result.extra?.basicAnimationFiles ? { basicAnimationFiles: result.extra.basicAnimationFiles } : model?.basicAnimationFiles ? { basicAnimationFiles: model.basicAnimationFiles } : {}),
       };
       ctx.model = model;
       record.steps.push({ step, status: "success", taskId: result.taskId, files, thumbnail, model });
@@ -445,6 +468,14 @@ export async function runGen3d(node, { input = "", render = (template) => templa
 export async function checkGen3dProvider(id, keys, { fetch = globalThis.fetch } = {}) {
   const adapter = ADAPTERS[id];
   if (!adapter) fail("알 수 없는 3D 생성 도구입니다.");
-  const tools = client(id, keys.get(id), { fetch, signal: AbortSignal.timeout(15000), sleep: abortableSleep, now: Date.now, pollMs: 1000, timeoutMs: 15000 });
+  const settings = keys.get(id);
+  if (id === "meshy" && settings.mode === "cli") return MESHY_CLI.check(meshyCliTools(settings, { signal: AbortSignal.timeout(60000), timeoutMs: 60000 }));
+  const tools = client(id, settings, { fetch, signal: AbortSignal.timeout(15000), sleep: abortableSleep, now: Date.now, pollMs: 1000, timeoutMs: 15000 });
   return adapter.check(tools);
+}
+
+// 설정의 "CLI 로그인": Meshy CLI의 브라우저 로그인을 연다.
+export function loginGen3dProvider(id, keys) {
+  if (id !== "meshy") fail("CLI 로그인은 Meshy만 지원합니다.");
+  return openMeshyLogin(keys.get(id));
 }

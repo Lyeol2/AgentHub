@@ -173,7 +173,10 @@ test("gen3d: 키가 없거나 틀리면 실행 전에·응답 문구로 알리�
   await assert.rejects(runGen3d(node({}), { input: "a", render: () => "a", projectPath: root, keys: { get: () => ({ apiKey: "wrong", baseUrl: server.meshy }) }, ...fast }), /HTTP 401\): Invalid API key/);
   const keys = new Gen3dKeys({ dataDir: root, env: {} });
   assert.deepEqual(keys.list().map((item) => [item.id, item.configured]), [["meshy", false], ["tripo", false]]);
-  const saved = keys.set("meshy", { apiKey: KEY, baseUrl: server.meshy + "/" });
+  assert.equal(keys.get("meshy").mode, "cli", "Meshy는 기본으로 CLI를 쓴다");
+  assert.equal(keys.get("tripo").mode, "api");
+  assert.throws(() => keys.set("tripo", { mode: "cli" }), /지원하지 않습니다/);
+  const saved = keys.set("meshy", { apiKey: KEY, baseUrl: server.meshy + "/", mode: "api" });
   assert.equal(saved.configured, true);
   assert.equal(saved.baseUrl, server.meshy);
   assert.ok(!JSON.stringify(keys.list()).includes(KEY));
@@ -201,8 +204,8 @@ test("gen3d: 그래프에서 모양 노드 → 다듬기 노드로 이어 실행
     if (!response.ok) throw Object.assign(new Error(value.error), { status: response.status });
     return value;
   };
-  assert.equal((await api("GET", "gen3d")).providers[0].configured, false);
-  await api("PUT", "gen3d/meshy", { apiKey: KEY, baseUrl: server.meshy });
+  assert.equal((await api("GET", "gen3d")).providers[0].hasKey, false);
+  await api("PUT", "gen3d/meshy", { apiKey: KEY, baseUrl: server.meshy, mode: "api" });
   assert.ok(!JSON.stringify(await api("GET", "gen3d")).includes(KEY));
   assert.deepEqual(await api("POST", "gen3d/meshy/check"), { ok: true, message: "남은 크레딧 1234" });
   const shape = await api("POST", "commands", { kind: "gen3d", projectPath, provider: "meshy", steps: ["generate"], prompt: "의자" });

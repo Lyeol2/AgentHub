@@ -111,6 +111,11 @@ test("browser: 3D 생성 도구 키 설정, 노드 실행과 결과 기록·썸�
     const row = "document.querySelector('#gen3d-providers [data-provider=meshy]')";
     await evaluate("document.querySelector('#open-settings').click()");
     await evaluate(until(`${row}?.querySelector('input[type=password]')`));
+    // Meshy는 기본이 CLI 방식이다. 이 시험은 가짜 API 서버를 쓰므로 API 키 방식으로 바꾼다.
+    assert.equal(await evaluate(`${row}.dataset.mode`), "cli");
+    assert.ok(await evaluate(`[...${row}.querySelectorAll('button')].some((b) => b.textContent === 'CLI 로그인')`));
+    await evaluate(`(() => { const r = ${row}; r.querySelector('select').value = 'api'; [...r.querySelectorAll('button')].find((b) => b.textContent === '저장').click(); })()`);
+    await evaluate(until(`${row}?.dataset.mode === 'api'`));
     assert.equal(await evaluate(`${row}.querySelector('span').textContent`), "키 없음");
     await evaluate(`(() => { const r = ${row}; r.querySelector('input[type=password]').value = ${JSON.stringify(KEY)}; r.querySelector('input.mono').value = ${JSON.stringify(meshy.base)}; [...r.querySelectorAll('button')].find((b) => b.textContent === '저장').click(); })()`);
     await evaluate(until(`${row}?.querySelector('span').textContent === '키 있음'`));

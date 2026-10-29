@@ -1,0 +1,47 @@
+// 테스트용 가짜 meshy-cli. 실제 CLI처럼 meshy.cli/v1 봉투를 stdout에 쓰고, -o 폴더에 결과 파일을 만든다.
+// FAKE_MESHY_LOG: 받은 인자를 한 줄씩 남길 파일, FAKE_MESHY_FAIL: 실패로 끝낼 리소스(예: "text-to-3d:refine"),
+// FAKE_MESHY_AUTH=0: 로그인하지 않은 상태
+import fs from "node:fs";
+import path from "node:path";
+
+const args = process.argv.slice(2);
+if (process.env.FAKE_MESHY_LOG) fs.appendFileSync(process.env.FAKE_MESHY_LOG, JSON.stringify({ args, key: process.env.MESHY_API_KEY ?? null }) + "\n");
+const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+const out = (value, code = 0) => { process.stdout.write(JSON.stringify({ schema_version: "meshy.cli/v1", command: args.slice(0, 2).join("."), warnings: [], ...value })); process.exit(code); };
+
+if (args[0] === "auth" && args[1] === "status") {
+  out(process.env.FAKE_MESHY_AUTH === "0"
+    ? { ok: true, result: { authenticated: false }, error: null }
+    : { ok: true, result: { authenticated: true, balance: { balance: 1206 } }, error: null });
+}
+if (process.env.FAKE_MESHY_AUTH === "0") out({ ok: false, result: null, error: { code: "auth_required", message: "no credential" } }, 3);
+
+const [resource, verb] = args;
+if (verb !== "create") out({ ok: false, result: null, error: { code: "usage", message: `unknown ${args.join(" ")}` } }, 2);
+const kind = resource === "text-to-3d" ? `text-to-3d:${flag("--mode")}` : resource;
+const counter = path.join(path.dirname(process.env.FAKE_MESHY_LOG ?? "."), "fake-meshy-count");
+const n = (Number(fs.existsSync(counter) ? fs.readFileSync(counter, "utf8") : 0) + 1);
+fs.writeFileSync(counter, String(n));
+const taskId = `${kind.replace(":", "-")}-${n}`;
+process.stderr.write(`${taskId} IN_PROGRESS 50%\n`);
+if (process.env.FAKE_MESHY_FAIL === kind) {
+  process.env.FAKE_MESHY_FAIL = "";
+  out({ ok: true, result: { task: { task_id: taskId, status: "FAILED", task_error: { message: "서버 혼잡" } }, downloads: { state: "not_ready", files: [] } }, error: null });
+}
+const dir = flag("-o");
+fs.mkdirSync(dir, { recursive: true });
+const files = [];
+const write = (key, name, body = `FAKE ${taskId} ${name}`) => { const file = path.join(dir, name); fs.writeFileSync(file, body); files.push({ key, path: file, status: "written" }); };
+for (const format of (flag("--target-formats") ?? "glb").split(",")) write(`model_urls.${format}`, `model.${format}`);
+if (resource !== "rigging" && resource !== "animate") write("thumbnail_url", "preview.png");
+if (resource === "rigging") {
+  write("result.rigged_character_glb_url", "rigged.glb");
+  if (args.includes("--all-assets")) {
+    write("result.rigged_character_fbx_url", "rigged.fbx");
+    write("result.basic_animations.walking_glb_url", "walking.glb");
+    write("result.basic_animations.walking_fbx_url", "walking.fbx");
+    write("result.basic_animations.running_glb_url", "running.glb");
+  }
+}
+process.stderr.write(`${taskId} SUCCEEDED 100%\n`);
+out({ ok: true, result: { task: { task_id: taskId, status: "SUCCEEDED", task_error: null }, submission: { state: "accepted", task_id: taskId }, downloads: { state: "completed", files } }, error: null });

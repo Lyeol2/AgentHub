@@ -44,9 +44,11 @@ export function createGen3dForm({ api, onRun, onChanged }) {
     $("gen3d-height-row").hidden = !(steps.includes("rig") && provider === "meshy");
     $("gen3d-texture-row").hidden = !steps.some((step) => ["texture", "refine"].includes(step));
     const info = providers?.find((item) => item.id === provider);
+    const cli = info?.mode === "cli";
     $("gen3d-key-state").textContent = !providers ? "" : info?.configured
-      ? `${info.label} API 키가 설정되어 있습니다.`
-      : `${info?.label ?? provider} API 키가 없습니다. 설정 → 3D 생성 도구에서 키를 넣어야 실행할 수 있습니다.`;
+      ? cli ? `${info.label} CLI로 실행합니다(meshy auth login 계정).` : `${info.label} API 키가 설정되어 있습니다.`
+      : cli ? `${info.label} CLI를 찾지 못했습니다. npm install -g meshy-cli 로 설치하고 meshy auth login 으로 로그인하세요.`
+        : `${info?.label ?? provider} API 키가 없습니다. 설정 → 3D 생성 도구에서 키를 넣어야 실행할 수 있습니다.`;
     $("gen3d-key-state").classList.toggle("error", !!providers && !info?.configured);
   }
   for (const id of ["gen3d-provider", "gen3d-input-mode"]) $(id).addEventListener("change", sync);
@@ -161,20 +163,32 @@ export function createGen3dSettings({ api }) {
     try { providers = (await api("GET", "/api/gen3d")).providers; }
     catch (error) { box.replaceChildren(el("p", { class: "error" }, error.message)); return; }
     box.replaceChildren(...providers.map((provider) => {
-      const key = el("input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: provider.configured ? "저장됨 · 바꾸려면 새 키 입력" : "API 키", "aria-label": `${provider.label} API 키` });
+      const cliMode = provider.mode === "cli";
+      // Meshy는 CLI(로그인한 계정)와 API 키 중에서 고른다. CLI 방식이면 키는 넣지 않아도 된다.
+      const mode = provider.modes?.length > 1 ? el("select", { "aria-label": `${provider.label} 작동 방식` },
+        el("option", { value: "cli" }, "CLI (meshy auth login 계정)"), el("option", { value: "api" }, "API 키")) : null;
+      if (mode) mode.value = provider.mode;
+      const key = el("input", { type: "password", autocomplete: "off", spellcheck: "false", placeholder: provider.hasKey ? "저장됨 · 바꾸려면 새 키 입력" : cliMode ? "선택 · 비우면 CLI 로그인 계정" : "API 키", "aria-label": `${provider.label} API 키` });
       const url = el("input", { class: "mono", spellcheck: "false", value: provider.baseUrl === provider.defaultBaseUrl ? "" : provider.baseUrl, placeholder: provider.defaultBaseUrl, "aria-label": `${provider.label} 서비스 주소` });
-      const status = el("span", { class: provider.configured ? "ok-text" : "muted", "aria-live": "polite" }, provider.configured ? "키 있음" : "키 없음");
+      const cliPath = provider.cli ? el("input", { class: "mono gen3d-cli-path", spellcheck: "false", value: provider.cli.path ?? "", placeholder: "비우면 PATH의 meshy", "aria-label": `${provider.label} CLI 경로` }) : null;
+      const state = cliMode
+        ? provider.cli?.found ? ["muted", "CLI 찾음 · 연결 확인으로 로그인 상태를 봅니다"] : ["error", "CLI 없음 · npm install -g meshy-cli 로 설치하세요"]
+        : provider.hasKey ? ["ok-text", "키 있음"] : ["muted", "키 없음"];
+      const status = el("span", { class: state[0], "aria-live": "polite" }, state[1]);
       const button = (label, run) => el("button", { type: "button", class: "ghost sm", onclick: async (event) => {
         const target = event.currentTarget;
         target.disabled = true;
         try { await run(); } catch (error) { status.textContent = error.message; status.className = "error"; } finally { target.disabled = false; }
       } }, label);
-      return el("div", { class: "gen3d-provider", "data-provider": provider.id },
+      return el("div", { class: "gen3d-provider", "data-provider": provider.id, "data-mode": provider.mode },
         el("strong", {}, provider.label), status,
-        el("label", {}, "API 키", key), el("label", {}, "서비스 주소 (비우면 기본)", url),
+        ...(mode ? [el("label", {}, "작동 방식", mode)] : []),
+        ...(cliPath && cliMode ? [el("label", {}, "CLI 경로 (meshy 또는 meshy-cli/dist/index.js)", cliPath)] : []),
+        el("label", {}, cliMode ? "API 키 (선택)" : "API 키", key), el("label", {}, "서비스 주소 (비우면 기본)", url),
         el("div", { class: "gen3d-provider-actions" },
           button("저장", async () => {
-            await api("PUT", `/api/gen3d/${provider.id}`, { ...(key.value.trim() ? { apiKey: key.value.trim() } : {}), baseUrl: url.value.trim() });
+            await api("PUT", `/api/gen3d/${provider.id}`, { ...(key.value.trim() ? { apiKey: key.value.trim() } : {}), baseUrl: url.value.trim(),
+              ...(mode ? { mode: mode.value } : {}), ...(cliPath && cliMode ? { cliPath: cliPath.value.trim() } : {}) });
             await load();
           }),
           button("연결 확인", async () => {
@@ -182,7 +196,12 @@ export function createGen3dSettings({ api }) {
             status.textContent = result.message;
             status.className = result.ok ? "ok-text" : "error";
           }),
-          ...(provider.configured ? [button("키 지우기", async () => {
+          ...(cliMode ? [button("CLI 로그인", async () => {
+            const result = await api("POST", `/api/gen3d/${provider.id}/login`);
+            status.textContent = result.message;
+            status.className = "muted";
+          })] : []),
+          ...(provider.hasKey ? [button("키 지우기", async () => {
             if (!confirm(`${provider.label} API 키를 지울까요?`)) return;
             await api("PUT", `/api/gen3d/${provider.id}`, { apiKey: "" });
             await load();
