@@ -225,4 +225,37 @@ test("gen3d: 그래프에서 모양 노드 → 다듬기 노드로 이어 실행
   assert.equal(second.history[0].steps[0].step, "refine");
   assert.equal(parseModel(second.lastRun.outputText).taskIds.generate, "meshy-preview-1");
   assert.ok(fs.existsSync(parseModel(second.lastRun.outputText).files.glb));
+
+  // 결과 파일: 이 노드 기록의 출력 폴더 안만 연다.
+  const thumb = first.history[0].steps[0].thumbnail;
+  const image = await fetch(`http://127.0.0.1:${hub.port}/api/commands/${shape.id}/gen3d/file?path=${encodeURIComponent(thumb)}`);
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get("content-type"), "image/png");
+  assert.equal(await image.text(), "FILE /files/meshy-preview-1/thumb.png");
+  const outside = path.join(projectPath, "secret.txt");
+  fs.writeFileSync(outside, "x");
+  assert.equal((await fetch(`http://127.0.0.1:${hub.port}/api/commands/${shape.id}/gen3d/file?path=${encodeURIComponent(outside)}`)).status, 403);
+
+  // 지난 결과를 다시 만들지 않고 다음 노드로 넘긴다.
+  const postsBefore = server.requests.filter((request) => request.method === "POST" && request.body?.mode === "preview").length;
+  await api("POST", `commands/${shape.id}/gen3d/forward`, { runId: first.history[0].runId });
+  const end2 = Date.now() + 20000;
+  while (Date.now() < end2 && (await commands()).find((item) => item.id === refine.id).history.length < 2) await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal((await commands()).find((item) => item.id === refine.id).history.length, 2);
+  assert.equal(server.requests.filter((request) => request.method === "POST" && request.body?.mode === "preview").length, postsBefore, "모양은 다시 만들지 않는다");
+  await assert.rejects(api("POST", `commands/${shape.id}/gen3d/forward`, { runId: "nope" }), { status: 404 });
+
+  // 통합 노드를 단계 노드로 펼치면 연결이 첫·마지막 단계로 옮겨지고 단계 사이가 성공 연결로 이어진다.
+  const whole = await api("POST", "commands", { kind: "gen3d", projectPath, provider: "meshy", preset: "prop", prompt: "나무 상자", pos: { x: 100, y: 200 } });
+  await api("POST", "links", { from: whole.id, to: refine.id, when: "success", enabled: true });
+  const { nodes } = await api("POST", `commands/${whole.id}/gen3d/expand`);
+  assert.deepEqual(nodes.map((item) => item.steps), [["generate"], ["refine"], ["remesh"]]);
+  assert.deepEqual(nodes.map((item) => item.pos), [{ x: 100, y: 200 }, { x: 380, y: 200 }, { x: 660, y: 200 }]);
+  assert.equal(nodes[0].prompt, "나무 상자");
+  const links = await api("GET", "links");
+  assert.ok(!links.some((link) => link.from === whole.id || link.to === whole.id));
+  assert.ok(links.some((link) => link.from === nodes[0].id && link.to === nodes[1].id && link.when === "success"));
+  assert.ok(links.some((link) => link.from === nodes[2].id && link.to === refine.id));
+  assert.ok(!(await commands()).some((item) => item.id === whole.id));
+  await assert.rejects(api("POST", `commands/${nodes[0].id}/gen3d/expand`), /펼칠 것이 없습니다/);
 });

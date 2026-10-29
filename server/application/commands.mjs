@@ -6,6 +6,9 @@ import { listGitNodeBranches } from "../git-nodes.mjs";
 import { HttpError } from "./errors.mjs";
 import { FLOW_MEMBER_KINDS, inputValues, newHookToken } from "../flow-nodes.mjs";
 import { HOOK_BODY_MAX, createHookRateLimit, findHookNode, hookVariables } from "../webhooks.mjs";
+import { randomBytes } from "node:crypto";
+import fs from "node:fs";
+import { GEN3D_STEPS, GEN3D_PROVIDERS, modelText } from "../gen3d.mjs";
 
 export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, graphTabs, ask = askOnce, notify: broadcast }) {
   const { ensureProject } = projects;
@@ -179,5 +182,64 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { ok: true, node: command.title, runId: flow.id };
   }
 
-  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, receiveHook };
+  // ── 3D 생성 노드 ──────────────────────────────────────────────
+  function gen3dNode(id) {
+    const command = getCommand(id);
+    if (commandKind(command) !== "gen3d") throw new HttpError(400, "3D 생성 노드가 아닙니다.");
+    return command;
+  }
+
+  // 결과 기록의 파일(썸네일·모델). 이 노드가 실행 기록에 남긴 출력 폴더 안의 파일만 연다.
+  const GEN3D_MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".fbx": "application/octet-stream", ".obj": "text/plain", ".usdz": "model/vnd.usdz+zip", ".mp4": "video/mp4" };
+  function gen3dFile(id, file) {
+    const command = gen3dNode(id);
+    const target = path.resolve(String(file ?? ""));
+    const inside = (root) => { const rel = path.relative(root, target); return rel && !rel.startsWith("..") && !path.isAbsolute(rel); };
+    if (!(command.history ?? []).some((run) => typeof run.outputDir === "string" && inside(path.resolve(run.outputDir)))) throw new HttpError(403, "이 노드의 결과 파일만 열 수 있습니다.");
+    let real;
+    try { real = fs.realpathSync(target); } catch { throw new HttpError(404, "결과 파일이 없습니다. 옮겨졌거나 지워졌을 수 있습니다."); }
+    if (!fs.statSync(real).isFile()) throw new HttpError(404, "결과 파일이 없습니다.");
+    return { realPath: real, name: path.basename(real), mimeType: GEN3D_MIME[path.extname(real).toLowerCase()] ?? "application/octet-stream" };
+  }
+
+  // 기록의 한 실행 결과를 다시 만들지 않고 다음 노드로 넘긴다(예전 시안 중 마음에 드는 것만 골라 이어 하기).
+  async function gen3dForward(id, body = {}) {
+    const command = gen3dNode(id);
+    const run = (command.history ?? []).find((item) => item.runId === body.runId);
+    if (!run?.model) throw new HttpError(404, "넘길 결과가 없습니다. 성공한 실행만 넘길 수 있습니다.");
+    if (!links.list().some((link) => link.from === id && link.enabled)) throw new HttpError(400, "이 노드에서 나가는 연결이 없습니다.");
+    await chain.workflow.forward(command, modelText(run.model));
+    return { ok: true };
+  }
+
+  // 통합 노드를 같은 설정의 단계 노드들로 펼친다. 들어오던 연결은 첫 단계로, 나가던 연결은 마지막 단계로 옮긴다.
+  function gen3dExpand(id) {
+    const command = gen3dNode(id);
+    if (command.steps.length < 2) throw new HttpError(400, "단계가 하나인 노드는 펼칠 것이 없습니다.");
+    if (chain.runs.has(id) || command.state === "running") throw new HttpError(409, "실행 중인 노드는 펼칠 수 없습니다. 중지한 뒤 다시 시도하세요.");
+    const tabId = graphTabs?.tabFor(command);
+    const at = command.pos ?? { x: 40, y: 40 };
+    const label = GEN3D_PROVIDERS[command.provider].label;
+    const created = command.steps.map((step, index) => create({
+      kind: "gen3d", projectPath: command.projectPath, ...(tabId ? { tabId } : {}),
+      title: `${label} · ${GEN3D_STEPS[step]}`, provider: command.provider, steps: [step],
+      prompt: index === 0 ? command.prompt : "{{input}}", inputMode: command.inputMode, imagePath: command.imagePath,
+      // 질감 단계가 따로 떨어져도 원래 요청 글을 질감 설명으로 쓴다.
+      options: { ...command.options, ...(step === "texture" && !command.options?.texturePrompt ? { texturePrompt: command.prompt === "{{input}}" ? "" : command.prompt } : {}) },
+      outputDir: command.outputDir, pollSec: command.pollSec, timeoutMin: command.timeoutMin,
+      pos: { x: at.x + index * 280, y: at.y },
+    }));
+    for (const link of links.list()) {
+      if (link.to === id) links.update(link, { to: created[0].id });
+      if (link.from === id) links.update(link, { from: created.at(-1).id });
+    }
+    for (let i = 1; i < created.length; i++) links.add({ id: randomBytes(4).toString("hex"), from: created[i - 1].id, to: created[i].id, when: "success", keyword: "", enabled: true });
+    chain.stopCommand(command);
+    commands.remove(id);
+    broadcast("commands", {});
+    broadcast("links", {});
+    return { nodes: created };
+  }
+
+  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, receiveHook, gen3dFile, gen3dForward, gen3dExpand };
 }

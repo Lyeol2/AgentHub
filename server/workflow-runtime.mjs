@@ -275,6 +275,19 @@ export class WorkflowRuntime {
     return this.execute(node, options).finally(() => this.drain(node));
   }
 
+  // 노드를 다시 실행하지 않고 지난 결과(3D 생성 기록의 한 실행)를 성공 연결로 다시 넘긴다.
+  async forward(node, text) {
+    const c = this.chain;
+    const flow = this.set(node, this.create({}));
+    for (const link of c.pickFlowLinks(node, true, text)) {
+      if (flow.cancelled || c.disposed) break;
+      if (link.approve) c.hold(link, node, text, 0, flow);
+      else await c.deliver(link, 0, text, null, flow);
+    }
+    this.settle();
+    return flow;
+  }
+
   async execute(node, options = {}) {
     const c = this.chain;
     const kind = commandKind(node);

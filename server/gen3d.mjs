@@ -197,7 +197,9 @@ const MESHY = {
       return { taskId, outputs: meshyUrls(task), thumbnail: task.thumbnail_url, stage: "textured" };
     }
     if (step === "texture") {
-      const { taskId, task } = await run("texture", "/openapi/v1/retexture", { input_task_id: model.taskId, text_style_prompt: options.texturePrompt || ctx.prompt });
+      const style = options.texturePrompt || (ctx.steps[0] === "generate" ? ctx.prompt : "");
+      if (!style) fail("질감 단계에 입힐 질감 설명을 입력하세요.");
+      const { taskId, task } = await run("texture", "/openapi/v1/retexture", { input_task_id: model.taskId, text_style_prompt: style });
       return { taskId, outputs: meshyUrls(task), thumbnail: task.thumbnail_url, stage: "textured" };
     }
     if (step === "remesh") {
