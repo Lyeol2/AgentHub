@@ -95,7 +95,7 @@ export function createMessagingTools({ mailbox, board, notify = () => {} }) {
   return [
     {
       name: "list_sessions",
-      description: "같은 프로젝트에서 활성화된 노드 연결로 직접 연결된 세션(이름, id, 에이전트, 역할, 상태)만 본다. 메시지를 보낼 상대를 찾을 때 쓴다.",
+      description: "같은 프로젝트에서 활성화된 노드 연결로 직접 연결된 세션(이름, id, 에이전트, 역할, 상태, 메시지·부르기 가능 여부)만 본다. 메시지를 보내거나 부를 상대를 찾을 때 쓴다.",
       inputSchema: { type: "object", properties: {} },
       run: (session) => mailbox.directory(session),
     },
@@ -130,6 +130,28 @@ export function createMessagingTools({ mailbox, board, notify = () => {} }) {
       run: async (session, { to, question, timeoutSec }) => {
         const { target, answer } = await mailbox.ask(session, to, question, timeoutSec);
         return answer ?? `"${target.title}"에게서 제한 시간 안에 답이 오지 않았다. 늦게 온 답은 다음 요청으로 받는다. 기다리지 말고 할 수 있는 일을 계속한다.`;
+      },
+    },
+    {
+      name: "call_session",
+      description: `사용자가 이번 요청에서 다른 세션에 넘기거나 부르라고 시켰을 때만 그 세션을 불러 일을 맡긴다. "요청 시 호출" 연결이나 일반 연결로 이어진 세션만 부를 수 있다. 사용자가 세션을 직접 말하지 않았으면 거절되며, 그때는 사용자에게 먼저 묻는다. wait가 true면 결과가 올 때까지 기다린다(기본 ${ASK_TIMEOUT_SEC}초, 최대 ${ASK_TIMEOUT_MAX}초).`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          to: { type: "string", description: "부를 세션의 이름, 역할 이름, 또는 id" },
+          task: { type: "string", description: "맡길 일. 상대가 이 글만 보고 일할 수 있게 필요한 맥락(브랜치·커밋·파일·완료 조건)을 함께 쓴다." },
+          wait: { type: "boolean", description: "결과가 올 때까지 기다릴지(기본 false)" },
+          timeoutSec: { type: "number", description: "기다릴 최대 시간(초)" },
+        },
+        required: ["to", "task"],
+      },
+      run: async (session, { to, task, wait = false, timeoutSec }) => {
+        if (!wait) {
+          const { target, via } = mailbox.call(session, to, task);
+          return `"${target.title}" 세션을 불렀다. ${via === "live" ? "상대가 작업 중이라 지금 하는 작업에 바로 들어갔다." : "상대가 쉬고 있으면 바로 시작하고, 실행 중이면 지금 작업이 끝난 뒤 받는다."} 결과는 나중에 메시지로 받는다.`;
+        }
+        const { target, answer } = await mailbox.callAndWait(session, to, task, timeoutSec);
+        return answer ?? `"${target.title}"에게서 제한 시간 안에 결과가 오지 않았다. 늦게 온 결과는 다음 요청으로 받는다. 기다리지 말고 할 수 있는 일을 계속한다.`;
       },
     },
     {

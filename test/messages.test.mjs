@@ -11,6 +11,7 @@ process.env.AGENTHUB_DATA = tmp;
 const { extractMessages, stripMessages, findTarget, Mailbox, readBoard, postBoard, clearBoard } = await import("../server/messages.mjs");
 const { Chain, MAX_HOPS } = await import("../server/chain.mjs");
 const { handleRpc, McpTokens } = await import("../server/mcp.mjs");
+const mailboxBlocks = await import("../server/messages.mjs");
 
 test.after(() => fs.rmSync(tmp, { recursive: true, force: true }));
 
@@ -304,4 +305,75 @@ test("mcp: 세션마다 토큰이 하나다", () => {
   assert.equal(tokens.session(t), "a");
   tokens.forget("a");
   assert.equal(tokens.session(t), null);
+});
+
+test("messages: 요청 시 부르기는 사용자가 직접 보낸 요청에서 대상을 말했을 때만 부르고, 그 밖에는 거절한다", () => {
+  const release = session("rel", { title: "릴리즈", roleName: "배포" });
+  const { sessions, runner, mailbox } = world([session("a"), release, session("c")], [link("a", "rel", { when: "call" })]);
+  const a = sessions.get("a");
+  // 사용자가 대상을 말하지 않은 요청: 부르지 말고 사용자에게 묻게 한다.
+  a.events.push({ kind: "user", text: "작업 끝나면 정리해 줘" });
+  assert.throws(() => mailbox.call(a, "릴리즈", "v0.16 릴리즈"), /직접 말하지 않았다/);
+  assert.equal(runner.sent.length, 0);
+  // 작업 중에 덧붙인 사용자 요청에서 이름을 말하면 부른다.
+  a.events.push({ kind: "user", text: "응 릴리즈 세션에 넘겨", injected: true });
+  assert.equal(mailbox.call(a, "릴리즈", "develop을 main에 합치고 릴리즈해 줘").via, "queue");
+  assert.equal(runner.sent[0][0], "rel");
+  assert.match(runner.sent[0][1], /\[세션 호출\] 부른 세션: A[\s\S]*develop을 main에 합치고/);
+  assert.equal(release.events.at(-1).call, true);
+  assert.equal(a.events.at(-1).kind, "message");
+  assert.equal(a.events.at(-1).call, true);
+  // 불린 세션은 결과를 부른 세션에 돌려줄 수 있지만, 부른 세션은 이 연결로 메시지를 먼저 보내거나 반대로 부를 수 없다.
+  assert.equal(mailbox.send(release, "A", "릴리즈 끝").via, "queue");
+  assert.throws(() => mailbox.send(a, "릴리즈", "그냥 메시지"), /찾지 못했습니다/);
+  release.events.push({ kind: "user", text: "A 세션 불러" });
+  assert.throws(() => mailbox.call(release, "A", "되부르기"), /찾지 못했습니다/);
+  // 연결 없는 세션은 부를 수 없다.
+  assert.throws(() => mailbox.call(a, "C", "C 불러"), /찾지 못했습니다/);
+  // 목록에는 부르기 가능 여부가 보인다.
+  assert.match(mailbox.directory(a), /릴리즈 .*부르기\(사용자가 요청할 때만\)/);
+  assert.doesNotMatch(mailbox.directory(a), /릴리즈 .*메시지/);
+});
+
+test("messages: 연결로 넘어온 작업에서는 부를 수 없고, @세션 참조는 이름 대신 쓸 수 있다", () => {
+  const { sessions, mailbox } = world([session("a"), session("b", { title: "검토" })], [link("a", "b", { when: "call" })]);
+  const a = sessions.get("a");
+  a.events.push({ kind: "user", text: "검토 세션 불러", from: "x", fromTitle: "X" });
+  assert.throws(() => mailbox.call(a, "검토", "봐 줘"), /사용자가 직접 보낸 요청/);
+  a.events.push({ kind: "user", text: "@agenthub://session/b 한테 넘겨", references: [{ label: "세션/검토", path: "agenthub://session/b" }] });
+  assert.equal(mailbox.call(a, "b", "봐 줘").target.id, "b");
+});
+
+test("messages: 부르고 기다리면 불린 세션이 send_message로 돌려준 결과를 도구 결과로 받는다", async () => {
+  const { sessions, runner, mailbox } = world([session("a"), session("b", { title: "릴리즈" })], [link("a", "b", { when: "call" })]);
+  const a = sessions.get("a"), b = sessions.get("b");
+  a.events.push({ kind: "user", text: "릴리즈 불러서 결과 받아 줘" });
+  runner.running.add("a");
+  const pending = mailbox.callAndWait(a, "릴리즈", "v0.16 릴리즈");
+  assert.match(runner.sent[0][1], /결과를 기다리고 있다/);
+  assert.equal(mailbox.send(b, "A", "v0.16 배포 완료").via, "answer");
+  assert.equal((await pending).answer, "v0.16 배포 완료");
+});
+
+test("messages: 답변 블록의 call은 부르기 규칙을 거친다", async () => {
+  const { processMessageBlocks } = mailboxBlocks;
+  const { sessions, runner, mailbox } = world([session("a"), session("b", { title: "릴리즈" })], [link("a", "b", { when: "call" })]);
+  const a = sessions.get("a");
+  a.events.push({ kind: "user", text: "정리해 줘" });
+  a.events.push({ kind: "text", text: "```agenthub-message\n{\"to\": \"릴리즈\", \"text\": \"릴리즈해 줘\", \"call\": true}\n```" });
+  processMessageBlocks(a, true, { mailbox, runner });
+  assert.match(a.events.at(-1).text, /세션을 부르지 못했습니다: .*직접 말하지 않았다/);
+  a.events.push({ kind: "user", text: "릴리즈에 넘겨" });
+  a.events.push({ kind: "text", text: "```agenthub-message\n{\"to\": \"릴리즈\", \"text\": \"릴리즈해 줘\", \"call\": true}\n```" });
+  processMessageBlocks(a, true, { mailbox, runner });
+  assert.equal(runner.sent.at(-1)[0], "b");
+});
+
+test("messages: 요청 시 부르기 연결은 턴이 끝나도 결과를 넘기지 않는다", async () => {
+  const { sessions, runner, finish } = world([session("a"), session("b")], [link("a", "b", { when: "call" }), link("a", "b", { id: "always", when: "always", enabled: false })]);
+  const a = sessions.get("a");
+  a.events.push({ kind: "user", text: "작업" }, { kind: "text", text: "끝" });
+  runner.running.add("a");
+  await finish(a);
+  assert.equal(runner.sent.length, 0);
 });

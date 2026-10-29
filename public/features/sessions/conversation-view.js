@@ -472,8 +472,8 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       // 이 세션이 다른 세션에 보낸 메시지
       return el("li", { class: `${cls} handoff` },
         el("details", {},
-          el("summary", {}, "✉ ", el("a", { href: "#", onclick: (e) => { e.preventDefault(); if (sessionById(ev.to)) selectSession(ev.to); } }, ev.toTitle),
-            `에게 보낸 메시지 · ${MESSAGE_VIA[ev.via] ?? ""}`),
+          el("summary", {}, ev.call ? "📞 " : "✉ ", el("a", { href: "#", onclick: (e) => { e.preventDefault(); if (sessionById(ev.to)) selectSession(ev.to); } }, ev.toTitle),
+            `${ev.call ? " 세션을 불렀습니다" : "에게 보낸 메시지"} · ${MESSAGE_VIA[ev.via] ?? ""}`),
           appendLinkedText(el("div", { class: "handoff-body" }), ev.text)));
     }
     if (ev.kind === "user" && ev.from) {
@@ -484,8 +484,8 @@ export function createConversationView({ api, getSession, sessionById, selectSes
       };
       return el("li", { class: `${cls} handoff` },
         el("details", {},
-          el("summary", {}, el("a", { href: "#", onclick: open }, `${ev.message || ev.reply ? "✉" : "↳"} ${ev.fromTitle}`),
-            ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
+          el("summary", {}, el("a", { href: "#", onclick: open }, `${ev.call ? "📞" : ev.message || ev.reply ? "✉" : "↳"} ${ev.fromTitle}`),
+            ev.call ? "에서 온 호출" : ev.reply ? "에게서 온 답" : ev.message ? "에게서 온 메시지" : "에서 넘어온 작업"),
           appendLinkedText(el("div", { class: "handoff-body" }), ev.text)));
     }
     const node = el("li", { class: cls, ...(ev.kind === "user" && Number.isInteger(ev.seq) ? { "data-seq": ev.seq } : {}) });

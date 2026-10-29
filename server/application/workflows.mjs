@@ -127,6 +127,7 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     if (commandKind(from) === "git" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "Git 출력은 성공·실패·항상·수동 조건을 사용하세요.");
     if (commandKind(from) === "repeat" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "반복 출력은 성공·실패·항상·수동 조건을 사용하세요.");
     if (isCommandId(from.id) && commandKind(from) === "task" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "작업 출력은 성공·실패·항상·수동 조건을 사용하세요.");
+    if (fields.when === "call" && (isCommandId(from.id) || isCommandId(to.id) || from.chat || to.chat)) throw new HttpError(400, "요청 시 부르기 연결은 프로젝트 세션끼리만 만들 수 있습니다.");
     // 작업 마무리는 커밋·push·PR을 만들므로 따로 정하지 않으면 넘기기 전에 승인을 받는다.
     if (body.approve === undefined && current.approve === undefined && isCommandId(to.id) && commandKind(to) === "task" && to.taskAction === "finish") fields.approve = true;
     const fromTask = isCommandId(from.id) && commandKind(from) === "task" && from.taskAction === "start";

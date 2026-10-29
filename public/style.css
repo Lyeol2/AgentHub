@@ -469,6 +469,8 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(2px); }
 .gate-btn.ok { color: var(--ok); border-color: rgb(76 194 138 / .5); }
 .gate-btn.no { color: var(--danger); border-color: rgb(240 100 100 / .45); }
 .graph-edges path.edge.gated { stroke: var(--warn); stroke-dasharray: 3 4; }
+/* 요청 시 부르기: 사용자가 시킬 때만 쓰는 연결 */
+.graph-edges path.edge.call { stroke: var(--accent); stroke-opacity: .7; stroke-dasharray: 7 5; }
 
 .gcard {
   position: absolute; width: 230px; height: 128px; z-index: 1; /* app.js의 CARD_H와 같다 */

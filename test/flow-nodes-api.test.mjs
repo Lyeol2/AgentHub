@@ -111,4 +111,7 @@ test("flow API: source nodes reject incoming edges while mixed outputs can reach
   connect(repeat.id, "session", "error");
   assert.throws(() => connect(repeat.id, "session", "keyword"), error => error.status === 400);
   assert.throws(() => connect(markdown.id, "session"), error => error.status === 400);
+  // 요청 시 부르기는 세션끼리만 만든다.
+  assert.throws(() => connect(button.id, "session", "call"), error => error.status === 400 && /세션끼리만/.test(error.message));
+  assert.throws(() => connect("session", command.id, "call"), error => error.status === 400 && /세션끼리만/.test(error.message));
 });
