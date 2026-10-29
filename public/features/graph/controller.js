@@ -343,6 +343,11 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
         ["작업 마무리", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "finish" }))]]],
       ["흐름 제어", [node("새 반복 제어", "repeat"), node("새 결과 가공", "transform"), collect]],
       ["출력", [node("새 알림", "notify"), node("새 웹훅 보내기", "webhook"), node("새 Markdown 출력", "markdown")]],
+      // 단계 노드는 하나씩, 통합 노드는 여러 단계를 이어 실행한다.
+      ["3D 생성", [
+        ...[["3D 모양 만들기", ["generate"]], ["3D 다듬기", ["refine"]], ["3D 질감", ["texture"]], ["3D 형태 정리", ["remesh"]], ["3D 뼈대", ["rig"]], ["3D 움직임", ["animate"]]]
+          .map(([label, steps]) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, "gen3d", { connectWhen, connectKeyword, gen3d: { steps } }))]),
+        ["3D 통합 (모양→다듬기→형태 정리)", inProject(() => openCommandDialog(null, pos, connectFrom, "gen3d", { connectWhen, connectKeyword, gen3d: { steps: ["generate", "refine", "remesh"] } }))]]],
     ];
     const selected = !connectFrom ? nodeGroups.selectedEntries() : [];
     openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [

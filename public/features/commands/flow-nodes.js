@@ -1,7 +1,8 @@
 import { $, el } from "../../shared/dom.js";
+import { createGen3dForm } from "./gen3d-form.js";
 
-export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "task", "webhook", "webhook-in"];
-export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", schedule: "시간 예약", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기" };
+export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "task", "webhook", "webhook-in", "gen3d"];
+export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", schedule: "시간 예약", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기", gen3d: "3D 생성" };
 export const kindOf = (node) => Object.hasOwn(KIND_LABEL, node?.kind) ? node.kind : "command";
 // 명령 노드는 kind가 없으므로 id로 세션과 구분한다.
 export const hasBranchPorts = (node) => ["git", "task", "repeat"].includes(node?.kind) || (!!node?.id?.startsWith("cmd-") && kindOf(node) === "command");
@@ -17,6 +18,7 @@ export const isScheduleArmed = (node) => node?.kind === "schedule" && (node.sche
 // 받는 주소. 앱이 열린 주소를 기준으로 만든다.
 export const hookUrl = (node) => node?.hookToken ? `${location.origin}/hooks/${node.hookToken}` : "";
 export const KIND_HINT = {
+  gen3d: "Meshy·Tripo로 3D 모델을 만듭니다. 단계를 하나만 고르면 단계 노드, 여러 개를 고르면 차례로 이어 실행하는 통합 노드입니다. 결과 파일은 출력 폴더에 받고, 다음 노드에는 3D 모델 정보(파일 경로·작업 ID)를 넘깁니다. 같은 도구의 다음 단계 노드는 파일을 다시 올리지 않고 작업 ID로 이어 갑니다. 단계를 실행할 때마다 서비스 크레딧이 듭니다. 실행 전에 확인하려면 들어오는 연결에 \"넘기기 전에 승인 받기\"를 켜세요.",
   webhook: "앞 노드의 결과를 지정한 주소로 보냅니다(Slack·Discord·사내 API 등). 본문과 머리글에 {{input}}와 입력값 {{key}}를 쓸 수 있고, JSON 본문에서는 값이 자동으로 이스케이프됩니다. 2xx 응답이면 성공이며 응답 본문을 다음 노드에 넘깁니다.",
   "webhook-in": "받는 주소로 POST 요청이 오면 흐름을 시작합니다. 주소의 긴 값이 비밀번호 역할을 하니 공유하지 마세요. AgentHub는 이 PC(127.0.0.1)에서만 열려 있으므로 GitHub 같은 외부 서비스는 ngrok 같은 터널 주소의 /hooks/... 경로로 보내야 합니다. 카드의 시험 실행은 빈 요청으로 흐름을 시험합니다.",
   notify: "앞 노드의 결과를 앱 알림으로 보여 주고 다음 노드로 전달합니다. 메시지에 {{input}}와 입력값 {{key}}를 사용할 수 있습니다. 데스크톱 알림과 소리는 흐름 알림 설정에서 허용하세요.",
@@ -28,8 +30,9 @@ export const KIND_HINT = {
   schedule: "저장 후 ‘예약 시작’을 누르면 정한 시간에 연결된 작업을 시작합니다. 설정을 바꾸려면 먼저 예약을 중지하세요. AgentHub가 실행 중이어야 하며 실행 중이던 예약은 앱을 다시 열면 복원합니다. 앱이 꺼져 있던 동안 지난 예약은 건너뜁니다.",
 };
 
-export function createFlowNodeForms() {
+export function createFlowNodeForms({ api = null, onRun = null, onChanged = null } = {}) {
   let resolveRun = null;
+  const gen3d = api ? createGen3dForm({ api, onRun, onChanged }) : null;
   let scheduleActive = false;
   const localDateTime = (value) => {
     const date = new Date(value);
@@ -93,6 +96,7 @@ export function createFlowNodeForms() {
   }
   function fill(kind, cmd, { timeZone } = {}) {
     for (const name of FLOW_KINDS) $(name + "-settings").hidden = kind !== name;
+    if (kind === "gen3d") gen3d?.fill(cmd, true);
     // Hidden required controls must not block a different kind of node.
     $("input-fields").replaceChildren();
     if (kind === "input") for (const field of cmd?.fields ?? [{ key: "task", label: "작업 내용", type: "textarea", required: true }]) addField(field);
@@ -145,6 +149,7 @@ export function createFlowNodeForms() {
     syncTask();
   }
   function body(kind) {
+    if (kind === "gen3d") return gen3d?.body() ?? {};
     if (kind === "input") return { fields: [...$("input-fields").children].map((row) => ({ key: row.querySelector(".flow-field-key").value.trim(), label: row.querySelector(".flow-field-label").value.trim(), type: row.querySelector(".flow-field-type").value, required: row.querySelector(".flow-field-required").checked, defaultValue: row.querySelector(".flow-field-default").value })), prompt: $("input-prompt").value };
     if (kind === "repeat") return { maxIterations: Number($("repeat-max").value), delayMs: Number($("repeat-delay").value) };
     if (kind === "transform") return { transformMode: $("transform-mode").value, expression: $("transform-expression").value, template: $("transform-template").value };
@@ -185,5 +190,5 @@ export function createFlowNodeForms() {
   });
   $("input-run-dialog").addEventListener("close", () => { const resolve = resolveRun; resolveRun = null; resolve?.(null); });
   function cancel() { if ($("input-run-dialog").open) $("input-run-dialog").close(); }
-  return { fill, body, collect, cancel };
+  return { fill, body, collect, cancel, renderGen3dHistory: (node) => gen3d?.renderHistory(node) };
 }

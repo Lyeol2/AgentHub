@@ -1455,3 +1455,29 @@ td .pill.subtasks-running { margin-left: 4px; }
   .mcp-toolbar p { flex-basis: 100%; }
   .mcp-body { padding: 12px; }
 }
+/* 3D 생성 노드 */
+.gen3d-steps { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; margin: 0; }
+.gen3d-steps legend { font-size: 12px; padding: 0 4px; }
+#gen3d-steps { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.gen3d-step[hidden], #gen3d-detail-options [hidden], #gen3d-settings [hidden] { display: none !important; }
+.gen3d-history-head { display: flex; align-items: center; gap: 8px; justify-content: space-between; margin-top: 4px; }
+.gen3d-history-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.gen3d-history { list-style: none; margin: 6px 0 0; padding: 0; display: grid; gap: 8px; max-height: 320px; overflow: auto; }
+.gen3d-run { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 10px; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.gen3d-run.failed { border-color: color-mix(in srgb, var(--error, #e5534b) 45%, var(--line)); }
+.gen3d-thumb { width: 72px; height: 72px; object-fit: cover; border-radius: 4px; background: var(--hover); display: grid; place-items: center; font-weight: 600; color: var(--muted); }
+.gen3d-run-body { display: grid; gap: 4px; min-width: 0; }
+.gen3d-run-steps { display: flex; flex-wrap: wrap; gap: 4px; }
+.gen3d-step-pill { font-size: 10.5px; }
+.gen3d-step-pill.failed { color: var(--error, #e5534b); }
+.gen3d-step-pill.skipped { opacity: .7; }
+.gen3d-run-file { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gen3d-run-error { font-size: 12px; }
+.gen3d-run-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.gen3d-card-thumb { display: block; width: 100%; max-height: 90px; object-fit: contain; border-radius: 4px; background: var(--hover); margin: 4px 0; }
+.gen3d-providers { display: grid; gap: 10px; }
+.gen3d-provider { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.gen3d-provider > label { grid-column: 1 / -1; display: grid; gap: 2px; font-size: 12px; }
+.gen3d-provider-actions { grid-column: 1 / -1; display: flex; gap: 6px; }
+/* 긴 경로·출력 줄이 창을 넓히지 않게 한다. */
+.dialog-form > .command-last, .dialog-form > .flow-node-settings, #gen3d-settings > *, #gen3d-history-box { min-width: 0; }

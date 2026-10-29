@@ -150,6 +150,7 @@ $$
     await evaluate("[...document.querySelectorAll('.report-toolbar button')].find(x=>x.textContent==='다음').click()");
     await evaluate(until("document.querySelector('.report-preview h2').textContent==='다음 화면'"));
     // 썸네일 줄, ←→ 키 이동, 휠 확대
+    await evaluate(until("document.querySelectorAll('.report-strip-item').length === 2"));
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.report-strip-item')].map((x) => x.classList.contains('active'))"), [false, true]);
     assert.equal(await evaluate("document.querySelector('.report-position').textContent"), "2 / 2");
     await evaluate("document.querySelector('.report-preview').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))");
