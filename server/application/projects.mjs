@@ -6,7 +6,8 @@ import { HttpError } from "./errors.mjs";
 import { projectSettings, projectSettingsKey, checkProjectSettings } from "../project-settings.mjs";
 export const samePath = (a, b) => path.resolve(a).toLowerCase() === path.resolve(b).toLowerCase();
 
-export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks, nodeGroups, graphTabs }) {
+// discoverProjects: CLI 기록에서 프로젝트를 찾는 함수. 테스트는 실제 홈 폴더를 훑지 않도록 바꿔 넣는다.
+export function createProjectService({ config, store, runner, links, commands, chain, board, saveConfig, notify: broadcast, sessions, tasks, nodeGroups, graphTabs, discoverProjects: findProjects = discoverProjects }) {
   const cleanupSession = (...args) => sessions().cleanupSession(...args);
   const cliSessionIds = (...args) => sessions().cliSessionIds(...args);
   const clearBoard = (...args) => board.clear(...args);
@@ -94,7 +95,7 @@ export function createProjectService({ config, store, runner, links, commands, c
   }
 
   async function all() {
-    const detected = await discoverProjects();
+    const detected = await findProjects();
     const merged = config.projects.map((p) => {
       const d = detected.find((x) => samePath(x.path, p.path));
       return { name: p.name, path: p.path, registered: true, claude: d?.claude ?? 0, codex: d?.codex ?? 0, lastActive: d?.lastActive ?? null, settings: projectSettings(config, p.path) };
