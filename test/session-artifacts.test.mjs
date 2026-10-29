@@ -7,8 +7,9 @@ import { pathToFileURL } from "node:url";
 import { collectReportReferences } from "../public/report-references.js";
 import {
   readSessionArtifact, readSessionArtifactContent, resolveSessionArtifact,
-  validateArtifactReferences, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TEXT_BYTES,
+  validateArtifactReferences, openPreviewMedia, MAX_ARTIFACT_BYTES, MAX_ARTIFACT_TEXT_BYTES,
 } from "../server/session-artifacts.mjs";
+import { Writable } from "node:stream";
 import { sessionRoutes } from "../server/transport/routes/sessions.mjs";
 
 function fixture(t) {
@@ -48,31 +49,65 @@ test("session artifacts: video metadata and bounded HTML media assets are preser
   assert.equal(readSessionArtifactContent(session, "clip.webm").mimeType, "video/webm");
   write("video.html", '<video controls src="clip.webm"></video>');
   const result = readSessionArtifact(session, "video.html");
-  assert.match(result.previewHtml, /src="data:video\/webm;base64,AQID"/);
+  // 영상은 페이지에 넣지 않고 미리보기 전용 임시 주소로 받는다.
+  const token = result.previewHtml.match(/src="\/preview-media\/([0-9a-f]{48})"/)?.[1];
+  assert.ok(token, result.previewHtml);
+  assert.equal(openPreviewMedia(token).mimeType, "video/webm");
+  assert.throws(() => openPreviewMedia("0".repeat(48)), { status: 404 });
+  assert.match(result.previewHtml, /media-src data: http:\/\/127\.0\.0\.1:\*/);
   assert.equal(result.previewWarnings, undefined);
 });
 
-test("session artifact routes: video playback supports full, partial and suffix byte requests", (t) => {
+test("session artifacts: an external HTML page mentioned by the answer loads its own folder's media but nothing outside it", (t) => {
+  const { session, outside, write } = fixture(t);
+  const page = write("review/index.html", '<img src="thumb.png"><video src="render/edit.mp4"></video><img src="../secret.png">', outside);
+  write("review/thumb.png", Buffer.from([1, 2]), outside);
+  write("review/render/edit.mp4", Buffer.from([0, 1, 2]), outside);
+  write("secret.png", Buffer.from([3]), outside);
+  // Codex처럼 드라이브 앞에 /를 붙인 링크로 언급한다.
+  session.events = [{ kind: "text", text: `[검토 페이지](</${page.split(path.sep).join("/")}>)` }];
+  const result = readSessionArtifact(session, page);
+  assert.match(result.previewHtml, /<img src="data:image\/png;base64,AQI=">/);
+  assert.match(result.previewHtml, /<video src="\/preview-media\/[0-9a-f]{48}">/);
+  assert.match(result.previewHtml, /<img src="data:,">/);
+  assert.deepEqual(result.previewWarnings, ["불러오지 못한 리소스: ../secret.png"]);
+  assert.throws(() => readSessionArtifact(session, path.join(outside, "review", "thumb.png")), { status: 403 });
+});
+
+test("session artifact routes: video playback streams full, partial and suffix byte requests", async (t) => {
   const { session, write } = fixture(t);
   write("clip.mp4", Buffer.from([0, 1, 2, 3, 4, 5]));
   const handler = sessionRoutes({ artifactContent: (_, file) => readSessionArtifactContent(session, file) }).find((route) => route[1] === "sessions/:id/artifact/content")[2];
-  const request = (range, download = false) => {
-    const response = {};
-    handler({ params: { id: session.id }, query: new URLSearchParams({ path: "clip.mp4", ...(download ? { download: "1" } : {}) }), req: { headers: { range } }, res: {
-      writeHead: (status, headers) => Object.assign(response, { status, headers }), end: (body) => { response.body = body; },
-    } });
-    return response;
-  };
-  assert.equal(request().headers["Content-Type"], "video/mp4");
-  assert.equal(request().status, 200);
+  // 영상은 파일을 통째로 읽지 않고 스트림으로 보낸다. 받은 조각을 모으는 Writable을 응답으로 넘긴다.
+  const request = (range, download = false) => new Promise((resolve) => {
+    const chunks = [], response = {};
+    const res = new Writable({ write(chunk, _, done) { chunks.push(chunk); done(); } });
+    res.writeHead = (status, headers) => Object.assign(response, { status, headers });
+    res.on("finish", () => resolve({ ...response, body: Buffer.concat(chunks) }));
+    handler({ params: { id: session.id }, query: new URLSearchParams({ path: "clip.mp4", ...(download ? { download: "1" } : {}) }), req: { headers: { range } }, res });
+  });
+  const full = await request();
+  assert.equal(full.headers["Content-Type"], "video/mp4");
+  assert.equal(full.status, 200);
+  assert.deepEqual([...full.body], [0, 1, 2, 3, 4, 5]);
   for (const [range, bytes, contentRange] of [["bytes=1-3", [1, 2, 3], "bytes 1-3/6"], ["bytes=4-", [4, 5], "bytes 4-5/6"], ["bytes=-2", [4, 5], "bytes 4-5/6"]]) {
-    const response = request(range);
+    const response = await request(range);
     assert.equal(response.status, 206);
     assert.equal(response.headers["Content-Range"], contentRange);
     assert.deepEqual([...response.body], bytes);
   }
-  for (const range of ["bytes=9-", "bytes=4-2", "bytes=-0", "bytes=-", "bytes=0-1,3-4", "garbage"]) assert.equal(request(range).status, 416, range);
-  assert.equal(request(undefined, true).headers["Content-Type"], "application/octet-stream");
+  for (const range of ["bytes=9-", "bytes=4-2", "bytes=-0", "bytes=-", "bytes=0-1,3-4", "garbage"]) assert.equal((await request(range)).status, 416, range);
+  const download = await request("bytes=1-2", true);
+  assert.equal(download.headers["Content-Type"], "application/octet-stream");
+  assert.equal(download.status, 200, "a download ignores the range and sends the whole file");
+});
+
+test("session artifacts: videos have their own larger size limit", (t) => {
+  const { session, write } = fixture(t);
+  fs.truncateSync(write("big.mp4", ""), MAX_ARTIFACT_BYTES + 1);
+  assert.equal(resolveSessionArtifact(session, "big.mp4").size, MAX_ARTIFACT_BYTES + 1);
+  fs.truncateSync(write("big.txt", ""), MAX_ARTIFACT_BYTES + 1);
+  assert.throws(() => resolveSessionArtifact(session, "big.txt"), { status: 413 });
 });
 
 test("session artifacts: relative working files and absolute original-project files have typed metadata", (t) => {

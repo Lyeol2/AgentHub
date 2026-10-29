@@ -1,11 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomBytes } from "node:crypto";
 import { HttpError } from "./application/errors.mjs";
 import { collectReportReferences } from "../public/report-references.js";
 
 export const MAX_ARTIFACT_BYTES = 32 * 1024 * 1024;
+// 영상은 통째로 읽지 않고 요청한 구간만 보내므로 크게 받는다.
+export const MAX_VIDEO_BYTES = 4 * 1024 * 1024 * 1024;
 export const MAX_ARTIFACT_TEXT_BYTES = 512 * 1024;
-export const ARTIFACT_PREVIEW_CSP = "sandbox allow-scripts; default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:; media-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'";
+// HTML 미리보기 안의 영상·소리는 미리보기를 만들 때 발급한 임시 주소(/preview-media/<토큰>)로 받는다.
+const PREVIEW_MEDIA_SOURCES = "http://127.0.0.1:* http://localhost:*";
+export const ARTIFACT_PREVIEW_CSP = `sandbox allow-scripts; default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:; media-src data: ${PREVIEW_MEDIA_SOURCES}; connect-src 'none'; form-action 'none'; base-uri 'none'; frame-ancestors 'self'`;
 const MAX_PREVIEW_ASSET_BYTES = 8 * 1024 * 1024;
 const MAX_PREVIEW_TOTAL_BYTES = 24 * 1024 * 1024;
 const TEXT_EXTENSIONS = new Set("txt text csv tsv json jsonl ndjson xml svg css scss less js mjs cjs jsx ts tsx py rb go rs java kt swift c h cpp hpp cs sh bash zsh ps1 bat cmd sql yaml yml toml ini cfg conf log env gitignore gitattributes dockerfile makefile".split(" "));
@@ -82,10 +87,11 @@ function classify(file) {
 }
 
 /** The same resolver is used by HTTP previews and desktop file actions. */
-export function resolveSessionArtifact(session, value, { resolveAttachment } = {}) {
+// within: 이미 열 수 있다고 확인한 HTML의 폴더. 그 HTML이 불러오는 파일은 이 폴더 안에서도 연다.
+export function resolveSessionArtifact(session, value, { resolveAttachment, within: folder } = {}) {
   if (session.locked) fail(423, "잠긴 세션입니다. 좌물쇠를 눌러 잠금을 해제하세요.");
   const { target, absolute, ...location } = localPath(value, session.cwd || session.projectPath);
-  const roots = [session.cwd, session.projectPath].filter((v) => typeof v === "string" && v).map((v) => path.resolve(v));
+  const roots = [session.cwd, session.projectPath, folder].filter((v) => typeof v === "string" && v).map((v) => path.resolve(v));
   const containing = roots.filter((root) => within(root, target));
   const mentioned = !containing.length && absolute && mentionedPath(session, target, resolveAttachment);
   if (!containing.length && !mentioned) fail(403, "세션에서 참조한 파일이나 프로젝트 안의 파일만 열 수 있습니다.");
@@ -96,8 +102,9 @@ export function resolveSessionArtifact(session, value, { resolveAttachment } = {
     } else if (pathKey(realPath) !== pathKey(target)) fail(403, "외부 파일의 바로 가기 경로는 열 수 없습니다.");
     const stat = fs.statSync(realPath);
     if (!stat.isFile()) fail(400, "일반 파일만 미리 볼 수 있습니다.");
-    if (stat.size > MAX_ARTIFACT_BYTES) fail(413, "파일 미리보기와 다운로드는 32 MiB까지 지원합니다.");
-    return { path: target, realPath, name: path.basename(target), ...classify(target), size: stat.size, ...location };
+    const type = classify(target);
+    if (stat.size > (type.kind === "video" ? MAX_VIDEO_BYTES : MAX_ARTIFACT_BYTES)) fail(413, type.kind === "video" ? "영상 미리보기는 4 GiB까지 지원합니다." : "파일 미리보기와 다운로드는 32 MiB까지 지원합니다.");
+    return { path: target, realPath, name: path.basename(target), ...type, size: stat.size, ...location };
   } catch (error) {
     if (error instanceof HttpError) throw error;
     if (["ENOENT", "ENOTDIR"].includes(error.code)) fail(404, "파일을 찾지 못했습니다. 이동되었거나 다른 환경의 경로일 수 있습니다.");
@@ -132,16 +139,18 @@ function htmlPreview(session, file, source, options) {
   const warnings = new Set();
   const scripts = [];
   let total = Buffer.byteLength(source), count = 0;
-  const asset = (url, owner, expected) => {
+  const asset = (url, owner, expected, stream = false) => {
     if (!url || url.startsWith("#") || /^data:/i.test(url)) return null;
     try {
       if (++count > 80) throw Error("리소스 수 제한");
       if (/^[A-Za-z][\w+.-]*:/.test(url) || /^[\\/]{2}/.test(url)) throw Error("외부 URL");
       const decoded = decodeURIComponent(url.split(/[?#]/, 1)[0].replace(/&amp;/g, "&"));
       const target = path.resolve(path.dirname(owner), decoded);
-      const resolved = resolveSessionArtifact(session, target, options);
+      const resolved = resolveSessionArtifact(session, target, { ...options, within: path.dirname(file.path) });
       const mimeType = ASSET_MIMES[path.extname(target).toLowerCase()];
       if (!mimeType || (expected && !expected.test(mimeType))) throw Error("지원하지 않는 형식");
+      // 영상·소리는 페이지에 넣지 않고 임시 주소로 필요한 구간만 받게 한다.
+      if (stream && /^(?:video|audio)\//.test(mimeType)) return { ...resolved, mimeType, url: previewMediaUrl(resolved, mimeType) };
       if (resolved.size > MAX_PREVIEW_ASSET_BYTES || total + resolved.size > MAX_PREVIEW_TOTAL_BYTES) throw Error("크기 제한");
       total += resolved.size;
       return { ...resolved, mimeType, bytes: readBytes(resolved).bytes };
@@ -188,11 +197,12 @@ function htmlPreview(session, file, source, options) {
     .replace(/\b(src|poster)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi, (whole, name, double, single, bare) => {
       const url = double ?? single ?? bare;
       if (/^data:/i.test(url)) return whole;
-      const item = asset(url, file.path, name.toLowerCase() === "src" && /^<(?:video|source)\b/i.test(tag) ? /^(?:image|video)\// : /^image\//);
-      return `${name}="${item ? escapeAttribute(dataUrl(item)) : "data:,"}"`;
+      const media = name.toLowerCase() === "src" && /^<(?:video|source|audio)\b/i.test(tag);
+      const item = asset(url, file.path, media ? /^(?:image|video|audio)\// : /^image\//, media);
+      return `${name}="${item ? escapeAttribute(item.url ?? dataUrl(item)) : "data:,"}"`;
     }));
   html = html.replace(/\bstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/gi, (_, double, single) => `style="${escapeAttribute(css(double ?? single, file.path))}"`);
-  const csp = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data:; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'";
+  const csp = `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; font-src data:; media-src data: ${PREVIEW_MEDIA_SOURCES}; connect-src 'none'; frame-src 'none'; object-src 'none'; form-action 'none'; base-uri 'none'`;
   // The caller MUST also set iframe sandbox="allow-scripts", without same-origin,
   // popups, forms, downloads, or top-navigation permissions.
   const policy = `<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${escapeAttribute(csp)}">`;
@@ -213,10 +223,60 @@ export function readSessionArtifact(session, value, options = {}) {
   return { ...result, text, truncated, ...(file.kind === "html" && !truncated ? htmlPreview(session, file, text, options) : {}) };
 }
 
+// 영상은 bytes 대신 realPath를 돌려주고, 전송 쪽이 요청한 구간만 읽어 보낸다(sendFileRange).
 export function readSessionArtifactContent(session, value, options = {}) {
   const file = resolveSessionArtifact(session, value, options);
   const { realPath, ...result } = file;
+  if (file.kind === "video") return { ...result, realPath };
   return { ...result, bytes: readBytes(file).bytes };
+}
+
+// ── HTML 미리보기의 영상 임시 주소 ───────────────────────────────
+// 미리보기는 출처가 없는 격리된 화면이라 /api를 부를 수 없다. 미리보기를 만들 때 파일마다 비밀 토큰을 발급한다.
+const PREVIEW_MEDIA_TTL_MS = 60 * 60 * 1000;
+const PREVIEW_MEDIA_MAX = 500;
+const previewMedia = new Map(); // 토큰 → { realPath, mimeType, at }
+
+function previewMediaUrl(file, mimeType) {
+  const now = Date.now();
+  for (const [token, item] of previewMedia) if (now - item.at > PREVIEW_MEDIA_TTL_MS) previewMedia.delete(token);
+  while (previewMedia.size >= PREVIEW_MEDIA_MAX) previewMedia.delete(previewMedia.keys().next().value);
+  const token = randomBytes(24).toString("hex");
+  previewMedia.set(token, { realPath: file.realPath, mimeType, at: now });
+  return `/preview-media/${token}`;
+}
+
+export function openPreviewMedia(token) {
+  const item = previewMedia.get(token);
+  if (!item || Date.now() - item.at > PREVIEW_MEDIA_TTL_MS) fail(404, "미리보기 영상 주소가 만료되었습니다. 미리보기를 다시 여세요.");
+  return item;
+}
+
+// 파일에서 요청한 구간(Range)만 읽어 보낸다. 영상 재생기가 처음 정보와 탐색 위치를 구간으로 요청한다.
+export function sendFileRange(req, res, realPath, headers) {
+  let size;
+  try { size = fs.statSync(realPath).size; } catch { fail(404, "파일을 찾을 수 없습니다."); }
+  const base = { ...headers, "Accept-Ranges": "bytes" };
+  const range = req?.headers?.range;
+  if (range) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(range);
+    const start = match?.[1] ? Number(match[1]) : Math.max(0, size - Number(match?.[2]));
+    const end = match?.[1] && match[2] ? Math.min(size - 1, Number(match[2])) : size - 1;
+    if (!match || (!match[1] && !match[2]) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) {
+      res.writeHead(416, { ...base, "Content-Range": `bytes */${size}`, "Content-Length": 0 });
+      return res.end();
+    }
+    res.writeHead(206, { ...base, "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": end - start + 1 });
+    return pipeFile(fs.createReadStream(realPath, { start, end }), res);
+  }
+  res.writeHead(200, { ...base, "Content-Length": size });
+  return pipeFile(fs.createReadStream(realPath), res);
+}
+
+// 읽는 중에 파일이 지워지거나 잠기면 응답만 끊는다(서버는 계속 돈다).
+function pipeFile(stream, res) {
+  stream.on("error", () => res.destroy?.());
+  stream.pipe(res);
 }
 
 export function validateArtifactReferences(session, value, prompt, options = {}) {

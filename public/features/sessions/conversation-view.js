@@ -422,7 +422,21 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     }
   }
 
+  // 첨부 이미지는 새 탭이 아니라 미리보기 창에서 열고, 대화 속 이미지·영상을 이어서 넘겨 본다.
+  const mediaLists = new WeakSet();
+  function watchMedia(list) {
+    if (mediaLists.has(list)) return;
+    mediaLists.add(list);
+    list.addEventListener("click", (event) => {
+      const link = event.target.closest(".event-attachments a[href]:not(.file)");
+      if (!link || !list.contains(link) || event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
+      event.preventDefault();
+      void reports.open({ url: link.getAttribute("href"), label: link.title || link.textContent, kind: "image" }, getSession(), reports.mediaGallery(list));
+    });
+  }
+
   function renderEvents(list, events) {
+    watchMedia(list);
     const draft = drafts.get(list);
     const history = { events: [...events], settled: isSettled(), sessionId: getSession()?.id };
     history.groups = turns(history.events, history.settled);

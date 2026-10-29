@@ -1,3 +1,5 @@
+import { sendFileRange } from "../../session-artifacts.mjs";
+
 export function assetRoutes({ commands: c, skills: s }) {
   const project = ({ query, body }) => query.get("path") ?? body.projectPath;
   return [
@@ -11,6 +13,16 @@ export function assetRoutes({ commands: c, skills: s }) {
     ["POST", "commands/:id/stop", ({ params }) => c.stop(params.id)],
     ["POST", "commands/:id/clear-error", ({ params }) => c.clearError(params.id)],
     ["GET", "commands/:id/output", ({ params }) => c.output(params.id)],
+    ["GET", "commands/:id/gen3d/file", ({ params, query, req, res }) => {
+      const file = c.gen3dFile(params.id, query.get("path"));
+      const inline = /^image\//.test(file.mimeType) || file.mimeType === "video/mp4";
+      const filename = encodeURIComponent(file.name).replace(/[!'()*]/g, (character) => "%" + character.charCodeAt(0).toString(16).toUpperCase());
+      return sendFileRange(req, res, file.realPath, { "Content-Type": inline ? file.mimeType : "application/octet-stream", "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'",
+        "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="model"; filename*=UTF-8''${filename}` });
+    }],
+    ["POST", "commands/:id/gen3d/forward", ({ params, body }) => c.gen3dForward(params.id, body)],
+    ["POST", "commands/:id/gen3d/expand", ({ params }) => c.gen3dExpand(params.id)],
     ["GET", "commands/:id/output/file", ({ params, res }) => {
       const output = c.output(params.id);
       const filename = encodeURIComponent(output.fileName).replace(/[!'()*]/g, (character) => "%" + character.charCodeAt(0).toString(16).toUpperCase());

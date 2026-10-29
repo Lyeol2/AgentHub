@@ -3,10 +3,13 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { HttpError } from "./application/errors.mjs";
 
-export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
+// 팀 작업(GitHub 이슈) 첨부는 저장소 브랜치에 커밋하므로 따로 작게 둔다.
+export const MAX_ISSUE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_BYTES = MAX_ATTACHMENT_BYTES;
-export const MAX_ATTACHMENTS = 4;
-export const ATTACHMENT_BODY_LIMIT = 14_100_000;
+export const MAX_ATTACHMENTS = 20;
+export const MAX_ATTACHMENTS_TOTAL_BYTES = 100 * 1024 * 1024; // 요청 하나에 붙인 파일 합계
+export const ATTACHMENT_BODY_LIMIT = 28_100_000; // 20 MiB 파일의 base64 본문
 export const IMAGE_BODY_LIMIT = ATTACHMENT_BODY_LIMIT;
 const TYPES = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp" };
 export const isImageAttachment = (attachment) => Object.hasOwn(TYPES, attachment?.mimeType);
@@ -64,10 +67,10 @@ export class AttachmentStore {
     mimeType = String(mimeType || "application/octet-stream").toLowerCase();
     if (mimeType.length > 150 || !MIME.test(mimeType)) throw new HttpError(400, "파일 형식이 올바르지 않습니다.");
     if (typeof data !== "string") throw new HttpError(400, "파일 데이터를 입력하세요.");
-    if (data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) throw new HttpError(413, "첨부 파일은 파일당 10MB까지 추가할 수 있습니다.");
+    if (data.length > Math.ceil(MAX_ATTACHMENT_BYTES / 3) * 4) throw new HttpError(413, "첨부 파일은 파일당 20MB까지 추가할 수 있습니다.");
     if (data.length % 4 || !/^[A-Za-z0-9+/]*={0,2}$/.test(data)) throw new HttpError(400, "파일 데이터가 올바른 base64 형식이 아닙니다.");
     const bytes = Buffer.from(data, "base64");
-    if (bytes.length > MAX_ATTACHMENT_BYTES) throw new HttpError(413, "첨부 파일은 파일당 10MB까지 추가할 수 있습니다.");
+    if (bytes.length > MAX_ATTACHMENT_BYTES) throw new HttpError(413, "첨부 파일은 파일당 20MB까지 추가할 수 있습니다.");
     if (bytes.toString("base64") !== data) throw new HttpError(400, "파일 데이터가 올바른 base64 형식이 아닙니다.");
     if (isImageAttachment({ mimeType }) && imageType(bytes) !== mimeType) throw new HttpError(400, "이미지 내용과 파일 형식이 일치하지 않습니다.");
     const id = randomBytes(16).toString("hex");
@@ -100,9 +103,11 @@ export class AttachmentStore {
   }
 
   resolveAll(sessionId, ids = []) {
-    if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS) throw new HttpError(400, "파일은 요청당 4개까지 첨부할 수 있습니다.");
+    if (!Array.isArray(ids) || ids.length > MAX_ATTACHMENTS) throw new HttpError(400, `파일은 요청당 ${MAX_ATTACHMENTS}개까지 첨부할 수 있습니다.`);
     if (new Set(ids).size !== ids.length) throw new HttpError(400, "같은 파일을 중복 첨부할 수 없습니다.");
-    return ids.map((id) => this.resolve(sessionId, id));
+    const files = ids.map((id) => this.resolve(sessionId, id));
+    if (files.reduce((sum, file) => sum + (Number(file.size) || 0), 0) > MAX_ATTACHMENTS_TOTAL_BYTES) throw new HttpError(413, "한 요청에 붙인 파일은 합계 100MB까지 보낼 수 있습니다.");
+    return files;
   }
 
   remove(sessionId) {

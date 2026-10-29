@@ -1,6 +1,6 @@
 import { ATTACHMENT_BODY_LIMIT, isImageAttachment, safeAttachmentName } from "../../attachments.mjs";
 import { BUNDLE_MAX_BYTES } from "../../session-bundle.mjs";
-import { ARTIFACT_PREVIEW_CSP } from "../../session-artifacts.mjs";
+import { ARTIFACT_PREVIEW_CSP, sendFileRange } from "../../session-artifacts.mjs";
 
 const RECORD_BODY_LIMIT = BUNDLE_MAX_BYTES * 2 + 100_000; // JSON 이스케이프 여유(.md 문서보다 큰 .agenthub 파일 기준)
 
@@ -38,31 +38,14 @@ export function sessionRoutes(s) {
       const filename = encodeURIComponent(safeAttachmentName(file.name)).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
       const headers = {
         "Content-Type": inline ? file.mimeType : "application/octet-stream",
-        "Content-Length": file.bytes.length,
         "Content-Disposition": `${inline ? "inline" : "attachment"}; filename="artifact"; filename*=UTF-8''${filename}`,
         "Cache-Control": "private, no-store",
         "X-Content-Type-Options": "nosniff",
         "Content-Security-Policy": "sandbox; default-src 'none'",
       };
-      // Browser media players request byte ranges for metadata and seeking.
-      if (inline && file.kind === "video") {
-        headers["Accept-Ranges"] = "bytes";
-        const range = req?.headers?.range;
-        if (range) {
-          const size = file.bytes.length;
-          const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-          const start = match?.[1] ? Number(match[1]) : Math.max(0, size - Number(match?.[2]));
-          const end = match?.[1] && match[2] ? Math.min(size - 1, Number(match[2])) : size - 1;
-          if (!match || (!match[1] && !match[2]) || !Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) {
-            res.writeHead(416, { ...headers, "Content-Range": `bytes */${size}`, "Content-Length": 0 });
-            return res.end();
-          }
-          const bytes = file.bytes.subarray(start, end + 1);
-          res.writeHead(206, { ...headers, "Content-Range": `bytes ${start}-${end}/${size}`, "Content-Length": bytes.length });
-          return res.end(bytes);
-        }
-      }
-      res.writeHead(200, headers);
+      // 영상은 파일 전체를 읽지 않고 재생기가 요청한 구간만 보낸다(처음 정보·탐색).
+      if (file.kind === "video") return sendFileRange(inline ? req : null, res, file.realPath, headers);
+      res.writeHead(200, { ...headers, "Content-Length": file.bytes.length });
       res.end(file.bytes);
     }],
     ["GET", "sessions/:id/attachments/:image", ({ params, res }) => {

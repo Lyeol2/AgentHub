@@ -84,3 +84,15 @@ test("attachments: directory links cannot redirect uploads or delete outside fil
   assert.equal(fs.existsSync(path.join(outside, "session-a")), false);
   assert.equal(fs.readFileSync(path.join(outside, "keep.txt"), "utf8"), "keep");
 });
+
+test("attachments: a request takes up to 20 files and 100 MB in total", (t) => {
+  const { storage } = fixture(t);
+  const ids = Array.from({ length: 21 }, (_, i) => storage.save("s", { name: `${i}.png`, mimeType: "image/png", data: PNG }).id);
+  assert.equal(storage.resolveAll("s", ids.slice(0, 20)).length, 20);
+  assert.throws(() => storage.resolveAll("s", ids), { status: 400, message: /20개/ });
+  // 크기 합계는 저장된 크기 정보로 잰다.
+  const big = Buffer.alloc(19 * 1024 * 1024).toString("base64");
+  const large = Array.from({ length: 6 }, (_, i) => storage.save("s", { name: `${i}.bin`, mimeType: "application/octet-stream", data: big }).id);
+  assert.equal(storage.resolveAll("s", large.slice(0, 5)).length, 5);
+  assert.throws(() => storage.resolveAll("s", large), { status: 413, message: /100MB/ });
+});

@@ -15,6 +15,7 @@ import { groupTemplateRoutes } from "./routes/group-templates.mjs";
 import { flowAssistantRoutes } from "./routes/flow-assistant.mjs";
 import { taskAssistantRoutes } from "./routes/task-assistant.mjs";
 import { graphTabRoutes } from "./routes/graph-tabs.mjs";
+import { gen3dRoutes } from "./routes/gen3d.mjs";
 
 export function createApiHandler({ services, events }) {
   const routes = [
@@ -23,6 +24,7 @@ export function createApiHandler({ services, events }) {
     ...workflowRoutes(services.workflows),
     ...(services.nodeGroups ? nodeGroupRoutes(services.nodeGroups) : []),
     ...(services.graphTabs ? graphTabRoutes(services.graphTabs) : []),
+    ...(services.gen3d ? gen3dRoutes(services.gen3d) : []),
     ...(services.runs ? runRoutes(services.runs) : []),
     ...(services.groupTemplates ? groupTemplateRoutes(services.groupTemplates) : []),
     ...(services.flowAssistant ? flowAssistantRoutes(services.flowAssistant) : []),
@@ -53,7 +55,7 @@ export function createApiHandler({ services, events }) {
       if (!matches) continue;
       const body = ["POST", "PUT"].includes(req.method) ? await readJson(req, { maxBytes: route.maxBodyBytes }) : {};
       const result = await route.run({ params, query: url.searchParams, body, req, res });
-      if (res.writableEnded) return;
+      if (res.writableEnded || res.headersSent) return;
       return send(res, 200, result);
     }
     throw new HttpError(404, "없는 API입니다.");

@@ -18,10 +18,15 @@
   files("s", [new File(["bad"], "image.svg", { type: "image/svg+xml" })]);
   check($("s-attachments").querySelector(".attachment-file-icon") && !$("s-attachments").querySelector("img"), "SVG attaches as a file without an inline image");
   $("s-attachments").querySelector("button").click();
-  files("s", Array.from({length: 5}, () => image()));
-  check($("s-attachment-error").textContent.includes("4개") && $("s-attachments").hidden, "attachment count limit");
-  files("s", [new File([new Uint8Array(10 * 1024 * 1024 + 1)], "huge.png", { type: "image/png" })]);
-  check($("s-attachment-error").textContent.includes("10 MiB"), "attachment size limit");
+  files("s", Array.from({length: 21}, (_, i) => image(`pixel-${i}.png`)));
+  check($("s-attachment-error").textContent.includes("20개") && $("s-attachments").hidden, "attachment count limit");
+  // 같은 파일을 두 번 넣으면 하나만 붙는다.
+  const twice = image("twice.png");
+  files("s", [twice]); files("s", [twice]);
+  check($("s-attachments").querySelectorAll(".attachment-preview").length === 1, "the same file is attached once");
+  $("s-attachments").querySelector("button").click();
+  files("s", [new File([new Uint8Array(20 * 1024 * 1024 + 1)], "huge.png", { type: "image/png" })]);
+  check($("s-attachment-error").textContent.includes("20 MiB"), "attachment size limit");
   files("s", [image()]);
   check($("s-attachments").children.length === 1 && !$("s-send").disabled && $("s-send").dataset.action === "send", "file picker enables image-only send");
   $("s-attachments").querySelector("button").click();
@@ -32,7 +37,14 @@
   $("s-prompt").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
   await until(() => $("s-attachments").hidden && $("s-events").querySelector(".event-attachments img"));
   check(await count("/attachments") === 1 && await count("/messages") === 1, "paste image-only Enter uploads then sends once");
-  check($("s-events").querySelector(".event-attachments a").getAttribute("target") === "_blank", "history image opens full size");
+  check($("s-events").querySelector(".event-attachments a").getAttribute("target") === "_blank", "history image keeps a full-size link for Ctrl+click");
+  // 그냥 누르면 새 탭이 아니라 미리보기 창에서 연다.
+  const historyImage = $("s-events").querySelector(".event-attachments a");
+  const opened = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+  historyImage.dispatchEvent(opened);
+  await until(() => document.querySelector("dialog.report-preview[open] .report-full-image"));
+  check(opened.defaultPrevented && document.querySelector("dialog.report-preview .report-full-image").getAttribute("src") === historyImage.getAttribute("href"), "a history image opens in the preview dialog");
+  document.querySelector("dialog.report-preview").close();
   await state("s1", "running");
   check(!document.hidden, "timer fixture is visible");
   $("s-elapsed").textContent = "stale timer";

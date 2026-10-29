@@ -197,3 +197,10 @@ test("markdown: www·꺾쇠·한글 뒤 주소도 새 창 링크가 되고 낱�
   assert.equal(renderMarkdown("여기https://a.com 봐"), '<p>여기<a href="https://a.com" target="_blank" rel="noreferrer">https://a.com</a> 봐</p>');
   assert.equal(renderMarkdown("abchttps://a.com me@www.a.com"), "<p>abchttps://a.com me@www.a.com</p>");
 });
+
+test("markdown: Codex가 쓰는 /C:/… 와 꺾쇠 경로도 파일 링크가 된다", () => {
+  const html = renderMarkdown("- [영상 · MP4](</C:/Users/u/out/render/edit.mp4>)\n- [검토 페이지](</C:/Users/u/out/index.html>)\n- [그림](/C:/Users/u/a.png)", { sessionId: "s" });
+  assert.match(html, /data-report-path="C:\/Users\/u\/out\/render\/edit\.mp4" data-report-video="true">영상 · MP4</);
+  assert.match(html, /data-report-path="C:\/Users\/u\/out\/index\.html">검토 페이지</);
+  assert.match(html, /data-report-path="C:\/Users\/u\/a\.png" data-report-image="true">그림</);
+});

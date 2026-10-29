@@ -43,6 +43,7 @@ import { createApiHandler } from "./transport/api.mjs";
 import { createFlowAssistantService } from "./application/flow-assistant.mjs";
 import { createMcpHandler } from "./transport/mcp.mjs";
 import { createEventStream } from "./transport/sse.mjs";
+import { Gen3dKeys } from "./gen3d.mjs";
 
 export function createHub(options = {}) {
   const dataDir = path.resolve(options.dataDir ?? DATA_DIR);
@@ -66,6 +67,7 @@ export function createHub(options = {}) {
   const links = deps.links ?? new LinkStore({ dataDir });
   const commands = deps.commands ?? new CommandStore({ dataDir });
   const runHistory = deps.runHistory ?? new RunHistoryStore({ dataDir });
+  const gen3dKeys = deps.gen3dKeys ?? new Gen3dKeys({ dataDir });
   for (const link of links.list()) {
     if (link.pending?.flow?.id && ["interrupted", "stopped"].includes(runHistory.get(link.pending.flow.id)?.status)) links.update(link, { pending: null });
   }
@@ -117,6 +119,7 @@ export function createHub(options = {}) {
 
   const chain = deps.chain ?? new Chain({
     store, runner, links, commands, cliPaths, history: runHistory,
+    gen3d: { keys: gen3dKeys, ...(deps.gen3dFetch ? { fetch: deps.gen3dFetch } : {}), ...(deps.gen3dSleep ? { sleep: deps.gen3dSleep } : {}) },
     autoTurnEnd: false,
     tasks: () => tasks,
     compose: (...args) => sessions.composeInput(...args),
@@ -153,6 +156,7 @@ export function createHub(options = {}) {
   tasks = createTaskService({ dataDir, config, saveConfig: persistConfig, store, runner, sessions, projects, graphTabs, notify, github: deps.github });
   const services = {
     sessions,
+    gen3d: gen3dKeys,
     projects,
     workflows,
     tasks,

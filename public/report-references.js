@@ -71,6 +71,8 @@ export function classifyReportTarget(value, { image = false, label, decodePath =
     // Markdown destinations are URL-encoded. Plain filesystem paths stay literal.
     try { target = decodeURIComponent(target); } catch { /* A literal percent sign can be part of a filename. */ }
   }
+  // Codex는 Windows 경로를 "/C:/…"처럼 앞에 /를 붙여 쓴다.
+  if (/^[\\/][a-z]:[\\/]/i.test(target)) target = target.slice(1);
   if (CONTROL.test(target) || /[<>"'|]/.test(target)) return null;
   const absolute = /^(?:[a-z]:[\\/]|[\\/]|\.{1,2}[\\/])/i.test(target);
   // A colon is meaningful only as a drive letter or trailing line/column.
