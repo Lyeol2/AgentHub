@@ -37,7 +37,14 @@
   $("s-prompt").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
   await until(() => $("s-attachments").hidden && $("s-events").querySelector(".event-attachments img"));
   check(await count("/attachments") === 1 && await count("/messages") === 1, "paste image-only Enter uploads then sends once");
-  check($("s-events").querySelector(".event-attachments a").getAttribute("target") === "_blank", "history image opens full size");
+  check($("s-events").querySelector(".event-attachments a").getAttribute("target") === "_blank", "history image keeps a full-size link for Ctrl+click");
+  // 그냥 누르면 새 탭이 아니라 미리보기 창에서 연다.
+  const historyImage = $("s-events").querySelector(".event-attachments a");
+  const opened = new MouseEvent("click", { bubbles: true, cancelable: true, button: 0 });
+  historyImage.dispatchEvent(opened);
+  await until(() => document.querySelector("dialog.report-preview[open] .report-full-image"));
+  check(opened.defaultPrevented && document.querySelector("dialog.report-preview .report-full-image").getAttribute("src") === historyImage.getAttribute("href"), "a history image opens in the preview dialog");
+  document.querySelector("dialog.report-preview").close();
   await state("s1", "running");
   check(!document.hidden, "timer fixture is visible");
   $("s-elapsed").textContent = "stale timer";

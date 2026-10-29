@@ -149,6 +149,18 @@ $$
     assert.equal(await evaluate("document.querySelector('.report-scale').textContent"), "125%");
     await evaluate("[...document.querySelectorAll('.report-toolbar button')].find(x=>x.textContent==='다음').click()");
     await evaluate(until("document.querySelector('.report-preview h2').textContent==='다음 화면'"));
+    // 썸네일 줄, ←→ 키 이동, 휠 확대
+    assert.deepEqual(await evaluate("[...document.querySelectorAll('.report-strip-item')].map((x) => x.classList.contains('active'))"), [false, true]);
+    assert.equal(await evaluate("document.querySelector('.report-position').textContent"), "2 / 2");
+    await evaluate("document.querySelector('.report-preview').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }))");
+    await evaluate(until("document.querySelector('.report-preview h2').textContent==='화면 미리보기'"));
+    await evaluate(until("document.querySelector('.report-full-image')?.naturalWidth===1"));
+    await evaluate("(() => { const v = document.querySelector('.report-image-viewport'), r = v.getBoundingClientRect(); v.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, clientX: r.left + 5, clientY: r.top + 5, bubbles: true, cancelable: true })); })()");
+    assert.notEqual(await evaluate("document.querySelector('.report-scale').textContent"), "맞춤");
+    await evaluate("document.querySelector('.report-preview').dispatchEvent(new KeyboardEvent('keydown', { key: '0', bubbles: true }))");
+    assert.equal(await evaluate("document.querySelector('.report-scale').textContent"), "맞춤");
+    await evaluate("document.querySelectorAll('.report-strip-item')[1].click()");
+    await evaluate(until("document.querySelector('.report-preview h2').textContent==='다음 화면'"));
     // Produce a tiny playable fixture in Chromium without external codecs or network assets.
     const video = await evaluate(`(async () => {
       const canvas = document.createElement('canvas'); canvas.width = 32; canvas.height = 32;
