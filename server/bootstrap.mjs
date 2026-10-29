@@ -137,6 +137,7 @@ export function createHub(options = {}) {
   });
   projects = createProjectService({
     config, store, runner, links, commands, chain, board, notify, graphTabs,
+    discoverProjects: deps.discoverProjects,
     saveConfig: persistConfig,
     sessions: () => sessions,
     tasks: () => tasks,
