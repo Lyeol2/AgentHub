@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const MAX_CLIPBOARD_FILES = 4;
-export const MAX_CLIPBOARD_FILE_BYTES = 10 * 1024 * 1024;
+export const MAX_CLIPBOARD_FILE_BYTES = 20 * 1024 * 1024;
 const MAX_URI_LIST_BYTES = 128 * 1024;
 const PASTE_WINDOW_MS = 1500;
 const MIME_TYPES = {
@@ -44,7 +44,7 @@ async function readFileAttachment(filename) {
     file = await open(filename, "r");
     const stat = await file.stat();
     if (!stat.isFile()) throw new Error("폴더는 첨부할 수 없습니다.");
-    if (stat.size > MAX_CLIPBOARD_FILE_BYTES) throw new Error("파일은 10MB까지 첨부할 수 있습니다.");
+    if (stat.size > MAX_CLIPBOARD_FILE_BYTES) throw new Error("파일은 20MB까지 첨부할 수 있습니다.");
     // Bound the read even if another process grows the file after stat.
     const bytes = Buffer.alloc(Math.min(stat.size + 1, MAX_CLIPBOARD_FILE_BYTES + 1));
     let length = 0;

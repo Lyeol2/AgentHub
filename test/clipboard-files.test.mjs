@@ -104,7 +104,7 @@ test("desktop clipboard: file size limit accepts the boundary and rejects oversi
   const [attachment] = await readClipboardFiles(clipboardWithFiles(limit));
   assert.equal(Buffer.from(attachment.data, "base64").length, MAX_CLIPBOARD_FILE_BYTES);
   const oversized = write("oversized.bin", Buffer.alloc(MAX_CLIPBOARD_FILE_BYTES + 1));
-  await assert.rejects(readClipboardFiles(clipboardWithFiles(oversized)), /oversized\.bin:.*10MB/);
+  await assert.rejects(readClipboardFiles(clipboardWithFiles(oversized)), /oversized\.bin:.*20MB/);
 });
 
 test("desktop clipboard: directories and missing files fail without disclosing absolute paths", async (t) => {

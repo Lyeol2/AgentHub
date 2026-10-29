@@ -2,7 +2,7 @@
 // 원격 판별·인증·REST 호출은 Pull Request 기능(GitHubPulls)과 같은 경로를 쓴다.
 import { randomBytes } from "node:crypto";
 import { GitHubError, githubPulls, parseGitHubRemote } from "./github.mjs";
-import { MAX_ATTACHMENT_BYTES, safeAttachmentName } from "./attachments.mjs";
+import { MAX_ISSUE_ATTACHMENT_BYTES, safeAttachmentName } from "./attachments.mjs";
 
 // 작업 첨부 파일을 보관하는 브랜치
 export const ATTACHMENT_BRANCH = "agenthub-attachments";
@@ -233,7 +233,7 @@ export class GitHubIssues {
     if (!data || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new GitHubError("첨부 파일 내용을 읽지 못했습니다. 다시 골라 주세요.");
     const size = Buffer.byteLength(data, "base64");
     if (!size) throw new GitHubError("빈 파일은 첨부할 수 없습니다.");
-    if (size > MAX_ATTACHMENT_BYTES) throw new GitHubError("첨부 파일은 10MB까지 올릴 수 있습니다.");
+    if (size > MAX_ISSUE_ATTACHMENT_BYTES) throw new GitHubError("첨부 파일은 10MB까지 올릴 수 있습니다.");
     const target = await this.target(dir, body.remote);
     if (typeof body.repo === "string" && body.repo.toLowerCase() !== target.repo.toLowerCase()) throw new GitHubError("원격 저장소가 바뀌었습니다. 다시 열어 주세요.", "stale-head", 409);
     await this.ensureAttachmentBranch(target);
