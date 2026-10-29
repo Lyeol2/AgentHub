@@ -58,7 +58,8 @@ async function withBrowser(temp, url, title, run) {
   }
 }
 
-const until = (condition) => `new Promise((resolve,reject)=>{const end=Date.now()+8000;const check=()=>{if(${condition})resolve(true);else if(Date.now()>end)reject(Error('Timed out: '+${JSON.stringify(condition)}));else setTimeout(check,25);};check();})`;
+// 전체 테스트에서는 화면 갱신도 느려지므로 브라우저 명령처럼 넉넉히 기다린다.
+const until = (condition) => `new Promise((resolve,reject)=>{const end=Date.now()+20000;const check=()=>{if(${condition})resolve(true);else if(Date.now()>end)reject(Error('Timed out: '+${JSON.stringify(condition)}));else setTimeout(check,25);};check();})`;
 
 test("browser: 세션 메뉴로 요청 시 부르기 연결을 만들고, 연결선·머리글·호출 기록을 보여 준다", { timeout: 90000 }, async (t) => {
   if (process.platform !== "win32" || !await fs.access(chrome).then(() => true, () => false)) return t.skip("Windows Chromium required");
