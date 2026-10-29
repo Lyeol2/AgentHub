@@ -83,10 +83,8 @@ test("browser: 세션 메뉴로 요청 시 부르기 연결을 만들고, 연결
   });
   await withBrowser(temp, `http://127.0.0.1:${hub.port}/`, "구현 담당", async ({ evaluate, errors }) => {
     // 메시지 기록은 접힌 작업 과정 안에 있다.
-    await evaluate(until("document.querySelector('#s-events li.ev.work summary')"));
-    await evaluate("document.querySelector('#s-events li.ev.work summary').click()");
-    await evaluate(until("[...document.querySelectorAll('#s-events li.ev.message summary')].some((x) => x.textContent.includes('릴리즈 담당 세션을 불렀습니다'))"));
-    assert.ok(await evaluate("document.querySelector('#s-events li.ev.message summary').textContent.startsWith('📞')"), "the caller sees a call record");
+    // 부하가 크면 펼친 직후 기록을 다시 그려 접힐 수 있으므로, 메시지가 보일 때까지 접혀 있으면 다시 펼친다.
+    await evaluate(until("(() => { const work = document.querySelector('#s-events li.ev.work details'); if (work && !work.open) work.querySelector('summary').click(); return [...document.querySelectorAll('#s-events li.ev.message summary')].some((x) => x.textContent.startsWith('📞') && x.textContent.includes('릴리즈 담당 세션을 불렀습니다')); })()"));
     // 세션 메뉴 → 부를 세션 추가 → 릴리즈 담당
     await evaluate(`(() => { const row = [...document.querySelectorAll('#session-list button')].find((x) => x.textContent.includes('구현 담당')); row.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 200, clientY: 200 })); })()`);
     await evaluate(until("[...document.querySelectorAll('.context-menu .menu-item')].some((x) => x.textContent === '부를 세션 추가…')"));

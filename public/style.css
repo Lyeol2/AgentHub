@@ -655,6 +655,17 @@ body.popup #s-crumb-project { pointer-events: none; color: inherit; text-decorat
 .menu-item { border: 0; background: transparent; text-align: left; padding: 6px 10px; border-radius: 5px; font-size: 12.5px; }
 .menu-item:hover:not(:disabled) { background: var(--hover); }
 .menu-item.danger { color: var(--danger); }
+/* 옆으로 펼치는 하위 메뉴 */
+.context-menu { max-height: calc(100vh - 16px); overflow-y: auto; }
+.menu-sub { display: grid; }
+.menu-sub-trigger { display: flex; align-items: center; gap: 8px; }
+.menu-sub-trigger.open { background: var(--hover); }
+.menu-sub-label { flex: 1; }
+.menu-sub-count { font-size: 10.5px; color: var(--faint); }
+.menu-sub-arrow { color: var(--muted); font-size: 10px; }
+.menu-panel { position: fixed; z-index: 101; min-width: 170px; max-width: 280px; max-height: calc(100vh - 16px); overflow-y: auto;
+  display: grid; padding: 4px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line-strong); box-shadow: 0 10px 30px var(--shadow); }
+.menu-panel[hidden] { display: none; }
 
 /* ── 답변 마크다운 ────────────────────────────────────────── */
 .ev.md { white-space: normal; width: 100%; }
