@@ -24,10 +24,12 @@ export class Chain {
   // notify: 연결(승인 대기)이나 대기열이 바뀌면 화면에 알린다. (kind: "links" | "queue", sessionId)
   // commands: 명령 노드 저장소(없으면 명령 노드를 쓰지 않는다). notify("commands")로 명령 상태 변화를 알린다.
   // tasks: 작업 서비스나 그것을 돌려주는 함수(작업 노드가 쓴다)
-  constructor({ store, runner, links, cliPaths, compose = withRole, notify = () => {}, commands = null, autoTurnEnd = true, runGit = runGitNode, runCommandShell = runShell, createWatch = undefined, history = null, tasks = null, gen3d = null }) {
+  constructor({ store, runner, links, cliPaths, compose = withRole, notify = () => {}, commands = null, autoTurnEnd = true, runGit = runGitNode, runCommandShell = runShell, createWatch = undefined, history = null, tasks = null, gen3d = null, figcraft = null }) {
     this.store = store;
     // 3D 생성 노드: { keys, fetch?, sleep? }. 없으면 실행할 때 키가 없다고 알린다.
     this.gen3d = gen3d;
+    // FigCraft 노드: CLI 위치 설정(FigcraftSettings)
+    this.figcraft = figcraft;
     this.taskService = typeof tasks === "function" ? tasks : () => tasks;
     this.runGit = runGit;
     this.runCommandShell = runCommandShell;
@@ -203,7 +205,7 @@ export class Chain {
       return;
     }
     // 명령 노드로 넘기면 명령을 실행한다. 실행 폴더는 명령을 처음 실행시킨 세션을 따른다.
-    if (["command", "git", "task", "repeat", "transform", "notify", "webhook", "gen3d"].includes(targetKind)) {
+    if (["command", "git", "task", "repeat", "transform", "notify", "webhook", "gen3d", "figcraft"].includes(targetKind)) {
       const origin = this.commandOrigin(source, sourceKind, link);
       this.note(source, `명령 "${target.title}" 실행`);
       this.startLinkedCommand(target, { origin, depth: depth + 1, prompt: answer ?? (sourceKind === "session" ? lastAnswer(source) : source.lastRun?.outputText ?? source.lastRun?.tail ?? source.prompt ?? ""), flow });
@@ -216,7 +218,7 @@ export class Chain {
   startLinkedCommand(node, options) {
     const flow = options.flow;
     try {
-      if (this.runs.has(node.id) && !["command", "repeat", "transform", "notify", "webhook", "gen3d"].includes(commandKind(node))) {
+      if (this.runs.has(node.id) && !["command", "repeat", "transform", "notify", "webhook", "gen3d", "figcraft"].includes(commandKind(node))) {
         this.failFlowDelivery(node, new Error("이미 실행 중인 노드입니다. 앞선 실행이 끝난 뒤 다시 시작하세요."), flow, options);
         return;
       }
@@ -244,7 +246,7 @@ export class Chain {
   // 세션 하나에 넘어온 작업을 넣는다. 보낸 쪽 종류에 따라 넘기는 내용이 다르다.
   async sendSession(link, source, sourceKind, target, depth, answer, flow = this.flowFor(source)) {
     const from = { from: source.id, fromTitle: source.title, ...(flow ? { flow } : {}) };
-    if (["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in", "gen3d"].includes(sourceKind)) {
+    if (["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in", "gen3d", "figcraft"].includes(sourceKind)) {
       const text = answer ?? source.lastRun?.outputText ?? source.lastRun?.tail ?? "";
       this.enqueue(target, [text, link.note?.trim()].filter(Boolean).join("\n\n"), from, depth + 1);
       return;
@@ -410,9 +412,9 @@ export class Chain {
   runCommand(cmd, { origin = null, depth = 0, prompt = null, values = undefined, flow = null, historyStepId = null, resume = false } = {}) {
     if (this.disposed || flow?.cancelled) return null;
     const kind = commandKind(cmd);
-    if (["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in", "gen3d"].includes(kind)) {
+    if (["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in", "gen3d", "figcraft"].includes(kind)) {
       if (this.runs.has(cmd.id)) {
-        if (["repeat", "transform", "webhook", "gen3d"].includes(kind)) return this.workflow.enqueue(cmd, { origin, depth, prompt, values, flow, historyStepId });
+        if (["repeat", "transform", "webhook", "gen3d", "figcraft"].includes(kind)) return this.workflow.enqueue(cmd, { origin, depth, prompt, values, flow, historyStepId });
         return null;
       }
       return this.workflow.run(cmd, { origin, depth, prompt, values, flow, historyStepId, resume });

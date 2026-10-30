@@ -576,6 +576,9 @@
       <h4>3D 생성 도구</h4>
       <p class="hint">흐름 그래프의 3D 생성 노드가 쓰는 도구입니다. Meshy는 기본으로 Meshy CLI(npm install -g meshy-cli)에 로그인한 계정으로 실행하고, API 키 방식으로 바꿀 수 있습니다. Tripo는 API 키를 씁니다. 키는 이 PC의 AgentHub 데이터 폴더(gen3d-keys.json)에만 저장하고 화면·기록에는 보이지 않습니다. 단계를 실행할 때마다 서비스 크레딧이 듭니다.</p>
       <div id="gen3d-providers" class="gen3d-providers"></div>
+      <h4>FigCraft</h4>
+      <p class="hint">흐름 그래프의 FigCraft 노드와 대화 속 .figcraft 미리보기가 쓰는 figcraft-cli입니다. 비우면 기본 설치 위치(C:\Program Files\FigCraft)와 PATH에서 찾습니다.</p>
+      <div id="figcraft-settings-row" class="gen3d-provider"></div>
       <p class="error" id="settings-error"></p>
       <menu>
         <button value="cancel" formnovalidate class="ghost">닫기</button>
@@ -721,6 +724,29 @@
         <div id="gen3d-history-box" hidden>
           <div class="gen3d-history-head"><strong>결과 기록</strong><span class="gen3d-history-actions" id="gen3d-actions"></span></div>
           <ol id="gen3d-history" class="gen3d-history"></ol>
+        </div>
+      </section>
+      <section id="figcraft-settings" class="flow-node-settings" hidden>
+        <div class="two"><label>하는 일 <select id="figcraft-action"><option value="run">디자인 만들기 (명령 스크립트 실행)</option><option value="export">내보내기</option></select></label>
+          <label>최대 실행 시간(초) <input id="figcraft-timeout" type="number" min="10" max="1800"></label></div>
+        <p class="hint" id="figcraft-cli-state"></p>
+        <div id="figcraft-run-fields">
+          <label>명령 스크립트 <textarea id="figcraft-script" rows="6" class="mono" spellcheck="false" placeholder='[{"command": "frame.create", "params": {"name": "로그인", "width": 360, "height": 640}}]'></textarea></label>
+          <p class="hint">{{input}}이면 앞 노드가 넘긴 글에서 JSON 배열(또는 ```json 블록)을 찾아 실행합니다. AI 세션에 "FigCraft 명령 JSON으로 써 줘"라고 시키고 연결하면 됩니다.</p>
+          <div class="figcraft-finder"><input id="figcraft-command-search" placeholder="명령 찾기 (예: frame, text, export)" aria-label="FigCraft 명령 찾기"><ol id="figcraft-commands" class="figcraft-commands"></ol></div>
+        </div>
+        <label id="figcraft-input-row">디자인 파일 <input id="figcraft-input" class="mono" spellcheck="false" placeholder="예: design/login.figcraft · {{input}}이면 앞 노드의 FigCraft 결과"></label>
+        <div class="two" id="figcraft-export-fields">
+          <label>형식 <select id="figcraft-format"><option value="png">PNG</option><option value="jpg">JPG</option><option value="webp">WebP</option><option value="svg">SVG</option><option value="pdf">PDF</option></select></label>
+          <label>배율 <input id="figcraft-scale" type="number" min="0.1" max="8" step="0.1"></label>
+          <label>페이지 (선택) <input id="figcraft-page" placeholder="비우면 첫 페이지"></label>
+          <label>레이어 (선택) <input id="figcraft-target" placeholder="이름이나 id · 비우면 프레임마다"></label>
+        </div>
+        <div class="two"><label>출력 폴더 <input id="figcraft-output" class="mono" spellcheck="false"></label>
+          <label class="check"><input id="figcraft-builtin-fonts" type="checkbox"> 내장 글꼴만 쓰기 (어느 PC에서나 같게 그리기)</label></div>
+        <div id="figcraft-history-box" hidden>
+          <div class="gen3d-history-head"><strong>결과 기록</strong></div>
+          <ol id="figcraft-history" class="gen3d-history"></ol>
         </div>
       </section>
       <section id="webhook-in-settings" class="flow-node-settings" hidden>

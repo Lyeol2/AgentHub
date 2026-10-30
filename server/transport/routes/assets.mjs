@@ -23,6 +23,7 @@ export function assetRoutes({ commands: c, skills: s }) {
     }],
     ["POST", "commands/:id/gen3d/forward", ({ params, body }) => c.gen3dForward(params.id, body)],
     ["POST", "commands/:id/gen3d/expand", ({ params }) => c.gen3dExpand(params.id)],
+    ["POST", "commands/:id/figcraft/open", ({ params, body }) => c.figcraftOpen(params.id, body)],
     ["GET", "commands/:id/output/file", ({ params, res }) => {
       const output = c.output(params.id);
       const filename = encodeURIComponent(output.fileName).replace(/[!'()*]/g, (character) => "%" + character.charCodeAt(0).toString(16).toUpperCase());

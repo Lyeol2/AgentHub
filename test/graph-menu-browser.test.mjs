@@ -83,11 +83,12 @@ test("browser: 노드 만들기 메뉴의 묶음은 옆으로 펼치는 하위 �
     await evaluate(until("document.querySelector('.context-menu')"));
     // 처음에는 모두 접혀 있고, 항목이 하나뿐인 "새 세션"만 바로 보인다.
     const top = await evaluate("[...document.querySelectorAll('.context-menu > .menu-item, .context-menu > .menu-sub > .menu-sub-trigger')].map((b) => b.querySelector('.menu-sub-label')?.textContent ?? b.textContent)");
-    assert.deepEqual(top, ["새 세션", "시작", "실행", "작업", "흐름 제어", "출력", "3D 생성", "그룹 템플릿 추가", "스킬 관리"]);
+    assert.deepEqual(top, ["새 세션", "시작", "실행", "작업", "흐름 제어", "출력", "3D 생성", "디자인", "그룹 템플릿 추가", "스킬 관리"]);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.context-menu .menu-panel')].map((p) => p.hidden)").then((list) => list.every(Boolean)), true);
     assert.equal(await evaluate(`${trigger("시작")}.querySelector('.menu-sub-count').textContent`), "5");
     assert.equal(await evaluate(`${trigger("3D 생성")}.querySelector('.menu-sub-count').textContent`), "7");
-    assert.ok(await evaluate("document.querySelector('.context-menu').getBoundingClientRect().height < 330"), "접은 메뉴는 짧다");
+    const menuHeight = await evaluate("document.querySelector('.context-menu').getBoundingClientRect().height");
+    assert.ok(menuHeight < 420, `접은 메뉴는 짧다 (${menuHeight}px)`);
     // 마우스를 올리면 오른쪽에 펼치고, 다른 묶음으로 옮기면 바뀐다.
     await evaluate(`${trigger("시작")}.closest('.menu-sub').dispatchEvent(new MouseEvent('mouseenter'))`);
     assert.equal(await evaluate(`${panelOf("시작")}.hidden`), false);

@@ -4,6 +4,8 @@ import { samePath, firstLine } from "../../shared/store.js";
 import { renderMarkdown } from "../../markdown.js";
 import { createFlowNodeForms, FLOW_KINDS, KIND_LABEL, kindOf, hasBranchPorts, TASK_TYPE_LABEL, isScheduleArmed, KIND_HINT as FLOW_HINT } from "./flow-nodes.js";
 import { gen3dFileUrl, gen3dThumbnail, gen3dSummary, createGen3dSettings } from "./gen3d-form.js";
+import { figcraftThumbnail, createFigcraftSettings } from "./figcraft-form.js";
+import { createReportView } from "../sessions/report-view.js";
 import { commandBody } from "../graph/history.js";
 import { showError } from "../../shared/error-report.js";
 
@@ -13,12 +15,16 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     "viewingOutput": null
   };
   const pendingRuns = new Set();
+  // 노드 결과 이미지(FigCraft 프레임 미리보기)는 대화와 같은 미리보기 창에서 확대·넘겨 본다.
+  const nodeViewer = createReportView({ api, getSession: () => ({ id: "" }) });
   const flowForms = createFlowNodeForms({
     api,
+    openImage: (ref, gallery) => nodeViewer.open(ref, { id: "" }, gallery),
     onRun: (cmd, extra) => runCommand(cmd, extra),
     onChanged: async () => { await Promise.all([loadCommands(), loadLinks()]); renderCommandRun(); },
   });
   createGen3dSettings({ api });
+  createFigcraftSettings({ api });
   // ── 명령 노드 ───────────────────────────────────────────────────
   const COMMAND_STATE = { idle: "대기", running: "실행 중", watching: "감시 중", scheduled: "예약 중", success: "성공", error: "실패" };
   const KIND_HINT = {
@@ -70,6 +76,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     if (kindOf(c) === "watch") return running ? `감시 중 · ${(c.watchPaths ?? []).length}개 경로${c.live?.tail ? ` · ${firstLine(c.live.tail)}` : ""}` : run ? `${run.ok ? "변경 전달 완료" : "감시 중지 또는 오류"} · ${timeAgo(run.startedAt)}` : "▶를 눌러 감시 시작";
     if (kindOf(c) === "webhook-in") return c.enabled === false ? "꺼짐 · 요청을 받지 않습니다" : run ? `${run.ok ? run.method === "TEST" ? "시험 실행함" : "요청 받음" : "요청 처리 실패"} · ${timeAgo(run.startedAt)}` : "POST 요청을 기다립니다";
     if (kindOf(c) === "webhook") return running ? "보내는 중" : run ? `${run.ok ? "보냄" : "보내기 실패"}${run.httpStatus ? ` · HTTP ${run.httpStatus}` : ""} · ${timeAgo(run.startedAt)}` : "앞 노드의 결과를 보냅니다";
+    if (kindOf(c) === "figcraft") return running ? c.live?.tail ?? "실행 중" : run ? `${run.ok ? "완료" : "실패"}${run.figcraft?.frames?.length ? ` · 프레임 ${run.figcraft.frames.length}개` : ""}${!run.ok && run.tail ? ` · ${firstLine(run.tail)}` : ""} · ${timeAgo(run.startedAt)}` : c.action === "run" ? "명령 스크립트로 디자인을 만듭니다" : "디자인 파일을 내보냅니다";
     if (kindOf(c) === "gen3d") return running ? c.live?.tail ?? "만드는 중" : run ? `${run.ok ? "완료" : "실패"}${!run.ok && run.tail ? ` · ${firstLine(run.tail)}` : ""} · ${timeAgo(run.startedAt)}` : c.steps?.[0] === "generate" ? "실행하면 모델을 만듭니다" : "앞 노드의 3D 모델을 받아 실행합니다";
     if (kindOf(c) === "notify") return running ? "알림 보내는 중" : run ? `${run.ok ? "알림 보냄" : "알림 실패"} · ${timeAgo(run.startedAt)}` : "앞 노드의 결과를 알립니다";
     if (kindOf(c) === "task") return running ? (c.taskAction === "finish" ? "커밋하고 반영하는 중" : "작업 만드는 중") : run ? `${run.ok ? "성공" : "실패"}${run.taskResult?.pull ? ` · PR #${run.taskResult.pull.number}` : run.taskResult?.local ? ` · ${run.taskResult.targetBranch}에 반영` : run.ok && run.taskResult?.branch ? ` · ${run.taskResult.branch}` : ""}${run.deliveryErrors?.length ? ` · 후속 실행 실패 ${run.deliveryErrors.length}개` : ""} · ${timeAgo(run.startedAt)}` : c.taskAction === "finish" ? "앞 세션의 작업을 마무리합니다" : "연결되면 새 작업을 만듭니다";
@@ -116,17 +123,18 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const running = ["running", "watching"].includes(c.state) || isScheduleArmed(c);
     const kind = kindOf(c);
     const output = c.lastRun?.output;
-    const detail = kind === "schedule" ? scheduleDetail(c) : kind === "git" ? c.gitAction === "merge" ? c.branch + " → " + c.targetBranch : c.branch + " · 작업 폴더 사용" : kind === "button" ? c.prompt : kind === "markdown" ? output?.relativePath ?? "완료 메시지 → .md 파일" : kind === "input" ? (c.fields ?? []).map((field) => field.label).join(" · ") : kind === "repeat" ? "최대 " + c.maxIterations + "회 · 실패하면 다시 실행" : kind === "transform" ? ({ json: "JSON", lines: "줄 선택", template: "템플릿" }[c.transformMode] ?? "JSON") + " · " + (c.expression || c.template || "전체 결과") : kind === "watch" ? (c.watchPaths ?? []).join(" · ") : kind === "notify" ? c.message : kind === "task" ? c.taskAction === "finish" ? (c.finishMode === "local" ? "커밋 → 대상 브랜치 반영" + (c.pushTarget ? " → 푸시" : "") : c.finishMode === "pr" ? "커밋 → 게시 → PR" : "커밋 → 작업 설정의 반영 방식") : (TASK_TYPE_LABEL[c.taskType] ?? c.taskType) + " · " + c.titleTemplate : kind === "webhook" ? `${c.method} ${c.url}` : kind === "webhook-in" ? "POST /hooks/…" : kind === "gen3d" ? gen3dSummary(c) : c.command;
-    const stoppable = ["command", "git", "task", "watch", "schedule", "repeat", "webhook", "gen3d"].includes(kind);
+    const detail = kind === "schedule" ? scheduleDetail(c) : kind === "git" ? c.gitAction === "merge" ? c.branch + " → " + c.targetBranch : c.branch + " · 작업 폴더 사용" : kind === "button" ? c.prompt : kind === "markdown" ? output?.relativePath ?? "완료 메시지 → .md 파일" : kind === "input" ? (c.fields ?? []).map((field) => field.label).join(" · ") : kind === "repeat" ? "최대 " + c.maxIterations + "회 · 실패하면 다시 실행" : kind === "transform" ? ({ json: "JSON", lines: "줄 선택", template: "템플릿" }[c.transformMode] ?? "JSON") + " · " + (c.expression || c.template || "전체 결과") : kind === "watch" ? (c.watchPaths ?? []).join(" · ") : kind === "notify" ? c.message : kind === "task" ? c.taskAction === "finish" ? (c.finishMode === "local" ? "커밋 → 대상 브랜치 반영" + (c.pushTarget ? " → 푸시" : "") : c.finishMode === "pr" ? "커밋 → 게시 → PR" : "커밋 → 작업 설정의 반영 방식") : (TASK_TYPE_LABEL[c.taskType] ?? c.taskType) + " · " + c.titleTemplate : kind === "webhook" ? `${c.method} ${c.url}` : kind === "webhook-in" ? "POST /hooks/…" : kind === "gen3d" ? gen3dSummary(c) : kind === "figcraft" ? (c.action === "run" ? "디자인 만들기" : `내보내기 · ${String(c.format).toUpperCase()}${c.target ? ` · ${c.target}` : ""}`) : c.command;
+    const stoppable = ["command", "git", "task", "watch", "schedule", "repeat", "webhook", "gen3d", "figcraft"].includes(kind);
     const actionLabel = kind === "schedule" ? running ? "예약 중지" : "예약 시작" : kind === "markdown" ? "결과 보기" : running && stoppable ? kind === "watch" ? "감시 중지" : "중지" : kind === "input" ? "입력하고 실행" : kind === "watch" ? "감시 시작" : kind === "webhook-in" ? "시험 실행" : kind === "button" ? running ? "전달 중" : "실행" : "지금 실행";
     const action = el("button", { type: "button", class: "gcmd-btn" + (running && stoppable ? " stop" : ""), title: kind === "markdown" && !output ? "결과를 받으면 볼 수 있습니다" : actionLabel, "aria-label": c.title + " " + actionLabel, onclick: () => kind === "markdown" ? openCommandOutput(c) : running && stoppable ? stopCommand(c) : runCommand(c) }, ["command", "watch"].includes(kind) ? running ? "■" : "▶" : actionLabel);
     action.disabled = kind === "markdown" ? !output : pendingRuns.has(c.id) || (running && !stoppable);
     const branchPorts = hasBranchPorts(c);
     return el("div", { class: "gcmd gcmd-" + kind + " " + c.state, "data-id": c.id, "data-kind": kind, title: c.title + "\n" + (detail ?? "") + "\n\n두 번 누르면 편집합니다. 손잡이를 끌어 다음 노드에 연결합니다." },
-      el("div", { class: "gcard-top" }, el("span", { class: "pill cmd " + kind }, KIND_LABEL[kind]), el("span", { class: "gcmd-shell" }, kind === "command" ? shellLabel(c.shell) : kind === "git" ? c.gitAction === "merge" ? "브랜치 병합" : "브랜치 사용" : kind === "button" ? "수동 실행" : kind === "markdown" ? "원문 저장" : kind === "watch" ? "변경 감지" : kind === "input" ? "실행 시작" : kind === "task" ? c.taskAction === "finish" ? "작업 마무리" : "새 작업" : kind === "webhook" ? c.method : kind === "webhook-in" ? "외부 요청" : kind === "gen3d" ? ({ meshy: "Meshy", tripo: "Tripo" }[c.provider] ?? c.provider) + ((c.steps ?? []).length > 1 ? " · 통합" : "") : ""), el("span", { class: "pill cmd-" + c.state }, COMMAND_STATE[c.state] ?? c.state)),
+      el("div", { class: "gcard-top" }, el("span", { class: "pill cmd " + kind }, KIND_LABEL[kind]), el("span", { class: "gcmd-shell" }, kind === "command" ? shellLabel(c.shell) : kind === "git" ? c.gitAction === "merge" ? "브랜치 병합" : "브랜치 사용" : kind === "button" ? "수동 실행" : kind === "markdown" ? "원문 저장" : kind === "watch" ? "변경 감지" : kind === "input" ? "실행 시작" : kind === "task" ? c.taskAction === "finish" ? "작업 마무리" : "새 작업" : kind === "webhook" ? c.method : kind === "webhook-in" ? "외부 요청" : kind === "gen3d" ? ({ meshy: "Meshy", tripo: "Tripo" }[c.provider] ?? c.provider) + ((c.steps ?? []).length > 1 ? " · 통합" : "") : kind === "figcraft" ? "디자인" : ""), el("span", { class: "pill cmd-" + c.state }, COMMAND_STATE[c.state] ?? c.state)),
       el("div", { class: "gcard-title" }, c.title),
       // 3D 생성 노드는 마지막 결과의 썸네일을 보인다.
       ...(kind === "gen3d" && gen3dThumbnail(c.history?.[0]) ? [el("img", { class: "gen3d-card-thumb", src: gen3dFileUrl(c, gen3dThumbnail(c.history[0])), alt: "마지막 결과", loading: "lazy" })] : []),
+      ...(kind === "figcraft" && figcraftThumbnail(c.history?.[0]) ? [el("img", { class: "gen3d-card-thumb", src: gen3dFileUrl(c, figcraftThumbnail(c.history[0])), alt: "마지막 결과", loading: "lazy" })] : []),
       el("div", { class: "gcmd-code" + (["command", "git", "transform", "watch", "webhook", "webhook-in"].includes(kind) ? " mono" : ""), title: detail ?? "" }, firstLine(detail ?? "")),
       el("div", { class: "gcmd-foot" }, el("span", { class: "gcmd-result" }, elapsedElement("command", c), el("span", { class: "gcmd-result-text" }, commandNodeFoot(c))), action),
       ...(branchPorts ? ["success", "error"].map((when) => el("span", { class: "gcard-handle git-port " + when, "data-when": when, title: (kind === "repeat" ? when === "success" ? "반복할 작업" : "횟수 초과" : when === "success" ? "성공" : "실패") + " · 끌어서 다음 노드에 연결", "aria-label": (when === "success" ? "성공" : "실패") + " 출력" }, el("span", { class: "git-port-label" }, kind === "repeat" ? when === "success" ? "반복" : "초과" : when === "success" ? "성공" : "실패"))) : [kind === "markdown" ? null : el("span", { class: "gcard-handle", title: "끌어서 다음 노드에 연결" })]));
@@ -195,7 +203,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   }
 
   // cmd가 없으면 새로 만든다. pos는 새 노드를 놓을 자리. members: 새 결과 모으기에 미리 고를 세션
-  function openCommandDialog(cmd, pos = null, connectFrom = null, kind = "command", { members = [], connectWhen = null, connectKeyword = "", taskAction = null, gen3d = null } = {}) {
+  function openCommandDialog(cmd, pos = null, connectFrom = null, kind = "command", { members = [], connectWhen = null, connectKeyword = "", taskAction = null, gen3d = null, figcraft = null } = {}) {
     if (ui.editingCommand) ui.editingCommand.cancelled = true;
     kind = kindOf(cmd ?? { kind });
     ui.editingCommand = { id: cmd?.id ?? null, kind, pos, projectPath: navigation.project, tabId: cmd?.tabId ?? navigation.graphTabId, connectFrom, connectWhen, connectKeyword };
@@ -207,7 +215,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     $("command-generator").hidden = kind !== "command";
     $("command-explain").hidden = kind !== "command";
     $("command-settings").hidden = !["command", "markdown"].includes(kind);
-    flowForms.fill(kind, cmd ?? (taskAction ? { taskAction } : gen3d), { timeZone: data.commandTimeZone });
+    flowForms.fill(kind, cmd ?? (taskAction ? { taskAction } : gen3d ?? figcraft), { timeZone: data.commandTimeZone });
     $("git-settings").hidden = kind !== "git";
     $("git-action").value = cmd?.gitAction ?? "use";
     $("git-timeout").value = cmd?.timeoutSec ?? 600;
@@ -314,6 +322,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const run = cmd?.lastRun;
     const kind = ui.editingCommand?.kind ?? kindOf(cmd);
     if (kind === "gen3d" && cmd && $("command-dialog").open) flowForms.renderGen3dHistory(cmd);
+    if (kind === "figcraft" && cmd && $("command-dialog").open) flowForms.renderFigcraftHistory(cmd);
     const box = $("command-last");
     $("command-output").hidden = kind === "schedule" && !cmd?.live?.tail && !run?.tail && !run?.error;
     const running = ["running", "watching"].includes(cmd?.state) || isScheduleArmed(cmd);
@@ -467,7 +476,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       $("command-dialog").close();
       return removeCommand(cmd);
     }
-    if (action === "run") return (["running", "watching"].includes(cmd?.state) || isScheduleArmed(cmd)) && ["command", "git", "task", "repeat", "watch", "schedule", "webhook", "gen3d"].includes(kind) ? stopCommand(cmd) : cmd && runCommand(cmd);
+    if (action === "run") return (["running", "watching"].includes(cmd?.state) || isScheduleArmed(cmd)) && ["command", "git", "task", "repeat", "watch", "schedule", "webhook", "gen3d", "figcraft"].includes(kind) ? stopCommand(cmd) : cmd && runCommand(cmd);
     const body = {
       title: $("command-title").value,
       ...(kind === "command" ? {

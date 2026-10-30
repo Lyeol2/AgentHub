@@ -9,8 +9,9 @@ import { HOOK_BODY_MAX, createHookRateLimit, findHookNode, hookVariables } from 
 import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { GEN3D_STEPS, GEN3D_PROVIDERS, modelText } from "../gen3d.mjs";
+import { resultText as figcraftText, openInFigcraft } from "../figcraft.mjs";
 
-export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, graphTabs, ask = askOnce, notify: broadcast }) {
+export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, graphTabs, ask = askOnce, notify: broadcast, figcraft = null }) {
   const { ensureProject } = projects;
   const allowHook = createHookRateLimit();
   const view = (command) => graphTabs ? { ...command, tabId: graphTabs.tabFor(command) } : command;
@@ -90,8 +91,8 @@ export function createCommandService({ commands, chain, links, store, projects, 
       const targetId = graphTabs.resolve(command.projectPath, body.tabId);
       if (targetId !== graphTabs.tabFor(command)) throw new HttpError(400, "노드는 탭 이동 메뉴로 옮기세요.");
     }
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification", "finishMode", "pushTarget", "provider", "steps", "preset", "inputMode", "imagePath", "options", "outputDir", "pollSec", "timeoutMin"].some((key) => body[key] !== undefined);
-    if (editing && ["git", "task", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "gen3d", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching", "scheduled"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification", "finishMode", "pushTarget", "provider", "steps", "preset", "inputMode", "imagePath", "options", "outputDir", "pollSec", "timeoutMin", "action", "script", "inputFile", "format", "scale", "page", "target", "builtinFonts"].some((key) => body[key] !== undefined);
+    if (editing && ["git", "task", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "gen3d", "figcraft", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching", "scheduled"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
     try {
       if (editing) fields = checkCommand(body, command);
@@ -189,10 +190,17 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return command;
   }
 
-  // 결과 기록의 파일(썸네일·모델). 이 노드가 실행 기록에 남긴 출력 폴더 안의 파일만 연다.
-  const GEN3D_MIME = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".fbx": "application/octet-stream", ".obj": "text/plain", ".usdz": "model/vnd.usdz+zip", ".mp4": "video/mp4" };
+  // 결과 기록이 있는 노드(3D 생성·FigCraft)
+  function resultNode(id) {
+    const command = getCommand(id);
+    if (!["gen3d", "figcraft"].includes(commandKind(command))) throw new HttpError(400, "결과 기록이 있는 노드가 아닙니다.");
+    return command;
+  }
+
+  // 결과 기록의 파일(썸네일·모델·미리보기). 이 노드가 실행 기록에 남긴 출력 폴더 안의 파일만 연다.
+  const GEN3D_MIME = { ".svg": "image/svg+xml", ".pdf": "application/pdf", ".figcraft": "application/octet-stream", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".fbx": "application/octet-stream", ".obj": "text/plain", ".usdz": "model/vnd.usdz+zip", ".mp4": "video/mp4" };
   function gen3dFile(id, file) {
-    const command = gen3dNode(id);
+    const command = resultNode(id);
     const target = path.resolve(String(file ?? ""));
     const inside = (root) => { const rel = path.relative(root, target); return rel && !rel.startsWith("..") && !path.isAbsolute(rel); };
     if (!(command.history ?? []).some((run) => typeof run.outputDir === "string" && inside(path.resolve(run.outputDir)))) throw new HttpError(403, "이 노드의 결과 파일만 열 수 있습니다.");
@@ -204,12 +212,23 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   // 기록의 한 실행 결과를 다시 만들지 않고 다음 노드로 넘긴다(예전 시안 중 마음에 드는 것만 골라 이어 하기).
   async function gen3dForward(id, body = {}) {
-    const command = gen3dNode(id);
+    const command = resultNode(id);
     const run = (command.history ?? []).find((item) => item.runId === body.runId);
-    if (!run?.model) throw new HttpError(404, "넘길 결과가 없습니다. 성공한 실행만 넘길 수 있습니다.");
+    const figma = commandKind(command) === "figcraft";
+    if (!run?.ok || (!figma && !run.model)) throw new HttpError(404, "넘길 결과가 없습니다. 성공한 실행만 넘길 수 있습니다.");
     if (!links.list().some((link) => link.from === id && link.enabled)) throw new HttpError(400, "이 노드에서 나가는 연결이 없습니다.");
-    await chain.workflow.forward(command, modelText(run.model));
+    await chain.workflow.forward(command, figma
+      ? figcraftText({ agenthubFigcraft: 1, action: run.action, file: run.file, previews: run.previews, exports: run.exports, frames: run.frames, missingFonts: run.missingFonts })
+      : modelText(run.model));
     return { ok: true };
+  }
+
+  // 결과 기록의 디자인 파일을 FigCraft 앱으로 연다.
+  function figcraftOpen(id, body = {}) {
+    if (!figcraft) throw new HttpError(400, "FigCraft 설정이 없습니다.");
+    const file = gen3dFile(id, body.path);
+    try { return openInFigcraft(figcraft, file.realPath); }
+    catch (error) { throw new HttpError(400, error.message); }
   }
 
   // 통합 노드를 같은 설정의 단계 노드들로 펼친다. 들어오던 연결은 첫 단계로, 나가던 연결은 마지막 단계로 옮긴다.
@@ -241,5 +260,5 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { nodes: created };
   }
 
-  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, receiveHook, gen3dFile, gen3dForward, gen3dExpand };
+  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, receiveHook, gen3dFile, gen3dForward, gen3dExpand, figcraftOpen };
 }
