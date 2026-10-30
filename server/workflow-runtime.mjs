@@ -6,6 +6,7 @@ import { hookVariables, sendWebhook } from "./webhooks.mjs";
 import { ScheduledNodes } from "./scheduled-nodes.mjs";
 import { runGen3d, GEN3D_STEPS } from "./gen3d.mjs";
 import { runFigcraft } from "./figcraft.mjs";
+import { askOnce } from "./one-shot.mjs";
 
 const GEN3D_HISTORY_MAX = 20;
 
@@ -357,11 +358,14 @@ export class WorkflowRuntime {
       else if (kind === "figcraft") {
         const input = options.prompt ?? "";
         request = new AbortController();
-        c.commands.update(node, { live: { ...(node.live ?? {}), tail: node.action === "run" ? "디자인 만드는 중" : "내보내는 중" } });
+        c.commands.update(node, { live: { ...(node.live ?? {}), tail: { ai: "AI가 디자인하는 중", run: "명령 실행 중", export: "내보내는 중" }[node.action] ?? "실행 중" } });
         c.notify("commands");
         try {
           const result = await runFigcraft(node, {
             input, projectPath: node.projectPath, cli: c.figcraft?.cli?.() ?? null, signal: request.signal, runId: flow.id,
+            // AI 디자인은 AI CLI를 작업 모드로 띄운다(시험에서는 ask를 바꿔 끼운다).
+            ask: c.figcraft?.ask ?? ((options) => askOnce({ cliPaths: c.cliPaths, ...options })),
+            edit: options.edit ?? null,
             render: (template) => renderTemplate(template, { ...flow.variables, input, output: input }),
           });
           text = result.text;

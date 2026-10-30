@@ -5,14 +5,16 @@ import { gen3dFileUrl } from "./gen3d-form.js";
 const basename = (file) => String(file ?? "").split(/[\\/]/).pop();
 export const figcraftThumbnail = (run) => run?.previews?.[0] ?? null;
 
-export function createFigcraftForm({ api, onChanged, openImage }) {
+export function createFigcraftForm({ api, onChanged, openImage, onRun }) {
   let editing = null;
   let searchTimer = null;
   function sync() {
-    const run = $("figcraft-action").value === "run";
-    $("figcraft-run-fields").hidden = !run;
-    $("figcraft-export-fields").hidden = run;
-    $("figcraft-input").placeholder = run ? "선택 · 이어서 고칠 디자인 파일 (비우면 새 문서)" : "예: design/login.figcraft · {{input}}이면 앞 노드의 FigCraft 결과";
+    const action = $("figcraft-action").value;
+    $("figcraft-ai-fields").hidden = action !== "ai";
+    $("figcraft-run-fields").hidden = action !== "run";
+    $("figcraft-export-fields").hidden = action !== "export";
+    $("figcraft-input").placeholder = action === "export" ? "예: design/login.figcraft · {{input}}이면 앞 노드의 FigCraft 결과"
+      : "선택 · 고칠 디자인 파일 (비우면 앞 노드의 FigCraft 결과, 그것도 없으면 새 문서)";
   }
   $("figcraft-action").addEventListener("change", () => {
     if ($("figcraft-action").value === "export" && !$("figcraft-input").value) $("figcraft-input").value = "{{input}}";
@@ -50,7 +52,11 @@ export function createFigcraftForm({ api, onChanged, openImage }) {
 
   function fill(node, active) {
     editing = node?.id ? node : null;
-    $("figcraft-action").value = node?.action ?? "run";
+    $("figcraft-action").value = node?.action ?? "ai";
+    $("figcraft-prompt").value = node?.prompt ?? "{{input}}";
+    $("figcraft-agent").value = node?.agent ?? "";
+    $("figcraft-model").value = node?.model ?? "";
+    $("figcraft-rounds").value = node?.maxRounds ?? 5;
     $("figcraft-script").value = node?.script ?? "{{input}}";
     $("figcraft-input").value = node?.inputFile ?? (node?.action === "export" ? "{{input}}" : "");
     $("figcraft-format").value = node?.format ?? "png";
@@ -58,7 +64,7 @@ export function createFigcraftForm({ api, onChanged, openImage }) {
     $("figcraft-page").value = node?.page ?? "";
     $("figcraft-target").value = node?.target ?? "";
     $("figcraft-output").value = node?.outputDir ?? "output/figcraft";
-    $("figcraft-timeout").value = node?.timeoutSec ?? 300;
+    $("figcraft-timeout").value = node?.timeoutSec ?? ((node?.action ?? "ai") === "ai" ? 900 : 300);
     $("figcraft-builtin-fonts").checked = node?.builtinFonts === true;
     $("figcraft-command-search").value = "";
     $("figcraft-commands").replaceChildren();
@@ -70,6 +76,7 @@ export function createFigcraftForm({ api, onChanged, openImage }) {
   function body() {
     return {
       action: $("figcraft-action").value, script: $("figcraft-script").value, inputFile: $("figcraft-input").value,
+      prompt: $("figcraft-prompt").value, agent: $("figcraft-agent").value, model: $("figcraft-model").value, maxRounds: Number($("figcraft-rounds").value),
       format: $("figcraft-format").value, scale: Number($("figcraft-scale").value), page: $("figcraft-page").value, target: $("figcraft-target").value,
       outputDir: $("figcraft-output").value, timeoutSec: Number($("figcraft-timeout").value), builtinFonts: $("figcraft-builtin-fonts").checked,
     };
@@ -84,6 +91,19 @@ export function createFigcraftForm({ api, onChanged, openImage }) {
     try { await navigator.clipboard.writeText(text); button.textContent = "복사함"; }
     catch { button.textContent = "복사 실패"; button.title = text; }
     setTimeout(() => { button.textContent = "경로 복사"; }, 1500);
+  }
+
+  // 이 결과 파일에 새 요청을 적용해 AI가 이어서 고친다(새 실행으로 기록된다).
+  function editBox(node, run) {
+    const input = el("input", { class: "figcraft-edit-input", placeholder: "이어서 고칠 내용 (예: 로그인 버튼을 더 크게)", "aria-label": "이어서 고칠 내용" });
+    const send = action("이어서 고치기", async () => {
+      const request = input.value.trim();
+      if (!request) { input.focus(); return; }
+      await onRun?.(node, { edit: { runId: run.runId, request } });
+      input.value = "";
+    });
+    input.addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); send.click(); } });
+    return el("span", { class: "figcraft-edit" }, input, send);
   }
 
   // 실행마다 프레임 미리보기를 썸네일로 보이고, 누르면 이미지 미리보기 창에서 확대·넘겨 본다.
@@ -104,12 +124,21 @@ export function createFigcraftForm({ api, onChanged, openImage }) {
           el("div", { class: "gen3d-run-meta" }, el("strong", {}, run.ok ? "완료" : run.stopped ? "중지" : "실패"),
             el("span", { class: "muted", title: run.at }, ` · ${timeAgo(run.at)}${run.frames?.length ? ` · 프레임 ${run.frames.length}개` : ""}${run.steps ? ` · 명령 ${run.steps}개` : ""}`)),
           run.error ? el("div", { class: "error gen3d-run-error" }, run.error) : null,
+          run.request ? el("div", { class: "figcraft-request", title: run.request }, `요청: ${run.request}`) : null,
+          run.summary ? el("div", { class: "figcraft-summary" }, run.summary) : null,
+          ...(run.renders?.length ? [el("div", { class: "figcraft-renders" }, el("span", { class: "muted" }, `AI가 확인한 화면 ${run.rounds ?? run.renders.length}번`),
+            ...run.renders.slice(-6).map((file) => {
+              const list = run.renders.map((item) => ({ url: gen3dFileUrl(node, item), label: basename(item), kind: "image" }));
+              return el("button", { type: "button", class: "figcraft-render", title: `${basename(file)} 크게 보기`, onclick: () => openImage?.(list[run.renders.indexOf(file)], list) },
+                el("img", { src: gen3dFileUrl(node, file), alt: basename(file), loading: "lazy" }));
+            }))] : []),
           run.missingFonts?.length ? el("div", { class: "hint" }, `빠진 글꼴: ${run.missingFonts.join(", ")} · 내장 글꼴만 쓰기를 켜면 어느 PC에서나 같게 그립니다.`) : null,
           run.file ? el("div", { class: "gen3d-run-file mono", title: run.file }, run.file) : null,
           ...(run.exports?.length ? [el("div", { class: "gen3d-run-file mono", title: run.exports.join("\n") }, `내보냄: ${run.exports.map(basename).join(", ")}`)] : []),
           el("div", { class: "gen3d-run-actions" },
             ...(run.file ? [el("button", { type: "button", class: "ghost sm", onclick: (event) => copy(run.file, event.currentTarget) }, "경로 복사")] : []),
             ...(run.file && run.ok ? [action("FigCraft에서 열기", () => api("POST", `/api/commands/${node.id}/figcraft/open`, { path: run.file }))] : []),
+            ...(run.ok && node.action === "ai" && run.file ? [editBox(node, run)] : []),
             ...(run.ok ? [action("다음 노드로 넘기기", async () => {
               await api("POST", `/api/commands/${node.id}/gen3d/forward`, { runId: run.runId });
               await onChanged?.();

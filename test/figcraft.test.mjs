@@ -26,7 +26,10 @@ const node = (fields) => ({ id: "n1", ...checkFigcraftNode(fields) });
 const SCRIPT = JSON.stringify([{ command: "frame.create", params: { name: "로그인" } }, { command: "frame.create", params: { name: "가입" } }]);
 
 test("figcraft: 노드 설정과 스크립트 읽기", () => {
-  assert.equal(checkFigcraftNode({}).title, "FigCraft 실행");
+  assert.equal(checkFigcraftNode({}).title, "FigCraft 명령 실행");
+  assert.equal(checkFigcraftNode({ action: "ai" }).title, "FigCraft AI 디자인");
+  assert.throws(() => checkFigcraftNode({ action: "ai", agent: "gpt" }), /Claude 또는 Codex/);
+  assert.throws(() => checkFigcraftNode({ action: "ai", maxRounds: 0 }), /1~20/);
   assert.equal(checkFigcraftNode({ action: "export" }).inputFile, "{{input}}");
   assert.throws(() => checkFigcraftNode({ format: "gif" }), /PNG·JPG·WebP·SVG·PDF/);
   assert.throws(() => checkFigcraftNode({ scale: 9 }), /0\.1~8/);
