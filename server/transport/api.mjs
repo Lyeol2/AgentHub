@@ -16,6 +16,7 @@ import { flowAssistantRoutes } from "./routes/flow-assistant.mjs";
 import { taskAssistantRoutes } from "./routes/task-assistant.mjs";
 import { graphTabRoutes } from "./routes/graph-tabs.mjs";
 import { gen3dRoutes } from "./routes/gen3d.mjs";
+import { figcraftRoutes } from "./routes/figcraft.mjs";
 
 export function createApiHandler({ services, events }) {
   const routes = [
@@ -25,6 +26,7 @@ export function createApiHandler({ services, events }) {
     ...(services.nodeGroups ? nodeGroupRoutes(services.nodeGroups) : []),
     ...(services.graphTabs ? graphTabRoutes(services.graphTabs) : []),
     ...(services.gen3d ? gen3dRoutes(services.gen3d) : []),
+    ...(services.figcraft ? figcraftRoutes(services.figcraft, services.sessions) : []),
     ...(services.runs ? runRoutes(services.runs) : []),
     ...(services.groupTemplates ? groupTemplateRoutes(services.groupTemplates) : []),
     ...(services.flowAssistant ? flowAssistantRoutes(services.flowAssistant) : []),

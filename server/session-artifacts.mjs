@@ -82,6 +82,7 @@ function classify(file) {
   if (VIDEO_MIMES[extension]) return { kind: "video", mimeType: VIDEO_MIMES[extension] };
   if ([".md", ".markdown", ".mdown"].includes(extension)) return { kind: "markdown", mimeType: "text/markdown" };
   if ([".html", ".htm"].includes(extension)) return { kind: "html", mimeType: "text/html" };
+  if (extension === ".figcraft") return { kind: "figcraft", mimeType: "application/octet-stream" };
   if (TEXT_EXTENSIONS.has(extension.slice(1)) || TEXT_EXTENSIONS.has(path.basename(file).replace(/^\./, "").toLowerCase())) return { kind: "text", mimeType: extension === ".svg" ? "image/svg+xml" : "text/plain" };
   return { kind: "file", mimeType: extension === ".pdf" ? "application/pdf" : "application/octet-stream" };
 }

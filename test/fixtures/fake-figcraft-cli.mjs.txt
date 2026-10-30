@@ -1,0 +1,41 @@
+// 테스트용 가짜 figcraft-cli. run·export·render·info·commands·--version을 실제 CLI와 같은 모양으로 흉내 낸다.
+// FAKE_FIGCRAFT_LOG: 받은 인자를 한 줄씩 남길 파일
+import fs from "node:fs";
+import path from "node:path";
+
+const args = process.argv.slice(2);
+if (process.env.FAKE_FIGCRAFT_LOG) fs.appendFileSync(process.env.FAKE_FIGCRAFT_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\n");
+const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", "base64");
+const [cmd] = args;
+if (cmd === "--version") { console.log("figcraft-cli 0.10.0-fake"); process.exit(0); }
+if (cmd === "commands") { console.log(JSON.stringify([{ id: "frame.create", label: "Create frame", params: "{name?, width?, height?}" }, { id: "node.create", label: "Create layer", params: "{type, text?}" }].filter((c) => !flag("--filter") || c.id.includes(flag("--filter"))))); process.exit(0); }
+const readDesign = (file) => JSON.parse(fs.readFileSync(file, "utf8"));
+if (cmd === "run") {
+  const steps = JSON.parse(fs.readFileSync(args[1], "utf8"));
+  const doc = flag("--in") ? readDesign(flag("--in")) : { frames: [] };
+  for (const [step, item] of steps.entries()) {
+    if (!item.command.includes(".")) { console.log(JSON.stringify({ command: item.command, error: `unknown command \`${item.command}\``, ok: false, rolledBack: true, step })); console.error(`error: step ${step} failed`); process.exit(1); }
+    if (item.command === "frame.create") doc.frames.push(item.params?.name ?? `Frame ${doc.frames.length + 1}`);
+    console.log(JSON.stringify({ command: item.command, ok: true, result: { id: step + 2 }, step }));
+  }
+  fs.writeFileSync(flag("--out"), JSON.stringify(doc));
+  console.log(`wrote ${flag("--out")}`);
+  process.exit(0);
+}
+if (cmd === "export") {
+  const doc = readDesign(args[1]);
+  const out = flag("-o"), format = flag("--format") ?? "png";
+  if (flag("--node") || path.extname(out)) { fs.mkdirSync(path.dirname(out), { recursive: true }); fs.writeFileSync(out, format === "png" ? PNG : `FAKE ${format}`); console.log(out); process.exit(0); }
+  fs.mkdirSync(out, { recursive: true });
+  for (const name of doc.frames) { const file = path.join(out, `${name}.${format}`); fs.writeFileSync(file, format === "png" ? PNG : `FAKE ${format} ${name}`); console.log(file); }
+  process.exit(0);
+}
+if (cmd === "render") { fs.writeFileSync(flag("-o"), PNG); console.log(`${flag("-o")} (1×1)`); process.exit(0); }
+if (cmd === "info") {
+  const doc = readDesign(args[1]);
+  console.log(JSON.stringify({ name: "fake", missingFonts: doc.missingFonts ?? [], pages: [{ id: 1, name: "Page 1", frames: doc.frames.map((name, i) => ({ id: i + 2, name, type: "FRAME", width: 100, height: 80 })) }] }));
+  process.exit(0);
+}
+console.error(`unknown ${cmd}`);
+process.exit(2);

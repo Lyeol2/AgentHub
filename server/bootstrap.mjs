@@ -44,6 +44,7 @@ import { createFlowAssistantService } from "./application/flow-assistant.mjs";
 import { createMcpHandler } from "./transport/mcp.mjs";
 import { createEventStream } from "./transport/sse.mjs";
 import { Gen3dKeys } from "./gen3d.mjs";
+import { FigcraftSettings } from "./figcraft.mjs";
 
 export function createHub(options = {}) {
   const dataDir = path.resolve(options.dataDir ?? DATA_DIR);
@@ -68,6 +69,7 @@ export function createHub(options = {}) {
   const commands = deps.commands ?? new CommandStore({ dataDir });
   const runHistory = deps.runHistory ?? new RunHistoryStore({ dataDir });
   const gen3dKeys = deps.gen3dKeys ?? new Gen3dKeys({ dataDir });
+  const figcraftSettings = deps.figcraftSettings ?? new FigcraftSettings({ dataDir });
   for (const link of links.list()) {
     if (link.pending?.flow?.id && ["interrupted", "stopped"].includes(runHistory.get(link.pending.flow.id)?.status)) links.update(link, { pending: null });
   }
@@ -119,6 +121,7 @@ export function createHub(options = {}) {
 
   const chain = deps.chain ?? new Chain({
     store, runner, links, commands, cliPaths, history: runHistory,
+    figcraft: figcraftSettings,
     gen3d: { keys: gen3dKeys, ...(deps.gen3dFetch ? { fetch: deps.gen3dFetch } : {}), ...(deps.gen3dSleep ? { sleep: deps.gen3dSleep } : {}) },
     autoTurnEnd: false,
     tasks: () => tasks,
@@ -158,6 +161,7 @@ export function createHub(options = {}) {
   const services = {
     sessions,
     gen3d: gen3dKeys,
+    figcraft: figcraftSettings,
     projects,
     workflows,
     tasks,
@@ -165,7 +169,7 @@ export function createHub(options = {}) {
     graphTabs,
     runs: createRunService({ history: runHistory, chain, projects, notify }),
     groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, graphTabs, notify }),
-    commands: createCommandService({ commands, chain, links, store, projects, cliPaths, graphTabs, nodeGroups: () => nodeGroupService, ask, notify }),
+    commands: createCommandService({ commands, chain, links, store, projects, cliPaths, graphTabs, nodeGroups: () => nodeGroupService, ask, notify, figcraft: figcraftSettings }),
     skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
     git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks, config }),
     system: createSystemService({

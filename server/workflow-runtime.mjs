@@ -5,6 +5,7 @@ import { createFileWatch } from "./file-watch.mjs";
 import { hookVariables, sendWebhook } from "./webhooks.mjs";
 import { ScheduledNodes } from "./scheduled-nodes.mjs";
 import { runGen3d, GEN3D_STEPS } from "./gen3d.mjs";
+import { runFigcraft } from "./figcraft.mjs";
 
 const GEN3D_HISTORY_MAX = 20;
 
@@ -353,6 +354,23 @@ export class WorkflowRuntime {
           throw error;
         }
       }
+      else if (kind === "figcraft") {
+        const input = options.prompt ?? "";
+        request = new AbortController();
+        c.commands.update(node, { live: { ...(node.live ?? {}), tail: node.action === "run" ? "디자인 만드는 중" : "내보내는 중" } });
+        c.notify("commands");
+        try {
+          const result = await runFigcraft(node, {
+            input, projectPath: node.projectPath, cli: c.figcraft?.cli?.() ?? null, signal: request.signal, runId: flow.id,
+            render: (template) => renderTemplate(template, { ...flow.variables, input, output: input }),
+          });
+          text = result.text;
+          gen3d = result.record;
+        } catch (error) {
+          gen3d = error.record ?? null;
+          throw error;
+        }
+      }
       else if (kind === "repeat") {
         const iteration = (flow.repeats[node.id] ?? 0) + 1;
         flow.repeats[node.id] = iteration;
@@ -371,10 +389,11 @@ export class WorkflowRuntime {
       runId: flow.id, tail: outputTail(text), outputText: text.slice(0, 200_000),
       ...(kind === "repeat" ? { iteration: Math.min(flow.repeats[node.id], node.maxIterations), exhausted } : {}),
       ...(kind === "webhook" ? { httpStatus } : {}),
-      ...(kind === "gen3d" && gen3d ? { gen3d } : {}) };
+      ...(kind === "gen3d" && gen3d ? { gen3d } : {}),
+      ...(kind === "figcraft" && gen3d ? { figcraft: gen3d } : {}) };
     c.commands.update(node, { state: stopped ? "idle" : ok ? "success" : "error", live: null, lastRun,
       // 3D 생성 노드는 실행마다 결과(단계별 파일·썸네일)를 기록에 쌓는다.
-      ...(kind === "gen3d" && gen3d ? { history: [{ ...gen3d, ok: ok && !stopped, stopped }, ...(node.history ?? [])].slice(0, GEN3D_HISTORY_MAX) } : {}) });
+      ...(["gen3d", "figcraft"].includes(kind) && gen3d ? { history: [{ ...gen3d, ok: ok && !stopped, stopped }, ...(node.history ?? [])].slice(0, GEN3D_HISTORY_MAX) } : {}) });
     c.notify("commands");
     c.controls?.finish(node, flow, { ok, output: text, stopped });
     if (stopped || flow.cancelled || c.disposed) return;

@@ -1492,3 +1492,13 @@ td .pill.subtasks-running { margin-left: 4px; }
 .gen3d-provider-actions { grid-column: 1 / -1; display: flex; gap: 6px; }
 /* 긴 경로·출력 줄이 창을 넓히지 않게 한다. */
 .dialog-form > .command-last, .dialog-form > .flow-node-settings, #gen3d-settings > *, #gen3d-history-box { min-width: 0; }
+/* FigCraft 노드 */
+.figcraft-run { grid-template-columns: minmax(0, 220px) minmax(0, 1fr); }
+.figcraft-previews { display: flex; flex-wrap: wrap; gap: 4px; align-content: flex-start; }
+.figcraft-preview { padding: 0; width: 64px; height: 64px; border: 1px solid var(--line); border-radius: 4px; background: var(--hover); overflow: hidden; cursor: zoom-in; }
+.figcraft-preview img { width: 100%; height: 100%; object-fit: contain; display: block; background: #fff; }
+.figcraft-finder { display: grid; gap: 4px; }
+.figcraft-commands { list-style: none; margin: 0; padding: 0; max-height: 180px; overflow: auto; display: grid; gap: 4px; }
+.figcraft-commands li { font-size: 12px; }
+.figcraft-params { font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+#figcraft-settings [hidden] { display: none !important; }

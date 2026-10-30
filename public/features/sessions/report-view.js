@@ -2,7 +2,7 @@ import { el } from "../../shared/dom.js";
 import { renderMarkdown } from "../../markdown.js";
 import { collectReportReferences, classifyReportTarget, trimUrl } from "../../report-references.js";
 
-const KIND = { image: "화면·이미지", video: "영상", markdown: "보고서", text: "검증 기록·텍스트", html: "화면", file: "파일", web: "실행 화면", session: "세션", task: "작업" };
+const KIND = { figcraft: "FigCraft 디자인", image: "화면·이미지", video: "영상", markdown: "보고서", text: "검증 기록·텍스트", html: "화면", file: "파일", web: "실행 화면", session: "세션", task: "작업" };
 const STATUS = { passed: "검증 통과", failed: "검증 실패", "not-run": "검증 미실행" };
 const basename = (value) => String(value ?? "").replace(/\\/g, "/").split("/").pop();
 const contentUrl = (session, path, download = false) => `/api/sessions/${encodeURIComponent(session.id)}/artifact/content?path=${encodeURIComponent(path)}${download ? "&download=1" : ""}`;
@@ -167,7 +167,7 @@ export function createReportView({ api, getSession, sessionById = () => null, se
         renderNavigation(ref, session, gallery);
         return;
       }
-      if (ref.kind === "image" && /^(https?:\/\/|\/api\/sessions\/[^/]+\/attachments\/)/.test(ref.url)) {
+      if (ref.kind === "image" && /^(https?:\/\/|\/api\/sessions\/[^/]+\/attachments\/|\/api\/commands\/[^/]+\/gen3d\/file\?)/.test(ref.url)) {
         message.textContent = "";
         renderImage(ref.url, ref.label);
         toolbar.append(el("a", { class: "ghost sm", href: ref.url, target: "_blank", rel: "noopener noreferrer" }, "원본 열기"));
@@ -199,6 +199,15 @@ export function createReportView({ api, getSession, sessionById = () => null, se
         }));
       }
       message.textContent = item.truncated ? "미리보기는 파일의 앞부분입니다. 전체 내용은 다운로드로 확인하세요." : "";
+      if (item.kind === "figcraft") {
+        // FigCraft 디자인은 AgentHub가 PNG로 그려 보여 주고, 원본은 FigCraft 앱에서 연다.
+        message.textContent = "FigCraft로 그린 미리보기입니다. 고치려면 FigCraft에서 여세요.";
+        toolbar.append(button("FigCraft에서 열기", async () => {
+          try { await api("POST", `/api/sessions/${encodeURIComponent(session.id)}/artifact/figcraft-open`, { path: item.path }); }
+          catch (error) { message.textContent = error.message; }
+        }));
+        renderImage(`/api/sessions/${encodeURIComponent(session.id)}/artifact/figcraft-preview?path=${encodeURIComponent(item.path)}`, item.name);
+      }
       if (item.kind === "image") renderImage(contentUrl(session, item.path), item.name);
       else if (item.kind === "video") renderVideo(contentUrl(session, item.path), item.name);
       if (["image", "video"].includes(item.kind)) renderNavigation(ref, session, gallery);
