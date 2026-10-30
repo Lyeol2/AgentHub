@@ -88,15 +88,14 @@ async function selectSession(id) {
   if (revision !== sessionSelectionRevision || navigation.viewRevision !== viewRevision) return;
   if (session.locked || sessionById(id)?.locked) return onSessionLocked(session);
   mergeSessionRead(session, sessionById(id));
+  // 보고 있던 세션을 다시 받는 것(실시간 연결 재접속 등)이면 화면을 바꾸지 않으므로, 열어 둔 메뉴를 닫지 않게 화면 전환을 건너뛴다.
+  const view = session.chat ? "chat" : "session";
+  const reload = data.current?.id === id && navigation.view === view;
   data.current = session;
   navigation.project = null;
-  if (data.current.chat) {
-    show("chat");
-    renderChat();
-  } else {
-    show("session");
-    renderSession();
-  }
+  if (!reload) show(view);
+  if (data.current.chat) renderChat();
+  else renderSession();
   void sessionReads.readCurrent();
 }
 
