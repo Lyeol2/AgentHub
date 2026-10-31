@@ -377,3 +377,24 @@ test("messages: 요청 시 부르기 연결은 턴이 끝나도 결과를 넘기
   await finish(a);
   assert.equal(runner.sent.length, 0);
 });
+
+test("messages: 이번 턴에 부른 세션에는 연결로 다시 넘기지 않고, 다른 연결과 다음 턴은 그대로 넘긴다", async () => {
+  const connections = [link("a", "b", { when: "call" }), link("a", "b", { id: "kw", when: "keyword", keyword: "자원 준비 완료" }), link("a", "c", { id: "log", when: "always" })];
+  const { sessions, runner, mailbox, finish } = world([session("a"), session("b", { title: "검증" }), session("c")], connections);
+  const a = sessions.get("a"), b = sessions.get("b");
+  a.events.push({ kind: "user", text: "검증 세션으로 넘겨" });
+  runner.running.add("a");
+  mailbox.call(a, "검증", "계획서 검증해 줘");
+  assert.deepEqual(runner.sent.map(([id]) => id), ["b"]);
+  a.events.push({ kind: "text", text: "넘겼습니다.\n자원 준비 완료" });
+  await finish(a);
+  assert.deepEqual(runner.sent.map(([id]) => id), ["b", "c"], "부른 세션에는 같은 턴의 연결로 다시 보내지 않는다");
+  assert.ok(a.events.some((e) => e.kind === "status" && /이미 불렀으므로/.test(e.text)));
+  // 불린 세션이 끝난 뒤, 부르지 않은 다음 턴에서는 연결이 그대로 동작한다.
+  runner.running.delete("b");
+  a.events.push({ kind: "user", text: "다시 정리해 줘" }, { kind: "text", text: "자원 준비 완료" });
+  runner.running.add("a");
+  await finish(a);
+  assert.equal(runner.sent.filter(([id]) => id === "b").length, 2);
+  assert.match(b.events.at(-1).text, /연결된 세션에서 넘어온 작업/);
+});

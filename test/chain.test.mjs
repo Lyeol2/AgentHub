@@ -276,3 +276,12 @@ test("chain: 연결이 끊긴 메시지를 버린 뒤 사용자 요청은 정상
   assert.deepEqual(runner.sent, [["b", "사용자 요청"]]);
   assert.equal(chain.pending("b"), 0);
 });
+
+test("chain: 긴 답변은 세션에 넘길 때만 앞을 줄이고, 명령 스크립트처럼 전체가 필요하면 줄이지 않는다", () => {
+  const script = `[{"command": "frame.create"}${',{"command": "node.set"}'.repeat(500)}]`;
+  const session = { events: [{ kind: "user", text: "만들어 줘" }, { kind: "text", text: `완성했습니다.\n\`\`\`json\n${script}\n\`\`\`` }] };
+  assert.match(lastAnswer(session), /^… \(앞부분 생략\)\n/);
+  assert.ok(lastAnswer(session).length < 8100);
+  assert.ok(lastAnswer(session, Infinity).startsWith("완성했습니다."));
+  assert.ok(lastAnswer(session, Infinity).includes(script));
+});
