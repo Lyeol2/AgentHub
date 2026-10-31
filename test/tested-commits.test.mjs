@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { recordPass, readStamps, testedMatch } from "../scripts/test-stamp.mjs";
+import { recordPass, readStamps, testedMatch } from "../scripts/tested-commits.mjs";
 
 test("test stamp: 깨끗할 때만 기록하고, 문서만 바뀐 커밋은 같은 코드로 본다", (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-stamp-"));

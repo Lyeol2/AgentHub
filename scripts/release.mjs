@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { releaseNotes, postDiscord, readPreparedRelease, DRAFT_FILE } from "./release-notes.mjs";
-import { testedMatch } from "./test-stamp.mjs";
+import { testedMatch } from "./tested-commits.mjs";
 
 const run = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { stdio: "inherit", shell: process.platform === "win32" && ["npm", "npx"].includes(cmd), ...opts }); // npm·npx는 .cmd라 셸이 필요하다.
