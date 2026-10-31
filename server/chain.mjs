@@ -409,7 +409,7 @@ export class Chain {
 
   // ── 명령 노드 실행 ────────────────────────────────────────────
   // 실행 중에 또 넘어온 요청은 실행별 입력을 보존해 차례로 실행한다. 실행이 끝나면 resolve되는 Promise를 돌려준다.
-  runCommand(cmd, { origin = null, depth = 0, prompt = null, values = undefined, flow = null, historyStepId = null, resume = false } = {}) {
+  runCommand(cmd, { origin = null, depth = 0, prompt = null, values = undefined, flow = null, historyStepId = null, resume = false, edit = null } = {}) {
     if (this.disposed || flow?.cancelled) return null;
     const kind = commandKind(cmd);
     if (["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in", "gen3d", "figcraft"].includes(kind)) {
@@ -417,7 +417,7 @@ export class Chain {
         if (["repeat", "transform", "webhook", "gen3d", "figcraft"].includes(kind)) return this.workflow.enqueue(cmd, { origin, depth, prompt, values, flow, historyStepId });
         return null;
       }
-      return this.workflow.run(cmd, { origin, depth, prompt, values, flow, historyStepId, resume });
+      return this.workflow.run(cmd, { origin, depth, prompt, values, flow, historyStepId, resume, edit });
     }
     flow ??= this.newFlow();
     if (++flow.steps > 1000) throw new Error("한 흐름에서 실행할 수 있는 노드 횟수를 초과했습니다.");

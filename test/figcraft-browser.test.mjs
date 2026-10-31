@@ -4,11 +4,22 @@ import fs from "node:fs/promises";
 import { copyFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHub } from "../server/bootstrap.mjs";
 
 const chrome = "C:/Program Files/Google/Chrome/Application/chrome.exe";
+
+// 가짜 AI: 작업 폴더에서 `node fc.mjs`만 써서 프레임을 더하고 렌더한다.
+let aiRuns = 0;
+async function fakeAi({ cwd, prompt }) {
+  const step = ++aiRuns;
+  const fc = (...args) => spawnSync(process.execPath, ["fc.mjs", ...args], { cwd, encoding: "utf8" });
+  await fs.writeFile(path.join(cwd, "edit.json"), JSON.stringify([{ command: "frame.create", params: { name: prompt.includes("버튼") ? "버튼 화면" : "첫 화면" } }]));
+  if (fc("run", "edit.json", "--in", "design.figcraft", "--out", "design.figcraft").status !== 0) throw new Error("run 실패");
+  if (fc("render", "design.figcraft", "-o", `renders/round-${step}.png`).status !== 0) throw new Error("render 실패");
+  return `${step}번째 작업: 프레임을 만들고 렌더해서 정렬을 확인했습니다.`;
+}
 
 async function withBrowser(temp, url, title, run) {
   const profile = path.join(temp, "profile");
@@ -71,7 +82,7 @@ test("browser: FigCraft 노드를 메뉴로 만들어 실행하고, 결과 미�
   const design = path.join(project, "login.figcraft");
   await fs.writeFile(design, JSON.stringify({ frames: ["로그인"] }));
   const hub = createHub({ port: 0, dataDir: path.join(temp, "data"), warmup: false, cliAutoUpdate: false, config: { projects: [{ name: "디자인", path: project }] },
-    deps: { cliPaths: () => ({ claude: null, codex: null }), discoverProjects: () => [], logger: { log() {} } } });
+    deps: { cliPaths: () => ({ claude: null, codex: null }), discoverProjects: () => [], logger: { log() {} }, figcraftAsk: fakeAi } });
   hub.store.add({ id: "s1", title: "화면 담당", agent: "codex", permission: "workspace-write", projectPath: project, projectName: "디자인", cwd: project, state: "idle", worktree: null, skills: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), graphPos: { x: 40, y: 40 },
     events: [{ seq: 0, kind: "user", text: "로그인 화면 만들어 줘" }, { seq: 1, kind: "text", text: "만들었습니다: [로그인 화면](login.figcraft)" }, { seq: 2, kind: "result", text: "완료" }] });
   await hub.start();
@@ -86,15 +97,15 @@ test("browser: FigCraft 노드를 메뉴로 만들어 실행하고, 결과 미�
     assert.ok(await evaluate("[...document.querySelectorAll('dialog.report-preview .report-toolbar button')].some((b) => b.textContent === 'FigCraft에서 열기')"));
     await evaluate("document.querySelector('dialog.report-preview').close()");
 
-    // 그래프 메뉴 → 디자인 → FigCraft 디자인 만들기
+    // 그래프 메뉴 → 디자인 → FigCraft 명령 실행
     await evaluate(until("[...document.querySelectorAll('#project-nav button')].some((x) => x.textContent.includes('디자인'))"));
     await evaluate("[...document.querySelectorAll('#project-nav button')].find((x) => x.textContent.includes('디자인')).click()");
     await evaluate(until("!document.querySelector('#view-project').hidden"));
     await evaluate("document.querySelector('#p-tabs [data-tab=flow]').click()");
     await evaluate(until("document.querySelector('.gcard[data-id=s1]')"));
     await evaluate("document.querySelector('#p-graph').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 800, clientY: 400 }))");
-    await evaluate(until("[...document.querySelectorAll('.context-menu .menu-item')].some((b) => b.textContent === 'FigCraft 디자인 만들기')"));
-    await evaluate("[...document.querySelectorAll('.context-menu .menu-item')].find((b) => b.textContent === 'FigCraft 디자인 만들기').click()");
+    await evaluate(until("[...document.querySelectorAll('.context-menu .menu-item')].some((b) => b.textContent === 'FigCraft 명령 실행')"));
+    await evaluate("[...document.querySelectorAll('.context-menu .menu-item')].find((b) => b.textContent === 'FigCraft 명령 실행').click()");
     await evaluate(until("document.querySelector('#command-dialog').open && !document.querySelector('#figcraft-settings').hidden"));
     assert.equal(await evaluate("document.querySelector('#figcraft-run-fields').hidden"), false);
     assert.equal(await evaluate("document.querySelector('#figcraft-export-fields').hidden"), true);
@@ -108,7 +119,7 @@ test("browser: FigCraft 노드를 메뉴로 만들어 실행하고, 결과 미�
     await evaluate("document.querySelector('#command-title').value = '앱 화면'; document.querySelector('#command-save').click()");
     await evaluate(until("!document.querySelector('#command-dialog').open && [...document.querySelectorAll('.gcmd')].some((c) => c.textContent.includes('앱 화면'))"));
     const id = await evaluate("[...document.querySelectorAll('.gcmd')].find((c) => c.textContent.includes('앱 화면')).dataset.id");
-    assert.match(await evaluate(`document.querySelector('.gcmd[data-id="${id}"]').textContent`), /FigCraft.*디자인.*디자인 만들기/);
+    assert.match(await evaluate(`document.querySelector('.gcmd[data-id="${id}"]').textContent`), /FigCraft.*디자인.*명령 실행/);
     // 실행 → 결과 기록의 프레임 미리보기 → 누르면 미리보기 창에서 넘겨 본다
     await evaluate(`document.querySelector('.gcmd[data-id="${id}"] .gcard-title').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
     await evaluate(until("document.querySelector('#command-dialog').open"));
@@ -125,6 +136,28 @@ test("browser: FigCraft 노드를 메뉴로 만들어 실행하고, 결과 미�
     await evaluate(`${viewer}.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))`);
     await evaluate(until(`${viewer}?.querySelector('.report-position')?.textContent === '2 / 2'`));
     assert.equal(await evaluate(`${viewer}.querySelector('h2').textContent`), "설정.png");
+    await evaluate(`${viewer}.close()`);
+    // AI 디자인 노드: 요청 → 실행 → AI 요약·확인한 화면 → 이어서 고치기
+    await evaluate("document.querySelector('#command-dialog').close()");
+    await evaluate("document.querySelector('#p-graph').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 800, clientY: 500 }))");
+    await evaluate(until("[...document.querySelectorAll('.context-menu .menu-item')].some((b) => b.textContent === 'FigCraft AI 배치')"));
+    await evaluate("[...document.querySelectorAll('.context-menu .menu-item')].find((b) => b.textContent === 'FigCraft AI 배치').click()");
+    await evaluate(until("document.querySelector('#command-dialog').open && !document.querySelector('#figcraft-ai-fields').hidden"));
+    assert.equal(await evaluate("document.querySelector('#figcraft-run-fields').hidden"), true);
+    assert.equal(await evaluate("document.querySelector('#figcraft-timeout').value"), "900");
+    await evaluate("document.querySelector('#figcraft-prompt').value = '대시보드 카드'; document.querySelector('#command-title').value = 'AI 카드'; document.querySelector('#command-save').click()");
+    await evaluate(until("!document.querySelector('#command-dialog').open && [...document.querySelectorAll('.gcmd')].some((c) => c.textContent.includes('AI 카드'))"));
+    const ai = await evaluate("[...document.querySelectorAll('.gcmd')].find((c) => c.textContent.includes('AI 카드')).dataset.id");
+    assert.match(await evaluate(`document.querySelector('.gcmd[data-id="${ai}"]').textContent`), /AI 배치 · 대시보드 카드/);
+    await evaluate(`document.querySelector('.gcmd[data-id="${ai}"] .gcard-title').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
+    await evaluate(until("document.querySelector('#command-dialog').open"));
+    await evaluate("document.querySelector('#command-run').click()");
+    await evaluate(until("document.querySelector('#figcraft-history .figcraft-summary')?.textContent.includes('1번째 작업')"));
+    assert.match(await evaluate("document.querySelector('#figcraft-history .figcraft-run').textContent"), /계획서·지시: 대시보드 카드.*AI가 확인한 화면 1번/);
+    await evaluate(until("document.querySelector('#figcraft-history .figcraft-render img')?.naturalWidth === 1"));
+    await evaluate("(() => { const box = document.querySelector('#figcraft-history .figcraft-edit'); box.querySelector('input').value = '버튼 추가'; [...box.querySelectorAll('button')].find((b) => b.textContent === '이어서 고치기').click(); })()");
+    await evaluate(until("document.querySelectorAll('#figcraft-history .figcraft-run').length === 2 && document.querySelector('#figcraft-history .figcraft-summary')?.textContent.includes('2번째 작업')"));
+    assert.match(await evaluate("document.querySelector('#figcraft-history .figcraft-run').textContent"), /프레임 2개.*계획서·지시: 버튼 추가/);
     assert.deepEqual(errors, []);
   });
 });

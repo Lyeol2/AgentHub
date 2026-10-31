@@ -70,6 +70,8 @@ export function createHub(options = {}) {
   const runHistory = deps.runHistory ?? new RunHistoryStore({ dataDir });
   const gen3dKeys = deps.gen3dKeys ?? new Gen3dKeys({ dataDir });
   const figcraftSettings = deps.figcraftSettings ?? new FigcraftSettings({ dataDir });
+  // 시험에서는 FigCraft AI 디자인의 AI 실행을 바꿔 끼운다.
+  if (deps.figcraftAsk) figcraftSettings.ask = deps.figcraftAsk;
   for (const link of links.list()) {
     if (link.pending?.flow?.id && ["interrupted", "stopped"].includes(runHistory.get(link.pending.flow.id)?.status)) links.update(link, { pending: null });
   }

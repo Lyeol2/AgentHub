@@ -727,9 +727,16 @@
         </div>
       </section>
       <section id="figcraft-settings" class="flow-node-settings" hidden>
-        <div class="two"><label>하는 일 <select id="figcraft-action"><option value="run">디자인 만들기 (명령 스크립트 실행)</option><option value="export">내보내기</option></select></label>
+        <div class="two"><label>하는 일 <select id="figcraft-action"><option value="ai">AI 배치 (계획서·이미지를 받아 CLI로 배치)</option><option value="run">명령 실행 (스크립트 그대로)</option><option value="export">내보내기</option></select></label>
           <label>최대 실행 시간(초) <input id="figcraft-timeout" type="number" min="10" max="1800"></label></div>
         <p class="hint" id="figcraft-cli-state"></p>
+        <div id="figcraft-ai-fields">
+          <label>계획서 · 추가 지시 <textarea id="figcraft-prompt" rows="4" placeholder="앞에 계획서를 쓰는 세션을 연결하면 비워 둡니다. 여기 적은 글은 추가 지시가 됩니다. 연결 없이 실행하면 이 칸을 계획서로 씁니다."></textarea></label>
+          <p class="hint">AI는 배치만 합니다. 계획서의 화면·문구·색과 넘겨받은 이미지만 써서 figcraft-cli로 배치하고, 렌더한 PNG를 직접 보며 겹침·잘림·정렬을 고칩니다. 문구를 새로 쓰거나 이미지를 만들지 않습니다. 이미지는 계획서 안의 <code>```agenthub-images</code> 블록(<code>[{"role": "logo", "source": "assets/logo.png"}]</code>)이나 글에 적힌 이미지 경로로 받습니다. MCP는 쓰지 않습니다.</p>
+          <div class="two"><label>맡길 AI <select id="figcraft-agent"><option value="">설치된 AI (Claude 우선)</option><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
+            <label>화면 확인 최대 횟수 <input id="figcraft-rounds" type="number" min="1" max="20"></label></div>
+          <label>모델 (선택) <input id="figcraft-model" placeholder="비우면 CLI 기본 모델"></label>
+        </div>
         <div id="figcraft-run-fields">
           <label>명령 스크립트 <textarea id="figcraft-script" rows="6" class="mono" spellcheck="false" placeholder='[{"command": "frame.create", "params": {"name": "로그인", "width": 360, "height": 640}}]'></textarea></label>
           <p class="hint">{{input}}이면 앞 노드가 넘긴 글에서 JSON 배열(또는 ```json 블록)을 찾아 실행합니다. AI 세션에 "FigCraft 명령 JSON으로 써 줘"라고 시키고 연결하면 됩니다.</p>

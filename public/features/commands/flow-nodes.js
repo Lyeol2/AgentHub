@@ -19,7 +19,7 @@ export const isScheduleArmed = (node) => node?.kind === "schedule" && (node.sche
 // 받는 주소. 앱이 열린 주소를 기준으로 만든다.
 export const hookUrl = (node) => node?.hookToken ? `${location.origin}/hooks/${node.hookToken}` : "";
 export const KIND_HINT = {
-  figcraft: "FigCraft를 창 없이 실행합니다. 디자인 만들기는 FigCraft 명령 스크립트(JSON)를 실행해 .figcraft 파일을 만들고, 내보내기는 디자인 파일을 PNG·SVG·PDF 등으로 내보냅니다. 맨 위 프레임마다 PNG 미리보기를 만들어 결과 기록과 노드 카드에 보이며, 원본은 FigCraft에서 열어 고칩니다. 다음 노드에는 파일 경로와 프레임 목록을 넘깁니다.",
+  figcraft: "FigCraft를 창 없이(figcraft-cli) 실행합니다. AI 배치는 앞 노드(계획서를 쓰는 세션)의 계획서와 이미지를 받아, AI가 figcraft-cli로 배치만 하고 렌더한 화면을 직접 보며 다듬습니다. 결과 기록에서 이어서 고칠 수 있습니다. 명령 실행은 FigCraft 명령 스크립트(JSON)를 그대로 실행해 .figcraft 파일을 만들고, 내보내기는 디자인 파일을 PNG·SVG·PDF 등으로 내보냅니다. 맨 위 프레임마다 PNG 미리보기를 만들어 결과 기록과 노드 카드에 보이며, 원본은 FigCraft에서 열어 고칩니다. 다음 노드에는 파일 경로와 프레임 목록을 넘깁니다.",
   gen3d: "Meshy·Tripo로 3D 모델을 만듭니다. 단계를 하나만 고르면 단계 노드, 여러 개를 고르면 차례로 이어 실행하는 통합 노드입니다. 결과 파일은 출력 폴더에 받고, 다음 노드에는 3D 모델 정보(파일 경로·작업 ID)를 넘깁니다. 같은 도구의 다음 단계 노드는 파일을 다시 올리지 않고 작업 ID로 이어 갑니다. 단계를 실행할 때마다 서비스 크레딧이 듭니다. 실행 전에 확인하려면 들어오는 연결에 \"넘기기 전에 승인 받기\"를 켜세요.",
   webhook: "앞 노드의 결과를 지정한 주소로 보냅니다(Slack·Discord·사내 API 등). 본문과 머리글에 {{input}}와 입력값 {{key}}를 쓸 수 있고, JSON 본문에서는 값이 자동으로 이스케이프됩니다. 2xx 응답이면 성공이며 응답 본문을 다음 노드에 넘깁니다.",
   "webhook-in": "받는 주소로 POST 요청이 오면 흐름을 시작합니다. 주소의 긴 값이 비밀번호 역할을 하니 공유하지 마세요. AgentHub는 이 PC(127.0.0.1)에서만 열려 있으므로 GitHub 같은 외부 서비스는 ngrok 같은 터널 주소의 /hooks/... 경로로 보내야 합니다. 카드의 시험 실행은 빈 요청으로 흐름을 시험합니다.",
@@ -35,7 +35,7 @@ export const KIND_HINT = {
 export function createFlowNodeForms({ api = null, onRun = null, onChanged = null, openImage = null } = {}) {
   let resolveRun = null;
   const gen3d = api ? createGen3dForm({ api, onRun, onChanged }) : null;
-  const figcraft = api ? createFigcraftForm({ api, onChanged, openImage }) : null;
+  const figcraft = api ? createFigcraftForm({ api, onChanged, openImage, onRun }) : null;
   let scheduleActive = false;
   const localDateTime = (value) => {
     const date = new Date(value);

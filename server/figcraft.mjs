@@ -92,20 +92,26 @@ export function runFigcraftCli(cli, args, { signal, timeoutMs = 300_000, cwd, sp
 // ── 노드 설정 ─────────────────────────────────────────────────
 export function checkFigcraftNode(body, current = {}) {
   const action = body.action ?? current.action ?? "run";
-  if (!["run", "export"].includes(action)) fail("FigCraft 노드는 실행 또는 내보내기입니다.");
+  if (!["ai", "run", "export"].includes(action)) fail("FigCraft 노드는 AI 디자인·명령 실행·내보내기 중 하나입니다.");
   const format = body.format ?? current.format ?? "png";
   if (!FIGCRAFT_FORMATS.includes(format)) fail("내보낼 형식은 PNG·JPG·WebP·SVG·PDF 중 하나입니다.");
   const scale = Number(body.scale ?? current.scale ?? 1);
   if (!Number.isFinite(scale) || scale < 0.1 || scale > 8) fail("배율은 0.1~8 사이로 입력하세요.");
-  const timeoutSec = Number(body.timeoutSec ?? current.timeoutSec ?? 300);
-  if (!Number.isInteger(timeoutSec) || timeoutSec < 10 || timeoutSec > 1800) fail("최대 실행 시간은 10~1800초 사이 정수로 입력하세요.");
+  const timeoutSec = Number(body.timeoutSec ?? current.timeoutSec ?? (action === "ai" ? 900 : 300));
+  if (!Number.isInteger(timeoutSec) || timeoutSec < 10 || timeoutSec > 3600) fail("최대 실행 시간은 10~3600초 사이 정수로 입력하세요.");
+  const agent = body.agent ?? current.agent ?? "";
+  if (!["", "claude", "codex"].includes(agent)) fail("AI는 Claude 또는 Codex입니다.");
+  const maxRounds = Number(body.maxRounds ?? current.maxRounds ?? 5);
+  if (!Number.isInteger(maxRounds) || maxRounds < 1 || maxRounds > 20) fail("화면 확인 횟수는 1~20 사이 정수로 입력하세요.");
   const outputDir = str(body.outputDir ?? current.outputDir ?? "output/figcraft", "출력 폴더", 300).trim().replaceAll("\\", "/") || "output/figcraft";
   if (path.posix.isAbsolute(outputDir) || path.win32.isAbsolute(outputDir) || outputDir.split("/").includes("..")) fail("출력 폴더는 프로젝트 안의 상대 경로로 입력하세요.");
   const builtinFonts = body.builtinFonts ?? current.builtinFonts ?? false;
   if (typeof builtinFonts !== "boolean") fail("내장 글꼴 설정이 올바르지 않습니다.");
   const title = str(body.title ?? current.title, "이름", 100).trim();
   return {
-    kind: "figcraft", title: title || (action === "run" ? "FigCraft 실행" : "FigCraft 내보내기"), action,
+    kind: "figcraft", title: title || { ai: "FigCraft AI 배치", run: "FigCraft 명령 실행", export: "FigCraft 내보내기" }[action], action,
+    // AI 디자인: 요청 글, 맡길 AI, 모델, 화면 확인(렌더) 최대 횟수
+    prompt: str(body.prompt ?? current.prompt ?? "{{input}}", "요청", 20_000), agent, model: str(body.model ?? current.model ?? "", "모델", 200).trim(), maxRounds,
     script: str(body.script ?? current.script ?? "{{input}}", "명령 스크립트", 200_000),
     inputFile: str(body.inputFile ?? current.inputFile ?? (action === "export" ? "{{input}}" : ""), "디자인 파일", 2000).trim(),
     format, scale, page: str(body.page ?? current.page ?? "", "페이지", 200).trim(), target: str(body.target ?? current.target ?? "", "레이어", 200).trim(),
@@ -145,7 +151,226 @@ export function parseResult(text) {
 
 export function resultText(result) {
   const main = result.file ?? result.exports?.[0] ?? "";
-  return `FigCraft · ${result.action === "run" ? "디자인 만들기" : "내보내기"}${main ? `\n${main}` : ""}\n\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
+  const title = { ai: "AI 배치", run: "명령 실행", export: "내보내기" }[result.action] ?? result.action;
+  return `FigCraft · ${title}${main ? `\n${main}` : ""}${result.summary ? `\n\n${result.summary}` : ""}\n\n\`\`\`json\n${JSON.stringify(result, null, 2)}\n\`\`\``;
+}
+
+// ── AI 디자인 ─────────────────────────────────────────────────
+// AI(Claude·Codex)가 figcraft-cli로 구조를 보고 → 고치고 → 렌더한 PNG를 직접 보며 다듬는다. MCP 없이 CLI만 쓴다.
+// AI는 실행 폴더에서 `node fc.mjs …`로만 FigCraft를 부른다. fc.mjs가 읽기·쓰기 폴더 제한과 화면 확인 횟수를 강제한다.
+export const FIGCRAFT_SHIM = "fc.mjs";
+const SHIM_COMMANDS = ["info", "export", "convert", "render", "run", "commands", "--version", "help", "--help"];
+
+function writeShim(runDir, { cli, readRoots, maxRounds, builtinFonts }) {
+  const config = { cli, readRoots, writeRoot: runDir, maxRounds, builtinFonts, allowed: SHIM_COMMANDS };
+  fs.writeFileSync(path.join(runDir, FIGCRAFT_SHIM), `// AgentHub가 만든 FigCraft 작업 명령. figcraft-cli를 감싸 이 폴더 밖 쓰기와 화면 확인 횟수를 막는다.
+import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
+const config = ${JSON.stringify(config)};
+const args = process.argv.slice(2);
+const [command] = args;
+if (!config.allowed.includes(command)) {
+  console.error("이 작업에서는 " + config.allowed.filter((name) => !name.startsWith("-")).join(", ") + " 명령만 쓸 수 있다.");
+  process.exit(2);
+}
+if (command === "render") {
+  const counter = path.join(config.writeRoot, ".renders");
+  const count = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, "utf8")) : 0) + 1;
+  if (count > config.maxRounds) {
+    console.error("화면 확인은 최대 " + config.maxRounds + "번이다. 더 렌더하지 말고 지금 결과로 마무리하라.");
+    process.exit(3);
+  }
+  fs.writeFileSync(counter, String(count));
+  const out = args[args.indexOf("-o") + 1];
+  if (out) fs.mkdirSync(path.dirname(path.resolve(out)), { recursive: true });
+}
+const confined = ["info", "export", "convert", "render", "run"].includes(command);
+const extra = confined ? [...config.readRoots.flatMap((dir) => ["--automation-read-root", dir]), "--automation-write-root", config.writeRoot, ...(config.builtinFonts ? ["--no-system-fonts"] : [])] : [];
+const [file, prefix] = /\.(?:c|m)?js$/i.test(config.cli) ? [process.execPath, [config.cli]] : [config.cli, []];
+const result = spawnSync(file, [...prefix, ...args, ...extra], { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`);
+}
+
+// ── 계획서·리소스 ──────────────────────────────────────────────
+// 앞 노드(보통 계획서를 쓴 세션)의 글에서 계획서와 쓸 이미지를 꺼낸다.
+// 이미지는 ```agenthub-images 블록([{ "role": "logo", "source": "assets/logo.png" }, …])으로 받고,
+// 블록이 없으면 글에 적힌 이미지 파일 경로(존재하는 파일)를 파일 이름을 용도로 삼아 받는다.
+const RESOURCE_EXT = new Set([".png", ".jpg", ".jpeg", ".webp", ".svg"]);
+const IMAGE_BLOCK = /```agenthub-images\s*\n([\s\S]*?)```/g;
+
+export function parsePlan(text, projectPath) {
+  const source = String(text ?? "");
+  const images = [];
+  let blocks = 0;
+  for (const match of source.matchAll(IMAGE_BLOCK)) {
+    blocks++;
+    let list;
+    try { list = JSON.parse(match[1]); } catch (error) { fail(`agenthub-images 블록이 JSON 형식이 아닙니다: ${error.message}`); }
+    if (!Array.isArray(list)) fail("agenthub-images 블록은 [{ \"role\": …, \"source\": … }] 배열이어야 합니다.");
+    for (const item of list) {
+      const file = item?.source ?? item?.path ?? item?.file;
+      if (typeof file !== "string" || !file.trim()) fail(`이미지 "${item?.role ?? "?"}"의 source(파일 경로)가 없습니다. 이미지는 세션이 먼저 준비해 파일로 넘겨야 합니다.`);
+      images.push({ role: item.role, source: file.trim(), note: typeof item.note === "string" ? item.note.slice(0, 300) : (typeof item.prompt === "string" ? item.prompt.slice(0, 300) : "") });
+    }
+  }
+  if (!blocks) {
+    // 경로만 적은 경우: 따옴표·괄호·꺾쇠로 감싼 경로나 공백 없는 경로 중 실제로 있는 이미지 파일
+    const seen = new Set();
+    for (const match of source.matchAll(/(?:<|\(|"|'|`)?((?:[A-Za-z]:[\\/]|\.{0,2}[\\/]?)?[^\s<>()"'`|*?]+\.(?:png|jpe?g|webp|svg))(?=$|[\s>)"'`,.;])/gi)) {
+      const file = path.resolve(projectPath, match[1]);
+      if (seen.has(file.toLowerCase()) || !fs.existsSync(file)) continue;
+      seen.add(file.toLowerCase());
+      images.push({ role: path.basename(file, path.extname(file)), source: match[1], note: "" });
+    }
+  }
+  return { plan: source.replace(IMAGE_BLOCK, "").trim(), images, declared: blocks > 0 };
+}
+
+const safeRole = (value, index) => String(value ?? "").trim().toLowerCase().replace(/[^a-z0-9가-힣_-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || `image-${index + 1}`;
+
+// 이미지 크기: PNG·JPEG·WebP 머리, SVG의 width·height·viewBox. 모르면 null
+export function imageSize(file) {
+  try {
+    const bytes = fs.readFileSync(file);
+    const ext = path.extname(file).toLowerCase();
+    if (ext === ".png" && bytes.toString("latin1", 12, 16) === "IHDR") return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20), alpha: [4, 6].includes(bytes[25]) };
+    if ((ext === ".jpg" || ext === ".jpeg") && bytes[0] === 0xff && bytes[1] === 0xd8) {
+      for (let i = 2; i + 9 < bytes.length;) {
+        if (bytes[i] !== 0xff) { i++; continue; }
+        const marker = bytes[i + 1];
+        if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return { width: bytes.readUInt16BE(i + 7), height: bytes.readUInt16BE(i + 5), alpha: false };
+        i += 2 + bytes.readUInt16BE(i + 2);
+      }
+    }
+    if (ext === ".webp" && bytes.toString("latin1", 0, 4) === "RIFF") {
+      const kind = bytes.toString("latin1", 12, 16);
+      if (kind === "VP8X") return { width: 1 + bytes.readUIntLE(24, 3), height: 1 + bytes.readUIntLE(27, 3), alpha: !!(bytes[20] & 0x10) };
+      if (kind === "VP8L") { const b = bytes.readUInt32LE(21); return { width: (b & 0x3fff) + 1, height: ((b >> 14) & 0x3fff) + 1, alpha: !!((b >> 28) & 1) }; }
+      if (kind === "VP8 ") return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff, alpha: false };
+    }
+    if (ext === ".svg") {
+      const text = bytes.toString("utf8", 0, 4000);
+      const width = parseFloat(text.match(/\bwidth="([\d.]+)/)?.[1]), height = parseFloat(text.match(/\bheight="([\d.]+)/)?.[1]);
+      if (width && height) return { width, height, alpha: true };
+      const box = text.match(/viewBox="[\d.\s-]*?([\d.]+)\s+([\d.]+)"/);
+      if (box) return { width: parseFloat(box[1]), height: parseFloat(box[2]), alpha: true };
+    }
+  } catch { /* 크기를 모르면 null */ }
+  return null;
+}
+
+// 받은 이미지를 실행 폴더의 resources/<용도>.<확장자>로 모으고 manifest.json·plan.md를 남긴다. 없는 파일이 있으면 실패한다.
+export function packResources({ plan, images }, { projectPath, runDir }) {
+  const dir = path.join(runDir, "resources");
+  fs.mkdirSync(dir, { recursive: true });
+  const used = new Set(), missing = [], resources = [];
+  images.forEach((image, index) => {
+    const file = path.resolve(projectPath, image.source);
+    const ext = path.extname(file).toLowerCase();
+    if (!fs.existsSync(file) || !fs.statSync(file).isFile()) { missing.push(image.source); return; }
+    if (!RESOURCE_EXT.has(ext)) fail(`배치할 수 없는 이미지 형식입니다(PNG·JPG·WebP·SVG): ${image.source}`);
+    let role = safeRole(image.role, index);
+    if (used.has(role)) fail(`이미지 용도 이름 "${role}"가 두 번 쓰였습니다. 용도마다 다른 이름을 쓰세요.`);
+    used.add(role);
+    const name = `${role}${ext}`;
+    fs.copyFileSync(file, path.join(dir, name));
+    resources.push({ role, file: `resources/${name}`, source: file, ...(imageSize(file) ?? {}), ...(image.note ? { note: image.note } : {}) });
+  });
+  if (missing.length) fail(`계획서의 이미지 파일을 찾을 수 없습니다: ${missing.join(", ")}. 세션이 이미지를 먼저 준비했는지 확인하세요.`);
+  fs.writeFileSync(path.join(runDir, "plan.md"), plan);
+  fs.writeFileSync(path.join(runDir, "manifest.json"), JSON.stringify({ plan: "plan.md", resources }, null, 2));
+  // 계획서가 [용도]로 가리키는데 받지 못한 이미지는 경고로 남긴다(마크다운 링크 [글](주소)는 뺀다).
+  const referenced = [...plan.matchAll(/\[([A-Za-z0-9가-힣_-]{2,60})\](?!\()/g)].map((match) => match[1].toLowerCase());
+  const warnings = [...new Set(referenced.filter((role) => !used.has(role) && resources.length))].map((role) => `계획서가 가리키는 이미지 [${role}]를 받지 못했습니다.`);
+  return { resources, warnings };
+}
+
+export function aiPrompt({ plan, extra, resources, rounds, fresh, base }) {
+  const list = resources.length
+    ? resources.map((item) => `- ${item.role}: ${item.file}${item.width ? ` (${Math.round(item.width)}×${Math.round(item.height)}${item.alpha ? ", 투명 배경" : ""})` : ""}${item.note ? ` · ${item.note}` : ""}`).join("\n")
+    : "- (없음: 글자·도형만으로 배치한다)";
+  return `[FigCraft 배치 작업]
+너는 배치만 한다. 아래 계획서와 리소스로 화면을 구성한다. 문구를 새로 쓰거나 바꾸지 않고, 이미지를 새로 만들거나 고르지 않는다.
+
+[계획서]
+${plan}
+${extra ? `\n[추가 지시]\n${extra}\n` : ""}
+[리소스] (현재 폴더 기준, 이 파일만 쓴다)
+${list}
+
+현재 폴더가 작업 폴더다. 디자인 파일은 design.figcraft 하나다${fresh ? "(빈 문서로 시작한다)" : base ? `(${base}를 복사한 파일이다. 이 파일을 고친다)` : ""}.
+FigCraft는 반드시 \`node ${FIGCRAFT_SHIM} …\`로만 실행한다. figcraft-cli를 감싼 명령이며 이 폴더 밖은 읽지도 쓰지도 못한다. MCP나 다른 프로그램은 쓰지 않는다.
+
+배치 규칙:
+- 계획서의 화면마다 그 크기의 프레임(frame.create)을 만들고 이름을 계획서의 화면 이름으로 한다.
+- 글자는 계획서에 적힌 문구만 그대로 쓴다. 색·글꼴·여백·크기는 계획서 값을 따른다(없으면 깔끔한 기본값).
+- 이미지는 image.place {"path": "resources/<파일>", x, y, width, height, parent, mode}로 넣는다. SVG는 file.import {"path": "resources/<파일>"}로 넣어 프레임 안으로 옮긴다.
+- 리소스의 비율을 유지한다(늘리거나 찌그러뜨리지 않는다). 투명 배경 이미지는 배경 위에 겹쳐 놓는다.
+
+명령:
+- 명령 찾기: node ${FIGCRAFT_SHIM} commands --filter <말>   (명령 id와 params 형식이 나온다. 예: frame, text, image, fill, autolayout)
+- 구조 보기(파일은 바뀌지 않는다): [{"command": "page.list", "params": {}}, {"command": "node.get", "params": {"id": 2}}]를 query.json에 쓰고
+  node ${FIGCRAFT_SHIM} run query.json --in design.figcraft      (node.get은 자식 레이어·위치·크기·글자를 모두 돌려준다)
+- 맨 위 프레임 목록: node ${FIGCRAFT_SHIM} info design.figcraft --json
+- 고치기: [{"command": "...", "params": {...}}, …]를 edit-1.json, edit-2.json …에 쓰고
+  node ${FIGCRAFT_SHIM} run edit-1.json --in design.figcraft --out design.figcraft
+  (한 명령이라도 실패하면 그 스크립트의 변경은 모두 되돌려진다. 결과 줄의 error를 읽고 고쳐 다시 실행한다)
+- 눈으로 확인: node ${FIGCRAFT_SHIM} render design.figcraft -o renders/round-1.png 를 실행한 뒤 그 PNG 파일을 열어 직접 본다. 최대 ${rounds}번.
+
+작업 순서: 계획서를 읽고 → 프레임·글자·이미지를 배치하고 → 렌더해서 보고 → 겹침·잘림·정렬·간격·글자 넘침과 계획서의 "지킬 것"을 확인해 고치고 → 다시 본다.
+만족하거나 확인 횟수를 다 쓰면 멈춘다. design.figcraft 말고 다른 디자인 파일을 만들지 않는다.
+마지막 답에는 어떤 화면에 무엇을 배치했는지, 렌더해서 무엇을 확인하고 고쳤는지, 계획서대로 못 한 것이 있으면 그 이유를 3~6줄로 요약한다.`;
+}
+
+async function runAiDesign(node, { render, input, upstream, edit, pickFile, projectPath, runDir, cli, ask, signal, timeoutMs, record }) {
+  if (!ask) fail("AI 실행기를 준비하지 못했습니다.");
+  // 계획서: 앞 노드의 글(보통 계획서를 쓴 세션) → 없으면 노드의 계획서 칸. 이어서 고치기는 앞 실행의 계획서·리소스를 그대로 쓴다.
+  const field = render(node.prompt || "").trim();
+  const fromInput = String(input ?? "").trim() && !upstream;
+  let parsed, extra = "";
+  if (edit) {
+    const previous = path.dirname(edit.file);
+    const plan = fs.existsSync(path.join(previous, "plan.md")) ? fs.readFileSync(path.join(previous, "plan.md"), "utf8") : "";
+    const manifest = (() => { try { return JSON.parse(fs.readFileSync(path.join(previous, "manifest.json"), "utf8")); } catch { return { resources: [] }; } })();
+    parsed = { plan, images: (manifest.resources ?? []).map((item) => ({ role: item.role, source: path.join(previous, item.file), note: item.note ?? "" })) };
+    extra = edit.request;
+  } else {
+    parsed = parsePlan(fromInput ? input : field, projectPath);
+    // 계획서를 앞 노드에서 받았으면 노드 칸은 추가 지시로 쓴다({{input}}만 적힌 칸은 비어 있는 것으로 본다).
+    if (fromInput && node.prompt && node.prompt.trim() !== "{{input}}") extra = field;
+  }
+  if (!parsed.plan.trim()) fail("배치할 계획서가 없습니다. 계획서를 쓰는 세션을 앞에 연결하거나 노드의 계획서 칸에 적으세요.");
+  // 시작 파일: 이어서 고치기 → 노드에 정한 파일 → 앞 노드의 FigCraft 결과 → 빈 문서
+  const base = edit?.file ?? pickFile();
+  const design = path.join(runDir, "design.figcraft");
+  if (base && path.extname(base).toLowerCase() === ".figcraft") fs.copyFileSync(base, design);
+  else {
+    const empty = path.join(runDir, "empty.json");
+    fs.writeFileSync(empty, "[]");
+    const start = await runFigcraftCli(cli, ["run", empty, ...(base ? ["--in", base] : []), "--out", design, "--automation-read-root", projectPath,
+      ...(base ? ["--automation-read-root", path.dirname(base)] : []), "--automation-write-root", runDir], { signal, timeoutMs: 120_000, cwd: runDir });
+    fs.rmSync(empty, { force: true });
+    if (start.code !== 0 || !fs.existsSync(design)) fail(`디자인 파일을 준비하지 못했습니다: ${start.stderr.trim().split(/\r?\n/).slice(-1)[0] ?? ""}`);
+  }
+  const { resources, warnings } = packResources(parsed, { projectPath, runDir });
+  // 리소스를 실행 폴더로 모았으므로 FigCraft는 실행 폴더만 읽고 쓴다.
+  writeShim(runDir, { cli, readRoots: [runDir], maxRounds: node.maxRounds ?? 5, builtinFonts: !!node.builtinFonts });
+  fs.mkdirSync(path.join(runDir, "renders"), { recursive: true });
+  record.request = (extra || parsed.plan).slice(0, 2000);
+  record.plan = path.join(runDir, "plan.md");
+  record.resources = resources.map(({ role, file, width, height, alpha }) => ({ role, file: path.join(runDir, file), width, height, alpha }));
+  record.warnings = warnings;
+  record.base = base ?? null;
+  const summary = await ask({ prompt: aiPrompt({ plan: parsed.plan, extra, resources, rounds: node.maxRounds ?? 5, fresh: !base, base: base && path.basename(base) }), cwd: runDir,
+    agent: node.agent || undefined, model: node.model || undefined, timeoutMs, signal, label: "FigCraft AI 배치", work: { commands: [`node ${FIGCRAFT_SHIM}`] } });
+  record.summary = String(summary ?? "").trim().slice(0, 4000);
+  record.renders = filesIn(path.join(runDir, "renders")).filter((file) => PREVIEW_EXT.has(path.extname(file).toLowerCase())).sort();
+  record.rounds = Number(fs.existsSync(path.join(runDir, ".renders")) ? fs.readFileSync(path.join(runDir, ".renders"), "utf8") : 0) || 0;
+  record.agent = node.agent || null;
+  if (!fs.existsSync(design)) fail("AI가 디자인 파일을 지웠습니다.");
+  return design;
 }
 
 // CLI가 쓴 파일 목록(한 줄에 하나, 실행 폴더 기준 또는 절대 경로)
@@ -154,7 +379,8 @@ const listed = (stdout, dir) => stdout.split(/\r?\n/).map((line) => line.trim())
 const filesIn = (dir) => fs.existsSync(dir) ? fs.readdirSync(dir).map((name) => path.join(dir, name)).filter((file) => fs.statSync(file).isFile()) : [];
 
 // ── 실행 ──────────────────────────────────────────────────────
-export async function runFigcraft(node, { input = "", render = (template) => template, projectPath, cli, signal, now = Date.now, runId = String(now()) }) {
+// ask: AI 작업 모드 실행(one-shot의 askOnce). edit: { file, request } 결과 기록에서 "이어서 고치기"
+export async function runFigcraft(node, { input = "", render = (template) => template, projectPath, cli, signal, now = Date.now, runId = String(now()), ask = null, edit = null }) {
   if (!cli) missing();
   const outputRoot = path.resolve(projectPath, node.outputDir || "output/figcraft");
   if (path.relative(projectPath, outputRoot).startsWith("..")) fail("출력 폴더는 프로젝트 안이어야 합니다.");
@@ -183,7 +409,10 @@ export async function runFigcraft(node, { input = "", render = (template) => tem
   };
   try {
     let design;
-    if (node.action === "run") {
+    if (node.action === "ai") {
+      design = await runAiDesign(node, { render, input, upstream, edit, pickFile, projectPath, runDir, cli, ask, signal, timeoutMs, record });
+      record.file = design;
+    } else if (node.action === "run") {
       const steps = parseScript(render(node.script || "{{input}}"));
       const base = pickFile();
       const script = path.join(runDir, "script.json");
@@ -233,7 +462,8 @@ export async function runFigcraft(node, { input = "", render = (template) => tem
       record.missingFonts = value.missingFonts ?? [];
     } catch { /* 정보가 없어도 결과는 쓴다. */ }
     record.ok = true;
-    const result = { [TAG]: 1, action: node.action, file: record.file, previews: record.previews, exports: record.exports, frames: record.frames, missingFonts: record.missingFonts };
+    const result = { [TAG]: 1, action: node.action, file: record.file, previews: record.previews, exports: record.exports, frames: record.frames, missingFonts: record.missingFonts,
+      ...(record.summary ? { summary: record.summary } : {}) };
     return { ok: true, text: resultText(result), record };
   } catch (error) {
     record.error = error.message;

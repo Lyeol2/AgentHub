@@ -91,7 +91,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
       const targetId = graphTabs.resolve(command.projectPath, body.tabId);
       if (targetId !== graphTabs.tabFor(command)) throw new HttpError(400, "노드는 탭 이동 메뉴로 옮기세요.");
     }
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification", "finishMode", "pushTarget", "provider", "steps", "preset", "inputMode", "imagePath", "options", "outputDir", "pollSec", "timeoutMin", "action", "script", "inputFile", "format", "scale", "page", "target", "builtinFonts"].some((key) => body[key] !== undefined);
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification", "finishMode", "pushTarget", "provider", "steps", "preset", "inputMode", "imagePath", "options", "outputDir", "pollSec", "timeoutMin", "action", "script", "inputFile", "format", "scale", "page", "target", "builtinFonts", "agent", "model", "maxRounds"].some((key) => body[key] !== undefined);
     if (editing && ["git", "task", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "gen3d", "figcraft", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching", "scheduled"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
     try {
@@ -138,7 +138,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
       catch (error) { throw new HttpError(400, error.message); }
     }
     const origin = links.list().filter((link) => link.to === id).map((link) => store.get(link.from)).find(Boolean) ?? null;
-    const pending = chain.runCommand(command, { origin, depth: 0, values: body.values, resume: body.resume === true });
+    const pending = chain.runCommand(command, { origin, depth: 0, values: body.values, resume: body.resume === true, edit: figcraftEdit(command, body.edit) });
     if (["button", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in"].includes(commandKind(command))) {
       try { await pending; }
       catch (error) { throw new HttpError(400, error.message); }
@@ -188,6 +188,17 @@ export function createCommandService({ commands, chain, links, store, projects, 
     const command = getCommand(id);
     if (commandKind(command) !== "gen3d") throw new HttpError(400, "3D 생성 노드가 아닙니다.");
     return command;
+  }
+
+  // FigCraft AI 디자인의 "이어서 고치기": 기록의 한 실행 결과 파일에 새 요청을 적용한다.
+  function figcraftEdit(command, edit) {
+    if (edit === undefined || edit === null) return null;
+    if (commandKind(command) !== "figcraft" || command.action !== "ai") throw new HttpError(400, "이어서 고치기는 FigCraft AI 디자인 노드에서만 쓸 수 있습니다.");
+    const request = String(edit.request ?? "").trim();
+    if (!request || request.length > 20_000) throw new HttpError(400, "고칠 내용을 적으세요.");
+    const run = (command.history ?? []).find((item) => item.runId === edit.runId);
+    if (!run?.ok || !run.file) throw new HttpError(404, "이어서 고칠 결과가 없습니다. 성공한 실행만 고칠 수 있습니다.");
+    return { file: run.file, request };
   }
 
   // 결과 기록이 있는 노드(3D 생성·FigCraft)
