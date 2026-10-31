@@ -412,6 +412,7 @@ export class Chain {
   runCommand(cmd, { origin = null, depth = 0, prompt = null, values = undefined, flow = null, historyStepId = null, resume = false, edit = null } = {}) {
     if (this.disposed || flow?.cancelled) return null;
     const kind = commandKind(cmd);
+    if (kind === "artref") throw new Error("아트 레퍼런스 노드는 실행하지 않습니다. 세션에 참고 연결로 이어 두면 세션이 요청을 받을 때 함께 읽습니다.");
     if (["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in", "gen3d", "figcraft"].includes(kind)) {
       if (this.runs.has(cmd.id)) {
         if (["repeat", "transform", "webhook", "gen3d", "figcraft"].includes(kind)) return this.workflow.enqueue(cmd, { origin, depth, prompt, values, flow, historyStepId });

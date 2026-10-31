@@ -629,6 +629,9 @@ export class Runner extends EventEmitter {
       // 세션 수명: 컨텍스트 압축 횟수와 지금 컨텍스트 크기
       if (event.compact) {
         session.compactions = (session.compactions ?? 0) + 1;
+        // 대화가 요약되면 아트 레퍼런스 전체 안내를 다시 붙이고, 진행 중인 작업에도 다시 열라고 알린다.
+        session.referencesCompacted = true;
+        setImmediate(() => this.emit("compacted", session));
         // 첫 요청에 붙인 스킬 안내가 요약되며 빠질 수 있으므로 다음 요청에 다시 붙인다.
         if (session.skills?.length) session.skillsChanged = true;
         delete event.compact;

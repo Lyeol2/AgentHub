@@ -1,9 +1,10 @@
 import { $, el } from "../../shared/dom.js";
 import { createGen3dForm } from "./gen3d-form.js";
 import { createFigcraftForm } from "./figcraft-form.js";
+import { createArtrefForm } from "./artref-form.js";
 
-export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "task", "webhook", "webhook-in", "gen3d", "figcraft"];
-export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", schedule: "시간 예약", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기", gen3d: "3D 생성", figcraft: "FigCraft" };
+export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "task", "webhook", "webhook-in", "gen3d", "figcraft", "artref"];
+export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", schedule: "시간 예약", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기", gen3d: "3D 생성", figcraft: "FigCraft", artref: "아트 레퍼런스" };
 export const kindOf = (node) => Object.hasOwn(KIND_LABEL, node?.kind) ? node.kind : "command";
 // 명령 노드는 kind가 없으므로 id로 세션과 구분한다.
 export const hasBranchPorts = (node) => ["git", "task", "repeat"].includes(node?.kind) || (!!node?.id?.startsWith("cmd-") && kindOf(node) === "command");
@@ -14,11 +15,12 @@ export const hasWorktreeOutput = (node) => node?.kind === "git" || (node?.kind =
 // 따로 정하지 않으면 성공 출력을 작업 폴더로 넘기는 노드
 export const worktreeByDefault = (node) => (node?.kind === "git" && node.gitAction === "use") || (node?.kind === "task" && node.taskAction === "start");
 export const TASK_TYPE_LABEL = { feature: "기능 개발", hotfix: "긴급 수정", release: "배포 준비" };
-export const isSourceOnly = (node) => ["button", "input", "watch", "schedule", "webhook-in"].includes(node?.kind);
+export const isSourceOnly = (node) => ["button", "input", "watch", "schedule", "webhook-in", "artref"].includes(node?.kind);
 export const isScheduleArmed = (node) => node?.kind === "schedule" && (node.scheduleEnabled === true || node.state === "scheduled");
 // 받는 주소. 앱이 열린 주소를 기준으로 만든다.
 export const hookUrl = (node) => node?.hookToken ? `${location.origin}/hooks/${node.hookToken}` : "";
 export const KIND_HINT = {
+  artref: "레퍼런스 이미지 폴더와 스타일 메모를 정해 두는 노드입니다. 실행하지 않고, 카드의 손잡이를 끌어 세션에 이으면(참고 연결) 그 세션이 요청을 받을 때마다 폴더 경로와 요약을 함께 받습니다. 새 대화, 레퍼런스가 바뀐 뒤, 대화가 요약된 뒤에는 INDEX.md와 관련 이미지를 다시 열어 보라는 안내를 붙입니다. 이미지는 폴더에 직접 넣어도 됩니다.",
   figcraft: "FigCraft를 창 없이(figcraft-cli) 실행합니다. AI 배치는 앞 노드(계획서를 쓰는 세션)의 계획서와 이미지를 받아, AI가 figcraft-cli로 배치만 하고 렌더한 화면을 직접 보며 다듬습니다. 결과 기록에서 이어서 고칠 수 있습니다. 명령 실행은 FigCraft 명령 스크립트(JSON)를 그대로 실행해 .figcraft 파일을 만들고, 내보내기는 디자인 파일을 PNG·SVG·PDF 등으로 내보냅니다. 맨 위 프레임마다 PNG 미리보기를 만들어 결과 기록과 노드 카드에 보이며, 원본은 FigCraft에서 열어 고칩니다. 다음 노드에는 파일 경로와 프레임 목록을 넘깁니다.",
   gen3d: "Meshy·Tripo로 3D 모델을 만듭니다. 단계를 하나만 고르면 단계 노드, 여러 개를 고르면 차례로 이어 실행하는 통합 노드입니다. 결과 파일은 출력 폴더에 받고, 다음 노드에는 3D 모델 정보(파일 경로·작업 ID)를 넘깁니다. 같은 도구의 다음 단계 노드는 파일을 다시 올리지 않고 작업 ID로 이어 갑니다. 단계를 실행할 때마다 서비스 크레딧이 듭니다. 실행 전에 확인하려면 들어오는 연결에 \"넘기기 전에 승인 받기\"를 켜세요.",
   webhook: "앞 노드의 결과를 지정한 주소로 보냅니다(Slack·Discord·사내 API 등). 본문과 머리글에 {{input}}와 입력값 {{key}}를 쓸 수 있고, JSON 본문에서는 값이 자동으로 이스케이프됩니다. 2xx 응답이면 성공이며 응답 본문을 다음 노드에 넘깁니다.",
@@ -36,6 +38,7 @@ export function createFlowNodeForms({ api = null, onRun = null, onChanged = null
   let resolveRun = null;
   const gen3d = api ? createGen3dForm({ api, onRun, onChanged }) : null;
   const figcraft = api ? createFigcraftForm({ api, onChanged, openImage, onRun }) : null;
+  const artref = api ? createArtrefForm({ api, onChanged }) : null;
   let scheduleActive = false;
   const localDateTime = (value) => {
     const date = new Date(value);
@@ -101,6 +104,7 @@ export function createFlowNodeForms({ api = null, onRun = null, onChanged = null
     for (const name of FLOW_KINDS) $(name + "-settings").hidden = kind !== name;
     if (kind === "gen3d") gen3d?.fill(cmd, true);
     if (kind === "figcraft") figcraft?.fill(cmd, true);
+    if (kind === "artref") artref?.fill(cmd);
     // Hidden required controls must not block a different kind of node.
     $("input-fields").replaceChildren();
     if (kind === "input") for (const field of cmd?.fields ?? [{ key: "task", label: "작업 내용", type: "textarea", required: true }]) addField(field);
@@ -155,6 +159,7 @@ export function createFlowNodeForms({ api = null, onRun = null, onChanged = null
   function body(kind) {
     if (kind === "gen3d") return gen3d?.body() ?? {};
     if (kind === "figcraft") return figcraft?.body() ?? {};
+    if (kind === "artref") return artref?.body() ?? {};
     if (kind === "input") return { fields: [...$("input-fields").children].map((row) => ({ key: row.querySelector(".flow-field-key").value.trim(), label: row.querySelector(".flow-field-label").value.trim(), type: row.querySelector(".flow-field-type").value, required: row.querySelector(".flow-field-required").checked, defaultValue: row.querySelector(".flow-field-default").value })), prompt: $("input-prompt").value };
     if (kind === "repeat") return { maxIterations: Number($("repeat-max").value), delayMs: Number($("repeat-delay").value) };
     if (kind === "transform") return { transformMode: $("transform-mode").value, expression: $("transform-expression").value, template: $("transform-template").value };

@@ -128,6 +128,13 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     if (commandKind(from) === "repeat" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "반복 출력은 성공·실패·항상·수동 조건을 사용하세요.");
     if (isCommandId(from.id) && commandKind(from) === "task" && !["success", "error", "always", "manual"].includes(fields.when)) throw new HttpError(400, "작업 출력은 성공·실패·항상·수동 조건을 사용하세요.");
     if (fields.when === "call" && (isCommandId(from.id) || isCommandId(to.id) || from.chat || to.chat)) throw new HttpError(400, "요청 시 부르기 연결은 프로젝트 세션끼리만 만들 수 있습니다.");
+    // 아트 레퍼런스는 세션에 "참고"로만 잇는다. 참고 연결은 실행을 일으키지 않는다.
+    if (isCommandId(from.id) && commandKind(from) === "artref") {
+      if (isCommandId(to.id) || to.chat) throw new HttpError(400, "아트 레퍼런스는 프로젝트 세션에만 연결할 수 있습니다.");
+      fields.when = "ref";
+      fields.keyword = "";
+      fields.approve = false;
+    } else if (fields.when === "ref") throw new HttpError(400, "참고 연결은 아트 레퍼런스 노드에서 세션으로만 만들 수 있습니다.");
     // 작업 마무리는 커밋·push·PR을 만들므로 따로 정하지 않으면 넘기기 전에 승인을 받는다.
     if (body.approve === undefined && current.approve === undefined && isCommandId(to.id) && commandKind(to) === "task" && to.taskAction === "finish") fields.approve = true;
     const fromTask = isCommandId(from.id) && commandKind(from) === "task" && from.taskAction === "start";
@@ -159,6 +166,7 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
       body = { ...body, when: source.port.when, keyword: source.port.keyword ?? "" };
     }
     if (["button", "input", "watch", "schedule", "webhook-in"].includes(commandKind(to))) throw new HttpError(400, "버튼·입력 폼·파일 감시·시간 예약·웹훅 받기 노드는 시작점이므로 들어오는 연결을 만들 수 없습니다.");
+    if (isCommandId(to.id) && commandKind(to) === "artref") throw new HttpError(400, "아트 레퍼런스 노드로 들어오는 연결은 만들 수 없습니다. 레퍼런스에서 세션으로 이으세요.");
     if (commandKind(from) === "markdown") throw new HttpError(400, "MD 출력 노드는 완료 메시지를 저장하는 마지막 노드입니다.");
     if (from.chat || to.chat) throw new HttpError(400, "일반 채팅 세션은 연결할 수 없습니다.");
     if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");
@@ -202,6 +210,7 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
   }
 
   async function runLink(id) {
+    if (getLink(id).when === "ref") throw new HttpError(400, "참고 연결은 넘길 결과가 없습니다. 세션이 요청을 받을 때 레퍼런스를 함께 읽습니다.");
     await chain.deliver(getLink(id), 0);
     return { ok: true };
   }

@@ -57,7 +57,8 @@ export function buildArgs(session, { mcp = null, unity = null } = {}) {
   if (session.chat) {
     args.push("--tools", "", "--system-prompt", CHAT_PROMPT, "--strict-mcp-config", "--disable-slash-commands");
   }
-  for (const dir of session.addDirs ?? []) args.push("--add-dir", dir);
+  // 아트 레퍼런스 폴더는 읽을 수 있게 연다(작업 폴더 밖일 때만 들어 있다).
+  for (const dir of [...new Set([...(session.addDirs ?? []), ...(session.referenceDirs ?? [])])]) args.push("--add-dir", dir);
   if (session.agentSessionId) {
     args.push("--resume", session.agentSessionId);
   } else {

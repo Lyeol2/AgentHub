@@ -41,9 +41,12 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
       onclick: () => selectSession(id),
     }, text);
     const incoming = data.links.filter((l) => l.to === s.id && sessionById(l.from));
+    // 이 세션이 참고하는 아트 레퍼런스
+    const references = data.links.filter((l) => l.to === s.id && l.when === "ref").map((l) => ({ link: l, node: (data.commands ?? []).find((c) => c.id === l.from) })).filter((item) => item.node);
     const outgoing = data.links.filter((l) => l.from === s.id && sessionById(l.to));
     $("s-flow").replaceChildren(
       ...(s.role ? [el("span", { class: "flow-role", title: s.role }, `${s.roleName || "역할"} · ${firstLine(s.role)}`)] : []),
+      ...references.map(({ link, node }) => el("span", { class: `flow-chip artref-chip${link.enabled ? "" : " off"}`, title: `${node.folderPath ?? node.folder} · 요청마다 이 레퍼런스 폴더를 알려 줍니다` }, `🎨 ${node.title}`)),
       ...incoming.map((l) => chip(l.from, `← ${sessionById(l.from).title} · ${linkLabel(l)}`, l)),
       ...outgoing.map((l) => chip(l.to, `→ ${sessionById(l.to).title} · ${linkLabel(l)}`, l)),
     );

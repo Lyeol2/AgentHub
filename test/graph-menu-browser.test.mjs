@@ -85,7 +85,7 @@ test("browser: 노드 만들기 메뉴의 묶음은 옆으로 펼치는 하위 �
     const top = await evaluate("[...document.querySelectorAll('.context-menu > .menu-item, .context-menu > .menu-sub > .menu-sub-trigger')].map((b) => b.querySelector('.menu-sub-label')?.textContent ?? b.textContent)");
     assert.deepEqual(top, ["새 세션", "시작", "실행", "작업", "흐름 제어", "출력", "3D 생성", "디자인", "그룹 템플릿 추가", "스킬 관리"]);
     assert.deepEqual(await evaluate("[...document.querySelectorAll('.context-menu .menu-panel')].map((p) => p.hidden)").then((list) => list.every(Boolean)), true);
-    assert.equal(await evaluate(`${trigger("시작")}.querySelector('.menu-sub-count').textContent`), "5");
+    assert.equal(await evaluate(`${trigger("시작")}.querySelector('.menu-sub-count').textContent`), "6");
     assert.equal(await evaluate(`${trigger("3D 생성")}.querySelector('.menu-sub-count').textContent`), "7");
     const menuHeight = await evaluate("document.querySelector('.context-menu').getBoundingClientRect().height");
     assert.ok(menuHeight < 420, `접은 메뉴는 짧다 (${menuHeight}px)`);
@@ -94,7 +94,7 @@ test("browser: 노드 만들기 메뉴의 묶음은 옆으로 펼치는 하위 �
     assert.equal(await evaluate(`${panelOf("시작")}.hidden`), false);
     assert.equal(await evaluate(`${trigger("시작")}.getAttribute('aria-expanded')`), "true");
     assert.ok(await evaluate(`${panelOf("시작")}.getBoundingClientRect().left >= document.querySelector('.context-menu').getBoundingClientRect().right - 1`), "하위 메뉴는 오른쪽에 뜬다");
-    assert.deepEqual(await evaluate(`[...${panelOf("시작")}.querySelectorAll('.menu-item')].map((b) => b.textContent)`), ["새 버튼", "새 입력 폼", "새 파일 감시", "새 시간 예약", "새 웹훅 받기"]);
+    assert.deepEqual(await evaluate(`[...${panelOf("시작")}.querySelectorAll('.menu-item')].map((b) => b.textContent)`), ["새 버튼", "새 입력 폼", "새 파일 감시", "새 시간 예약", "새 웹훅 받기", "아트 레퍼런스"]);
     await evaluate(`${trigger("출력")}.closest('.menu-sub').dispatchEvent(new MouseEvent('mouseenter'))`);
     assert.equal(await evaluate(`${panelOf("시작")}.hidden`), true, "같은 단계의 다른 하위 메뉴는 닫힌다");
     assert.equal(await evaluate(`${panelOf("출력")}.hidden`), false);
