@@ -124,7 +124,14 @@ export function createFigcraftForm({ api, onChanged, openImage, onRun }) {
           el("div", { class: "gen3d-run-meta" }, el("strong", {}, run.ok ? "완료" : run.stopped ? "중지" : "실패"),
             el("span", { class: "muted", title: run.at }, ` · ${timeAgo(run.at)}${run.frames?.length ? ` · 프레임 ${run.frames.length}개` : ""}${run.steps ? ` · 명령 ${run.steps}개` : ""}`)),
           run.error ? el("div", { class: "error gen3d-run-error" }, run.error) : null,
-          run.request ? el("div", { class: "figcraft-request", title: run.request }, `요청: ${run.request}`) : null,
+          run.request ? el("div", { class: "figcraft-request", title: run.request }, `${run.resources ? "계획서·지시" : "요청"}: ${run.request}`) : null,
+          ...(run.resources?.length ? [el("div", { class: "figcraft-renders" }, el("span", { class: "muted" }, `리소스 ${run.resources.length}개`),
+            ...run.resources.slice(0, 8).map((item) => {
+              const list = run.resources.map((resource) => ({ url: gen3dFileUrl(node, resource.file), label: resource.role, kind: "image" }));
+              return el("button", { type: "button", class: "figcraft-render", title: `${item.role}${item.width ? ` · ${Math.round(item.width)}×${Math.round(item.height)}` : ""}`, onclick: () => openImage?.(list[run.resources.indexOf(item)], list) },
+                el("img", { src: gen3dFileUrl(node, item.file), alt: item.role, loading: "lazy" }));
+            }))] : []),
+          ...(run.warnings?.length ? [el("div", { class: "hint error" }, run.warnings.join(" "))] : []),
           run.summary ? el("div", { class: "figcraft-summary" }, run.summary) : null,
           ...(run.renders?.length ? [el("div", { class: "figcraft-renders" }, el("span", { class: "muted" }, `AI가 확인한 화면 ${run.rounds ?? run.renders.length}번`),
             ...run.renders.slice(-6).map((file) => {

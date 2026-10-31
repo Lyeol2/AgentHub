@@ -349,7 +349,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
         { submenu: "단계 노드", items: [["3D 모양 만들기", ["generate"]], ["3D 다듬기", ["refine"]], ["3D 질감", ["texture"]], ["3D 형태 정리", ["remesh"]], ["3D 뼈대", ["rig"]], ["3D 움직임", ["animate"]]]
           .map(([label, steps]) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, "gen3d", { connectWhen, connectKeyword, gen3d: { steps } }))]) }]],
       ["디자인", [
-        ["FigCraft AI 디자인", inProject(() => openCommandDialog(null, pos, connectFrom, "figcraft", { connectWhen, connectKeyword, figcraft: { action: "ai" } }))],
+        ["FigCraft AI 배치", inProject(() => openCommandDialog(null, pos, connectFrom, "figcraft", { connectWhen, connectKeyword, figcraft: { action: "ai" } }))],
         ["FigCraft 명령 실행", inProject(() => openCommandDialog(null, pos, connectFrom, "figcraft", { connectWhen, connectKeyword, figcraft: { action: "run" } }))],
         ["FigCraft 내보내기", inProject(() => openCommandDialog(null, pos, connectFrom, "figcraft", { connectWhen, connectKeyword, figcraft: { action: "export" } }))]]],
     ];

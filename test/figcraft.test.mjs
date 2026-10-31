@@ -27,7 +27,7 @@ const SCRIPT = JSON.stringify([{ command: "frame.create", params: { name: "로�
 
 test("figcraft: 노드 설정과 스크립트 읽기", () => {
   assert.equal(checkFigcraftNode({}).title, "FigCraft 명령 실행");
-  assert.equal(checkFigcraftNode({ action: "ai" }).title, "FigCraft AI 디자인");
+  assert.equal(checkFigcraftNode({ action: "ai" }).title, "FigCraft AI 배치");
   assert.throws(() => checkFigcraftNode({ action: "ai", agent: "gpt" }), /Claude 또는 Codex/);
   assert.throws(() => checkFigcraftNode({ action: "ai", maxRounds: 0 }), /1~20/);
   assert.equal(checkFigcraftNode({ action: "export" }).inputFile, "{{input}}");
