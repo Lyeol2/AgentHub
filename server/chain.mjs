@@ -17,6 +17,16 @@ import { MAX_HOPS, lastAnswer, verdictLine, pickLinks, noMatchNote, handoffText,
 export { CONDITIONS, CONDITION_LABELS, MAX_HOPS, lastAnswer, verdictLine, keywordList, hasKeyword, matches, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
 
 // 명령 노드 실행 기록에 남기는 시작 세션 정보. 작업 마무리 노드가 taskId로 마무리할 작업을 찾는다.
+// 마지막 요청(사용자·넘겨받은 작업) 이후 이 세션이 call_session으로 부른 세션 id
+export function calledThisTurn(session) {
+  const ids = new Set();
+  for (let i = session.events.length - 1; i >= 0; i--) {
+    const event = session.events[i];
+    if (event.kind === "user" && !event.injected) break;
+    if (event.kind === "message" && event.call && event.to) ids.add(event.to);
+  }
+  return ids;
+}
 const originRecord = (origin) => origin ? { id: origin.id, title: origin.title, cwd: origin.cwd, ...(origin.gitContext ? { gitContext: origin.gitContext } : {}), ...(origin.taskId ? { taskId: origin.taskId } : {}) } : null;
 
 export class Chain {
@@ -104,8 +114,16 @@ export class Chain {
         const text = noMatchNote(outgoing, verdict);
         if (text) this.note(session, text);
       }
+      const called = calledThisTurn(session);
       for (const link of picked) {
-        const message = commandKind(this.node(link.to)) === "markdown" ? completion : answer;
+        // 이번 턴에 이미 call_session으로 일을 맡긴 세션에는 연결로 다시 넘기지 않는다(같은 일이 두 번 돌지 않게).
+        if (called.has(link.to)) {
+          this.note(session, `"${this.node(link.to)?.title ?? link.to}"은(는) 이번 턴에 이미 불렀으므로 연결로 다시 넘기지 않았습니다`);
+          continue;
+        }
+        const kind = commandKind(this.node(link.to));
+        // FigCraft 노드는 답변 끝의 명령 스크립트 전체가 필요하므로 줄이지 않는다.
+        const message = kind === "markdown" ? completion : kind === "figcraft" ? lastAnswer(session, Infinity) : answer;
         if (link.approve) this.hold(link, session, message, session.chainDepth ?? 0, flow);
         else await this.deliver(link, session.chainDepth ?? 0, message, null, flow);
       }
@@ -208,7 +226,7 @@ export class Chain {
     if (["command", "git", "task", "repeat", "transform", "notify", "webhook", "gen3d", "figcraft"].includes(targetKind)) {
       const origin = this.commandOrigin(source, sourceKind, link);
       this.note(source, `명령 "${target.title}" 실행`);
-      this.startLinkedCommand(target, { origin, depth: depth + 1, prompt: answer ?? (sourceKind === "session" ? lastAnswer(source) : source.lastRun?.outputText ?? source.lastRun?.tail ?? source.prompt ?? ""), flow });
+      this.startLinkedCommand(target, { origin, depth: depth + 1, prompt: answer ?? (sourceKind === "session" ? lastAnswer(source, targetKind === "figcraft" ? Infinity : undefined) : source.lastRun?.outputText ?? source.lastRun?.tail ?? source.prompt ?? ""), flow });
       return;
     }
     await this.sendSession(link, source, sourceKind, target, depth, answer, flow);

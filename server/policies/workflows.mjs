@@ -15,8 +15,8 @@ export const CONDITION_LABELS = {
 export const MAX_HOPS = 8;
 const ANSWER_MAX = 8000;
 
-// 마지막 요청 이후 에이전트가 쓴 답변
-export function lastAnswer(session) {
+// 마지막 요청 이후 에이전트가 쓴 답변. max를 넘으면 앞부분을 줄인다(세션에 넘길 때). 명령 스크립트처럼 잘리면 안 되는 곳은 Infinity를 준다.
+export function lastAnswer(session, max = ANSWER_MAX) {
   let start = 0;
   for (let i = session.events.length - 1; i >= 0; i--) {
     if (session.events[i].kind === "user") {
@@ -25,7 +25,7 @@ export function lastAnswer(session) {
     }
   }
   const text = session.events.slice(start).filter((e) => e.kind === "text").map((e) => e.text).join("\n\n").trim();
-  return text.length > ANSWER_MAX ? `… (앞부분 생략)\n${text.slice(-ANSWER_MAX)}` : text;
+  return text.length > max ? `… (앞부분 생략)\n${text.slice(-max)}` : text;
 }
 
 // 판정 줄: 답변의 마지막 글 줄. 마크다운 꾸밈(#, >, -, **, `)과 감싼 따옴표는 걷어 낸다.
