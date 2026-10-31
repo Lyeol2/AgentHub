@@ -2,8 +2,9 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { checkGen3dNode } from "./gen3d.mjs";
 import { checkFigcraftNode } from "./figcraft.mjs";
+import { checkArtrefNode } from "./artref.mjs";
 
-export const FLOW_NODE_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in", "gen3d", "figcraft"];
+export const FLOW_NODE_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "webhook-in", "gen3d", "figcraft", "artref"];
 export const FLOW_MEMBER_KINDS = ["command", "git", "task", "input", "repeat", "transform", "notify", "webhook", "gen3d", "figcraft"];
 export const WEBHOOK_METHODS = ["POST", "PUT", "PATCH", "GET", "DELETE"];
 // 받는 쪽 주소에 들어가는 비밀 값. 노드를 만들 때(템플릿으로 추가할 때 포함) 새로 만든다.
@@ -67,6 +68,7 @@ export function checkFlowNode(body, current = {}) {
   if (!FLOW_NODE_KINDS.includes(kind)) return null;
   if (kind === "gen3d") return checkGen3dNode(body, current);
   if (kind === "figcraft") return checkFigcraftNode(body, current);
+  if (kind === "artref") return checkArtrefNode(body, current);
   const title = text(body.title ?? current.title, "이름", 100).trim();
   if (kind === "schedule") {
     const scheduleMode = body.scheduleMode ?? current.scheduleMode ?? "once";

@@ -18,6 +18,7 @@ import { assertSessionGitContext } from "../git-context.mjs";
 import { AttachmentStore, isImageAttachment, publicAttachment } from "../attachments.mjs";
 import { unsupportedChatAttachment } from "../attachment-input.mjs";
 import { resolveSessionArtifact, readSessionArtifact, readSessionArtifactContent, validateArtifactReferences } from "../session-artifacts.mjs";
+import { syncArtref, artrefNotice, artrefCompactNotice } from "../artref.mjs";
 import { exportSession } from "../session-export.mjs";
 import { exportBundle, isBundleName, BUNDLE_MAX_BYTES, recordReadText } from "../session-bundle.mjs";
 import { expandPrompt, planRequest, projectFiles, rankFiles } from "../prompt-refs.mjs";
@@ -125,6 +126,45 @@ export function createSessionService({
     });
   }
 
+  // ── 아트 레퍼런스 ───────────────────────────────────────────
+  // "참고" 연결로 이은 레퍼런스 노드. 폴더를 만들고 INDEX.md를 최신으로 맞춘 뒤 돌려준다.
+  function references(session) {
+    if (session.chat || !commands) return [];
+    const nodes = links.list().filter((link) => link.enabled && link.when === "ref" && link.to === session.id)
+      .map((link) => commands.get(link.from)).filter((node) => node?.kind === "artref");
+    return nodes.map((node) => {
+      try { return { id: node.id, title: node.title, style: node.style ?? "", ...syncArtref(node) }; }
+      catch { return null; }
+    }).filter(Boolean);
+  }
+
+  // 매 요청에 짧은 안내를, 새 대화·레퍼런스 변경·대화 요약 직후에는 전체 안내를 붙인다.
+  // 작업 폴더 밖의 레퍼런스 폴더는 Claude가 읽을 수 있게 연다(Codex는 기본으로 읽을 수 있다).
+  function withReferences(session, input) {
+    const refs = references(session);
+    const outside = refs.map((ref) => ref.folder).filter((folder) => ![session.cwd, session.projectPath].some((root) => root && !path.relative(root, folder).startsWith("..") && !path.isAbsolute(path.relative(root, folder))));
+    if (outside.length || session.referenceDirs?.length) session.referenceDirs = outside;
+    if (!refs.length) {
+      if (session.referencesKey) delete session.referencesKey;
+      delete session.referencesCompacted;
+      return input;
+    }
+    const key = refs.map((ref) => ref.key).join(",");
+    const reason = !session.agentSessionId ? "" : session.referencesCompacted ? "대화가 요약되어 다시 알린다." : session.referencesKey !== key ? "레퍼런스가 바뀌었다." : null;
+    delete session.referencesCompacted;
+    session.referencesKey = key;
+    return `${artrefNotice(refs, { full: reason !== null, reason: reason ?? "" })}\n\n${input}`;
+  }
+
+  // 작업 중에 대화가 요약되면 진행 중인 작업에 "레퍼런스를 다시 열라"고 끼워 넣는다. 붙일 수 없으면 다음 요청의 전체 안내로 대신한다.
+  runner.on?.("compacted", (session) => {
+    try {
+      const refs = references(session);
+      if (!refs.length || !runner.canInject?.(session)) return;
+      runner.inject(session, artrefCompactNotice(refs), { notice: "artref" });
+    } catch { /* 다음 요청에 전체 안내를 붙인다. */ }
+  });
+
   function composeBase(session, prompt) {
     if (!session.chat) chain.assertGitAvailable?.(session);
     if (session.chat) {
@@ -133,9 +173,9 @@ export function createSessionService({
       const intro = AGENTS[session.agent].CHAT_INTRO;
       return intro && !session.agentSessionId ? `${intro}\n\n${input}` : input;
     }
-    let input = withSkills(session, session.kind !== "orchestrator" ? withRole(session, prompt) : orchestratorInput(session, prompt, {
+    let input = withReferences(session, withSkills(session, session.kind !== "orchestrator" ? withRole(session, prompt) : orchestratorInput(session, prompt, {
       sessions: projectSessions(session.projectPath).filter((item) => !graphTabs || graphTabs.tabFor(item) === graphTabs.tabFor(session)),
-    }));
+    })));
     // 이전 버전의 원본 전용 안내를 받은 CLI 대화에도 현재 작업 폴더를 다시 알린다.
     if (!session.agentSessionId || session.projectFolderGuide !== "optional-worktree") {
       session.projectFolderGuide = "optional-worktree";

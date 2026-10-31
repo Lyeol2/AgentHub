@@ -756,6 +756,16 @@
           <ol id="figcraft-history" class="gen3d-history"></ol>
         </div>
       </section>
+      <section id="artref-settings" class="flow-node-settings" hidden>
+        <label>레퍼런스 폴더 <input id="artref-folder" class="mono" spellcheck="false" placeholder="references/브랜드 · 프로젝트 기준 또는 전체 경로"></label>
+        <p class="hint" id="artref-folder-state"></p>
+        <label>스타일 메모 <textarea id="artref-style" rows="3" placeholder="예: 따뜻한 파스텔, 둥근 모서리, 굵은 외곽선 금지"></textarea></label>
+        <label>색 팔레트 <input id="artref-palette" class="mono" spellcheck="false" placeholder="#F6C453 #2B3A55"></label>
+        <div class="artref-images-head"><strong>이미지</strong>
+          <label class="ghost sm artref-upload">이미지 넣기<input id="artref-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/svg+xml" multiple hidden></label></div>
+        <p class="hint" id="artref-images-hint">폴더에 직접 넣은 이미지도 여기에 나타납니다. 메모·태그는 AI가 먼저 읽는 INDEX.md에 적힙니다.</p>
+        <ol id="artref-images" class="artref-images"></ol>
+      </section>
       <section id="webhook-in-settings" class="flow-node-settings" hidden>
         <label>받는 주소 <span class="webhook-url-row"><input id="webhook-in-url" class="mono" readonly placeholder="저장하면 주소를 만듭니다"><button type="button" class="ghost sm" id="webhook-in-copy">복사</button></span></label>
         <label class="check" id="webhook-in-regenerate-row"><input id="webhook-in-regenerate" type="checkbox"> 저장할 때 주소를 새로 만들기 (이전 주소로 온 요청은 받지 않음)</label>

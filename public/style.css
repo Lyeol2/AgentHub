@@ -1509,3 +1509,16 @@ td .pill.subtasks-running { margin-left: 4px; }
 .figcraft-render img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .figcraft-edit { display: flex; gap: 4px; flex: 1 1 260px; min-width: 0; }
 .figcraft-edit-input { flex: 1; min-width: 0; }
+/* 아트 레퍼런스 노드 */
+.artref-images-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.artref-upload { cursor: pointer; padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+.artref-images { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; max-height: 360px; overflow: auto; }
+.artref-image { display: grid; grid-template-columns: 64px minmax(0, 1fr); gap: 8px; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
+.artref-image img { width: 64px; height: 64px; object-fit: cover; border-radius: 4px; background: var(--hover); }
+.artref-image-fields { display: grid; gap: 4px; min-width: 0; }
+.artref-image-name { font-size: 11px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.artref-image-fields input { font-size: 12px; padding: 3px 6px; }
+.artref-card-thumbs { display: flex; gap: 3px; margin: 4px 0; }
+.artref-card-thumbs img { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; background: var(--hover); }
+.graph-edges path.edge.call[class*="ref"] { stroke-dasharray: 2 4; }
+#artref-settings [hidden] { display: none !important; }

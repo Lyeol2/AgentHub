@@ -10,6 +10,7 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { GEN3D_STEPS, GEN3D_PROVIDERS, modelText } from "../gen3d.mjs";
 import { resultText as figcraftText, openInFigcraft } from "../figcraft.mjs";
+import { syncArtref, listArtrefImages, addArtrefImage, artrefImageFile, artrefFolder } from "../artref.mjs";
 
 export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, graphTabs, ask = askOnce, notify: broadcast, figcraft = null }) {
   const { ensureProject } = projects;
@@ -28,7 +29,22 @@ export function createCommandService({ commands, chain, links, store, projects, 
     catch (error) { throw new HttpError(500, error.message); }
   }
   function list(projectPath) {
-    return { shells: shells(), commands: projectPath ? commands.list(projectPath).map(view) : [], timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+    return { shells: shells(), commands: projectPath ? commands.list(projectPath).map(listView) : [], timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+  }
+
+  // 아트 레퍼런스는 카드에 보일 폴더 경로와 이미지 목록을 함께 보낸다.
+  function listView(command) {
+    if (commandKind(command) !== "artref") return view(command);
+    let images = [];
+    try { images = listArtrefImages(command); } catch { /* 폴더가 없으면 빈 목록 */ }
+    return { ...view(command), folderPath: artrefFolder(command), images };
+  }
+
+  // 폴더를 만들고 INDEX.md를 맞춘다. 실패해도(권한 등) 노드 저장은 막지 않고 오류를 알린다.
+  function syncReference(command) {
+    if (commandKind(command) !== "artref") return;
+    try { syncArtref(command); }
+    catch (error) { throw new HttpError(400, `레퍼런스 폴더를 준비하지 못했습니다: ${error.message}`); }
   }
 
   async function gitBranches(projectPath) {
@@ -80,9 +96,10 @@ export function createCommandService({ commands, chain, links, store, projects, 
     if (command.kind === "webhook-in") command.hookToken = newHookToken();
     if (command.kind === "schedule") Object.assign(command, { scheduleEnabled: false, nextRunAt: null });
     savePos(command, body.pos);
+    syncReference(command);
     commands.add(command);
     broadcast("commands", {});
-    return view(command);
+    return listView(command);
   }
 
   function update(id, body) {
@@ -91,7 +108,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
       const targetId = graphTabs.resolve(command.projectPath, body.tabId);
       if (targetId !== graphTabs.tabFor(command)) throw new HttpError(400, "노드는 탭 이동 메뉴로 옮기세요.");
     }
-    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification", "finishMode", "pushTarget", "provider", "steps", "preset", "inputMode", "imagePath", "options", "outputDir", "pollSec", "timeoutMin", "action", "script", "inputFile", "format", "scale", "page", "target", "builtinFonts", "agent", "model", "maxRounds"].some((key) => body[key] !== undefined);
+    const editing = ["kind", "title", "prompt", "command", "shell", "cwdMode", "timeoutSec", "members", "gitAction", "branch", "targetBranch", "fields", "maxIterations", "delayMs", "transformMode", "expression", "template", "watchPaths", "debounceMs", "scheduleMode", "runAt", "timeOfDay", "intervalMinutes", "message", "notificationTitle", "level", "sound", "url", "method", "headers", "bodyType", "body", "enabled", "taskAction", "taskType", "titleTemplate", "version", "inPlace", "commitMessage", "description", "verification", "finishMode", "pushTarget", "provider", "steps", "preset", "inputMode", "imagePath", "options", "outputDir", "pollSec", "timeoutMin", "action", "script", "inputFile", "format", "scale", "page", "target", "builtinFonts", "agent", "model", "maxRounds", "folder", "style", "palette", "items"].some((key) => body[key] !== undefined);
     if (editing && ["git", "task", "input", "repeat", "transform", "watch", "schedule", "notify", "webhook", "gen3d", "figcraft", "group"].includes(commandKind(command)) && (chain.runs.has(id) || ["running", "watching", "scheduled"].includes(command.state))) throw new HttpError(409, "실행 중인 노드는 편집할 수 없습니다. 중지한 뒤 다시 편집하세요.");
     let fields = null;
     try {
@@ -100,6 +117,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
       throw new HttpError(400, error.message);
     }
     if (fields) Object.assign(command, checkMembers(fields, command.projectPath, id));
+    if (fields) syncReference(command);
     // 받는 주소가 새어 나갔으면 새 주소로 바꾼다. 이전 주소로 온 요청은 받지 않는다.
     if (commandKind(command) === "webhook-in" && (body.regenerateToken === true || !command.hookToken)) command.hookToken = newHookToken();
     savePos(command, body.pos);
@@ -126,6 +144,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
 
   async function run(id, body = {}) {
     const command = getCommand(id);
+    if (commandKind(command) === "artref") throw new HttpError(400, "아트 레퍼런스 노드는 실행하지 않습니다. 세션에 이어 두면 세션이 요청을 받을 때 함께 읽습니다.");
     if (commandKind(command) === "markdown") throw new HttpError(400, "MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
     if (commandKind(command) === "group") {
       const result = await chain.fireGroup(command);
@@ -201,6 +220,28 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { file: run.file, request };
   }
 
+  // ── 아트 레퍼런스 ──────────────────────────────────────────
+  function artrefNode(id) {
+    const command = getCommand(id);
+    if (commandKind(command) !== "artref") throw new HttpError(400, "아트 레퍼런스 노드가 아닙니다.");
+    return command;
+  }
+
+  function addReferenceImage(id, body = {}) {
+    const command = artrefNode(id);
+    let name;
+    try { name = addArtrefImage(command, body); syncArtref(command); }
+    catch (error) { throw new HttpError(400, error.message); }
+    broadcast("commands", {});
+    return { name, images: listArtrefImages(command) };
+  }
+
+  function referenceImage(id, name) {
+    const command = artrefNode(id);
+    try { return artrefImageFile(command, name); }
+    catch (error) { throw new HttpError(404, error.message); }
+  }
+
   // 결과 기록이 있는 노드(3D 생성·FigCraft)
   function resultNode(id) {
     const command = getCommand(id);
@@ -271,5 +312,5 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { nodes: created };
   }
 
-  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, receiveHook, gen3dFile, gen3dForward, gen3dExpand, figcraftOpen };
+  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, receiveHook, gen3dFile, gen3dForward, gen3dExpand, figcraftOpen, addReferenceImage, referenceImage };
 }

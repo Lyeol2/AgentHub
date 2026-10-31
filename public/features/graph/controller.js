@@ -336,7 +336,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     // 종류별로 묶는다. 시작점 노드는 들어오는 연결을 받을 수 없으므로 손잡이에서 열었을 때는 뺀다.
     const sections = [
       ["AI", [["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen, connectKeyword }))]]],
-      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch"), start("새 시간 예약", "schedule"), start("새 웹훅 받기", "webhook-in")]],
+      ["시작", connectFrom ? [] : [start("새 버튼", "button"), start("새 입력 폼", "input"), start("새 파일 감시", "watch"), start("새 시간 예약", "schedule"), start("새 웹훅 받기", "webhook-in"), start("아트 레퍼런스", "artref")]],
       ["실행", [node("새 명령", "command"), node("새 GIT", "git")]],
       ["작업", [
         ["새 작업", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "start" }))],
@@ -353,6 +353,11 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
         ["FigCraft 명령 실행", inProject(() => openCommandDialog(null, pos, connectFrom, "figcraft", { connectWhen, connectKeyword, figcraft: { action: "run" } }))],
         ["FigCraft 내보내기", inProject(() => openCommandDialog(null, pos, connectFrom, "figcraft", { connectWhen, connectKeyword, figcraft: { action: "export" } }))]]],
     ];
+    // 아트 레퍼런스에서 끌어 연 메뉴는 세션만 만들 수 있다(레퍼런스는 세션에만 잇는다).
+    if (commandById(connectFrom)?.kind === "artref") {
+      openContextMenu(e, "레퍼런스를 참고할 새 세션", [["새 세션", inProject(() => openNew(projectPath, { pos, connectFrom, connectWhen: "ref" }))]]);
+      return;
+    }
     const selected = !connectFrom ? nodeGroups.selectedEntries() : [];
     openContextMenu(e, connectFrom ? "새 노드에 연결" : "여기에 만들기", [
       ...selected, ...(selected.length ? [null] : []),
@@ -649,8 +654,8 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
       const halfWidth = linkLabel(link).length * 4 + 10;
       const mid = placeLabel(edge.mid, halfWidth);
       const path = document.createElementNS(SVG_NS, "path");
-      // 요청 시 부르기 연결은 턴이 끝나도 넘기지 않으므로 실행 중에도 흐름 표시를 하지 않는다.
-      const call = link.when === "call";
+      // 요청 시 부르기·참고 연결은 턴이 끝나도 넘기지 않으므로 실행 중에도 흐름 표시를 하지 않는다.
+      const call = link.when === "call" || link.when === "ref";
       const live = !call && (sessionById(link.from) ?? commandById(link.from))?.state === "running";
       path.setAttribute("d", d);
       path.setAttribute("class", `edge${link.enabled ? "" : " off"}${live ? " live" : ""}${link.pending ? " gated" : ""}${call ? " call" : ""}`);
@@ -658,7 +663,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
       g.svg.append(path);
       const label = link.pending ? gateLabel(link)
         : el("button", { class: `edge-label${link.enabled ? "" : " off"}${link.approve ? " gate" : ""}`, type: "button", "data-link": link.id },
-          call ? `📞 ${linkLabel(link)}` : linkLabel(link));
+          link.when === "ref" ? `🎨 ${linkLabel(link)}` : call ? `📞 ${linkLabel(link)}` : linkLabel(link));
       label.style.left = `${mid.x}px`;
       label.style.top = `${mid.y}px`;
       g.canvas.append(label);
@@ -1031,9 +1036,10 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     const value = select.value;
     // 요청 시 부르기는 세션끼리만 쓴다(명령 노드에서 나가는 연결에는 보이지 않는다).
     select.replaceChildren(...(data.status?.linkConditions ?? [])
-      .filter((c) => (!resultOnlyOutputs(source) || ["success", "error", "always", "manual"].includes(c.id)) && (c.id !== "call" || !source))
+      .filter((c) => source?.kind === "artref" ? c.id === "ref" : (!resultOnlyOutputs(source) || ["success", "error", "always", "manual"].includes(c.id)) && (c.id !== "call" || !source) && c.id !== "ref")
       .map((c) => el("option", { value: c.id }, c.label)));
     if (value) select.value = value;
+    if (select.selectedIndex < 0 && select.options.length) select.selectedIndex = 0;
   }
 
   // 보내는 세션의 역할에서 따옴표로 감싼 말("검토 요청", "통과" …)을 키워드 후보로 꺼낸다.
@@ -1064,6 +1070,8 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     renderLinkConditions(source);
     const initial = link ?? (connectWhen ? { when: connectWhen, keyword: connectKeyword } : defaultLinkCondition(from));
     $("link-when").value = initial.when;
+    // 이 출력에서 쓸 수 없는 조건이면(예: 아트 레퍼런스는 "참고"만) 첫 선택지를 고른다.
+    if ($("link-when").selectedIndex < 0) $("link-when").selectedIndex = 0;
     $("link-keyword").value = initial.keyword ?? "";
     // 키워드 후보를 누르면 키워드 칸에 넣는다.
     $("link-keyword-chips").replaceChildren(...keywordSuggestions(from).map((k) =>
@@ -1081,6 +1089,11 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     $("link-git-worktree").checked = link?.useGitWorktree ?? (worktreeByDefault(source) && initial.when === "success");
     $("link-delete").hidden = !link;
     $("link-run").hidden = !link;
+    // 참고 연결(아트 레퍼런스)은 넘길 결과가 없으므로 지시·승인·지금 넘기기를 숨긴다.
+    const reference = source?.kind === "artref";
+    $("link-note").closest("label").hidden = reference;
+    $("link-approve").closest("label").hidden = reference;
+    if (reference) $("link-run").hidden = true;
     $("link-error").textContent = "";
     syncLinkWhen();
     $("link-dialog").showModal();
