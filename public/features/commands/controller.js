@@ -66,6 +66,15 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     }
     if (navigation.view === "project") renderGraph();
     if ($("command-dialog").open) renderCommandRun();
+    // 실행 결과 창을 열어 둔 채 실행 중이면 출력을 이어서 보인다.
+    const viewing = ui.viewingOutput && commandById(ui.viewingOutput.id);
+    if (viewing && kindOf(viewing) !== "markdown" && viewing.live && $("command-result-dialog").open) {
+      const raw = $("command-result-raw");
+      const atEnd = raw.scrollTop + raw.clientHeight >= raw.scrollHeight - 8;
+      raw.textContent = viewing.live.tail ?? "";
+      $("command-result-status").textContent = commandNodeFoot(viewing);
+      if (atEnd) raw.scrollTop = raw.scrollHeight;
+    }
   }
 
   function commandNodeFoot(c) {
@@ -81,7 +90,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       const sessions = (data.links ?? []).filter((link) => link.from === c.id && link.enabled && link.when === "ref").length;
       return `이미지 ${(c.images ?? []).length}장 · ${sessions ? `세션 ${sessions}개가 참고` : "세션에 이어 쓰세요"}`;
     }
-    if (kindOf(c) === "figcraft") return running ? c.live?.tail ?? "실행 중" : run ? `${run.ok ? "완료" : "실패"}${run.figcraft?.frames?.length ? ` · 프레임 ${run.figcraft.frames.length}개` : ""}${!run.ok && run.tail ? ` · ${firstLine(run.tail)}` : ""} · ${timeAgo(run.startedAt)}` : c.action === "ai" ? "계획서·이미지를 받아 AI가 배치합니다" : c.action === "run" ? "명령 스크립트로 디자인을 만듭니다" : "디자인 파일을 내보냅니다";
+    if (kindOf(c) === "figcraft") return running ? c.live?.status || firstLine(c.live?.tail ?? "") || "실행 중" : run ? `${run.ok ? "완료" : "실패"}${run.figcraft?.frames?.length ? ` · 프레임 ${run.figcraft.frames.length}개` : ""}${!run.ok && run.tail ? ` · ${firstLine(run.tail)}` : ""} · ${timeAgo(run.startedAt)}` : c.action === "ai" ? "계획서·이미지를 받아 AI가 배치합니다" : c.action === "run" ? "명령 스크립트로 디자인을 만듭니다" : "디자인 파일을 내보냅니다";
     if (kindOf(c) === "gen3d") return running ? c.live?.tail ?? "만드는 중" : run ? `${run.ok ? "완료" : "실패"}${!run.ok && run.tail ? ` · ${firstLine(run.tail)}` : ""} · ${timeAgo(run.startedAt)}` : c.steps?.[0] === "generate" ? "실행하면 모델을 만듭니다" : "앞 노드의 3D 모델을 받아 실행합니다";
     if (kindOf(c) === "notify") return running ? "알림 보내는 중" : run ? `${run.ok ? "알림 보냄" : "알림 실패"} · ${timeAgo(run.startedAt)}` : "앞 노드의 결과를 알립니다";
     if (kindOf(c) === "task") return running ? (c.taskAction === "finish" ? "커밋하고 반영하는 중" : "작업 만드는 중") : run ? `${run.ok ? "성공" : "실패"}${run.taskResult?.pull ? ` · PR #${run.taskResult.pull.number}` : run.taskResult?.local ? ` · ${run.taskResult.targetBranch}에 반영` : run.ok && run.taskResult?.branch ? ` · ${run.taskResult.branch}` : ""}${run.deliveryErrors?.length ? ` · 후속 실행 실패 ${run.deliveryErrors.length}개` : ""} · ${timeAgo(run.startedAt)}` : c.taskAction === "finish" ? "앞 세션의 작업을 마무리합니다" : "연결되면 새 작업을 만듭니다";
@@ -140,7 +149,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       // 3D 생성 노드는 마지막 결과의 썸네일을 보인다.
       ...(kind === "gen3d" && gen3dThumbnail(c.history?.[0]) ? [el("img", { class: "gen3d-card-thumb", src: gen3dFileUrl(c, gen3dThumbnail(c.history[0])), alt: "마지막 결과", loading: "lazy" })] : []),
       ...(kind === "artref" && c.images?.length ? [el("div", { class: "artref-card-thumbs" }, ...c.images.slice(0, 4).map((name) => el("img", { src: artrefImageUrl(c, name), alt: name, loading: "lazy" })))] : []),
-      ...(kind === "figcraft" && figcraftThumbnail(c.history?.[0]) ? [el("img", { class: "gen3d-card-thumb", src: gen3dFileUrl(c, figcraftThumbnail(c.history[0])), alt: "마지막 결과", loading: "lazy" })] : []),
+      ...(kind === "figcraft" && (c.state === "running" ? c.live?.figcraft?.renders?.at(-1) : figcraftThumbnail(c.history?.[0])) ? [el("img", { class: "gen3d-card-thumb", src: gen3dFileUrl(c, c.state === "running" ? c.live.figcraft.renders.at(-1) : figcraftThumbnail(c.history[0])), alt: c.state === "running" ? "AI가 지금 확인한 화면" : "마지막 결과", loading: "lazy" })] : []),
       el("div", { class: "gcmd-code" + (["command", "git", "transform", "watch", "webhook", "webhook-in"].includes(kind) ? " mono" : ""), title: detail ?? "" }, firstLine(detail ?? "")),
       el("div", { class: "gcmd-foot" }, el("span", { class: "gcmd-result" }, elapsedElement("command", c), el("span", { class: "gcmd-result-text" }, commandNodeFoot(c))), action),
       ...(branchPorts ? ["success", "error"].map((when) => el("span", { class: "gcard-handle git-port " + when, "data-when": when, title: (kind === "repeat" ? when === "success" ? "반복할 작업" : "횟수 초과" : when === "success" ? "성공" : "실패") + " · 끌어서 다음 노드에 연결", "aria-label": (when === "success" ? "성공" : "실패") + " 출력" }, el("span", { class: "git-port-label" }, kind === "repeat" ? when === "success" ? "반복" : "초과" : when === "success" ? "성공" : "실패"))) : [kind === "markdown" ? null : el("span", { class: "gcard-handle", title: "끌어서 다음 노드에 연결" })]));

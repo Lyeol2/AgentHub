@@ -12,12 +12,15 @@ const chrome = "C:/Program Files/Google/Chrome/Application/chrome.exe";
 
 // 가짜 AI: 작업 폴더에서 `node fc.mjs`만 써서 프레임을 더하고 렌더한다.
 let aiRuns = 0;
-async function fakeAi({ cwd, prompt }) {
+// 첫 실행은 렌더한 뒤 멈춰 실행 중 화면(단계·AI 글·중간 렌더)을 확인하게 한다.
+let releaseAi = null;
+async function fakeAi({ cwd, prompt, onActivity }) {
   const step = ++aiRuns;
   const fc = (...args) => spawnSync(process.execPath, ["fc.mjs", ...args], { cwd, encoding: "utf8" });
   await fs.writeFile(path.join(cwd, "edit.json"), JSON.stringify([{ command: "frame.create", params: { name: prompt.includes("버튼") ? "버튼 화면" : "첫 화면" } }]));
   if (fc("run", "edit.json", "--in", "design.figcraft", "--out", "design.figcraft").status !== 0) throw new Error("run 실패");
   if (fc("render", "design.figcraft", "-o", `renders/round-${step}.png`).status !== 0) throw new Error("render 실패");
+  if (step === 1) { onActivity?.({ kind: "text", text: "카드를 배치하고 화면을 확인했습니다." }); await new Promise((resolve) => { releaseAi = resolve; }); }
   return `${step}번째 작업: 프레임을 만들고 렌더해서 정렬을 확인했습니다.`;
 }
 
@@ -152,7 +155,14 @@ test("browser: FigCraft 노드를 메뉴로 만들어 실행하고, 결과 미�
     await evaluate(`document.querySelector('.gcmd[data-id="${ai}"] .gcard-title').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))`);
     await evaluate(until("document.querySelector('#command-dialog').open"));
     await evaluate("document.querySelector('#command-run').click()");
+    // 실행 중: 노드 설정 창에 단계·AI 글·중간 렌더가, 카드에 단계와 지금 화면이 보인다.
+    await evaluate(until("!document.querySelector('#figcraft-live').hidden && document.querySelector('#figcraft-live').textContent.includes('카드를 배치하고 화면을 확인했습니다.') && document.querySelector('#figcraft-live').textContent.includes('화면 확인 1/5') && document.querySelector('#figcraft-live .figcraft-render img')?.naturalWidth === 1"));
+    const live = await evaluate("document.querySelector('#figcraft-live').textContent");
+    assert.ok(live.includes("AI가 배치하는 중") && live.includes("FigCraft run edit.json · 명령 1개 · 성공"), live);
+    await evaluate(until(`document.querySelector('.gcmd[data-id="${ai}"]').textContent.includes('AI가 배치하는 중') && document.querySelector('.gcmd[data-id="${ai}"] img.gen3d-card-thumb')?.naturalWidth === 1`));
+    releaseAi();
     await evaluate(until("document.querySelector('#figcraft-history .figcraft-summary')?.textContent.includes('1번째 작업')"));
+    assert.equal(await evaluate("document.querySelector('#figcraft-live').hidden"), true);
     assert.match(await evaluate("document.querySelector('#figcraft-history .figcraft-run').textContent"), /계획서·지시: 대시보드 카드.*AI가 확인한 화면 1번/);
     await evaluate(until("document.querySelector('#figcraft-history .figcraft-render img')?.naturalWidth === 1"));
     await evaluate("(() => { const box = document.querySelector('#figcraft-history .figcraft-edit'); box.querySelector('input').value = '버튼 추가'; [...box.querySelectorAll('button')].find((b) => b.textContent === '이어서 고치기').click(); })()");

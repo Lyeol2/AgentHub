@@ -1504,6 +1504,15 @@ td .pill.subtasks-running { margin-left: 4px; }
 #figcraft-settings [hidden] { display: none !important; }
 .figcraft-request { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .figcraft-summary { font-size: 12.5px; white-space: pre-wrap; overflow-wrap: anywhere; padding: 6px 8px; border-radius: 4px; background: var(--hover); }
+.figcraft-live { display: grid; gap: 6px; padding: 8px; margin-bottom: 8px; border: 1px solid var(--accent, #4a8); border-radius: 6px; }
+.figcraft-activity { list-style: none; margin: 0; padding: 4px 6px; max-height: 260px; overflow: auto; display: grid; gap: 3px; font-size: 12px; background: var(--hover); border-radius: 4px; }
+.figcraft-activity li { display: grid; grid-template-columns: 22px 1fr; gap: 4px; align-items: start; }
+.figcraft-activity-icon { font-size: 10px; font-weight: 600; opacity: .7; text-align: center; padding-top: 1px; }
+.figcraft-activity-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.figcraft-activity-tool .figcraft-activity-text, .figcraft-activity-figcraft .figcraft-activity-text { font-family: var(--mono, monospace); font-size: 11.5px; opacity: .85; }
+.figcraft-activity-phase .figcraft-activity-text { font-weight: 600; }
+.figcraft-activity-error .figcraft-activity-text { color: var(--danger, #d55); }
+.figcraft-activity-box summary { cursor: pointer; font-size: 12px; }
 .figcraft-renders { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11.5px; }
 .figcraft-render { padding: 0; width: 40px; height: 40px; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; cursor: zoom-in; background: #fff; }
 .figcraft-render img { width: 100%; height: 100%; object-fit: contain; display: block; }

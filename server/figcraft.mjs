@@ -188,7 +188,17 @@ if (command === "render") {
 const confined = ["info", "export", "convert", "render", "run"].includes(command);
 const extra = confined ? [...config.readRoots.flatMap((dir) => ["--automation-read-root", dir]), "--automation-write-root", config.writeRoot, ...(config.builtinFonts ? ["--no-system-fonts"] : [])] : [];
 const [file, prefix] = /\.(?:c|m)?js$/i.test(config.cli) ? [process.execPath, [config.cli]] : [config.cli, []];
+const started = Date.now();
 const result = spawnSync(file, [...prefix, ...args, ...extra], { stdio: "inherit" });
+// AgentHub가 진행을 보이도록 명령마다 한 줄을 남긴다(이름·결과·렌더 파일·스크립트 단계 수).
+try {
+  const target = args[1] && !args[1].startsWith("-") ? path.resolve(args[1]) : null;
+  let steps = null;
+  if (command === "run" && target) { try { const list = JSON.parse(fs.readFileSync(target, "utf8")); steps = Array.isArray(list) ? list.length : null; } catch {} }
+  const outIndex = args.indexOf("-o") >= 0 ? args.indexOf("-o") : args.indexOf("--out");
+  const out = outIndex >= 0 && args[outIndex + 1] ? path.resolve(args[outIndex + 1]) : null;
+  fs.appendFileSync(path.join(config.writeRoot, ".progress.jsonl"), JSON.stringify({ at: new Date().toISOString(), command, target, steps, out, code: result.status ?? 1, ms: Date.now() - started }) + String.fromCharCode(10));
+} catch {}
 process.exit(result.status ?? 1);
 `);
 }
@@ -324,7 +334,7 @@ FigCraft는 반드시 \`node ${FIGCRAFT_SHIM} …\`로만 실행한다. figcraft
 마지막 답에는 어떤 화면에 무엇을 배치했는지, 렌더해서 무엇을 확인하고 고쳤는지, 계획서대로 못 한 것이 있으면 그 이유를 3~6줄로 요약한다.`;
 }
 
-async function runAiDesign(node, { render, input, upstream, edit, pickFile, projectPath, runDir, cli, ask, signal, timeoutMs, record }) {
+async function runAiDesign(node, { render, input, upstream, edit, pickFile, projectPath, runDir, cli, ask, signal, timeoutMs, record, progress }) {
   if (!ask) fail("AI 실행기를 준비하지 못했습니다.");
   // 계획서: 앞 노드의 글(보통 계획서를 쓴 세션) → 없으면 노드의 계획서 칸. 이어서 고치기는 앞 실행의 계획서·리소스를 그대로 쓴다.
   const field = render(node.prompt || "").trim();
@@ -354,6 +364,7 @@ async function runAiDesign(node, { render, input, upstream, edit, pickFile, proj
     fs.rmSync(empty, { force: true });
     if (start.code !== 0 || !fs.existsSync(design)) fail(`디자인 파일을 준비하지 못했습니다: ${start.stderr.trim().split(/\r?\n/).slice(-1)[0] ?? ""}`);
   }
+  progress.phase("prepare");
   const { resources, warnings } = packResources(parsed, { projectPath, runDir });
   // 리소스를 실행 폴더로 모았으므로 FigCraft는 실행 폴더만 읽고 쓴다.
   writeShim(runDir, { cli, readRoots: [runDir], maxRounds: node.maxRounds ?? 5, builtinFonts: !!node.builtinFonts });
@@ -363,14 +374,67 @@ async function runAiDesign(node, { render, input, upstream, edit, pickFile, proj
   record.resources = resources.map(({ role, file, width, height, alpha }) => ({ role, file: path.join(runDir, file), width, height, alpha }));
   record.warnings = warnings;
   record.base = base ?? null;
-  const summary = await ask({ prompt: aiPrompt({ plan: parsed.plan, extra, resources, rounds: node.maxRounds ?? 5, fresh: !base, base: base && path.basename(base) }), cwd: runDir,
+  progress.phase("ai", { maxRounds: node.maxRounds ?? 5, resources: resources.length });
+  const watch = setInterval(() => progress.poll(), 1000);
+  let summary;
+  try {
+    summary = await ask({ onActivity: (item) => progress.add(item.kind, item.text), prompt: aiPrompt({ plan: parsed.plan, extra, resources, rounds: node.maxRounds ?? 5, fresh: !base, base: base && path.basename(base) }), cwd: runDir,
     agent: node.agent || undefined, model: node.model || undefined, timeoutMs, signal, label: "FigCraft AI 배치", work: { commands: [`node ${FIGCRAFT_SHIM}`] } });
+  } finally { clearInterval(watch); progress.poll(); }
   record.summary = String(summary ?? "").trim().slice(0, 4000);
   record.renders = filesIn(path.join(runDir, "renders")).filter((file) => PREVIEW_EXT.has(path.extname(file).toLowerCase())).sort();
   record.rounds = Number(fs.existsSync(path.join(runDir, ".renders")) ? fs.readFileSync(path.join(runDir, ".renders"), "utf8") : 0) || 0;
   record.agent = node.agent || null;
   if (!fs.existsSync(design)) fail("AI가 디자인 파일을 지웠습니다.");
   return design;
+}
+
+// ── 진행 표시 ─────────────────────────────────────────────────
+const PHASES = { prepare: "리소스 준비", ai: "AI가 배치하는 중", finish: "미리보기·결과 정리", run: "명령 실행 중", export: "내보내는 중" };
+const ACTIVITY_MAX = 200;
+const seconds = (ms) => ms >= 1000 ? `${(ms / 1000).toFixed(1)}초` : `${ms}ms`;
+// 실행 폴더의 .progress.jsonl(fc.mjs가 남김)과 AI 활동을 모아 화면에 보낼 상태를 만든다.
+function progressTracker(runDir, onProgress) {
+  const state = { phase: null, label: "", rounds: 0, maxRounds: null, renders: [], outputDir: runDir, startedAt: new Date().toISOString() };
+  const activity = [];
+  let read = 0, timer = null;
+  const emit = () => {
+    if (!onProgress || timer) return;
+    // 이벤트가 몰려도 화면 갱신(과 저장)은 1초에 한 번
+    timer = setTimeout(() => { timer = null; try { onProgress({ ...state, renders: [...state.renders], activity: activity.slice(-60) }); } catch {} }, 1000);
+  };
+  const add = (kind, text) => {
+    const line = String(text ?? "").trim();
+    if (!line) return;
+    activity.push({ at: new Date().toISOString(), kind, text: line.slice(0, 1500) });
+    if (activity.length > ACTIVITY_MAX) activity.splice(0, activity.length - ACTIVITY_MAX);
+    emit();
+  };
+  const poll = () => {
+    const file = path.join(runDir, ".progress.jsonl");
+    let text;
+    try { text = fs.readFileSync(file, "utf8"); } catch { return; }
+    const lines = text.slice(read).split(/\r?\n/);
+    const rest = lines.pop();
+    read = text.length - rest.length;
+    for (const line of lines) {
+      let item;
+      try { item = JSON.parse(line); } catch { continue; }
+      const ok = item.code === 0;
+      if (item.command === "render") {
+        if (ok && item.out && fs.existsSync(item.out)) state.renders.push(item.out);
+        state.rounds++;
+        add("figcraft", `화면 확인 ${state.rounds}${state.maxRounds ? `/${state.maxRounds}` : ""} · ${ok ? path.basename(item.out ?? "") : `실패(종료 코드 ${item.code})`} · ${seconds(item.ms)}`);
+      } else {
+        add("figcraft", `FigCraft ${item.command}${item.target ? ` ${path.basename(item.target)}` : ""}${item.steps != null ? ` · 명령 ${item.steps}개` : ""} · ${ok ? "성공" : `실패(종료 코드 ${item.code})`} · ${seconds(item.ms)}`);
+      }
+    }
+  };
+  const phase = (name, extra = {}) => {
+    Object.assign(state, extra, { phase: name, label: PHASES[name] ?? name });
+    add("phase", PHASES[name] ?? name);
+  };
+  return { activity, add, poll, phase, state };
 }
 
 // CLI가 쓴 파일 목록(한 줄에 하나, 실행 폴더 기준 또는 절대 경로)
@@ -380,13 +444,16 @@ const filesIn = (dir) => fs.existsSync(dir) ? fs.readdirSync(dir).map((name) => 
 
 // ── 실행 ──────────────────────────────────────────────────────
 // ask: AI 작업 모드 실행(one-shot의 askOnce). edit: { file, request } 결과 기록에서 "이어서 고치기"
-export async function runFigcraft(node, { input = "", render = (template) => template, projectPath, cli, signal, now = Date.now, runId = String(now()), ask = null, edit = null }) {
+// onProgress: 실행 중 상태({ phase, label, rounds, maxRounds, renders, activity })를 받을 때마다 부른다.
+export async function runFigcraft(node, { input = "", render = (template) => template, projectPath, cli, signal, now = Date.now, runId = String(now()), ask = null, edit = null, onProgress = null }) {
   if (!cli) missing();
   const outputRoot = path.resolve(projectPath, node.outputDir || "output/figcraft");
   if (path.relative(projectPath, outputRoot).startsWith("..")) fail("출력 폴더는 프로젝트 안이어야 합니다.");
   const runDir = path.join(outputRoot, `${new Date(now()).toISOString().replace(/[:.]/g, "-").slice(0, 23)}-${node.id ?? "node"}`);
   fs.mkdirSync(runDir, { recursive: true });
   const record = { runId, at: new Date(now()).toISOString(), action: node.action, outputDir: runDir, ok: false, file: null, previews: [], exports: [], frames: [], missingFonts: [], log: [] };
+  const progress = progressTracker(runDir, onProgress);
+  record.activity = progress.activity;
   const upstream = parseResult(input);
   const fonts = node.builtinFonts ? ["--no-system-fonts"] : [];
   const timeoutMs = (node.timeoutSec ?? 300) * 1000;
@@ -410,7 +477,7 @@ export async function runFigcraft(node, { input = "", render = (template) => tem
   try {
     let design;
     if (node.action === "ai") {
-      design = await runAiDesign(node, { render, input, upstream, edit, pickFile, projectPath, runDir, cli, ask, signal, timeoutMs, record });
+      design = await runAiDesign(node, { render, input, upstream, edit, pickFile, projectPath, runDir, cli, ask, signal, timeoutMs, record, progress });
       record.file = design;
     } else if (node.action === "run") {
       const steps = parseScript(render(node.script || "{{input}}"));
@@ -441,6 +508,7 @@ export async function runFigcraft(node, { input = "", render = (template) => tem
       record.exports = listed(out.stdout, runDir).length ? listed(out.stdout, runDir).filter((file) => file.startsWith(exportDir)) : filesIn(exportDir);
       if (!record.exports.length) fail("내보낸 파일이 없습니다. 페이지·레이어 이름을 확인하세요.");
     }
+    progress.phase("finish");
     // 미리보기: 맨 위 프레임마다 PNG. 프레임이 없으면 페이지 전체를 그린다.
     if (node.action === "export" && ["png", "jpg", "webp"].includes(node.format)) record.previews = record.exports.filter((file) => PREVIEW_EXT.has(path.extname(file).toLowerCase()));
     if (!record.previews.length) {
@@ -467,8 +535,12 @@ export async function runFigcraft(node, { input = "", render = (template) => tem
     return { ok: true, text: resultText(result), record };
   } catch (error) {
     record.error = error.message;
+    progress.add("error", error.message);
     error.record = record;
     throw error;
+  } finally {
+    // 기록에는 마지막 활동만 남긴다.
+    record.activity = progress.activity.slice(-80).map((item) => ({ ...item, text: item.text.slice(0, 400) }));
   }
 }
 

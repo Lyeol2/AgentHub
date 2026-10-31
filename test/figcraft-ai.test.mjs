@@ -200,3 +200,29 @@ test("figcraft ai: 설치된 실제 figcraft-cli로 리소스 이미지를 배�
   assert.equal(fs.readFileSync(result.record.renders[0]).subarray(1, 4).toString(), "PNG", "AI가 본 화면은 실제 PNG다");
   assert.equal(fs.readFileSync(result.record.previews[0]).subarray(1, 4).toString(), "PNG");
 });
+
+test("figcraft ai: 실행 중 단계·AI 활동·FigCraft 명령·중간 렌더를 알려 주고, 기록에 작업 기록을 남긴다", async (t) => {
+  const { root } = project(t);
+  const states = [];
+  const ai = fakeAi();
+  const ask = async (options) => {
+    options.onActivity({ kind: "text", text: "계획서를 읽고 로그인 화면부터 배치하겠습니다." });
+    options.onActivity({ kind: "tool", text: "실행: node fc.mjs run edit-1.json" });
+    const answer = await ai(options);
+    await new Promise((resolve) => setTimeout(resolve, 1300)); // 진행 파일을 한 번 더 읽게 기다린다.
+    return answer;
+  };
+  const result = await runFigcraft(node({ action: "ai", maxRounds: 3 }), { input: PLAN, projectPath: root, cli: FAKE, ask, onProgress: (state) => states.push(state) });
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const during = states.find((state) => state.renders.length);
+  assert.ok(during, "AI 작업 중에 중간 렌더를 알린다");
+  assert.equal(during.maxRounds, 3);
+  assert.equal(during.rounds, 1);
+  assert.equal(path.basename(during.renders[0]), "round-1.png");
+  const texts = states.at(-1).activity.map((item) => `${item.kind}:${item.text}`);
+  assert.ok(texts.includes("phase:AI가 배치하는 중"));
+  assert.ok(texts.includes("text:계획서를 읽고 로그인 화면부터 배치하겠습니다."));
+  assert.ok(texts.some((text) => text.startsWith("figcraft:FigCraft run edit-1.json · 명령 2개 · 성공")));
+  assert.ok(texts.some((text) => text.startsWith("figcraft:화면 확인 1/3 · round-1.png")));
+  assert.ok(result.record.activity.some((item) => item.kind === "phase" && item.text === "미리보기·결과 정리"), "기록에도 남는다");
+});
