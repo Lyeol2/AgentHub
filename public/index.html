@@ -13,6 +13,8 @@
   <link rel="stylesheet" href="/features/tasks/finish.css">
   <link rel="stylesheet" href="/features/git/operations.css">
   <link rel="stylesheet" href="/features/graph/tabs.css">
+  <link rel="stylesheet" href="/features/guide/guide.css">
+  <link rel="stylesheet" href="/features/guide/skills.css">
   <link rel="stylesheet" href="/features/sessions/reports.css">
 </head>
 <body>
@@ -129,6 +131,7 @@
           <button type="button" role="tab" data-tab="git">Git <span class="tab-count" id="p-tab-git"></span></button>
           <button type="button" role="tab" data-tab="issues" title="GitHub 이슈로 팀원과 작업을 주고받습니다">팀 작업 <span class="tab-count" id="p-tab-issues"></span></button>
           <button type="button" role="tab" data-tab="members" title="이 저장소에 작업을 받을 수 있는 팀원과 이름">팀원 <span class="tab-count" id="p-tab-members"></span></button>
+          <button type="button" role="tab" data-tab="guide" title="AGENTS.md를 쓰고, 지침이 어떻게 이어지는지 봅니다">프로젝트 지침 <span class="tab-count" id="p-tab-guide"></span></button>
         </nav>
         <div class="tab-panel" data-panel="flow">
         <div class="card flow-card">
@@ -243,6 +246,7 @@
           </div>
         </div>
 
+        <div class="tab-panel" data-panel="guide" hidden><div id="guide-root" class="guide"></div></div>
         <div class="tab-panel" data-panel="members" hidden>
           <div class="card member-card">
             <div class="pr-toolbar">
@@ -752,6 +756,7 @@
         <div class="two"><label>출력 폴더 <input id="figcraft-output" class="mono" spellcheck="false"></label>
           <label class="check"><input id="figcraft-builtin-fonts" type="checkbox"> 내장 글꼴만 쓰기 (어느 PC에서나 같게 그리기)</label></div>
         <div id="figcraft-history-box" hidden>
+          <div id="figcraft-live" class="figcraft-live" hidden aria-live="polite"></div>
           <div class="gen3d-history-head"><strong>결과 기록</strong></div>
           <ol id="figcraft-history" class="gen3d-history"></ol>
         </div>
@@ -844,10 +849,11 @@
       <p class="hint">장착한 스킬은 이 세션에 "이 작업을 할 때 이 스킬을 따르라"고 알려 줍니다. 대화 중에 바꾸면 다음 요청부터 적용됩니다.</p>
       <p class="error" id="equip-error"></p>
       <menu>
-        <button value="manage" formnovalidate class="ghost">스킬 관리</button>
+        <span class="muted" id="equip-summary"></span>
         <span class="spacer"></span>
+        <button value="manage" formnovalidate class="ghost">스킬 보기 열기</button>
         <button value="cancel" formnovalidate class="ghost">취소</button>
-        <button value="ok" class="primary">저장</button>
+        <button value="ok" class="primary">장착</button>
       </menu>
     </form>
   </dialog>

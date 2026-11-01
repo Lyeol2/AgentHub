@@ -113,6 +113,7 @@ export function createFigcraftForm({ api, onChanged, openImage, onRun }) {
     editing = node;
     box.hidden = false;
     const runs = node.history ?? [];
+    renderLive(node);
     $("figcraft-history").replaceChildren(...(runs.length ? runs.map((run) => {
       const previews = run.previews ?? [];
       const gallery = previews.map((file) => ({ url: gen3dFileUrl(node, file), label: basename(file), kind: "image" }));
@@ -133,6 +134,7 @@ export function createFigcraftForm({ api, onChanged, openImage, onRun }) {
             }))] : []),
           ...(run.warnings?.length ? [el("div", { class: "hint error" }, run.warnings.join(" "))] : []),
           run.summary ? el("div", { class: "figcraft-summary" }, run.summary) : null,
+          ...(run.activity?.length ? [el("details", { class: "figcraft-activity-box" }, el("summary", {}, `작업 기록 ${run.activity.length}줄`), activityList(run.activity))] : []),
           ...(run.renders?.length ? [el("div", { class: "figcraft-renders" }, el("span", { class: "muted" }, `AI가 확인한 화면 ${run.rounds ?? run.renders.length}번`),
             ...run.renders.slice(-6).map((file) => {
               const list = run.renders.map((item) => ({ url: gen3dFileUrl(node, item), label: basename(item), kind: "image" }));
@@ -153,7 +155,38 @@ export function createFigcraftForm({ api, onChanged, openImage, onRun }) {
     }) : [el("li", { class: "muted" }, "아직 실행 기록이 없습니다.")]));
   }
 
+  // 실행 중: 단계·화면 확인 횟수·AI가 지금 하는 일·중간 렌더를 보인다.
+  function renderLive(node) {
+    const box = $("figcraft-live");
+    if (!box) return;
+    const live = node.state === "running" ? node.live : null;
+    if (!live) { box.hidden = true; box.replaceChildren(); return; }
+    box.hidden = false;
+    const state = live.figcraft ?? {};
+    const renders = state.renders ?? [];
+    const gallery = renders.map((file) => ({ url: gen3dFileUrl(node, file), label: basename(file), kind: "image" }));
+    const previous = box.querySelector(".figcraft-activity");
+    const atEnd = !previous || previous.scrollTop + previous.clientHeight >= previous.scrollHeight - 8;
+    const list = activityList(state.activity ?? (live.tail ? live.tail.split(/\r?\n/).map((text) => ({ kind: "log", text })) : []));
+    box.replaceChildren(
+      el("div", { class: "gen3d-run-meta" }, el("strong", {}, state.label ?? "실행 중"),
+        el("span", { class: "muted" }, `${state.maxRounds ? ` · 화면 확인 ${state.rounds ?? 0}/${state.maxRounds}` : ""}${state.startedAt ? ` · ${timeAgo(state.startedAt)} 시작` : ""}`)),
+      ...(renders.length ? [el("div", { class: "figcraft-renders" }, el("span", { class: "muted" }, "AI가 확인한 화면"),
+        ...renders.slice(-6).map((file) => el("button", { type: "button", class: "figcraft-render", title: `${basename(file)} 크게 보기`, onclick: () => openImage?.(gallery[renders.indexOf(file)], gallery) },
+          el("img", { src: gen3dFileUrl(node, file), alt: basename(file), loading: "lazy" }))))] : []),
+      list);
+    if (atEnd) list.scrollTop = list.scrollHeight;
+    else list.scrollTop = previous.scrollTop;
+  }
+
   return { fill, body, renderHistory };
+}
+
+// AI가 쓴 글·실행한 명령·FigCraft 결과를 시간 순서로 보인다.
+const ACTIVITY_ICON = { text: "AI", tool: "▸", figcraft: "FC", phase: "──", error: "!" };
+function activityList(items) {
+  return el("ol", { class: "figcraft-activity" }, ...items.map((item) => el("li", { class: `figcraft-activity-${item.kind}`, title: item.at ?? "" },
+    el("span", { class: "figcraft-activity-icon", "aria-hidden": "true" }, ACTIVITY_ICON[item.kind] ?? "·"), el("span", { class: "figcraft-activity-text" }, item.text))));
 }
 
 // 설정 창의 "FigCraft": figcraft-cli 경로와 연결 확인

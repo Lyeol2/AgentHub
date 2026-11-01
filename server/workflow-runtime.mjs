@@ -366,6 +366,15 @@ export class WorkflowRuntime {
             // AI 디자인은 AI CLI를 작업 모드로 띄운다(시험에서는 ask를 바꿔 끼운다).
             ask: c.figcraft?.ask ?? ((options) => askOnce({ cliPaths: c.cliPaths, ...options })),
             edit: options.edit ?? null,
+            // 단계·AI 활동·중간 렌더를 실행 중 화면에 보인다.
+            onProgress: (state) => {
+              if (!c.commands.get(node.id)) return;
+              const last = state.activity.at(-1);
+              const status = [state.label, state.maxRounds ? `화면 확인 ${state.rounds}/${state.maxRounds}` : null, last && last.kind !== "phase" ? last.text.split(/\r?\n/)[0].slice(0, 120) : null].filter(Boolean).join(" · ");
+              const tail = state.activity.map((item) => `${item.kind === "text" ? "AI: " : item.kind === "phase" ? "── " : item.kind === "error" ? "오류: " : ""}${item.text}`).join("\n");
+              c.commands.update(node, { live: { ...(node.live ?? {}), status, tail, figcraft: { phase: state.phase, label: state.label, rounds: state.rounds, maxRounds: state.maxRounds, renders: state.renders.slice(-12), outputDir: state.outputDir, startedAt: state.startedAt, activity: state.activity } } });
+              c.notify("commands");
+            },
             render: (template) => renderTemplate(template, { ...flow.variables, input, output: input }),
           });
           text = result.text;

@@ -1,5 +1,6 @@
 // 새 버전을 빌드해 GitHub Release로 올린다. 앱의 업데이트 기능은 이 릴리스의 latest.yml을 읽는다.
-// 사용법: npm run release [patch|minor|major|x.y.z] (인수 > 현재 HEAD의 준비 초안 > patch)
+// 사용법: npm run release [patch|minor|major|x.y.z] [--test] (인수 > 현재 HEAD의 준비 초안 > patch)
+// 같은 코드(문서만 다른 커밋 포함)가 이미 npm test 전체를 통과했으면 테스트를 건너뛴다. --test면 늘 다시 돌린다.
 // 마지막 커밋을 임시 작업 트리에 꺼내 빌드하므로 커밋하지 않은 변경은 릴리스에 들어가지 않고 그대로 남는다.
 // 필요: package.json·package-lock.json에 커밋하지 않은 변경이 없을 것, GitHub CLI(gh) 로그인
 import { execFileSync } from "node:child_process";
@@ -7,6 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { releaseNotes, postDiscord, readPreparedRelease, DRAFT_FILE } from "./release-notes.mjs";
+import { testedMatch } from "./tested-commits.mjs";
 
 const run = (cmd, args, opts = {}) =>
   execFileSync(cmd, args, { stdio: "inherit", shell: process.platform === "win32" && ["npm", "npx"].includes(cmd), ...opts }); // npm·npx는 .cmd라 셸이 필요하다.
@@ -35,7 +37,10 @@ try {
 }
 // 릴리스 준비 세션이 쓴 사용자용 초안(release-notes.draft.md)이 지금 커밋 기준이면 그것을, 아니면 커밋 노트를 쓴다.
 const draft = readPreparedRelease();
-const bump = process.argv[2] ?? draft?.bump ?? "patch";
+const args = process.argv.slice(2);
+const forceTest = args.includes("--test");
+const bump = args.find((arg) => !arg.startsWith("--")) ?? draft?.bump ?? "patch";
+const tested = forceTest ? null : testedMatch();
 const notes = draft?.notes ?? releaseNotes(lastTag);
 console.log(`버전 단위: ${bump}`);
 console.log(draft ? "업데이트 내역: 릴리스 준비 세션의 초안을 씁니다." : "업데이트 내역: 지난 태그 이후 커밋으로 만듭니다.");
@@ -50,7 +55,8 @@ process.once("SIGINT", () => { interrupted = true; });
 try {
   const inTree = { cwd: dir };
   run("npm", ["ci"], inTree);
-  run("npm", ["test"], inTree);
+  if (tested) console.log(`테스트: 같은 코드가 ${tested.commit.slice(0, 7)}에서 전체 테스트를 통과해 건너뜁니다(${tested.at}). 다시 돌리려면 --test를 붙입니다.`);
+  else run("npm", ["test"], inTree);
   run("npm", ["version", bump, "--no-git-tag-version"], inTree);
   const { version } = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
   const tag = `v${version}`;

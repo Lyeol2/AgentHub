@@ -1,0 +1,135 @@
+/* 프로젝트 지침 탭의 스킬 보기와 스킬 장착 창 */
+.guide-view[data-view-panel="skills"]:not([hidden]) { display: flex; flex-direction: column; gap: 10px; }
+#gs-banner:empty { display: none; }
+.gs-grid { display: grid; grid-template-columns: 300px minmax(0, 1fr) 264px; gap: 16px; height: calc(100vh - 300px); min-height: 480px; }
+.gs-list, .gs-info { border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); display: flex; flex-direction: column; min-height: 0; }
+.gs-list { background: var(--panel-2); }
+.gs-search { padding: 12px 12px 0; }
+.gs-search input { width: 100%; }
+.gs-filters { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px 0; }
+.gs-filter { font-size: 12px; padding: 2px 8px; border-radius: 6px; border: 1px solid var(--line-strong); background: var(--panel); color: var(--muted); }
+.gs-filter.active { color: var(--text); border-color: var(--accent); background: var(--accent-soft); }
+.gs-problems { padding: 8px 12px 4px; font-size: 12px; }
+.gs-rows { flex: 1; overflow: auto; padding: 4px 0; }
+.gs-list > footer { display: flex; align-items: center; justify-content: space-between; padding: 6px 12px; border-top: 1px solid var(--line); font-size: 12px; }
+.gs-group { padding: 10px 12px 4px; font-size: 11px; color: var(--muted); letter-spacing: .04em; }
+.gs-row { display: block; width: 100%; text-align: left; border: 0; border-left: 2px solid transparent; background: none; padding: 7px 12px; color: var(--text); border-radius: 0; }
+.gs-row:hover { background: var(--hover); }
+.gs-row.selected { background: var(--accent-soft); border-left-color: var(--accent); }
+.gs-row.skipped { opacity: .7; }
+.gs-row.skipped .gs-row-name { color: var(--faint); }
+.gs-row.skeleton { height: 44px; margin: 4px 12px; width: auto; border-radius: 6px; background: var(--hover); animation: gs-pulse 1.2s ease-in-out infinite; }
+@keyframes gs-pulse { 50% { opacity: .45; } }
+.gs-row-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.gs-row-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gs-row-badges { display: inline-flex; gap: 3px; margin-left: auto; flex-shrink: 0; }
+.gs-row-users { font-size: 11px; flex-shrink: 0; }
+.gs-row-desc { font-size: 12px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gs-dirty { color: var(--accent); }
+.gs-badge { font-size: 10.5px; padding: 0 6px; border-radius: 9px; border: 1px solid; line-height: 16px; white-space: nowrap; }
+.gs-badge.warn { color: var(--warn); }
+.gs-badge.faint { color: var(--faint); }
+.gs-badge.orch { color: var(--orch); }
+.gs-badge.new { color: var(--accent); }
+.gs-chip { font-size: 10.5px; font-family: var(--mono); line-height: 16px; padding: 0 6px; border-radius: 4px; border: 1px solid; white-space: nowrap; flex-shrink: 0; }
+.gs-chip.agenthub { color: var(--ok); border-color: rgb(76 194 138 / .45); background: rgb(76 194 138 / .1); }
+.gs-chip.claude { color: var(--claude); border-color: rgb(232 135 92 / .45); background: rgb(232 135 92 / .1); }
+.gs-chip.codex { color: var(--codex); border-color: rgb(76 194 138 / .45); background: none; }
+.gs-chip.shared { color: var(--orch); border-color: color-mix(in srgb, var(--orch) 50%, transparent); border-style: dashed; }
+.gs-chip.skipped { color: var(--faint); border-color: var(--line-strong); }
+.gs-none { padding: 20px 12px; font-size: 13px; }
+.gs-list-error { padding: 12px; display: grid; gap: 6px; font-size: 12.5px; }
+.gs-list-error.small { grid-template-columns: 1fr auto; padding: 6px 12px; }
+.gs-list-error pre { margin: 0; white-space: pre-wrap; }
+.gs-editor { display: flex; flex-direction: column; min-height: 0; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); position: relative; overflow: hidden; }
+.gs-head { display: flex; align-items: center; gap: 8px; padding: 10px 16px 0; }
+.gs-head h3 { margin: 0; font-size: 13.5px; }
+.gs-head .muted { font-size: 11.5px; }
+.gs-tabs { display: flex; gap: 2px; padding: 8px 16px 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.gs-tabs > button, .gs-tab > button:first-child { background: none; border: 0; border-bottom: 2px solid transparent; padding: 4px 10px; color: var(--muted); font-family: var(--mono); font-size: 12px; border-radius: 0; white-space: nowrap; }
+.gs-tabs > button.active, .gs-tab.active > button:first-child { color: var(--text); border-bottom-color: var(--accent); }
+.gs-tab { display: inline-flex; align-items: center; }
+.gs-tab-close { background: none; border: 0; color: var(--faint); padding: 0 4px; }
+.gs-fields { display: grid; grid-template-columns: 200px minmax(0, 1fr); gap: 12px; padding: 10px 16px; }
+.gs-field { display: grid; gap: 3px; font-size: 12px; }
+.gs-field input, .gs-field textarea { width: 100%; }
+.gs-name > span:last-child { font-size: 11.5px; }
+.gs-body { flex: 1; margin: 0 16px; border: 1px solid var(--line); border-radius: 6px; background: var(--code-bg); overflow: hidden; }
+.gs-body.readonly { opacity: .75; }
+.gs-body.readonly textarea { cursor: not-allowed; }
+.gs-text { flex: 1; resize: none; border: 0; outline: none; background: transparent; color: var(--text); padding: 12px; font-size: 13px; line-height: 21px; white-space: pre; overflow: auto; min-height: 0; tab-size: 2; }
+.gs-editor .guide-editor-foot { margin-top: 8px; }
+.gs-skip-card { margin: 10px 16px 0; padding: 10px 12px; border-left: 3px solid var(--faint); border-radius: 6px; background: var(--panel-2); font-size: 13px; display: grid; gap: 6px; }
+.gs-skip-card ul { margin: 0; padding-left: 4px; list-style: none; display: grid; gap: 3px; color: var(--muted); }
+.gs-progress { position: relative; margin: 8px 16px 0; inset: auto; }
+.gs-empty-actions { display: flex; gap: 8px; }
+.gs-info { padding: 14px; gap: 6px; overflow: auto; font-size: 13px; }
+.gs-info p { margin: 0; }
+.gs-reader { display: grid; grid-template-columns: 24px 1fr; gap: 8px; padding: 10px; border-radius: var(--radius); border-left: 3px solid var(--line-strong); background: var(--panel-2); }
+.gs-reader.agenthub { border-left-color: var(--ok); }
+.gs-reader.claude { border-left-color: var(--claude); }
+.gs-reader.codex { border-left-color: var(--codex); }
+.gs-reader.shared { border-left-color: var(--orch); }
+.gs-reader.skipped { border-left-color: var(--faint); }
+.gs-reader p { font-size: 12px; margin-top: 2px !important; }
+.gs-reader-icon { font-size: 16px; text-align: center; }
+.gs-path-actions { display: flex; gap: 6px; }
+.gs-tree { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: 12.5px; font-family: var(--mono); }
+.gs-tree button { text-align: left; font-family: var(--mono); }
+.gs-sessions { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.gs-session { display: flex; align-items: center; gap: 6px; width: 100%; background: none; border: 0; padding: 4px 6px; border-radius: 4px; text-align: left; color: var(--text); }
+.gs-session:hover { background: var(--hover); }
+.gs-engine { width: 8px; height: 8px; border-radius: 50%; background: var(--claude); flex-shrink: 0; }
+.gs-engine.codex { background: var(--codex); }
+.gs-elsewhere { text-align: left; color: var(--orch) !important; margin-top: 6px; }
+.gs-move { width: 100%; }
+.gs-delete { align-self: flex-start; }
+.gs-panel-head { display: flex; align-items: center; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.gs-info .guide-warning-list { padding: 8px 0; }
+.gs-panel-foot { display: flex; gap: 8px; justify-content: flex-end; padding-top: 8px; border-top: 1px solid var(--line); }
+.gs-dialog { width: min(500px, 92vw); padding: 20px; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--panel); color: var(--text); }
+.gs-dialog[open] { display: grid; gap: 10px; }
+.gs-dialog h3 { margin: 0; }
+.gs-dialog footer { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.gs-dialog .spacer { flex: 1; }
+.gs-hint { margin: -4px 0 0; font-size: 12px; }
+.gs-label { margin: 0; font-size: 12px; }
+.gs-scope-cards { display: grid; gap: 6px; }
+.gs-scope-card { display: grid; grid-template-columns: auto 22px 1fr; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid var(--line-strong); border-radius: 6px; cursor: pointer; }
+.gs-scope-card.active { border-color: var(--accent); background: var(--accent-soft); }
+.gs-scope-card.agenthub { border-left-color: var(--ok); }
+.gs-scope-card.claude { border-left-color: var(--claude); }
+.gs-scope-card.codex { border-left-color: var(--codex); }
+.gs-scope-card.shared { border-left-color: var(--orch); }
+.gs-scope-card span:last-child { display: grid; }
+.gs-projects { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.gs-projects li { display: flex; align-items: center; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; }
+.gs-trigger-pop { width: 440px; }
+.gs-trigger-row { display: flex; align-items: center; gap: 8px; }
+.gs-trigger-row .spacer { flex: 1; }
+.guide-seg.sm button { padding: 2px 10px; font-size: 12px; }
+.gs-trigger-results { display: grid; gap: 6px; max-height: 280px; overflow: auto; }
+.gs-rank { display: grid; gap: 4px; text-align: left; padding: 8px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); }
+.gs-rank-top { display: flex; align-items: center; gap: 6px; }
+.gs-rank-top .spacer { flex: 1; }
+.gs-rank-bar { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.gs-rank-bar > div { height: 100%; }
+.gs-rank-bar .accent { background: var(--accent); }
+.gs-rank-bar .warn { background: var(--warn); }
+.gs-rank-bar .faint { background: var(--faint); }
+.gs-rank p { margin: 0; font-size: 12px; }
+.gs-small { font-size: 11.5px; margin: 0; }
+#g-skills-count.warn { color: var(--warn); margin-left: 4px; }
+/* 장착 창 */
+#equip-dialog { width: min(600px, 92vw); }
+.equip-search { width: 100%; }
+.equip-tabs { margin: 8px 0; }
+.equip-panel { display: grid; gap: 4px; max-height: 46vh; overflow-y: auto; }
+.dialog-form label.equip-item { grid-template-columns: auto auto auto 1fr; }
+.equip-item.skipped { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: baseline; opacity: .8; }
+.gs-info .guide-warning-list { flex: 0 0 auto; overflow: visible; }
+.gs-problems { display: flex; align-items: center; gap: 6px; justify-content: flex-start; }
+#gs-banner:not(:empty) + .gs-grid { height: calc(100vh - 356px); }
+.gs-problems input { width: auto; flex: none; margin: 0; }
+.equip-tabs button { border-bottom: 2px solid transparent; }
+.equip-tabs button.active { color: var(--text); border-bottom-color: var(--accent); }

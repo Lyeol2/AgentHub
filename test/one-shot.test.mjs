@@ -72,3 +72,31 @@ test("one-shot: Codex 사용자 MCP 서버를 끄고 실패 이유를 MCP 연결
   silent.child.emit("close", 1);
   await assert.rejects(silent.promise, (error) => /설치·로그인/.test(error.message) && !/rmcp/.test(error.message));
 });
+
+test("one-shot: 작업 모드는 진행을 흘려 받아 AI 글·도구 사용을 알리고 마지막 result를 답으로 쓴다", async () => {
+  const seen = [];
+  const work = { commands: ["node fc.mjs"] };
+  const claude = fixture({ agent: "claude", work, onActivity: (item) => seen.push(item) });
+  assert.equal(claude.call.args[claude.call.args.indexOf("--output-format") + 1], "stream-json");
+  assert.ok(claude.call.args.includes("--verbose"));
+  const lines = [
+    { type: "system", subtype: "init" },
+    { type: "assistant", message: { content: [{ type: "text", text: "배치하겠습니다." }, { type: "tool_use", name: "Bash", input: { command: "node fc.mjs render design.figcraft -o renders/r1.png" } }] } },
+    { type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "renders/r1.png" } }] } },
+    { type: "result", result: "완성했습니다." },
+  ].map((line) => JSON.stringify(line) + String.fromCharCode(10)).join("");
+  claude.child.stdout.write(lines.slice(0, 40));
+  claude.child.stdout.write(lines.slice(40));
+  claude.child.emit("close", 0);
+  assert.equal(await claude.promise, "완성했습니다.");
+  assert.deepEqual(seen, [{ kind: "text", text: "배치하겠습니다." }, { kind: "tool", text: "실행: node fc.mjs render design.figcraft -o renders/r1.png" }, { kind: "tool", text: "읽기: renders/r1.png" }]);
+  const codexSeen = [];
+  const codex = fixture({ agent: "codex", work, onActivity: (item) => codexSeen.push(item) });
+  codex.child.stdout.write([
+    { type: "item.started", item: { type: "command_execution", command: "node fc.mjs run a.json" } },
+    { type: "item.completed", item: { type: "agent_message", text: "끝났습니다." } },
+  ].map((line) => JSON.stringify(line)).join(String.fromCharCode(10)) + String.fromCharCode(10));
+  codex.child.emit("close", 0);
+  assert.equal(await codex.promise, "끝났습니다.");
+  assert.deepEqual(codexSeen, [{ kind: "tool", text: "실행: node fc.mjs run a.json" }, { kind: "text", text: "끝났습니다." }]);
+});

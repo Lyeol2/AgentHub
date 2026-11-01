@@ -10,7 +10,7 @@
     "start": "node server/index.mjs",
     "app": "electron .",
     "dist": "electron-builder --win --publish never",
-    "test": "node --test --test-concurrency=8",
+    "test": "node scripts/run-tests.mjs",
     "test:performance": "node --test --test-concurrency=2 test/frontend-performance.test.mjs test/runtime-performance.test.mjs test/session-journal.test.mjs test/git-execution.test.mjs test/json-lines.test.mjs test/discover.test.mjs test/limits.test.mjs test/file-watch.test.mjs test/run-history.test.mjs",
     "test:groups": "node --test test/node-groups.test.mjs test/node-groups-api.test.mjs test/node-groups-browser.test.mjs",
     "test:fast": "node --test test/composer.test.mjs test/elapsed.test.mjs test/frontend-core.test.mjs test/gitgraph.test.mjs test/markdown.test.mjs test/report-references.test.mjs",

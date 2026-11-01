@@ -41,6 +41,7 @@ import { createTurnLifecycle } from "./application/lifecycle.mjs";
 import { createHttpServer } from "./transport/http.mjs";
 import { createApiHandler } from "./transport/api.mjs";
 import { createFlowAssistantService } from "./application/flow-assistant.mjs";
+import { createGuideService } from "./application/guide.mjs";
 import { createMcpHandler } from "./transport/mcp.mjs";
 import { createEventStream } from "./transport/sse.mjs";
 import { Gen3dKeys } from "./gen3d.mjs";
@@ -172,7 +173,7 @@ export function createHub(options = {}) {
     runs: createRunService({ history: runHistory, chain, projects, notify }),
     groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, graphTabs, notify }),
     commands: createCommandService({ commands, chain, links, store, projects, cliPaths, graphTabs, nodeGroups: () => nodeGroupService, ask, notify, figcraft: figcraftSettings }),
-    skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
+    skills: createSkillService({ config, projects, sessions, store, cliPaths, ask, saveConfig: persistConfig, notify }),
     git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks, config }),
     system: createSystemService({
       config, setup, cliPaths, limits, saveConfig: persistConfig, version,
@@ -183,6 +184,7 @@ export function createHub(options = {}) {
   };
   services.flowAssistant = createFlowAssistantService({ store, commands, links, projects, sessions, graphTabs, commandService: services.commands,
     workflowService: workflows, cliPaths, ask, notify });
+  services.guide = createGuideService({ dataDir, projects, store, links, cliPaths, ask });
   services.taskAssistant = createTaskAssistantService({ projects, graphTabs, cliPaths, config, ask });
   services.issues = deps.issues ?? createIssueService({
     config, store, sessions, notify,

@@ -20,7 +20,8 @@ export function oneShotArgs({ agent, model, cwd, mcpServers = agent === "codex" 
   if (work) {
     const allowed = ["Read", "Glob", "Grep", "Write", "Edit", ...(work.commands ?? []).map((command) => `Bash(${command}:*)`)];
     return agent === "claude"
-      ? ["-p", "--output-format", "json", ...(selected ? ["--model", selected] : []), "--tools", "Read,Glob,Grep,Write,Edit,Bash", "--allowedTools", allowed.join(","),
+      // 작업 모드는 오래 걸리므로 진행을 화면에 보이도록 이벤트를 흘려 받는다(stream-json).
+      ? ["-p", "--output-format", "stream-json", "--verbose", ...(selected ? ["--model", selected] : []), "--tools", "Read,Glob,Grep,Write,Edit,Bash", "--allowedTools", allowed.join(","),
         "--permission-mode", "acceptEdits", "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence"]
       : ["exec", "--json", "--sandbox", "workspace-write", "--skip-git-repo-check", ...(selected ? ["--model", selected] : []),
         ...mcpServers.flatMap((name) => ["-c", `mcp_servers.${name}.enabled=false`]), "--cd", cwd, "-"];
@@ -46,7 +47,29 @@ function codexFailure(out) {
   return failure ? String(failure.error?.message || failure.message || "CLI 요청 실패") : null;
 }
 
-export async function askOnce({ cliPaths, prompt, cwd, agent: requested, model, timeoutMs = 120_000, label = "AI 요청", spawn = spawnCli, work = null, signal = null }) {
+// 흘려 받은 이벤트 한 줄을 화면용 활동으로 바꾼다. { kind: "text" | "tool", text } 또는 null
+export function oneShotActivity(agent, event) {
+  if (!event || typeof event !== "object") return [];
+  if (agent === "claude") {
+    if (event.type !== "assistant") return [];
+    return (event.message?.content ?? []).flatMap((part) => part?.type === "text" && part.text?.trim() ? [{ kind: "text", text: part.text.trim() }]
+      : part?.type === "tool_use" ? [{ kind: "tool", text: toolLine(part.name, part.input) }] : []);
+  }
+  if (event.type !== "item.completed" && event.type !== "item.started") return [];
+  const item = event.item ?? {};
+  if (item.type === "agent_message" && event.type === "item.completed" && item.text?.trim()) return [{ kind: "text", text: item.text.trim() }];
+  if (item.type === "command_execution" && event.type === "item.started") return [{ kind: "tool", text: `실행: ${String(item.command ?? "").slice(0, 300)}` }];
+  if (item.type === "file_change" && event.type === "item.completed") return [{ kind: "tool", text: `파일 수정: ${(item.changes ?? []).map((change) => change.path).join(", ").slice(0, 300)}` }];
+  return [];
+}
+function toolLine(name, input = {}) {
+  if (name === "Bash") return `실행: ${String(input.command ?? "").slice(0, 300)}`;
+  if (["Read", "Write", "Edit"].includes(name)) return `${{ Read: "읽기", Write: "쓰기", Edit: "수정" }[name]}: ${input.file_path ?? ""}`;
+  return `${name}${input.pattern ? `: ${input.pattern}` : ""}`;
+}
+
+// onActivity: 작업 모드에서 AI가 쓴 글·도구 사용을 받을 때마다 부른다(진행 표시용).
+export async function askOnce({ cliPaths, prompt, cwd, agent: requested, model, timeoutMs = 120_000, label = "AI 요청", spawn = spawnCli, work = null, signal = null, onActivity = null }) {
   const paths = cliPaths();
   const agent = selectOneShotAgent(paths, requested);
   // 기존 호출자는 가벼운 Claude 모델을 계속 사용한다. 명시적으로 선택한 AI는 CLI 기본 모델을 따른다(작업 모드도 기본 모델).
@@ -67,9 +90,19 @@ export async function askOnce({ cliPaths, prompt, cwd, agent: requested, model, 
     catch (error) { finish(new HttpError(500, `${label} 실패: ${error.message}`, "assistant-cli")); return; }
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
+    let pending = "";
     const receive = (key, data) => {
       if (settled) return;
       if (key === "out") out += data; else err += data;
+      if (key === "out" && onActivity) {
+        const lines = (pending + data).split(/\r?\n/);
+        pending = lines.pop();
+        for (const line of lines) {
+          let event;
+          try { event = JSON.parse(line); } catch { continue; }
+          for (const item of oneShotActivity(agent, event)) { try { onActivity(item); } catch {} }
+        }
+      }
       if (out.length + err.length > 2_000_000) { finish(new HttpError(502, `${label}의 응답이 너무 큽니다. 요청을 나눠 주세요.`, "assistant-output")); stop(); }
     };
     child.stdout.on("data", (data) => receive("out", data));
@@ -85,7 +118,10 @@ export async function askOnce({ cliPaths, prompt, cwd, agent: requested, model, 
       try {
         let text;
         if (agent === "claude") {
-          const result = JSON.parse(out);
+          // stream-json이면 마지막 result 이벤트가 답이다.
+          let result;
+          try { result = JSON.parse(out); }
+          catch { result = out.split(/\r?\n/).map((line) => { try { return JSON.parse(line); } catch { return null; } }).findLast((event) => event?.type === "result") ?? JSON.parse(out); }
           if (result.is_error) throw Error(String(result.result || "CLI 요청 실패"));
           text = result.result;
         } else {

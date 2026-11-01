@@ -255,7 +255,9 @@ export function createCommandService({ commands, chain, links, store, projects, 
     const command = resultNode(id);
     const target = path.resolve(String(file ?? ""));
     const inside = (root) => { const rel = path.relative(root, target); return rel && !rel.startsWith("..") && !path.isAbsolute(rel); };
-    if (!(command.history ?? []).some((run) => typeof run.outputDir === "string" && inside(path.resolve(run.outputDir)))) throw new HttpError(403, "이 노드의 결과 파일만 열 수 있습니다.");
+    // 실행 중인 FigCraft 노드는 이번 실행 폴더의 중간 렌더도 연다.
+    const roots = [...(command.history ?? []).map((run) => run.outputDir), command.live?.figcraft?.outputDir];
+    if (!roots.some((dir) => typeof dir === "string" && inside(path.resolve(dir)))) throw new HttpError(403, "이 노드의 결과 파일만 열 수 있습니다.");
     let real;
     try { real = fs.realpathSync(target); } catch { throw new HttpError(404, "결과 파일이 없습니다. 옮겨졌거나 지워졌을 수 있습니다."); }
     if (!fs.statSync(real).isFile()) throw new HttpError(404, "결과 파일이 없습니다.");

@@ -8,7 +8,7 @@ import { parseSkill, formatSkill, listSkills, writeSkill, deleteSkill, moveSkill
 test("skills: SKILL.md 앞머리와 본문을 읽고 쓴다", () => {
   const text = formatSkill({ name: "code-review", description: "리뷰할 때: 버그부터", body: "# 리뷰\n1. diff" });
   assert.match(text, /^---\nname: code-review\ndescription: "리뷰할 때: 버그부터"\n---\n/);
-  assert.deepEqual(parseSkill(text), { name: "code-review", description: "리뷰할 때: 버그부터", body: "# 리뷰\n1. diff" });
+  assert.deepEqual((({ name, description, body }) => ({ name, description, body }))(parseSkill(text)), { name: "code-review", description: "리뷰할 때: 버그부터", body: "# 리뷰\n1. diff" });
   assert.equal(parseSkill("앞머리 없음").body, "앞머리 없음");
   assert.throws(() => checkSkill({ name: "Bad Name", description: "x" }));
   assert.throws(() => checkSkill({ name: "ok", description: "" }));

@@ -46,5 +46,16 @@ export function assetRoutes({ commands: c, skills: s }) {
     ["PUT", "skills/:name", (ctx) => s.update(project(ctx), ctx.params.name, ctx.body)],
     ["DELETE", "skills/:name", (ctx) => s.remove(project(ctx), ctx.params.name)],
     ["POST", "skills/:name/move", (ctx) => s.move(project(ctx), ctx.params.name, ctx.body.to)],
+    // 스킬 보기(프로젝트 지침 탭): 목록·자세히·검사·참고 파일·두 위치 합치기·건너뜀 고치기·AI
+    ["GET", "skills/catalog", (ctx) => s.catalog(project(ctx))],
+    ["POST", "skills/check", (ctx) => s.check(project(ctx), ctx.body)],
+    ["POST", "skills/fix-skipped", (ctx) => s.fixSkipped(project(ctx), ctx.body)],
+    ["POST", "skills/draft", (ctx) => s.draft(project(ctx), ctx.body, ctx.res)],
+    ["POST", "skills/trigger", (ctx) => s.trigger(project(ctx), ctx.body, ctx.res)],
+    ["GET", "skills/:name/detail", (ctx) => s.detail(project(ctx), ctx.params.name, { file: ctx.query.get("file") ?? undefined })],
+    ["GET", "skills/:name/file", (ctx) => s.readFile(project(ctx), ctx.params.name, ctx.query.get("rel"))],
+    ["PUT", "skills/:name/file", (ctx) => s.writeFile(project(ctx), ctx.params.name, ctx.query.get("rel") ?? ctx.body.rel, ctx.body)],
+    ["POST", "skills/:name/merge", (ctx) => s.mergePersonal(project(ctx), ctx.params.name, ctx.body)],
+    ["POST", "skills/:name/suggest", (ctx) => s.suggest(project(ctx), ctx.params.name, ctx.body, ctx.res)],
   ];
 }
