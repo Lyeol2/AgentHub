@@ -2,6 +2,7 @@ import { $, el } from "../../shared/dom.js";
 import { openDiffDialog } from "./diff.js";
 import { renderMap, KIND_LABEL } from "./map.js";
 import { renderFlow } from "./flow.js";
+import { createSkillsView } from "./skills.js";
 
 // 프로젝트 지침 탭: 편집(AGENTS.md 작성·검사·AI 초안) / 지침 지도 / 작업 순서도
 const VIEW_KEY = "agenthub-guide-view";
@@ -12,15 +13,17 @@ const LEVEL_ORDER = { conflict: 0, error: 1, info: 2 };
 // 빈 값(null·false)은 "null" 글자로 들어가지 않게 뺀다.
 const fill = (box, ...items) => box.replaceChildren(...items.filter((item) => item !== null && item !== undefined && item !== false));
 
-export function createGuideController({ api, navigation, selectSession }) {
+export function createGuideController({ api, navigation, selectSession, showGraph }) {
   const state = {
-    project: null, file: "AGENTS.md", view: ["edit", "map", "flow"].includes(localStorage.getItem(VIEW_KEY)) ? localStorage.getItem(VIEW_KEY) : "edit",
+    project: null, file: "AGENTS.md", view: ["edit", "map", "flow", "skills"].includes(localStorage.getItem(VIEW_KEY)) ? localStorage.getItem(VIEW_KEY) : "edit",
     guide: null, text: "", warnings: [], sections: [], panel: false, ignored: new Set(), fixed: [], dismissedClaude: new Set(),
     saveError: null, busy: null, checkTimer: null, loadId: 0,
     map: null, mapError: null, mapLoading: false, mapSelected: null, hideDim: localStorage.getItem(HIDE_KEY) !== "0", zoom: 1,
     flow: null, flowError: null, flowBusy: null, flowSelected: null, session: "",
   };
   let root = null;
+  const skills = createSkillsView({ api, toast: (text, error) => toast(text, error), selectSession, showGraph: (ids) => showGraph?.(ids),
+    onCount: (n) => { const count = $("g-skills-count"); if (count) { count.textContent = n ? String(n) : ""; count.classList.toggle("warn", n > 0); } } });
   const dirty = () => state.guide && state.text !== (state.guide.exists ? state.guide.text : "");
   const q = (extra = {}) => new URLSearchParams({ path: state.project, file: state.file, ...extra }).toString();
   const problems = () => state.warnings.filter((w) => w.level !== "info" && !state.ignored.has(w.id));
@@ -32,7 +35,7 @@ export function createGuideController({ api, navigation, selectSession }) {
     root.replaceChildren(
       el("div", { class: "guide-bar" },
         el("div", { class: "guide-seg", role: "tablist", "aria-label": "지침 보기" },
-          ...[["edit", "편집"], ["map", "지침 지도"], ["flow", "작업 순서도"]].map(([view, label]) => el("button", { type: "button", role: "tab", "data-view": view, onclick: () => show(view) }, label))),
+          ...[["edit", "편집"], ["map", "지침 지도"], ["flow", "작업 순서도"], ["skills", "스킬"]].map(([view, label]) => el("button", { type: "button", role: "tab", "data-view": view, onclick: () => show(view) }, label, view === "skills" ? el("span", { class: "tab-count", id: "g-skills-count" }) : null))),
         el("div", { class: "guide-actions", "data-for": "edit" },
           el("button", { type: "button", class: "ghost", id: "g-rewrite", onclick: openRewrite }, "섹션만 다시 쓰기"),
           el("button", { type: "button", id: "g-draft", onclick: () => state.busy ? stopBusy() : draft() }, "AI 초안 만들기"),
@@ -74,7 +77,10 @@ export function createGuideController({ api, navigation, selectSession }) {
       el("section", { class: "guide-view", "data-view-panel": "flow", hidden: "" },
         el("div", { class: "guide-flow-main" }, el("div", { id: "g-flow-notice" }), el("div", { class: "guide-canvas", id: "g-flow" })),
         el("aside", { class: "guide-side" }, el("div", { class: "guide-info", id: "g-flow-info" }))),
+      el("section", { class: "guide-view", "data-view-panel": "skills", hidden: "", id: "g-skills" }),
       el("div", { class: "guide-toast", id: "g-toast", role: "status", hidden: "" }));
+    root.querySelector(".guide-bar").append(el("div", { class: "guide-actions", "data-for": "skills", id: "g-skills-actions" }));
+    skills.mount($("g-skills"), $("g-skills-actions"));
     $("g-hide-dim").checked = state.hideDim;
     enablePan($("g-map"));
     enablePan($("g-flow"));
@@ -113,6 +119,7 @@ export function createGuideController({ api, navigation, selectSession }) {
     renderBanner();
     if (view === "map" && !state.map && !state.mapLoading) loadMap();
     if (view === "flow" && !state.flow && !state.flowBusy) loadFlow();
+    if (view === "skills" && state.project) skills.activate(state.project);
   }
 
   // ── 불러오기 ─────────────────────────────────────────────────
@@ -543,7 +550,8 @@ export function createGuideController({ api, navigation, selectSession }) {
       el("p", { class: "guide-label" }, `들어오는 선 ${incoming.length}`), el("ul", { class: "guide-refs" }, ...incoming.map((e) => ref(e, e.from))),
       el("p", { class: "guide-label" }, `나가는 선 ${outgoing.length}`), el("ul", { class: "guide-refs" }, ...outgoing.map((e) => ref(e, e.to))),
       editable ? el("button", { type: "button", class: "primary guide-wide", onclick: async () => { show("edit"); if (state.file !== node.id) await switchFile(node.id); } }, "편집 보기로 열기") : null,
-      node.sessionId ? el("button", { type: "button", class: "primary guide-wide", onclick: () => selectSession?.(node.sessionId) }, "세션 열기") : null);
+      node.sessionId ? el("button", { type: "button", class: "primary guide-wide", onclick: () => selectSession?.(node.sessionId) }, "세션 열기") : null,
+      node.kind === "skill" ? el("button", { type: "button", class: "primary guide-wide", onclick: () => { show("skills"); skills.activate(state.project, { select: node.title }); } }, "스킬 보기로 열기") : null);
   }
 
   // ── 작업 순서도 ──────────────────────────────────────────────
@@ -677,5 +685,12 @@ export function createGuideController({ api, navigation, selectSession }) {
   // 다른 곳(세션·명령)에서 프로젝트가 바뀌면 지도를 다시 읽는다.
   function changed() { state.map = null; if (state.view === "map" && navigation.project === state.project) loadMap(); }
 
-  return { activate, changed, isDirty: () => !!dirty() };
+  // 상단바 "스킬" 버튼·그래프의 "스킬 관리"·지도의 스킬 노드에서 스킬 보기로 바로 온다.
+  async function showSkills(projectPath, name) {
+    await activate(projectPath);
+    show("skills");
+    if (name) await skills.activate(projectPath, { select: name });
+  }
+
+  return { activate, changed, showSkills, isDirty: () => !!dirty() || skills.isDirty() };
 }

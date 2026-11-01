@@ -206,7 +206,8 @@ const issuesChanged = (...args) => issues.changed(...args);
 const settings = createSettingsController({
   api, goDashboard, loadProjects, renderProjectNav, currentProject, renderLinkConditions, data, navigation
 });
-const guide = createGuideController({ api, navigation, selectSession });
+const guide = createGuideController({ api, navigation, selectSession, showGraph: (ids) => { showProjectTab("flow"); highlightSessions(new Set(ids)); } });
+const openSkillsView = (name) => { showProjectTab("guide"); return guide.showSkills(navigation.project, name); };
 const loadGuide = (...args) => guide.activate(...args);
 const projects = createProjectsController({
   sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, loadGuide, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation
@@ -225,7 +226,7 @@ const commands = createCommandsController({
   history: graph.history, nodeSnapshot: graph.nodeSnapshot, recordNodesRemoved: graph.recordNodesRemoved,
 });
 const skills = createSkillsController({
-  api, loadSessions, sessionById, renderGraph, highlightSessions, data, navigation
+  api, loadSessions, sessionById, renderGraph, highlightSessions, openSkillsView, data, navigation
 });
 const knowledge = createKnowledgeController({
   api, currentProject

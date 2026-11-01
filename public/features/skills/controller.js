@@ -2,7 +2,7 @@ import { $, el } from "../../shared/dom.js";
 import { samePath } from "../../shared/store.js";
 import { showError } from "../../shared/error-report.js";
 
-export function createSkillsController({ api, loadSessions, sessionById, renderGraph, highlightSessions, data, navigation }) {
+export function createSkillsController({ api, loadSessions, sessionById, renderGraph, highlightSessions, openSkillsView, data, navigation }) {
   const ui = {
     "editingSkill": null,
     "equipping": null
@@ -150,35 +150,64 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
   }
 
   // 사이드바에서 우클릭해 열 수도 있으므로 보고 있는 프로젝트와 상관없이 그 세션의 프로젝트 스킬을 읽는다.
+  // 탭: AgentHub가 붙임(이 세션의 CLI가 저절로 읽지 않는 스킬) / 저절로 읽힘(장착하면 한 번 더 알려 줌) / 건너뜀
+  const NATIVE = { claude: new Set(["claude", "personal"]), codex: new Set(["codex", "personal", "codex-home"]) };
+  const READER_CHIP = { agenthub: "AgentHub", claude: "Claude", codex: "Codex", shared: "공용" };
   async function openEquipDialog(s) {
     const mine = ++request;
-    let skills;
+    let catalog;
     try {
-      skills = await api("GET", `/api/skills?path=${encodeURIComponent(s.projectPath)}`);
+      catalog = await api("GET", `/api/skills/catalog?path=${encodeURIComponent(s.projectPath)}`);
     } catch (err) {
       if (mine === request) showError(err, { action: "스킬 목록 불러오기" });
       return;
     }
     if (mine !== request) return;
     ui.equipping = s;
-    const on = new Set(s.skills ?? []);
-    $("equip-session").textContent = s.title;
+    ui.equipOn = new Set(s.skills ?? []);
+    const native = NATIVE[s.agent] ?? new Set();
+    const tabs = {
+      attach: catalog.skills.filter((k) => !native.has(k.scope)),
+      native: catalog.skills.filter((k) => native.has(k.scope)),
+      skipped: catalog.skipped,
+    };
+    let tab = "attach", query = "";
+    $("equip-session").textContent = `${s.title} · ${s.agent === "codex" ? "Codex" : "Claude"} 세션`;
     $("equip-error").textContent = "";
-    const groups = ["project", "claude", "personal"]
-      .map((scope) => [scope, skills.filter((k) => (k.scope ?? "project") === scope)])
-      .filter(([, list]) => list.length);
-    $("equip-list").replaceChildren(
-      ...groups.map(([scope, list]) => el("fieldset", { class: "equip-group" },
-        el("legend", {}, SKILL_GROUP_LABEL[scope]),
-        ...list.map((k) => {
-          const box = el("input", { type: "checkbox", value: k.name });
-          box.checked = on.has(k.name);
-          return el("label", { class: "check equip-item", title: k.file }, box,
-            el("span", { class: "equip-name mono" }, k.name),
-            el("span", { class: "muted" }, k.description));
-        }))),
-      skills.length ? null : el("p", { class: "hint" }, "아직 스킬이 없습니다. '스킬 관리'에서 만드세요."));
+    const search = el("input", { type: "search", placeholder: "스킬 검색", "aria-label": "스킬 검색", class: "equip-search" });
+    const bar = el("div", { class: "tabs equip-tabs", role: "tablist" });
+    const panel = el("div", { class: "equip-panel" });
+    const summary = $("equip-summary");
+    const paint = () => {
+      bar.replaceChildren(...[["attach", "AgentHub가 붙임"], ["native", "저절로 읽힘"], ["skipped", "건너뜀"]].map(([key, label]) =>
+        el("button", { type: "button", role: "tab", class: tab === key ? "active" : "", "aria-selected": String(tab === key), onclick: () => { tab = key; paint(); } }, `${label} `, el("span", { class: "tab-count" }, String(tabs[key].length)))));
+      const q = query.trim().toLowerCase();
+      const list = tabs[tab].filter((k) => !q || k.name.toLowerCase().includes(q) || String(k.description ?? "").toLowerCase().includes(q));
+      const item = (k) => {
+        const box = el("input", { type: "checkbox", value: k.name });
+        box.checked = ui.equipOn.has(k.name);
+        box.addEventListener("change", () => { if (box.checked) ui.equipOn.add(k.name); else ui.equipOn.delete(k.name); paintSummary(); });
+        return el("label", { class: "check equip-item", title: k.file }, box,
+          el("span", { class: `gs-chip ${k.reader}` }, READER_CHIP[k.reader] ?? k.reader),
+          el("span", { class: "equip-name mono" }, k.name, k.locked ? " 🔒" : ""),
+          el("span", { class: "muted" }, k.description));
+      };
+      panel.replaceChildren(...[
+        tab === "native" ? el("p", { class: "hint" }, `이 스킬들은 장착하지 않아도 ${s.agent === "codex" ? "Codex" : "Claude"}가 읽습니다. 장착하면 새 대화마다 한 번 더 알려 줍니다. 끄려면 범위를 AgentHub만으로 옮기세요.`) : null,
+        tab === "skipped" ? el("p", { class: "hint" }, "규칙에 맞지 않아 Claude·Codex가 읽지 않는 스킬입니다.") : null,
+        ...(tab === "skipped"
+          ? list.map((k) => el("div", { class: "equip-item skipped" }, el("span", { class: "equip-name mono" }, `⊘ ${k.name}`), el("span", { class: "muted" }, k.reasons?.[0]?.text ?? ""),
+            el("button", { type: "button", class: "link", onclick: () => { $("equip-dialog").close(); openSkillsView?.(k.name); } }, "스킬 보기에서 고치기")))
+          : list.map(item)),
+        list.length ? null : el("p", { class: "hint" }, q ? `‘${query}’와 맞는 스킬이 없습니다.` : tab === "attach" ? "붙일 스킬이 없습니다. 스킬 보기에서 만드세요." : "없습니다.")].filter(Boolean));
+      paintSummary();
+    };
+    const paintSummary = () => { summary.textContent = `선택 ${ui.equipOn.size} · 저절로 읽힘 ${tabs.native.length}`; };
+    search.addEventListener("input", () => { query = search.value; paint(); });
+    $("equip-list").replaceChildren(search, bar, panel);
+    paint();
     $("equip-dialog").showModal();
+    search.focus();
   }
 
   const SKILL_GROUP_LABEL = { project: "이 프로젝트 (AgentHub 전용)", claude: "Claude 프로젝트 스킬 (.claude/skills)", personal: "개인 스킬 (모든 프로젝트)" };
@@ -189,9 +218,9 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
     e.preventDefault();
     if (action === "manage") {
       $("equip-dialog").close();
-      return openSkillsManager();
+      return openSkillsView ? openSkillsView() : openSkillsManager();
     }
-    const names = [...$("equip-list").querySelectorAll("input:checked")].map((b) => b.value);
+    const names = [...(ui.equipOn ?? new Set())];
     await setSessionSkills(ui.equipping.id, () => names);
     $("equip-dialog").close();
   });
@@ -199,6 +228,7 @@ export function createSkillsController({ api, loadSessions, sessionById, renderG
   // ── 스킬 관리 ───────────────────────────────────────────────────
   // 만들기·편집·옮기기·삭제. 스킬에 마우스를 올리면 그 스킬을 장착한 카드를 강조한다.
   async function openSkillsManager() {
+    if (openSkillsView) return openSkillsView();
     const mine = ++request;
     await loadSkills();
     if (mine !== request) return;

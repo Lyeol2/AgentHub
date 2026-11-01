@@ -173,7 +173,7 @@ export function createHub(options = {}) {
     runs: createRunService({ history: runHistory, chain, projects, notify }),
     groupTemplates: createGroupTemplateService({ dataDir, store, commands, links, nodeGroups: nodeGroupService, projects, sessions, graphTabs, notify }),
     commands: createCommandService({ commands, chain, links, store, projects, cliPaths, graphTabs, nodeGroups: () => nodeGroupService, ask, notify, figcraft: figcraftSettings }),
-    skills: createSkillService({ config, projects, sessions, saveConfig: persistConfig, notify }),
+    skills: createSkillService({ config, projects, sessions, store, cliPaths, ask, saveConfig: persistConfig, notify }),
     git: createGitService({ sessions, projects, runner, notify, tasks: () => tasks, config }),
     system: createSystemService({
       config, setup, cliPaths, limits, saveConfig: persistConfig, version,

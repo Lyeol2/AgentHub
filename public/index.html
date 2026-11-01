@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="/features/git/operations.css">
   <link rel="stylesheet" href="/features/graph/tabs.css">
   <link rel="stylesheet" href="/features/guide/guide.css">
+  <link rel="stylesheet" href="/features/guide/skills.css">
   <link rel="stylesheet" href="/features/sessions/reports.css">
 </head>
 <body>
@@ -848,10 +849,11 @@
       <p class="hint">장착한 스킬은 이 세션에 "이 작업을 할 때 이 스킬을 따르라"고 알려 줍니다. 대화 중에 바꾸면 다음 요청부터 적용됩니다.</p>
       <p class="error" id="equip-error"></p>
       <menu>
-        <button value="manage" formnovalidate class="ghost">스킬 관리</button>
+        <span class="muted" id="equip-summary"></span>
         <span class="spacer"></span>
+        <button value="manage" formnovalidate class="ghost">스킬 보기 열기</button>
         <button value="cancel" formnovalidate class="ghost">취소</button>
-        <button value="ok" class="primary">저장</button>
+        <button value="ok" class="primary">장착</button>
       </menu>
     </form>
   </dialog>
