@@ -1,8 +1,9 @@
 /** Browser HTTP transport. All feature controllers use this client. */
 export function createApiClient({ fetch: request = globalThis.fetch } = {}) {
-  return async function api(method, url, body) {
+  // options.signal: 오래 걸리는 요청(AI 초안 등)을 중지할 때 쓴다.
+  return async function api(method, url, body, { signal } = {}) {
     const res = await request(url, {
-      method,
+      method, ...(signal ? { signal } : {}),
       headers: { "Content-Type": "application/json", "X-AgentHub": "1" },
       body: body === undefined ? undefined : JSON.stringify(body),
     });

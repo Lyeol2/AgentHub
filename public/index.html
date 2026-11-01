@@ -13,6 +13,7 @@
   <link rel="stylesheet" href="/features/tasks/finish.css">
   <link rel="stylesheet" href="/features/git/operations.css">
   <link rel="stylesheet" href="/features/graph/tabs.css">
+  <link rel="stylesheet" href="/features/guide/guide.css">
   <link rel="stylesheet" href="/features/sessions/reports.css">
 </head>
 <body>
@@ -129,6 +130,7 @@
           <button type="button" role="tab" data-tab="git">Git <span class="tab-count" id="p-tab-git"></span></button>
           <button type="button" role="tab" data-tab="issues" title="GitHub 이슈로 팀원과 작업을 주고받습니다">팀 작업 <span class="tab-count" id="p-tab-issues"></span></button>
           <button type="button" role="tab" data-tab="members" title="이 저장소에 작업을 받을 수 있는 팀원과 이름">팀원 <span class="tab-count" id="p-tab-members"></span></button>
+          <button type="button" role="tab" data-tab="guide" title="AGENTS.md를 쓰고, 지침이 어떻게 이어지는지 봅니다">프로젝트 지침 <span class="tab-count" id="p-tab-guide"></span></button>
         </nav>
         <div class="tab-panel" data-panel="flow">
         <div class="card flow-card">
@@ -243,6 +245,7 @@
           </div>
         </div>
 
+        <div class="tab-panel" data-panel="guide" hidden><div id="guide-root" class="guide"></div></div>
         <div class="tab-panel" data-panel="members" hidden>
           <div class="card member-card">
             <div class="pr-toolbar">

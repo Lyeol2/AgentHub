@@ -18,6 +18,7 @@ import { createCreationController } from "./features/creation/controller.js";
 import { createTasksController } from "./features/tasks/controller.js";
 import { createAccountController } from "./features/account/controller.js";
 import { createIssuesController } from "./features/issues/controller.js";
+import { createGuideController } from "./features/guide/controller.js";
 import { createExecutionControls } from "./features/executions/controller.js";
 import { createRecordsController } from "./features/records/controller.js";
 
@@ -205,8 +206,10 @@ const issuesChanged = (...args) => issues.changed(...args);
 const settings = createSettingsController({
   api, goDashboard, loadProjects, renderProjectNav, currentProject, renderLinkConditions, data, navigation
 });
+const guide = createGuideController({ api, navigation, selectSession });
+const loadGuide = (...args) => guide.activate(...args);
 const projects = createProjectsController({
-  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation
+  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, loadGuide, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation
 });
 const git = createGitController({
   api, selectSession, openSetup, currentProject, projectTab, pullIssues, navigation,

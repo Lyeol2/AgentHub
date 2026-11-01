@@ -41,6 +41,7 @@ import { createTurnLifecycle } from "./application/lifecycle.mjs";
 import { createHttpServer } from "./transport/http.mjs";
 import { createApiHandler } from "./transport/api.mjs";
 import { createFlowAssistantService } from "./application/flow-assistant.mjs";
+import { createGuideService } from "./application/guide.mjs";
 import { createMcpHandler } from "./transport/mcp.mjs";
 import { createEventStream } from "./transport/sse.mjs";
 import { Gen3dKeys } from "./gen3d.mjs";
@@ -183,6 +184,7 @@ export function createHub(options = {}) {
   };
   services.flowAssistant = createFlowAssistantService({ store, commands, links, projects, sessions, graphTabs, commandService: services.commands,
     workflowService: workflows, cliPaths, ask, notify });
+  services.guide = createGuideService({ dataDir, projects, store, links, cliPaths, ask });
   services.taskAssistant = createTaskAssistantService({ projects, graphTabs, cliPaths, config, ask });
   services.issues = deps.issues ?? createIssueService({
     config, store, sessions, notify,
