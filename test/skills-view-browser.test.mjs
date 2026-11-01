@@ -139,7 +139,7 @@ test("browser: 스킬 보기 — 목록·편집·참고 파일·검사·잠김 �
     await evaluate(until("!document.querySelector('#view-project').hidden"));
     // 상단바 "스킬" 버튼은 스킬 보기로 바로 온다.
     await evaluate("document.querySelector('#p-skills').click()");
-    await evaluate(until("!document.querySelector('#g-skills').hidden && document.querySelectorAll('#gs-rows .gs-row').length === 6"));
+    await evaluate(until("!document.querySelector('#g-skills').hidden && document.querySelectorAll('#gs-rows .gs-row:not(.skeleton)').length === 6"));
     assert.deepEqual(await evaluate("[...document.querySelectorAll('#gs-rows .gs-group')].map((g) => g.textContent)"), ["AgentHub만", "Claude 자동", "Codex 자동", "공용", "건너뜀"]);
     assert.match(await evaluate("document.querySelector('#gs-filters').textContent"), /전체 6.*AgentHub만 1.*Claude 자동 1.*Codex 자동 1.*공용 2/);
     await evaluate(until("document.querySelector('#g-skills-count').textContent === '4'"));
