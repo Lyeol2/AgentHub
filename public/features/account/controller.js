@@ -59,9 +59,9 @@ export function createAccountController({ api, openSetup, onChange = () => {} })
     }
     const label = a && !a.installed ? "GitHub CLI 설치" : "GitHub 계정 연결";
     const action = () => (a && !a.installed ? openSetup("gh", "install") : connect());
-    box.replaceChildren(el("button", { type: "button", class: "account-connect", onclick: action, title: "팀원에게 작업을 보내고 받으려면 GitHub 계정을 연결하세요" }, label));
+    box.replaceChildren(el("button", { type: "button", class: "account-connect", onclick: action, title: "Pull Request를 만들고 작업을 게시하려면 GitHub 계정을 연결하세요" }, label));
     settings.replaceChildren(el("div", { class: "account-row" },
-      el("span", { class: "muted" }, a?.error ?? (a && !a.installed ? "GitHub CLI가 없습니다." : "연결된 계정이 없습니다. 팀 작업(받은 작업·작업 보내기)에 GitHub 계정이 필요합니다.")),
+      el("span", { class: "muted" }, a?.error ?? (a && !a.installed ? "GitHub CLI가 없습니다." : "연결된 계정이 없습니다. Pull Request와 작업 게시에 GitHub 계정이 필요합니다.")),
       el("span", { class: "spacer" }),
       el("button", { type: "button", class: "sm", onclick: action }, label)));
   }

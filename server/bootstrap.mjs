@@ -35,8 +35,6 @@ import { createGitService } from "./application/git.mjs";
 import { createTaskService } from "./application/tasks.mjs";
 import { createSystemService } from "./application/system.mjs";
 import { createAccountService } from "./application/account.mjs";
-import { createIssueService } from "./application/issues.mjs";
-import { FileIssueLinkStore } from "./infrastructure/persistence/issue-links.mjs";
 import { createTurnLifecycle } from "./application/lifecycle.mjs";
 import { createHttpServer } from "./transport/http.mjs";
 import { createApiHandler } from "./transport/api.mjs";
@@ -150,10 +148,8 @@ export function createHub(options = {}) {
     nodeGroups: () => nodeGroupService,
   });
   nodeGroupService = createNodeGroupService({ groups: nodeGroups, store, commands, links, projects, graphTabs, notify });
-  // 받은 작업(이슈)과 세션의 연결. 세션을 다시 만들거나 지울 때도 함께 고친다.
-  const issueLinks = deps.issueLinks ?? new FileIssueLinkStore({ dataDir });
   sessions = createSessionService({
-    config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects, commands, graphTabs, issueLinks,
+    config, dataDir, store, runner, links, chain, mailbox, mcpTokens, mcpDir, chatDir, cliPaths, notify, projects, commands, graphTabs,
     saveConfig: persistConfig,
     workflows: () => workflows,
     tasks: () => tasks,
@@ -186,11 +182,6 @@ export function createHub(options = {}) {
     workflowService: workflows, cliPaths, ask, notify });
   services.guide = createGuideService({ dataDir, projects, store, links, cliPaths, ask });
   services.taskAssistant = createTaskAssistantService({ projects, graphTabs, cliPaths, config, ask });
-  services.issues = deps.issues ?? createIssueService({
-    config, store, sessions, notify,
-    links: issueLinks,
-    logger: deps.logger ?? console,
-  });
 
   // 꺼진 사용자 Codex MCP 서버는 세션 실행에서 빼 연결 재시도·오류를 막는다.
   const mcpProbe = deps.mcpProbe ?? new CodexMcpProbe();
@@ -266,7 +257,7 @@ export function createHub(options = {}) {
     if (agent === "claude") limits.recordClaudeLimit(info);
     notify("limits", {});
   });
-  const onTurnEnd = createTurnLifecycle({ runner, mailbox, sessions, workflows, chain, notify, issues: services.issues });
+  const onTurnEnd = createTurnLifecycle({ runner, mailbox, sessions, workflows, chain, notify });
   const logger = deps.logger ?? console;
   listen(runner, "turnEnd", (session, ok) => {
     onTurnEnd(session, ok).catch((err) => logger.error(err));

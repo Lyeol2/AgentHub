@@ -5,7 +5,7 @@ import { taskGit, taskRef, taskAncestor, assertTaskWorktree, assertTaskGitIdle }
 import { clone, now, needsDevelop } from "./task-domain.mjs";
 
 /** Reconcile interrupted local and remote mutations from observed Git and pull-request state. */
-export function createTaskRecovery({ backedUp, findBackMerge, findPull, freshness, github, githubTarget, hasFolder, mutate, offBranch, save, setPull, syncIssue, taskDir, taskSettings }) {
+export function createTaskRecovery({ backedUp, findBackMerge, findPull, freshness, github, githubTarget, hasFolder, mutate, offBranch, save, setPull, taskDir, taskSettings }) {
   async function refresh(id) {
     return mutate(id, async (task) => {
       if (task.state === "cleaned") return { task: clone(task) };
@@ -65,7 +65,6 @@ export function createTaskRecovery({ backedUp, findBackMerge, findPull, freshnes
           const developHead = await taskRef(task.projectPath, `refs/heads/${taskSettings(task).develop}`);
           task.developPending = !developHead || !await taskAncestor(task.cwd, task.mergedHead, developHead);
         }
-        await syncIssue(task);
         save(task);
         return { task: clone(task) };
       }
@@ -107,7 +106,6 @@ export function createTaskRecovery({ backedUp, findBackMerge, findPull, freshnes
         try { task.developPull = normalizePull(await github.api(target, "GET", `repos/${target.repo}/pulls/${task.developPull.number}`), target.repo); }
         catch (error) { if (error.reason === "github-timeout") throw error; }
       }
-      await syncIssue(task, target);
       save(task);
       return { task: clone(task) };
     });

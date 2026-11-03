@@ -50,7 +50,7 @@ npm run release
 - 모델을 고르지 않은 Codex 세션은 `~/.codex/config.toml`의 기본 모델을 쓴다. 이 기본 모델이나 세션에 저장한 모델이 Codex 모델 목록(`~/.codex/models_cache.json`, 숨은 모델 포함)에 아예 없으면 지금 계정에서 쓸 수 없는 모델이다(예: "model is not supported when using Codex with a ChatGPT account"). 그때는 목록의 첫 모델로 바꿔 실행하고, 세션 기록과 모델 입력칸에 그 사실을 알린다. 추론 강도를 바꾼 모델이 지원하지 않으면 그 모델의 기본 강도를 쓴다. 이 목록은 마지막으로 받아 온 Codex 버전이 아는 모델만 담으므로, Codex 앱에는 있는 새 모델이 빠져 보이면 CLI를 업데이트한다(`npm i -g @openai/codex@latest`).
 - 워크트리를 선택하면 `<저장소>.agenthub/<이름>` 폴더와 `agenthub/<이름>` 브랜치를 현재 커밋에서 만든다. 커밋하지 않은 원본 수정은 포함하지 않는다. 이름은 영문·숫자·한글로 시작하는 1~64자의 영문·숫자·한글·하이픈·밑줄이며 Windows 예약어는 쓸 수 없다.
 - 워크트리를 선택한 세션은 앱을 다시 시작하거나 재생성해도 같은 작업 폴더와 브랜치를 이어 쓴다. 이전 버전에서 원본으로 전환된 세션의 작업 폴더나 브랜치를 자동 복원하거나 합치지는 않는다. 가져온 CLI 기록은 원본 폴더에서 이어 쓴다.
-- 세션 기록은 데이터 폴더의 `sessions/`에, 설정은 `config.json`에 저장된다. 연결은 `links.json`, 메시지는 `messages.json`(최근 300개), 공유 노트는 `boards/`에, 팀 작업 이슈와 세션의 연결은 `issue-links.json`에 저장된다. 프로젝트별 GitFlow 설정은 `config.json`의 `gitflow`에 둔다. Claude Code·Codex 기록 검색 요약은 `discover-cache.json`에 캐시하며(파일별 크기·수정 시각·읽은 위치), 기록 파일이 자라면 늘어난 부분만 읽는다. 지워도 다음 검색 때 다시 만든다. 저장소의 `data/`는 git에 올리지 않는다.
+- 세션 기록은 데이터 폴더의 `sessions/`에, 설정은 `config.json`에 저장된다. 연결은 `links.json`, 메시지는 `messages.json`(최근 300개), 공유 노트는 `boards/`에에 저장된다. 프로젝트별 GitFlow 설정은 `config.json`의 `gitflow`에 둔다. Claude Code·Codex 기록 검색 요약은 `discover-cache.json`에 캐시하며(파일별 크기·수정 시각·읽은 위치), 기록 파일이 자라면 늘어난 부분만 읽는다. 지워도 다음 검색 때 다시 만든다. 저장소의 `data/`는 git에 올리지 않는다.
 - 데이터 파일은 임시 파일에 쓰고 fsync한 뒤 이름을 바꿔 저장하므로, 저장 중에 꺼져도 원래 파일이 남는다. 시작할 때 읽을 수 없는 세션·설정·명령·연결·메시지·작업 파일이 있으면 데이터 폴더의 `corrupted/<시각>/`으로 옮기고 나머지 데이터로 시작한다. 설정 파일이 깨졌으면 기본값으로 다시 만든다.
 - 세션의 자동 저장은 500ms 단위로 메타데이터·추가 이벤트·수정 이벤트만 `sessions/<id>.journal.jsonl`에 기록한다. 별도 worker가 직렬화·쓰기·fsync를 맡으며, 저장이 밀리면 세션별 후속 변경을 합친다. 저널이 4MiB 이상이면 worker에서 기존 `<id>.json`에 합친다. 스냅샷의 세대·리비전으로 중복 재생을 막고, 쓰다 끊긴 마지막 줄은 제외한다. 기존 JSON 세션도 그대로 읽는다. 백업은 스냅샷과 저널을 함께 포함해야 한다.
 - 실행 기록은 `run-history.json`의 v2 인덱스와 `run-history/<ID의 SHA-256>.json`으로 나누어 변경된 실행만 저장한다. 기존 배열 파일은 처음 읽을 때 변환한다. `GET /api/runs?path=...`는 단계 본문을 제외한 요약을 기본 50개(최대 100개)와 `nextCursor`로 반환한다. 다음 페이지는 `cursor`, 개별 실행의 전체 단계는 `GET /api/runs/:id`로 읽는다. 변환 후 구버전으로 되돌릴 때는 변환 전 백업을 사용한다.
@@ -127,7 +127,7 @@ Claude CLI는 입력(stdin)이 닫히면 백그라운드 작업(서브에이전�
 - `server/infrastructure/persistence/`는 파일 저장을 담당한다. 서버와 저장소의 `dataDir`을 주입해 테스트용 데이터와 실제 기록을 분리한다. 기존 저장소 import 경로는 호환용 진입점으로 유지한다.
 - `server/index.mjs`는 명령줄 실행 진입점이며, `electron/main.mjs`는 창과 앱 수명을 관리한다. 두 진입점이 같은 서버 조립 코드를 사용한다.
 - `shutdown()`은 Promise다. CLI 종료와 마지막 출력 처리(최대 5초), 세션 저널과 검색 캐시의 저장이 끝날 때까지 호출자가 기다려야 한다. Electron도 저장이 끝난 뒤 종료한다.
-- `server/application/tasks.mjs`는 공통 작업 문맥과 잠금을 조립하고, 생성·동기화/검토·공개·복구·정리·이슈 연결은 별도 작업 모듈에 둔다. Git의 하위 실행기·인증·상태·이력 계산은 업무 서비스에 의존하지 않는다.
+- `server/application/tasks.mjs`는 공통 작업 문맥과 잠금을 조립하고, 생성·동기화/검토·공개·복구·정리는 별도 작업 모듈에 둔다. Git의 하위 실행기·인증·상태·이력 계산은 업무 서비스에 의존하지 않는다.
 
 ### 성능 경계
 

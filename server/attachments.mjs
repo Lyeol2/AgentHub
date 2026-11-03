@@ -4,8 +4,6 @@ import { randomBytes } from "node:crypto";
 import { HttpError } from "./application/errors.mjs";
 
 export const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024;
-// 팀 작업(GitHub 이슈) 첨부는 저장소 브랜치에 커밋하므로 따로 작게 둔다.
-export const MAX_ISSUE_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 export const MAX_IMAGE_BYTES = MAX_ATTACHMENT_BYTES;
 export const MAX_ATTACHMENTS = 20;
 export const MAX_ATTACHMENTS_TOTAL_BYTES = 100 * 1024 * 1024; // 요청 하나에 붙인 파일 합계

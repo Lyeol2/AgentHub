@@ -9,7 +9,7 @@ import { icon } from "../../shared/icons.js";
 import { confirmAction } from "../../shared/confirm-dialog.js";
 import { errorPanel, showError } from "../../shared/error-report.js";
 
-export function createGitController({ api, selectSession, openSetup, currentProject, projectTab, pullIssues = () => [], sessionForFolder = () => null, navigation }) {
+export function createGitController({ api, selectSession, openSetup, currentProject, projectTab, sessionForFolder = () => null, navigation }) {
   initGitResizer();
   initGitStageResizer();
   for (const slot of $("g-tabs").querySelectorAll("[data-icon]")) slot.replaceWith(icon(slot.dataset.icon, { size: 16 }));
@@ -28,7 +28,7 @@ export function createGitController({ api, selectSession, openSetup, currentProj
   // ── Git 탭 ──────────────────────────────────────────────────────
   const GIT_TAB_KEY = "agenthub-git-tab";
   const GIT_TABS = ["changes", "history", "pulls"];
-  const pullRequests = createPullRequests({ api, renderMarkdown, renderDiff, onSetup: () => openSetup("gh"), isProjectCurrent: (project, cwd) => samePath(project, navigation.project) && samePath(cwd || project, ui.git?.cwd || project), pullIssues });
+  const pullRequests = createPullRequests({ api, renderMarkdown, renderDiff, onSetup: () => openSetup("gh"), isProjectCurrent: (project, cwd) => samePath(project, navigation.project) && samePath(cwd || project, ui.git?.cwd || project) });
   const gitTab = () => GIT_TABS.includes(localStorage.getItem(GIT_TAB_KEY)) ? localStorage.getItem(GIT_TAB_KEY) : "changes";
   const gitBusy = () => !!(ui.git?.indexBusy || ui.git?.committing || ui.git?.merging || ui.git?.checkingOut || ui.git?.operationBusy);
   const gitFiles = (area) => (ui.git?.data?.files ?? []).filter((f) => f[area]);

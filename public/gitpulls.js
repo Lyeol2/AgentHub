@@ -1,6 +1,6 @@
 import { confirmAction } from "./shared/confirm-dialog.js";
 // GitHub PR 화면. 원격 변경은 사용자가 누른 작업만 보내고, 조회 응답은 프로젝트/요청 순서를 확인한다.
-export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, isProjectCurrent, pullIssues = () => [] }) {
+export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, isProjectCurrent }) {
   const $ = (id) => document.getElementById(id);
   const node = (tag, attrs = {}, ...children) => {
     const result = document.createElement(tag);
@@ -254,7 +254,6 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
         $("pr-create").hidden = true;
         $("pr-title").value = "";
         $("pr-description").value = "";
-        $("pr-issue").value = "";
         $("pr-labels").value = "";
         $("pr-filter").value = "open";
       }
@@ -305,10 +304,6 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
     if (!state?.context) return;
     $("pr-create").hidden = false;
     if (!$("pr-title").value) $("pr-title").value = state.context.lastCommit?.subject ?? "";
-    // 받은 작업과 연결하면 PR이 병합될 때 GitHub가 그 이슈를 닫는다.
-    const issues = pullIssues(state.project);
-    $("pr-issue").replaceChildren(node("option", { value: "" }, "(연결 안 함)"), ...issues.map((i) => node("option", { value: String(i.number) }, "#" + i.number + " " + i.title)));
-    $("pr-issue").closest("label").hidden = !issues.length;
     controls();
     $("pr-title").focus();
   });
@@ -317,10 +312,7 @@ export function createPullRequests({ api, renderMarkdown, renderDiff, onSetup, i
   $("pr-create").addEventListener("submit", (e) => {
     e.preventDefault();
     if ($("pr-submit").disabled) return;
-    const issue = $("pr-issue").value;
-    const description = $("pr-description").value;
-    const linked = new RegExp("\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) #" + issue + "\\b", "i").test(description);
-    const body = issue && !linked ? (description.trimEnd() + "\n\nCloses #" + issue).trimStart() : description;
+    const body = $("pr-description").value;
     const labels = $("pr-labels").value.split(",").map((name) => name.trim()).filter(Boolean);
     mutate("create", "/api/git/pulls", { title: $("pr-title").value.trim(), body, base: $("pr-base").value, head: $("pr-head").value, draft: $("pr-draft").checked, expectedHead: state.context.headSha, ...(labels.length ? { labels } : {}) });
   });

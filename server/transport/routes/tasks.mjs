@@ -25,8 +25,6 @@ export function taskRoutes(s) {
     ["POST", "tasks/:id/freshness", ({ params }) => s.recheck(params.id)],
     ["POST", "tasks/:id/sync", ({ params, body }) => s.sync(params.id, body)],
     ["POST", "tasks/:id/develop", ({ params }) => s.mergeDevelop(params.id)],
-    ["POST", "tasks/:id/issue", ({ params, body }) => s.linkIssue(params.id, body)],
-    ["DELETE", "tasks/:id/issue", ({ params }) => s.unlinkIssue(params.id)],
     ["POST", "tasks/:id/cleanup", ({ params }) => s.cleanup(params.id)],
     ["POST", "tasks/:id/abort", ({ params }) => s.abortOperation(params.id)],
     ["POST", "tasks/:id/preview", ({ params }) => s.startPreview(params.id)],
