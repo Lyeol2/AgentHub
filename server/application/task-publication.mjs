@@ -298,9 +298,8 @@ export function createTaskPublication({ assertActive, assertIdle, freshness, get
       // 대상의 최신 상태는 표시용으로 갱신한다. PR 생성·갱신은 대상 병합을 요구하지 않는다.
       await freshness(task);
       // 연결한 이슈는 PR이 기본 브랜치에 병합될 때 GitHub가 닫는다.
-      const issueLine = task.issue && task.issue.repo.toLowerCase() === target.repo.toLowerCase() ? `\n관련 이슈: Closes #${task.issue.number}` : "";
       const text = [`## 작업\n${description || task.title}`, `## 검증\n${verification || "검증 결과를 입력하지 않았습니다."}`,
-        `AgentHub 작업: ${task.id}\n유형: ${task.type}${task.version ? `\n버전: ${task.version}` : ""}\n기준: ${task.baseBranch} → ${task.targetBranch}${issueLine}`].join("\n\n");
+        `AgentHub 작업: ${task.id}\n유형: ${task.type}${task.version ? `\n버전: ${task.version}` : ""}\n기준: ${task.baseBranch} → ${task.targetBranch}`].join("\n\n");
       if (!existing) {
         try {
           const result = await externalWrite(task, "pull", head, () => github.create(task.cwd, { ...args, base: task.targetBranch, title: task.title, body: text }));

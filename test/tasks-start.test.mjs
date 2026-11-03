@@ -167,29 +167,3 @@ test("tasks: start requires an explicit boolean, request id and session before a
   assert.equal(f.state.sends.length, 0);
 });
 
-test("tasks: issues link by number or creation, survive restart, close through the PR and sync state", async (t) => {
-  const f = fixture(t);
-  const { task, session } = await f.create();
-  f.state.issues.push({ number: 7, title: "로그인 버튼", body: "", state: "open", user: { login: "lead" } });
-  await assert.rejects(f.service.linkIssue(task.id, { number: "abc" }), (error) => error.status === 400);
-  await assert.rejects(f.service.linkIssue(task.id, { number: 8 }), (error) => error.status === 404 && /#8/.test(error.message));
-  f.state.running.add(session.id);
-  const linked = await f.service.linkIssue(task.id, { number: "#7" });
-  f.state.running.clear();
-  assert.deepEqual([linked.task.issue.number, linked.task.issue.state, linked.task.issue.url], [7, "open", "https://github.com/acme/widget/issues/7"]);
-  const other = await f.create();
-  await assert.rejects(f.service.linkIssue(other.task.id, { number: 7 }), (error) => error.reason === "task-issue-linked");
-  const created = await f.service.linkIssue(other.task.id, { create: true });
-  assert.equal(created.task.issue.number, 101); assert.equal(f.state.issues.at(-1).title, "새 작업");
-  assert.equal(f.restart().get(task.id).issue.number, 7, "the link is stored with the task");
-  f.change(task.cwd);
-  const finished = await f.service.finish(task.id, { verification: "확인" });
-  assert.match(finished.pull.body, /Closes #7/);
-  f.state.issues[0].state = "closed";
-  assert.equal((await f.service.refresh(task.id)).task.issue.state, "closed");
-  f.state.issueError = new GitHubError("GitHub CLI 인증이 필요합니다.", "gh-auth", 401);
-  const failed = await f.service.refresh(task.id);
-  assert.equal(failed.task.state, "review", "an unreadable issue never fails the task refresh");
-  assert.equal(failed.task.issue.errorReason, "gh-auth"); assert.equal(failed.task.issue.state, "closed");
-  assert.equal((await f.service.unlinkIssue(task.id)).task.issue, undefined);
-});

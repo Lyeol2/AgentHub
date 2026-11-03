@@ -9,7 +9,7 @@ import { gitRoutes } from "./routes/git.mjs";
 import { messagingRoutes } from "./routes/messaging.mjs";
 import { taskRoutes } from "./routes/tasks.mjs";
 import { nodeGroupRoutes } from "./routes/node-groups.mjs";
-import { teamRoutes } from "./routes/team.mjs";
+import { accountRoutes } from "./routes/account.mjs";
 import { runRoutes } from "./routes/runs.mjs";
 import { groupTemplateRoutes } from "./routes/group-templates.mjs";
 import { flowAssistantRoutes } from "./routes/flow-assistant.mjs";
@@ -38,7 +38,7 @@ export function createApiHandler({ services, events }) {
     ...gitRoutes(services.git),
     ...messagingRoutes(services.messaging),
     ...taskRoutes(services.tasks),
-    ...(services.account && services.issues ? teamRoutes(services.account, services.issues) : []),
+    ...(services.account ? accountRoutes(services.account) : []),
   ].map(([method, pattern, run, options = {}]) => ({ method, parts: pattern.split("/"), run, ...options }));
 
   return async function handleApi(req, res, url) {

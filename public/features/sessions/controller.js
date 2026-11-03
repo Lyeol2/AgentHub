@@ -15,7 +15,7 @@ import { mergeSubtasks, countSubtasks } from "../../shared/subtasks.js";
 import { createMcpDialog } from "./mcp-dialog.js";
 import { mergeSessionRead } from "../../shared/session-read.js";
 
-export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
+export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
   const ui = {
     "chatDraft": null
   };
@@ -587,7 +587,6 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         disabled: running, title: "같은 설정(역할·모델·권한·연결)으로 새 세션을 만들고 지금 세션은 지웁니다. 화면 기록도 비워집니다.",
       }),
       s.chat ? null : item("스킬 장착…", () => openEquipDialog(s)),
-      s.chat ? null : item("팀원에게 넘기기…", () => sendSessionToTeam(s), { title: "세션 요약으로 GitHub 이슈를 만들어 팀원에게 작업을 보냅니다" }),
       s.chat ? null : item("부를 세션 추가…", () => openCallMenu(e, s), { title: "사용자가 요청할 때만 이 세션이 고른 세션을 불러 일을 맡길 수 있게 \"요청 시 부르기\" 연결을 만듭니다" }),
       el("hr"),
       item("삭제", () => confirmDeleteSession(s), { danger: true }));

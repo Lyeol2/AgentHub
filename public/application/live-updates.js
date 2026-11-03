@@ -3,7 +3,7 @@ import { applySessionState, samePath, indexById } from "../shared/store.js";
 import { applySessionRead } from "../shared/session-read.js";
 import { createFrameTask } from "../shared/frame-task.js";
 
-export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns, notifyFlow, onSessionRemoved, refreshSessionMeta, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, taskProgress, applySubtasks, readCurrent }) {
+export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, refreshRuns, notifyFlow, onSessionRemoved, refreshSessionMeta, applyActivity, markOutput, sessionStateChanged, updateEvent, appendDraft, taskProgress, applySubtasks, readCurrent }) {
   const changedProjects = new Set();
   let unknownProject = false;
   const renderTask = createFrameTask(() => {
@@ -137,9 +137,8 @@ export function connectLiveUpdates({ data, navigation, notifyQuestion, eventsLis
     if (data.current?.id === sessionId) selectSession(sessionId);
   },
   limits: loadLimits,
-  // GitHub 로그인이 끝났거나 팀 작업이 바뀌었다.
+  // GitHub 로그인이 끝났다.
   account: () => loadAccount(true),
-  issues: (e) => issuesChanged(JSON.parse(e.data)),
   update: (e) => {
     applyUpdate(JSON.parse(e.data));
   },

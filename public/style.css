@@ -153,7 +153,7 @@ body.resizing-sidebar, body.resizing-sidebar * { cursor: col-resize !important; 
 .nav-section-toggle:hover { background: var(--hover); color: var(--text); }
 .nav-chevron { display: inline-block; font-size: 16px; line-height: 1; transform: rotate(90deg); }
 .nav-section-toggle[aria-expanded="false"] .nav-chevron { transform: none; }
-.sidebar-lists .nav-section.collapsed, #inbox-section.collapsed { flex: none; min-height: 0; gap: 0; }
+.sidebar-lists .nav-section.collapsed { flex: none; min-height: 0; gap: 0; }
 .nav-label {
   display: flex; justify-content: space-between; align-items: center;
   padding: 0 8px; color: var(--faint);
@@ -1215,45 +1215,11 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .account-who { display: grid; gap: 2px; min-width: 0; }
 .account-who a { font-size: 11.5px; text-decoration: none; }
 
-/* 팀 작업(GitHub 이슈) */
-/* 사이드바가 낮아 받은 작업 칸이 줄어들면 목록도 함께 줄어 스크롤한다. 아래 프로젝트 칸과 겹치지 않는다. */
-#inbox-section { min-height: 76px; overflow: hidden; }
-.inbox-list { flex: 0 1 auto; max-height: 180px; }
+/* 상태 필터 단추(작업 탭) */
 .issue-boxes { display: flex; gap: 2px; }
 .issue-boxes button { border: 0; border-radius: 6px; padding: 4px 10px; background: transparent; color: var(--muted); font-size: 12px; }
 .issue-boxes button.active { background: var(--accent-soft); color: var(--text); font-weight: 600; }
 .issue-boxes button[aria-pressed="true"] { background: var(--accent-soft); color: var(--text); font-weight: 600; }
-.issue-body-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 4px 0 6px; }
-.issue-body-tools .hint { margin: 0; }
-#issue-body.dragover { outline: 2px dashed var(--accent); outline-offset: 2px; }
-.issue-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 10px 14px 0; }
-.issue-filters select { width: auto; max-width: 100%; font-size: 12px; padding: 3px 6px; }
-.issue-assignee-pill { color: var(--muted); }
-.issue-assignee-pill.unassigned { color: var(--warn); }
-.issue-pill { font-size: 10px; padding: 0 6px; }
-.issue-assignees { border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px 2px; margin: 0; display: grid; gap: 4px; }
-.issue-assignees legend { padding: 0 4px; font-size: 12px; }
-#issue-assignees { display: flex; flex-wrap: wrap; gap: 4px 14px; max-height: 120px; overflow: auto; }
-#issue-assignees label.check { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; }
-.issue-link { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 0 16px; font-size: 11.5px; }
-.issue-link:empty { display: none; }
-.issue-link .check { display: flex; align-items: center; gap: 5px; }
-.issue-link .check input { width: auto; margin: 0; }
-.issue-link .dot { display: inline-block; }
-.issue-done { flex-basis: 100%; color: var(--ok); }
-.issue-thread { border-top: 1px solid var(--line); padding: 12px 16px 16px; display: grid; gap: 10px; }
-.issue-thread h5 { margin: 0; font-size: 12px; color: var(--muted); font-weight: 600; }
-.issue-comments { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 50vh; overflow-y: auto; }
-.issue-comment { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; background: var(--panel-2); max-width: 92%; }
-.issue-comment.mine { justify-self: end; border-color: rgb(76 141 255 / .35); background: var(--accent-soft); }
-.issue-comment-head { display: flex; gap: 8px; align-items: baseline; font-size: 11px; margin-bottom: 4px; }
-.issue-comment-body { font-size: 12px; overflow-wrap: anywhere; }
-.issue-comment-form { display: grid; gap: 6px; }
-.issue-comment-form textarea { width: 100%; resize: vertical; }
-.issue-row { gap: 12px; }
-.issue-row label { flex: 1; min-width: 0; }
-.issue-row select { width: 100%; }
-#issue-visibility.error { color: var(--danger); }
 .account-row .spacer { flex: 1; }
 .record-pick { align-items: center; }
 
@@ -1347,23 +1313,6 @@ button.link:hover:not(:disabled) { background: transparent; color: var(--accent)
 .gcmd-repeat .git-port.success:hover { background: var(--ok); }
 .gcmd-repeat .git-port.error:hover { background: var(--danger); }
 @media (max-width: 760px) { .flow-input-field { grid-template-columns: 1fr 1fr; } }
-
-/* ── 팀원 탭 ─────────────────────────────────────────────────── */
-.member-card .pr-toolbar h3 { margin: 0; font-size: 14px; }
-.member-list { list-style: none; margin: 0; padding: 0 0 8px; }
-.member-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 12px; padding: 10px 16px; border-top: 1px solid var(--line); }
-.member-avatar { flex: none; width: 32px; height: 32px; border-radius: 50%; background: var(--panel-2); object-fit: cover; }
-.member-info { flex: 1 1 180px; min-width: 0; display: grid; gap: 2px; }
-.member-title { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.member-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.member-sub { font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.member-tasks { flex: none; font-size: 11.5px; }
-.member-name-input { flex: none; width: 160px; padding: 5px 8px; font-size: 12px; }
-.member-empty { padding: 14px 16px; }
-@media (max-width: 720px) {
-  .member-row { flex-wrap: wrap; }
-  .member-name-input { width: 100%; }
-}
 
 /* ── 하위 작업(서브에이전트·백그라운드 명령) ───────────────── */
 /* 백그라운드 작업 중: 실행 중(채운 점)과 달리 테두리만 있는 점·점선 테두리 */

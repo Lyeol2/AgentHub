@@ -51,7 +51,4 @@ export function worktreeFailure(error) {
 export const needsDevelop = (task) => ["hotfix", "release"].includes(task.type);
 // 이보다 오래된 최신 확인 결과는 카드가 열릴 때 다시 확인한다.
 export const FRESHNESS_MAX_AGE = 10 * 60_000;
-export const ISSUE_NUMBER = /^[1-9][0-9]{0,8}$/;
-export const issueSummary = (issue) => ({ repo: issue.repo, number: issue.number, title: issue.title, url: issue.url, state: issue.state,
-  stateReason: issue.stateReason ?? null, checkedAt: new Date().toISOString() });
 

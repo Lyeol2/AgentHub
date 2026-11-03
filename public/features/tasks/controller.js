@@ -75,8 +75,6 @@ export function createTasksController({
   const finishDialog = $('finish-task-dialog');
   const finishForm = $('finish-task-form');
   const settingsDialog = $('task-settings-dialog');
-  const issueDialog = $('task-issue-dialog');
-  const issueForm = $('task-issue-form');
   const settingsForm = $('task-settings-form');
   // 화면에서만 보여 줄 요청 오류. { message, reason }
   const taskErrors = new Map();
@@ -109,10 +107,6 @@ export function createTasksController({
   let settingsBusy = false;
   let settingsLoading = false;
   let settingsReadFailed = false;
-  let issueTaskId = null;
-  let issueBusy = false;
-  // 팀 작업에서 시작한 새 작업이면 만든 뒤 연결할 이슈. { number, repo }
-  let createIssue = null;
   let filter = (() => { try { const value = localStorage.getItem(FILTER_KEY); return TASK_FILTERS[value] ? value : 'all'; } catch { return 'all'; } })();
   const workbranchPicker = createWorkbranchPicker({
     api, owner: 'task', select: $('task-workbranch'), status: $('task-workbranch-status'), refresh: $('task-workbranch-refresh'),
@@ -362,7 +356,6 @@ export function createTasksController({
       card.setAttribute('aria-busy', String(pendingTasks.has(task.id)));
       const header = node('div', 'task-card-header');
       const heading = node('h3', 'task-title', task.title);
-      if (task.issue?.number) heading.append(node('span', 'task-number', `#${task.issue.number}`));
       const state = node('span', 'task-state', pipeline.stateLabel);
       state.dataset.state = task.state;
       // 푸시 안 된 커밋·원본 폴더 브랜치 이탈처럼 놓치기 쉬운 상태는 제목 옆 배지로 알린다.
@@ -386,7 +379,6 @@ export function createTasksController({
       card.append(meta);
       card.append(folderLine(task, status));
       workspace.decorate(card, task);
-      if (task.issue) card.append(issueLine(task.issue));
       card.append(renderTaskPipeline(pipeline));
       // 상태 조회가 지금 HEAD로 다시 따진 결과가 있으면 저장된 결과보다 그것을 보여 준다.
       const fresh = status?.freshness || task.freshness;
@@ -442,7 +434,6 @@ export function createTasksController({
         const unpushed = task.completion?.kind === 'local' && (task.completion.publishState !== 'done' || (task.completion.developHead && task.completion.developPublishState !== 'done'));
         if (unpushed) secondary.append(actionButton('대상 브랜치 푸시', 'push-target', task, { disabled: blocked }));
       }
-      if (task.state !== 'cleaned') secondary.append(task.issue ? actionButton('이슈 연결 해제', 'unlink-issue', task) : actionButton('이슈 연결', 'link-issue', task));
       const remove = actionButton('작업 삭제', 'delete', task);
       remove.classList.add('danger');
       secondary.append(remove);
@@ -534,90 +525,6 @@ export function createTasksController({
     return link;
   }
 
-  function issueLine(issue) {
-    const line = node('p', 'task-issue');
-    line.dataset.state = issue.state || 'unknown';
-    const label = `이슈 #${issue.number} · ${issue.state === 'closed' ? '닫힘' : '열림'}`;
-    let link = node('span', '', label);
-    try {
-      const url = new URL(issue.url);
-      if (url.protocol === 'https:') { link = node('a', 'task-pull-link', label); link.href = url.href; link.target = '_blank'; link.rel = 'noopener noreferrer'; }
-    } catch { /* Invalid server-provided links are not rendered as links. */ }
-    line.append(link);
-    if (issue.title) line.append(node('span', '', ` ${issue.title}`));
-    if (issue.error) {
-      line.append(node('span', 'task-issue-error', ` · 상태 확인 실패: ${issue.error}`));
-      appendLogin(line, issue.errorReason);
-    }
-    return line;
-  }
-
-  function openIssue(task) {
-    if (!task || pendingTasks.has(task.id) || issueBusy) return;
-    issueTaskId = task.id;
-    issueForm?.reset();
-    $('task-issue-summary').textContent = `${task.title}\n${task.branch} → ${task.targetBranch}`;
-    $('task-issue-title').value = task.title || '';
-    updateIssueForm();
-    showError('task-issue-error');
-    issueDialog?.showModal();
-    $('task-issue-number')?.focus();
-  }
-
-  function updateIssueForm() {
-    const create = $('task-issue-mode')?.value === 'create';
-    $('task-issue-number-row').hidden = create;
-    $('task-issue-number').required = !create;
-    $('task-issue-title-row').hidden = !create;
-    $('task-issue-title').required = create;
-    $('task-issue-submit').textContent = issueBusy ? '처리 중…' : create ? '만들고 연결' : '연결';
-    $('task-issue-submit').disabled = issueBusy;
-  }
-
-  async function submitIssue(event) {
-    event.preventDefault();
-    const task = getTask(issueTaskId);
-    if (!task || issueBusy || !sameProject(projectPath)) return;
-    if (issueForm && !issueForm.reportValidity()) return;
-    const create = $('task-issue-mode').value === 'create';
-    const body = create ? { create: true, title: $('task-issue-title').value.trim() } : { number: $('task-issue-number').value.trim() };
-    const path = projectPath, epoch = projectEpoch, id = task.id;
-    issueBusy = true;
-    pendingTasks.add(id);
-    showError('task-issue-error');
-    updateIssueForm();
-    renderTasks();
-    try {
-      const result = await api('POST', `/api/tasks/${encodeURIComponent(id)}/issue`, body);
-      if (sameProject(path, epoch)) { replaceTask(result.task); issueDialog?.close(); }
-    } catch (error) {
-      if (sameProject(path, epoch)) showError('task-issue-error', requestError(error), error.reason);
-    } finally {
-      issueBusy = false;
-      pendingTasks.delete(id);
-      updateIssueForm();
-      if (sameProject(path, epoch)) renderTasks();
-    }
-  }
-
-  async function unlinkIssue(task) {
-    if (!task?.issue || pendingTasks.has(task.id)) return;
-    if (!confirm(`이슈 #${task.issue.number} 연결을 해제할까요?\nGitHub 이슈와 이미 만든 PR은 그대로 둡니다.`)) return;
-    const path = projectPath, epoch = projectEpoch, id = task.id;
-    pendingTasks.add(id);
-    taskErrors.delete(id);
-    renderTasks();
-    try {
-      const result = await api('DELETE', `/api/tasks/${encodeURIComponent(id)}/issue`);
-      if (sameProject(path, epoch)) replaceTask(result.task);
-    } catch (error) {
-      taskErrors.set(id, { message: requestError(error), reason: error.reason, hint: error.hint, raw: error.raw, action: '이슈 연결 해제' });
-    } finally {
-      pendingTasks.delete(id);
-      if (sameProject(path, epoch)) renderTasks();
-    }
-  }
-
   function invalidateProject() {
     generation++;
     projectEpoch++;
@@ -629,7 +536,6 @@ export function createTasksController({
     loading = false;
     if (createDialog?.open) createDialog.close();
     if (finishDialog?.open) finishDialog.close();
-    if (issueDialog?.open) issueDialog.close();
     workspace.reset();
     updateToolbar();
   }
@@ -674,7 +580,6 @@ export function createTasksController({
       resetSettings();
       if (createDialog?.open) createDialog.close();
       if (finishDialog?.open) finishDialog.close();
-      if (issueDialog?.open) issueDialog.close();
     }
     loading = true;
     showError('tasks-error');
@@ -979,13 +884,12 @@ export function createTasksController({
     }
   }
 
-  // prefill: 팀 작업에서 시작할 때 채울 { title, content, issue }. 사용자가 확인한 뒤 만든다.
+  // prefill: 채워서 열 { title, content }. 사용자가 확인한 뒤 만든다.
   function openNewTask(prefill = null) {
     const path = getProjectPath();
     if (!path || path !== projectPath || createBusy || settingsBusy || uncertainCreates.has(path)) return false;
     createProject = path;
     createTabId = navigation?.graphTabId;
-    createIssue = prefill?.issue ?? null;
     createForm?.reset();
     workbranchPicker.reset();
     worktreePicker.reset();
@@ -994,7 +898,7 @@ export function createTasksController({
     workspace.resetCreate();
     void workspace.prepareCreate(path);
     taskAssistant.open();
-    if ($('task-create-heading')) $('task-create-heading').textContent = createIssue ? `새 작업 · 이슈 #${createIssue.number}` : '새 작업';
+    if ($('task-create-heading')) $('task-create-heading').textContent = '새 작업';
     if (prefill) {
       if ($('task-title')) $('task-title').value = prefill.title ?? '';
       if ($('task-content')) $('task-content').value = prefill.content ?? '';
@@ -1006,19 +910,6 @@ export function createTasksController({
     createDialog?.showModal();
     (prefill ? $('task-title') : $('task-assistant-prompt') || $('task-title'))?.focus();
     return true;
-  }
-
-  // 팀 작업 탭에서 맡은 작업을 새 작업으로 시작한다. 작업 탭으로 옮겨 새 작업 창을 채워 연다.
-  async function startFromIssue({ projectPath: path, title, content, issue }) {
-    if (!path || !issue?.number) return;
-    showTasksTab();
-    if (path !== projectPath || !tasks.length) await loadTasks(path, { localOnly: true });
-    if (!sameProject(path)) return;
-    if (tasks.some(task => task.state !== 'cleaned' && task.issue?.number === issue.number && task.issue.repo?.toLowerCase() === issue.repo?.toLowerCase())) {
-      const linked = tasks.find(task => task.issue?.number === issue.number);
-      throw Error(`이슈 #${issue.number}은 이미 "${linked.title}" 작업에 연결되어 있습니다. 작업 탭에서 이어서 진행하세요.`);
-    }
-    if (!openNewTask({ title, content, issue })) throw Error('지금은 새 작업을 만들 수 없습니다. 작업 탭에서 진행 중인 요청이 끝난 뒤 다시 시도하세요.');
   }
 
   async function createTask(event) {
@@ -1115,17 +1006,9 @@ export function createTasksController({
         ...(existing ? {} : { type: payload.type }),
         agent: payload.agent, permission: payload.permission, model: payload.model || '', effort: payload.effort || '',
       });
-      // 팀 작업에서 시작했으면 그 이슈를 작업에 연결한다. 연결에 실패해도 작업은 남기고 카드에 알린다.
-      const issue = createIssue;
-      let issueError = null;
-      if (issue && !result.task?.issue) {
-        try { result.task = (await api('POST', `/api/tasks/${encodeURIComponent(result.task.id)}/issue`, { number: String(issue.number) })).task; }
-        catch (error) { issueError = { message: `작업은 만들었지만 이슈 #${issue.number}을 연결하지 못했습니다: ${requestError(error)}`, reason: error.reason }; }
-      }
       await reloadSessions();
       if (sameProject(path, epoch)) {
         replaceTask(result.task);
-        if (issueError) taskErrors.set(result.task.id, issueError);
         if (result.startError) taskErrors.set(result.task.id, { message: typeof result.startError === 'string' ? result.startError : result.startError.message || '작업은 만들어졌지만 시작하지 못했습니다. 세션에서 확인해 주세요.' });
         renderTasks();
         createDialog?.close();
@@ -1358,7 +1241,6 @@ export function createTasksController({
     if (task.ownsBranch === false) keeps.push(`기존 브랜치 ${task.branch} (로컬·원격)`);
     else changes.push(`로컬 브랜치 ${task.branch}를 지웁니다.`, `원격 브랜치 ${task.remote || 'origin'}/${task.branch}가 있으면 지웁니다.`);
     if (task.pull?.number && task.pull.state === 'OPEN') changes.push(`열린 PR #${task.pull.number}을 닫습니다.`);
-    if (task.issue?.number) changes.push(`이슈 #${task.issue.number}에서 내 담당을 해제합니다. 이슈는 닫지 않습니다.`);
     changes.push('작업 카드와 작업 기록을 지웁니다.');
     return { changes, keeps };
   }
@@ -1475,13 +1357,13 @@ export function createTasksController({
   }, true);
   finishForm?.addEventListener('submit', finishTask);
   createDialog?.addEventListener('cancel', event => { if (createBusy) event.preventDefault(); });
-  createDialog?.addEventListener('close', () => { workbranchPicker.reset(); worktreePicker.reset(); taskAssistant.close(); if (!createBusy) createIssue = null; });
+  createDialog?.addEventListener('close', () => { workbranchPicker.reset(); worktreePicker.reset(); taskAssistant.close(); });
   finishDialog?.addEventListener('cancel', event => { if (finishBusy) event.preventDefault(); });
   $('task-create-cancel')?.addEventListener('click', () => { if (!createBusy) createDialog?.close(); });
   $('task-finish-cancel')?.addEventListener('click', () => { if (!finishBusy) finishDialog?.close(); });
   document.querySelectorAll('[data-task-dialog-close]').forEach(button => button.addEventListener('click', () => {
     const dialog = button.closest('dialog');
-    if ((dialog === createDialog && createBusy) || (dialog === finishDialog && finishBusy) || (dialog === issueDialog && issueBusy)) return;
+    if ((dialog === createDialog && createBusy) || (dialog === finishDialog && finishBusy)) return;
     dialog?.close();
   }));
   list?.addEventListener('click', event => {
@@ -1496,8 +1378,6 @@ export function createTasksController({
     if (action === 'merge') { openFinish(task, { merge: true }); return; }
     if (action === 'delete') { void deleteTask(task); return; }
     if (action === 'abandon') { void abandonTask(task); return; }
-    if (action === 'link-issue') { openIssue(task); return; }
-    if (action === 'unlink-issue') { void unlinkIssue(task); return; }
     if (action === 'resolve-conflict') { void askConflict(task, button.dataset.sessionId); return; }
     if (workspace.handles(action)) { taskErrors.delete(task.id); void workspace.run(action, task, { setError: value => { taskErrors.set(task.id, value); renderTasks(); }, setPending: on => { if (on) pendingTasks.add(task.id); else pendingTasks.delete(task.id); renderTasks(); } }); return; }
     if (['refresh', 'sync', 'backup', 'cleanup', 'push-target', 'develop', 'abort', 'activate'].includes(action)) void runTaskAction(action, task);
@@ -1506,10 +1386,8 @@ export function createTasksController({
     const button = event.target.closest('[data-task-filter]');
     if (button) setFilter(button.dataset.taskFilter);
   });
-  issueForm?.addEventListener('submit', submitIssue);
   // 작업 탭을 열어 둔 동안에도 검토 대기 작업의 병합을 주기적으로 확인한다.
   setInterval(() => { if (projectPath && !loading && isTasksVisible()) void checkReviewTasks(projectPath, generation); }, REVIEW_CHECK_MS);
-  $('task-issue-mode')?.addEventListener('change', updateIssueForm);
   updateToolbar();
 
   // 작업 만들기 진행 단계(원격 확인 → 작업 폴더 → 세션). 만드는 중인 같은 프로젝트의 버튼 글자로 보여 준다.
@@ -1522,7 +1400,7 @@ export function createTasksController({
   }
 
   return {
-    loadTasks, invalidateProject, renderTasks, cancelCreation, startFromIssue, taskProgress,
+    loadTasks, invalidateProject, renderTasks, cancelCreation, taskProgress,
     async openReference(id, path = getProjectPath()) {
       await loadTasks(path, { localOnly: true });
       if (!sameProject(path)) return;

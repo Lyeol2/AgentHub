@@ -6,7 +6,7 @@ import { taskGit, taskRef, taskAncestor, assertTaskWorktree, readTaskBranch, tas
 import { clone, now, remoteFingerprint, failure, recordError } from "./task-domain.mjs";
 
 /** Verify ownership and merged content before releasing task branches, folders and sessions. */
-export function createTaskCleanup({ busy, directory, findPull, freshness, get, github, githubTarget, hasFolder, isBusy, issues, leaveInPlaceBranch, locked, mutate, notify, offBranch, records, save, sessionService, setPull, store, taskDir, taskSettings, workspace }) {
+export function createTaskCleanup({ busy, directory, findPull, freshness, get, github, githubTarget, hasFolder, isBusy, leaveInPlaceBranch, locked, mutate, notify, offBranch, records, save, sessionService, setPull, store, taskDir, taskSettings, workspace }) {
   // 작업 브랜치의 내용이 이미 대상에 모두 들어 있는지 본다. 병합한 뒤 기준 브랜치를 받아온 병합 커밋만 더 붙었거나
   // 하나로 합치기(squash)로 병합했어도, 작업 브랜치를 대상에 다시 합친 결과가 대상과 같으면 정리해도 잃는 내용이 없다.
   async function contentInTarget(task, head, target) {
@@ -225,7 +225,7 @@ export function createTaskCleanup({ busy, directory, findPull, freshness, get, g
     if (!force && owned.some((session) => isBusy(session.id))) throw new HttpError(409, "이 작업에서 실행 중인 세션이 있습니다.", "running");
     if (!force && !task.inPlace && task.ownsWorktree !== false && fs.existsSync(task.cwd) && await taskDirty(task))
       throw new HttpError(409, "작업 폴더에 커밋하지 않은 변경이나 새 파일이 있습니다.", "task-dirty");
-    const remote = { pullClosed: null, remoteBranchRemoved: false, issueUnassigned: false };
+    const remote = { pullClosed: null, remoteBranchRemoved: false };
     const warnings = [];
     await locked(task.gitCommonDir, async () => {
       busy.add(id);
@@ -245,14 +245,6 @@ export function createTaskCleanup({ busy, directory, findPull, freshness, get, g
       } catch (error) { recordError(task, error); save(task); throw failure(error); }
       finally { busy.delete(id); }
     });
-    if (task.issue?.number) {
-      try {
-        const target = await githubTarget(task);
-        const viewer = await issues.viewer(target);
-        await github.api(target, "DELETE", `repos/${task.issue.repo}/issues/${task.issue.number}/assignees`, { assignees: [viewer] }, { write: true });
-        remote.issueUnassigned = true;
-      } catch (error) { warnings.push(`이슈 #${task.issue.number}의 담당을 해제하지 못했습니다: ${error.message}`); }
-    }
     const result = await remove(id, { force: true, deleteBranch: true });
     if (result.warning) warnings.push(result.warning);
     return { ...result, ...remote, ...(warnings.length ? { warning: warnings.join("\n") } : {}) };

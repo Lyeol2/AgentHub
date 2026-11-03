@@ -17,7 +17,6 @@ import { createSessionsController } from "./features/sessions/controller.js";
 import { createCreationController } from "./features/creation/controller.js";
 import { createTasksController } from "./features/tasks/controller.js";
 import { createAccountController } from "./features/account/controller.js";
-import { createIssuesController } from "./features/issues/controller.js";
 import { createGuideController } from "./features/guide/controller.js";
 import { createExecutionControls } from "./features/executions/controller.js";
 import { createRecordsController } from "./features/records/controller.js";
@@ -194,13 +193,8 @@ const renderProject = (...args) => projects.renderProject(...args);
 const renderSession = (...args) => sessions.renderSession(...args);
 const renderChat = (...args) => sessions.renderChat(...args);
 const loadUpdate = (...args) => settings.loadUpdate(...args);
-const loadIssues = (...args) => issues.activate(...args);
-const renderIssueCount = (...args) => issues.renderTabCount(...args);
-const sendSessionToTeam = (...args) => issues.sendSession(...args);
-const pullIssues = (...args) => issues.pullIssues(...args);
 const showProjectTab = (...args) => projects.showProjectTab(...args);
 const loadAccount = (...args) => account.loadAccount(...args);
-const issuesChanged = (...args) => issues.changed(...args);
 
 // Compose independent features through explicit commands and shared server snapshots.
 const settings = createSettingsController({
@@ -210,10 +204,10 @@ const guide = createGuideController({ api, navigation, selectSession, showGraph:
 const openSkillsView = (name) => { showProjectTab("guide"); return guide.showSkills(navigation.project, name); };
 const loadGuide = (...args) => guide.activate(...args);
 const projects = createProjectsController({
-  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, loadGuide, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation
+  sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadGuide, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation
 });
 const git = createGitController({
-  api, selectSession, openSetup, currentProject, projectTab, pullIssues, navigation,
+  api, selectSession, openSetup, currentProject, projectTab, navigation,
   // Git 탭의 작업 폴더를 쓰는 세션 중 가장 최근 세션. 오류 해결 요청을 보낼 곳이다.
   sessionForFolder: (cwd) => data.sessions.filter((s) => !s.chat && s.cwd && samePath(s.cwd, cwd)).sort((a, b) => String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? ""))).at(-1)?.id ?? null,
 });
@@ -243,14 +237,10 @@ const sessions = createSessionsController({
     showProjectTab("tasks");
     await tasks.openReference(id, projectPath);
   },
-  POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, sendSessionToTeam, fillModels, fillEfforts, clearSelection, data, navigation
+  POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation
 });
 const account = createAccountController({
-  api, openSetup, onChange: () => issues?.accountChanged(),
-});
-const issues = createIssuesController({
-  api, account: () => account.account(), connectAccount: () => account.connect(), goProject, showProjectTab, projectTab, selectSession, navigation,
-  startTask: (...args) => tasks.startFromIssue(...args),
+  api, openSetup,
 });
 const records = createRecordsController({ api, loadSessions, selectSession, data, navigation });
 const creation = createCreationController({
@@ -290,7 +280,7 @@ if (POPUP) {
 } else if (navigation.viewRevision === bootView && sessionSelectionRevision === bootSelection) goDashboard();
 
 const stream = connectLiveUpdates({
-  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, issuesChanged, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved,
+  data, navigation, notifyQuestion, eventsList, appendEvent, scrollToBottom, selectSession, loadLimits, renderSessionList, renderProjectNav, renderDashboard, renderProjectSessions, projectTab, loadGit, loadTasks, renderState, loadSessions, loadProjects, currentProject, goDashboard, loadLinks, loadNodeGroups, loadGraphTabs, loadMessages, refreshBoard, applySetupJobs, loadStatus, loadAuth, loadSetup, loadCommands, loadSkills, refreshQueue, applyUpdate, loadAccount, refreshRuns: executions.refreshRuns, notifyFlow: executions.notify, onSessionRemoved,
   refreshSessionMeta: sessions.refreshSessionMeta, applyActivity: sessions.applyActivity, markOutput: sessions.markOutput, sessionStateChanged: sessions.sessionStateChanged,
   updateEvent: sessions.updateEvent, appendDraft: sessions.appendDraft, taskProgress: tasks.taskProgress, applySubtasks: sessions.applySubtasks,
   readCurrent: () => sessionReads.readCurrent(),

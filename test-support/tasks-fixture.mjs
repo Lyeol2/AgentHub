@@ -7,7 +7,6 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { createTaskService } from "../server/application/tasks.mjs";
 import { GitHubError, normalizePull } from "../server/github.mjs";
-import { normalizeIssue } from "../server/issues.mjs";
 import { gitflowSettingsKey } from "../server/gitflow-settings.mjs";
 
 export function fixture(t, { develop = true, main = "main", developBranch = "develop", settings } = {}) {
@@ -24,7 +23,7 @@ export function fixture(t, { develop = true, main = "main", developBranch = "dev
   git(repo, "add", "."); git(repo, "commit", "-qm", "base");
   git(repo, "remote", "add", "origin", remote); git(repo, "push", "-q", "origin", main);
   if (develop) { git(repo, "branch", developBranch); git(repo, "push", "-q", "origin", developBranch); }
-  const state = { pulls: [], issues: [], writes: [], refs: [], sends: [], running: new Set(), timeout: null, saves: 0, saveError: null, sendError: null, issueError: null };
+  const state = { pulls: [], writes: [], refs: [], sends: [], running: new Set(), timeout: null, saves: 0, saveError: null, sendError: null };
   const config = settings ? { gitflow: { [gitflowSettingsKey(repo)]: settings } } : {};
   const stored = new Map(); let serial = 0;
   const store = { list: () => [...stored.values()], get: (id) => stored.get(id) };
@@ -46,12 +45,6 @@ export function fixture(t, { develop = true, main = "main", developBranch = "dev
         state.refs.push(body.ref);
         if (remoteSha(body.ref.replace(/^refs\/heads\//, ""))) throw new GitHubError("HTTP 422 exists");
         git(repo, "push", "-q", remote, `${body.sha}:${body.ref}`); return { ref: body.ref };
-      }
-      if (method === "GET" && /\/issues\/\d+$/.test(endpoint)) {
-        if (state.issueError) throw state.issueError;
-        const issue = state.issues.find((item) => item.number === Number(endpoint.split("/").at(-1)));
-        if (!issue) throw new GitHubError("gh: Not Found (HTTP 404)");
-        return issue;
       }
       if (method === "GET" && /\/pulls\/\d+$/.test(endpoint)) return state.pulls.find((item) => item.number === Number(endpoint.split("/").at(-1)));
       if (method === "POST" && endpoint.endsWith("/pulls")) {
@@ -93,16 +86,8 @@ export function fixture(t, { develop = true, main = "main", developBranch = "dev
     },
     async remoteHead(target, branch) { return remoteSha(branch); },
   };
-  const issues = {
-    async viewer() { return "me"; },
-    async create(dir, body) {
-      state.writes.push("issue");
-      const raw = { number: 100 + state.issues.length, title: body.title, body: body.body, state: "open", user: { login: "me" }, assignees: [{ login: body.assignee }] };
-      state.issues.push(raw); return { ok: true, issue: normalizeIssue(raw, "acme/widget") };
-    },
-  };
   const options = { dataDir, store, config, saveConfig: (value) => { assert.equal(value, config); state.saves++; if (state.saveError) throw state.saveError; }, runner: { isRunning: (id) => state.running.has(id) }, sessions,
-    projects: { ensureProject: (projectPath) => ({ name: "repo", path: projectPath }) }, github, issues };
+    projects: { ensureProject: (projectPath) => ({ name: "repo", path: projectPath }) }, github };
   let service = createTaskService(options);
   const create = (type = "feature", extra = {}) => service.create({ projectPath: repo, title: "새 작업", type, agent: "codex", ...extra });
   function change(dir, filename = "change.txt", text = "change\n") { fs.writeFileSync(path.join(dir, filename), text); }

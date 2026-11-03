@@ -14,7 +14,7 @@ const UNITY_HINT = {
   off: "유니티 명령과 Unity MCP 도구, unity-cli 스킬을 쓰지 못하게 합니다. Codex는 Unity MCP 서버를 끄고 실행합니다.",
 };
 
-export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadIssues, loadGuide, renderIssueCount, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation }) {
+export function createProjectsController({ sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadGuide, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation }) {
   const ui = {
     "filter": "",
     "removingProject": null,
@@ -84,9 +84,9 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
   }
 
   // ── 프로젝트 탭 ─────────────────────────────────────────────────
-  // 프로젝트 탭(세션 흐름 / 세션 목록 / 작업 / Git / 팀 작업 / 팀원). 마지막에 본 탭을 이 브라우저에 기억한다.
+  // 프로젝트 탭(세션 흐름 / 세션 목록 / 작업 / Git / 프로젝트 지침). 마지막에 본 탭을 이 브라우저에 기억한다.
   const TAB_KEY = "agenthub-project-tab";
-  const PROJECT_TABS = ["flow", "sessions", "tasks", "git", "issues", "members", "guide"];
+  const PROJECT_TABS = ["flow", "sessions", "tasks", "git", "guide"];
   const projectTab = () => (PROJECT_TABS.includes(localStorage.getItem(TAB_KEY)) ? localStorage.getItem(TAB_KEY) : "flow");
 
   function showProjectTab(tab) {
@@ -100,8 +100,6 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     renderProjectSessions();
     if (tab === "git") loadGit();
     if (tab === "tasks") loadTasks?.(navigation.project);
-    if (tab === "issues") loadIssues(navigation.project);
-    if (tab === "members") loadIssues(navigation.project, "members");
     if (tab === "guide") loadGuide?.(navigation.project);
   }
 
@@ -179,7 +177,6 @@ export function createProjectsController({ sessionOpener, api, goDashboard, goPr
     $("p-name").textContent = p.name;
     $("p-path").textContent = p.path;
     $("p-registered").hidden = p.registered;
-    renderIssueCount();
     showProjectTab(projectTab());
     loadSkills(p.path);
     loadCommands(p.path);

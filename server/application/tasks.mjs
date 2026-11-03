@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { withGitRepoLock } from "../git-lock.mjs";
 import { githubPulls } from "../github.mjs";
-import { GitHubIssues, githubIssues } from "../issues.mjs";
 import { HttpError } from "./errors.mjs";
 import { readJsonFile, writeJsonAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { taskGit, taskRepo, taskRef, assertTaskWorktree, readTaskBranch, taskDirty, sameTaskPath, insideTaskPath, assertTaskGitIdle } from "../tasks.mjs";
@@ -12,13 +11,12 @@ import { createTaskProvisioning } from "./task-provisioning.mjs";
 import { createTaskReviewService } from "./task-review-service.mjs";
 import { createTaskPublication } from "./task-publication.mjs";
 import { createTaskRecovery } from "./task-recovery.mjs";
-import { createTaskIssueLinks } from "./task-issue-links.mjs";
 import { createTaskCleanup } from "./task-cleanup.mjs";
 export { taskBranchName } from "./task-domain.mjs";
 import { clone, now, failure, recordError } from "./task-domain.mjs";
 
 export function createTaskService({ dataDir, store, runner, sessions, projects, graphTabs, notify = () => {}, github = githubPulls,
-  issues = github === githubPulls ? githubIssues : new GitHubIssues({ pulls: github }), config = {}, saveConfig = () => {}, workspaceTools = {} }) {
+  config = {}, saveConfig = () => {}, workspaceTools = {} }) {
   const directory = path.join(dataDir, "tasks");
   fs.mkdirSync(directory, { recursive: true });
   const records = new Map();
@@ -298,7 +296,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     hasFolder,
     inPlaceTasks,
     isBusy,
-    issues,
     leaveInPlaceBranch,
     locked,
     mutate,
@@ -314,7 +311,6 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
     sessionService,
     setPull: (...args) => setPull(...args),
     store,
-    syncIssue: (...args) => syncIssue(...args),
     taskDir: (...args) => taskDir(...args),
     taskSessions,
     taskSettings,
@@ -324,10 +320,9 @@ export function createTaskService({ dataDir, store, runner, sessions, projects, 
   const { context, freshness, developBehindHint, requireFresh, review, status, reviewDiff, commitReview, recheck, sync, abortOperation } = createTaskReviewService(taskContext);
   const { taskDir, githubTarget, findPull, setPull, externalWrite, findBackMerge, mergeDevelop, backedUp, backup, pushTarget, finish, mergePull } = createTaskPublication(taskContext);
   const { refresh } = createTaskRecovery(taskContext);
-  const { syncIssue, linkIssue, unlinkIssue } = createTaskIssueLinks(taskContext);
   const { cleanup, remove, abandon } = createTaskCleanup(taskContext);
   return { list, get: (id) => clone(get(id)), adoptSession, context, inPlaceStatus, settings, updateSettings, create, activate, finish, review, status, reviewDiff, commitReview, mergePull, pushTarget, backup, refresh, recheck, sync, cleanup, remove, abandon, assertSession, assertGitOperation, replaceSession, detachSession, workbranches, createBranchSession,
-    mergeDevelop, linkIssue, unlinkIssue, abortOperation,
+    mergeDevelop, abortOperation,
     workspace: (projectPath, options) => workspace.info(projectPath, options), updateWorkspace: (projectPath, body) => workspace.updateSettings(projectPath, body),
     removeReuse: (projectPath, name) => workspace.removeReuse(projectPath, name), previewStatus: (projectPath) => workspace.previewStatus(projectPath),
     startPreview: (id) => workspace.startPreview(id), endPreview: (projectPath) => workspace.endPreview(projectPath), openTask: (id, target) => workspace.open(id, target),

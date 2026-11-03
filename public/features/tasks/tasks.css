@@ -134,10 +134,6 @@
 .task-action-reason { margin: 8px 0 0; font-size: 12px; color: var(--warn); line-height: 1.6; }
 .task-pull-link { color: var(--accent, #8fa6ff); text-decoration: none; }
 .task-pull-link:hover { text-decoration: underline; }
-.task-issue { margin: 8px 0 0; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
-.task-issue[data-state="closed"] .task-pull-link { color: var(--muted, #9ca3af); }
-.task-issue-error { color: var(--danger); }
-.task-issue > .task-login { margin-left: 8px; }
 /* 작업 카드의 오류는 공용 오류 표시(error-report)를 쓰고 카드 안에서 조금 작게 보인다. */
 .task-inline-error { margin: 10px 0 0; font-size: 12px; }
 .task-error-hint { display: block; color: var(--text); opacity: .85; }
