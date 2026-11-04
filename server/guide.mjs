@@ -91,7 +91,8 @@ export function guideLinks(text) {
       if (isExternal(target)) continue;
       // 링크 앞에 "C# 수정 시"처럼 조건이 있으면 조건부 참조로 본다.
       const before = line.slice(0, match.index).replace(/^\s*(?:[-*+]|\d+[.)]|\|)\s*/, "").replace(/\|/g, " ").trim();
-      const condition = /(시|때|경우|전|후|작업)\s*[:：]?\s*$/.test(before) && before.length <= 40 ? before.replace(/[:：]\s*$/, "").trim() : "";
+      // "C# 수정 시", "배포하기 전에", ".cs 파일을 고칠 때는", "실패한 경우에"처럼 끝나면 조건으로 본다.
+      const condition = /(시|때|경우|전|후|작업|면)(에|에는|엔|는)?\s*[:：]?\s*$/.test(before) && before.length <= 60 ? before.replace(/[:：]\s*$/, "").trim() : "";
       links.push({ line: index + 1, text: line.trim(), target: cleanTarget(target), label: match[1] || target, condition });
     }
   });
@@ -125,6 +126,7 @@ export function checkGuide(text, { file, projectPath, skills = [] } = {}) {
       const target = path.resolve(base, link.target);
       if (fs.existsSync(target)) continue;
       warnings.push({ id: `broken:${link.line}:${link.target}`, kind: "broken-link", level: "error", title: "없는 파일을 가리킵니다", detail: `${link.target} 파일이 없습니다.`, line: link.line, quote: link.text,
+        ...(projectPath && /\.md$/i.test(target) && !path.relative(projectPath, target).startsWith("..") ? { docPath: path.relative(projectPath, target).split(path.sep).join("/") } : {}),
         fix: { line: link.line, from: lineAt(text, link.line), to: null } });
     }
   }
@@ -176,8 +178,8 @@ export function claudeSections(text) {
 }
 
 // ── 지침 지도 ─────────────────────────────────────────────────
-const SKIP_DIRS = new Set(["node_modules", ".git", "Library", "Temp", "obj", "Logs", "Build", "Builds", "dist", "out", ".agenthub", ".claude", ".idea", ".vs", "UserSettings", "Packages"]);
-const DOC_DIRS = ["docs", "Docs", ".ai"];
+export const SKIP_DIRS = new Set(["node_modules", ".git", "Library", "Temp", "obj", "Logs", "Build", "Builds", "dist", "out", ".agenthub", ".claude", ".idea", ".vs", "UserSettings", "Packages"]);
+export const DOC_DIRS = ["docs", "Docs", ".ai"];
 
 // 하위 폴더의 AGENTS.md·CLAUDE.md(깊이·폴더 수 제한)
 export function findNestedGuides(projectPath, { depth = 4, maxDirs = 3000 } = {}) {
@@ -300,6 +302,16 @@ export function guideMap(projectPath, { skills = [], sessions = [], links = [] }
       edges.push({ from: injection.id, to: id, kind: "inject", label: "" });
     }
     for (const name of session.skills ?? []) if (nodes.has(`skill:${name}`)) edges.push({ from: `skill:${name}`, to: id, kind: "inject", label: "이은 스킬" });
+  }
+  // 읽힘 보장: 루트·CLAUDE.md는 세션마다, @가져온 문서는 Claude 세션마다, 하위 지침은 그 폴더를 다룰 때, 링크 문서는 AI가 열 때만
+  for (const node of nodes.values()) {
+    if (node.kind === "root") node.assurance = status.imports ? "항상" : "항상(Codex)";
+    else if (node.kind === "claude") node.assurance = "항상(Claude)";
+    else if (node.kind === "nested") node.assurance = "폴더 진입 시";
+    else if (node.kind === "doc") {
+      const incoming = edges.filter((e) => e.to === node.id);
+      node.assurance = node.orphan ? "읽히지 않음" : incoming.some((e) => e.kind === "import") ? "항상(Claude)" : incoming.some((e) => e.kind === "conditional") ? "조건부" : "조건 없는 링크";
+    }
   }
   return { nodes: [...nodes.values()], edges, claude: status };
 }

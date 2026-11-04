@@ -1,6 +1,10 @@
 // 프로젝트 지침 탭: AGENTS.md·CLAUDE.md 읽기·저장, 저장 전 검사, CLAUDE.md 연결·합치기, AI 초안·섹션 다시 쓰기, 지침 지도, 작업 순서도.
 import fs from "node:fs";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { writeFileAtomic } from "../infrastructure/persistence/json-file.mjs";
+import { GUIDE_NAMES, folderSuggestions, checkFolder, defaultDocDir, docFileName, blankDoc, blankNested, insertDocLink, moveSections, dropReferences, guideSources, branchChecks } from "../guide-branches.mjs";
 import { askOnce } from "../one-shot.mjs";
 import { listSkills } from "../skills.mjs";
 import { HttpError } from "./errors.mjs";
@@ -13,9 +17,21 @@ import {
 const REQUEST_MAX = 1000;
 const DRAFT_TIMEOUT = 600_000;
 const FLOW_TIMEOUT = 300_000;
+const TRASH_KEEP = 20;
+const slash = (value) => value.split(path.sep).join("/");
 
 export function createGuideService({ dataDir, projects, store, links, cliPaths, ask = askOnce }) {
   const flowDir = path.join(dataDir, "guide-flows");
+  const trashDir = path.join(dataDir, "guide-trash");
+  // git 읽기(추적 여부·바뀐 지침). git 저장소가 아니거나 git이 없으면 null
+  const git = (root, args) => { try { return execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5000, windowsHide: true }); } catch { return null; } };
+  const tracked = (root, relPath) => { try { execFileSync("git", ["ls-files", "--error-unmatch", "--", relPath], { cwd: root, stdio: "ignore", timeout: 5000, windowsHide: true }); return true; } catch (error) { return error.status === 1 ? false : null; } };
+  function uncommitted(root) {
+    const files = guideSources(root).map((f) => slash(path.relative(root, f)));
+    if (!files.length) return [];
+    const out = git(root, ["status", "--porcelain", "--untracked-files=all", "--", ...files]);
+    return out == null ? null : out.split("\n").map((line) => line.trimEnd()).filter(Boolean).map((line) => line.slice(3).trim());
+  }
 
   function project(projectPath) {
     if (!projectPath) throw new HttpError(400, "프로젝트를 정하세요.");
@@ -51,6 +67,11 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
       sections: parseSections(text ?? ""), warnings: text === null ? [] : checkGuide(text, { file: full, projectPath: root, skills: skillsOf(root) }),
       claude: claudeStatus(root), files: guideFiles(root), catalog: GUIDE_SECTIONS.map(({ key, title, hint }) => ({ key, title, hint })),
       blank: blankGuide(path.basename(root)),
+      // 반영 시점 안내: 실행 중인 세션은 다음 새 대화부터, 워크트리 세션은 커밋·병합 뒤 읽는다.
+      running: projectSessions(root).filter((s) => s.state === "running").length,
+      worktrees: projectSessions(root).filter((s) => s.worktree).length,
+      uncommitted: uncommitted(root), docDir: defaultDocDir(root),
+      branches: branchChecks(root).reduce((n, f) => n + f.warnings.filter((w) => w.level !== "info").length, 0),
     };
   }
 
@@ -70,8 +91,7 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
     const current = read(full);
     if (!force && current !== null && hashText(current) !== baseHash) throw new HttpError(409, "파일이 다른 곳에서 바뀌었습니다.", "guide-changed");
     try {
-      fs.mkdirSync(path.dirname(full), { recursive: true });
-      fs.writeFileSync(full, value);
+      writeFileAtomic(full, value);
     } catch (error) { throw new HttpError(500, `저장하지 못했습니다: ${error.code ?? error.message}`, "guide-write"); }
     return view(root, rel);
   }
@@ -84,7 +104,7 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
     if (!status.agents) throw new HttpError(400, "먼저 AGENTS.md를 저장하세요.");
     if (status.imports) return view(root, "AGENTS.md");
     const text = read(claude);
-    fs.writeFileSync(claude, text === null ? "@AGENTS.md\n" : `@AGENTS.md\n\n${text}`);
+    writeFileAtomic(claude, text === null ? "@AGENTS.md\n" : `@AGENTS.md\n\n${text}`);
     return view(root, "AGENTS.md");
   }
 
@@ -103,8 +123,8 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
     const kept = chunks.filter((c) => !move.has(c.index));
     if (!moved.length) throw new HttpError(400, "옮길 내용을 고르세요.");
     const appended = moved.map((c) => `## ${c.title === "앞부분" ? "Claude에서 옮긴 내용" : c.title}\n${c.text}`).join("\n\n");
-    fs.writeFileSync(agents, `${agentsText.replace(/\s+$/, "")}${agentsText.trim() ? "\n\n" : ""}${appended}\n`);
-    fs.writeFileSync(claude, ["# CLAUDE.md", "", "@AGENTS.md", ...kept.flatMap((c) => ["", `## ${c.title}`, c.text])].join("\n") + "\n");
+    writeFileAtomic(agents, `${agentsText.replace(/\s+$/, "")}${agentsText.trim() ? "\n\n" : ""}${appended}\n`);
+    writeFileAtomic(claude, ["# CLAUDE.md", "", "@AGENTS.md", ...kept.flatMap((c) => ["", `## ${c.title}`, c.text])].join("\n") + "\n");
     return view(root, "AGENTS.md");
   }
 
@@ -184,5 +204,132 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
     return withHighlights(root, full, flow, session);
   }
 
-  return { view, check, save, linkClaude, mergeClaude, draft, rewrite, map, getFlow, drawFlow };
+  // ── 갈래 만들기·삭제 ─────────────────────────────────────────
+  function folders({ projectPath, q } = {}) {
+    const root = project(projectPath);
+    return { folders: folderSuggestions(root, q), docDir: defaultDocDir(root) };
+  }
+
+  // 새 지침: dir 폴더에 AGENTS.md / CLAUDE.md / 둘 다(CLAUDE.md는 @AGENTS.md). start=move면 상위 지침에서 고른 섹션을 옮긴다.
+  // 옮긴 뒤 상위 지침의 남은 글은 저장하지 않고 돌려준다(편집기에서 확인하고 저장).
+  function createGuide({ projectPath, dir, kind = "both", start = "blank", sections = [], parentText } = {}) {
+    const root = project(projectPath);
+    let folder;
+    try { folder = checkFolder(root, dir); } catch (error) { throw new HttpError(400, error.message, "guide-path"); }
+    const names = kind === "agents" ? ["AGENTS.md"] : kind === "claude" ? ["CLAUDE.md"] : ["AGENTS.md", "CLAUDE.md"];
+    const relOf = (name) => (folder.rel ? folder.rel + "/" + name : name);
+    const existing = names.filter((n) => fs.existsSync(path.join(folder.full, n)));
+    if (existing.length === names.length) throw new HttpError(409, "이미 있습니다: " + existing.map(relOf).join(", "), "guide-exists", { file: relOf(existing[0]) });
+    let body = blankNested(folder.rel), remaining = null;
+    if (start === "move" && Array.isArray(sections) && sections.length && parentText != null) {
+      const moved = moveSections(String(parentText), sections, relOf(names.includes("AGENTS.md") ? "AGENTS.md" : "CLAUDE.md"));
+      body = "# " + (folder.rel || "루트") + " 폴더 지침\n\n" + moved.moved + "\n";
+      remaining = moved.remaining;
+    }
+    const created = [];
+    for (const name of names) {
+      const full = path.join(folder.full, name);
+      if (fs.existsSync(full)) continue;
+      writeFileAtomic(full, name === "CLAUDE.md" && names.includes("AGENTS.md") ? "@AGENTS.md\n" : body);
+      created.push(relOf(name));
+    }
+    const open = created.find((f) => f.endsWith("AGENTS.md")) ?? created[0];
+    return { created, open, remaining, ...view(root, open) };
+  }
+
+  // 연결 문서: 문서를 만들고 지침에 "- <조건> [제목](경로)" 줄을 넣은 글을 돌려준다(지침은 사용자가 저장).
+  // mode=import면 같은 폴더의 CLAUDE.md에 @경로 줄을 넣어 바로 저장한다(Claude가 항상 읽음).
+  // docPath를 주면(깨진 링크의 "이 파일 만들기") 그 경로에 빈 문서만 만든다.
+  function createDoc({ projectPath, file = "AGENTS.md", text, title, dir, condition, mode = "link", docPath: exact } = {}) {
+    const root = project(projectPath);
+    const guide = target(root, file);
+    const cond = String(condition ?? "").trim().replace(/[:：]\s*$/, "");
+    if (!exact && !cond) throw new HttpError(400, "언제 읽을지 적어 주세요. 예: .cs 파일을 고치기 전에", "guide-condition");
+    let docFull;
+    if (exact) docFull = target(root, exact).full;
+    else {
+      const name = String(title ?? "").trim();
+      if (!name) throw new HttpError(400, "문서 제목을 적어 주세요.", "guide-title");
+      let folder;
+      try { folder = checkFolder(root, dir ?? defaultDocDir(root)); } catch (error) { throw new HttpError(400, error.message, "guide-path"); }
+      docFull = path.join(folder.full, docFileName(name));
+    }
+    const docRel = slash(path.relative(root, docFull));
+    if (GUIDE_NAMES.includes(path.basename(docFull))) throw new HttpError(400, "지침 파일은 + 새 지침으로 만드세요.", "guide-path");
+    const createdDoc = !fs.existsSync(docFull);
+    if (createdDoc) writeFileAtomic(docFull, blankDoc(String(title || path.basename(docFull, ".md")), cond || "필요할 때"));
+    const current = text != null ? String(text) : read(guide.full) ?? "";
+    if (exact) return { doc: docRel, created: createdDoc, text: current };
+    const linkTarget = slash(path.relative(path.dirname(guide.full), docFull));
+    if (mode === "import") {
+      const claudeFull = path.join(path.dirname(guide.full), "CLAUDE.md");
+      const claudeText = read(claudeFull) ?? "";
+      const importRel = slash(path.relative(path.dirname(claudeFull), docFull));
+      if (!claudeText.split(/\r?\n/).some((l) => l.trim() === "@" + importRel)) writeFileAtomic(claudeFull, claudeText.replace(/\s+$/, "") + (claudeText.trim() ? "\n" : "") + "@" + importRel + "\n");
+      return { doc: docRel, created: createdDoc, imported: slash(path.relative(root, claudeFull)), text: current };
+    }
+    return { doc: docRel, created: createdDoc, text: insertDocLink(current, "- " + cond + " [" + String(title).trim() + "](" + linkTarget + ")", linkTarget) };
+  }
+
+  // 삭제: 데이터 폴더에 백업한 뒤 지운다. dropRefs면 이 파일을 가리키는 링크·@ 줄도 다른 지침에서 지운다.
+  function removeFile({ projectPath, file, baseHash, dropRefs = false } = {}) {
+    const root = project(projectPath);
+    const { full, rel } = target(root, file);
+    const text = read(full);
+    if (text === null) throw new HttpError(404, "파일이 없습니다.", "guide-missing");
+    if (baseHash !== undefined && baseHash !== null && hashText(text) !== baseHash) throw new HttpError(409, "파일이 다른 곳에서 바뀌었습니다. 다시 불러온 뒤 지우세요.", "guide-changed");
+    const id = Date.now() + "-" + randomBytes(3).toString("hex");
+    const wasTracked = tracked(root, rel);
+    writeFileAtomic(path.join(trashDir, id, "content.md"), text);
+    writeFileAtomic(path.join(trashDir, id, "meta.json"), JSON.stringify({ id, projectPath: root, file: rel, deletedAt: new Date().toISOString(), tracked: wasTracked }, null, 2));
+    fs.rmSync(full);
+    const cleaned = [];
+    if (dropRefs) {
+      for (const source of guideSources(root)) {
+        const result = dropReferences(fs.readFileSync(source, "utf8"), path.dirname(source), full);
+        if (result.removed) { writeFileAtomic(source, result.text); cleaned.push({ file: slash(path.relative(root, source)), removed: result.removed }); }
+      }
+    }
+    fs.rmSync(flowFile(root, rel), { force: true });
+    pruneTrash(root);
+    return { removed: rel, backup: id, tracked: wasTracked, cleaned, ...view(root, "AGENTS.md") };
+  }
+
+  function trashEntries(root) {
+    let ids = [];
+    try { ids = fs.readdirSync(trashDir); } catch { return []; }
+    return ids.map((id) => { try { return JSON.parse(fs.readFileSync(path.join(trashDir, id, "meta.json"), "utf8")); } catch { return null; } })
+      .filter((m) => m && samePath(m.projectPath, root)).sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
+  }
+  function pruneTrash(root) { for (const old of trashEntries(root).slice(TRASH_KEEP)) fs.rmSync(path.join(trashDir, old.id), { recursive: true, force: true }); }
+  function trash({ projectPath } = {}) { return { items: trashEntries(project(projectPath)) }; }
+
+  // 되살리기: 같은 경로에 새 파일이 생겼으면 덮어쓰지 않는다.
+  function restore({ projectPath, id } = {}) {
+    const root = project(projectPath);
+    const entry = trashEntries(root).find((m) => m.id === String(id));
+    if (!entry) throw new HttpError(404, "되살릴 백업이 없습니다.", "guide-trash-missing");
+    const { full, rel } = target(root, entry.file);
+    if (fs.existsSync(full)) throw new HttpError(409, rel + "이(가) 이미 있어 되살리지 않았습니다.", "guide-exists");
+    writeFileAtomic(full, fs.readFileSync(path.join(trashDir, entry.id, "content.md"), "utf8"));
+    fs.rmSync(path.join(trashDir, entry.id), { recursive: true, force: true });
+    return { restored: rel, ...view(root, rel) };
+  }
+
+  // 지울 때 확인 창에 보일 영향: 가리키는 곳·읽는 도구·읽힘 보장·git 추적 여부·실행 중인 세션
+  function impact({ projectPath, file } = {}) {
+    const root = project(projectPath);
+    const { full, rel } = target(root, file);
+    const data = guideMap(root, { skills: skillsOf(root), sessions: projectSessions(root), links: links.list() });
+    const node = data.nodes.find((n) => n.id === rel);
+    const refs = data.edges.filter((e) => e.to === rel).map((e) => ({ from: e.from, kind: e.kind, label: e.label ?? "" }));
+    const text = read(full);
+    return { file: rel, exists: text !== null, lines: text === null ? 0 : text.split(/\r?\n/).length, savedAt: text === null ? null : fs.statSync(full).mtime.toISOString(),
+      hash: text === null ? null : hashText(text), readers: node?.readers ?? "", assurance: node?.assurance ?? "", refs, tracked: tracked(root, rel),
+      running: projectSessions(root).filter((s) => s.state === "running").length };
+  }
+
+  function checkAll({ projectPath } = {}) { return { files: branchChecks(project(projectPath)) }; }
+
+  return { view, check, save, linkClaude, mergeClaude, draft, rewrite, map, getFlow, drawFlow, folders, createGuide, createDoc, removeFile, trash, restore, impact, checkAll };
 }
