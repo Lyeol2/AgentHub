@@ -3,6 +3,7 @@ import { openDiffDialog } from "./diff.js";
 import { renderMap, KIND_LABEL } from "./map.js";
 import { renderFlow } from "./flow.js";
 import { createSkillsView } from "./skills.js";
+import { openNewGuide, openAddDoc, openDelete, openTrash, openBranchWarnings, createPair, createMissing } from "./branches.js";
 
 // 프로젝트 지침 탭: 편집(AGENTS.md 작성·검사·AI 초안) / 지침 지도 / 작업 순서도
 const VIEW_KEY = "agenthub-guide-view";
@@ -52,8 +53,13 @@ export function createGuideController({ api, navigation, selectSession, showGrap
       el("div", { id: "g-banner" }),
       el("section", { class: "guide-view", "data-view-panel": "edit" },
         el("div", { class: "guide-filebar" },
-          el("select", { id: "g-file", class: "mono", "aria-label": "지침 파일", onchange: (e) => switchFile(e.target.value) }),
+          el("div", { class: "guide-filepick" },
+            el("select", { id: "g-file", class: "mono", "aria-label": "지침 파일", onchange: (e) => switchFile(e.target.value) }),
+            el("button", { type: "button", class: "ghost sm", id: "g-new-guide", title: "하위 폴더 지침(AGENTS.md·CLAUDE.md)을 만듭니다", onclick: () => openNewGuide(branchCtx) }, "+ 새 지침"),
+            el("button", { type: "button", class: "ghost sm", id: "g-add-doc", title: "필요할 때 읽을 연결 문서를 만들고 필독 문서에 링크합니다", onclick: () => openAddDoc(branchCtx, { docDir: state.guide?.docDir }) }, "+ 문서 추가"),
+            el("button", { type: "button", class: "ghost sm", id: "g-file-more", "aria-label": "지침 파일 메뉴", onclick: openFileMenu }, "⋯")),
           el("span", { class: "muted guide-meta", id: "g-saved" })),
+        el("div", { class: "guide-branchbar", id: "g-branchbar" }),
         el("div", { class: "guide-edit" },
           el("aside", { class: "guide-sections" }, el("header", {}, el("strong", {}, "섹션"), el("span", { class: "muted", id: "g-section-count" })), el("ol", { id: "g-section-list" }), el("footer", { class: "muted" }, "섹션 순서는 권장 순서입니다")),
           el("div", { class: "guide-editor" },
@@ -163,6 +169,7 @@ export function createGuideController({ api, navigation, selectSession, showGrap
     $("g-file").replaceChildren(...guide.files.map((file) => el("option", { value: file, ...(file === state.file ? { selected: "" } : {}) }, file)));
     if (!guide.files.includes(state.file)) $("g-file").append(el("option", { value: state.file, selected: "" }, state.file));
     $("g-saved").textContent = guide.exists ? `마지막 저장 ${time(guide.savedAt)} · ${guide.lines}줄` : "아직 파일이 없습니다";
+    renderBranchBar();
     const textarea = $("g-text");
     if (textarea.value !== state.text) textarea.value = state.text;
     const empty = !guide.exists && !state.text;
@@ -296,7 +303,8 @@ export function createGuideController({ api, navigation, selectSession, showGrap
         el("p", { class: "muted" }, warning.detail),
         warning.fix?.to ? el("p", { class: "guide-suggest" }, `제안: ${warning.fix.to.trim()}`) : null,
         el("div", { class: "guide-warning-actions" },
-          warning.fix ? el("button", { type: "button", class: "primary sm", onclick: () => applyFix(warning) }, warning.fix.to ? "제안 적용" : "링크 지우기") : null,
+          warning.docPath ? el("button", { type: "button", class: "primary sm", onclick: () => createMissing(branchCtx, warning.docPath) }, "이 파일 만들기") : null,
+          warning.fix ? el("button", { type: "button", class: warning.docPath ? "ghost sm" : "primary sm", onclick: () => applyFix(warning) }, warning.fix.to ? "제안 적용" : "링크 지우기") : null,
           el("button", { type: "button", class: "ghost sm", onclick: () => goLine(warning.line, { select: true }) }, "줄로 이동"),
           el("button", { type: "button", class: "ghost sm", onclick: () => { state.ignored.add(warning.id); renderWarnings(); renderSections(); renderTabCount(); } }, "무시")))),
       ...state.fixed.map((text) => el("article", { class: "guide-warning fixed" }, el("strong", {}, "고쳤습니다"), el("p", { class: "muted" }, text))),
@@ -328,7 +336,7 @@ export function createGuideController({ api, navigation, selectSession, showGrap
       if (!problems().length) state.panel = false;
       state.map = null;
       renderEdit();
-      toast(`${state.file}를 저장했습니다`);
+      toast(`${state.file}를 저장했습니다${reflectNote()}`);
     } catch (error) {
       state.saveError = { kind: error.reason === "guide-changed" ? "changed" : "write", message: error.message };
       renderEdit();
@@ -544,12 +552,14 @@ export function createGuideController({ api, navigation, selectSession, showGrap
       el("p", { class: "muted guide-label" }, "선택한 노드"),
       el("h4", {}, node.title),
       node.file ? el("p", { class: "mono muted guide-path" }, node.kind === "skill" ? node.file : `${state.project.replace(/[\\/]$/, "")}\\${node.id.replaceAll("/", "\\")}`) : null,
-      el("div", { class: "guide-rows" }, row("종류", KIND_LABEL[node.kind] ?? node.kind), row("읽는 도구", node.readers ?? ""), node.lines ? row("줄 수", `${node.lines}줄`) : null),
+      el("div", { class: "guide-rows" }, row("종류", KIND_LABEL[node.kind] ?? node.kind), row("읽는 도구", node.readers ?? ""), node.assurance ? row("읽힘 보장", node.assurance) : null, node.lines ? row("줄 수", `${node.lines}줄`) : null),
       node.description ? el("p", { class: "muted guide-desc" }, node.description) : null,
       node.role ? el("p", { class: "guide-desc" }, node.role.slice(0, 400)) : null,
       el("p", { class: "guide-label" }, `들어오는 선 ${incoming.length}`), el("ul", { class: "guide-refs" }, ...incoming.map((e) => ref(e, e.from))),
       el("p", { class: "guide-label" }, `나가는 선 ${outgoing.length}`), el("ul", { class: "guide-refs" }, ...outgoing.map((e) => ref(e, e.to))),
       editable ? el("button", { type: "button", class: "primary guide-wide", onclick: async () => { show("edit"); if (state.file !== node.id) await switchFile(node.id); } }, "편집 보기로 열기") : null,
+      node.kind === "nested" && !data.nodes.some((n) => n.id === node.id.replace(/(AGENTS|CLAUDE)\.md$/i, (m) => (m.toUpperCase() === "AGENTS.MD" ? "CLAUDE.md" : "AGENTS.md"))) ? el("button", { type: "button", class: "ghost guide-wide", onclick: () => createPair(branchCtx, node.id.replace(/(AGENTS|CLAUDE)\.md$/i, (m) => (m.toUpperCase() === "AGENTS.MD" ? "CLAUDE.md" : "AGENTS.md"))) }, "짝 만들기") : null,
+      editable || (node.kind === "doc" && node.orphan) ? el("button", { type: "button", class: "ghost sm danger guide-wide", onclick: () => openDelete(branchCtx, node.id) }, "삭제") : null,
       node.sessionId ? el("button", { type: "button", class: "primary guide-wide", onclick: () => selectSession?.(node.sessionId) }, "세션 열기") : null,
       node.kind === "skill" ? el("button", { type: "button", class: "primary guide-wide", onclick: () => { show("skills"); skills.activate(state.project, { select: node.title }); } }, "스킬 보기로 열기") : null);
   }
@@ -667,14 +677,58 @@ export function createGuideController({ api, navigation, selectSession, showGrap
   }
 
   let toastTimer = null;
-  function toast(text, error = false) {
+  // action: { label, run } — 알림 안의 단추(예: 되돌리기). 단추가 있으면 조금 더 오래 보인다.
+  function toast(text, error = false, action = null) {
     const box = $("g-toast");
     if (!box) return;
-    box.textContent = text;
+    fill(box, text, action ? el("button", { type: "button", class: "link guide-toast-action", onclick: () => { box.hidden = true; action.run(); } }, action.label) : null);
     box.className = `guide-toast${error ? " error" : ""}`;
     box.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { box.hidden = true; }, 3000);
+    toastTimer = setTimeout(() => { box.hidden = true; }, action ? 8000 : 3000);
+  }
+
+  // ── 갈래 만들기·삭제 ─────────────────────────────────────────
+  const branchCtx = {
+    api, project: () => state.project, file: () => state.file, text: () => state.text, sections: () => state.sections,
+    setText: (text) => { setText(text); check().then(() => renderEdit()); },
+    // 다른 파일로 갈 때 저장하지 않은 변경이 있으면 switchFile이 묻는다.
+    openFile: async (file) => { show("edit"); state.map = null; if (state.file === file) await load(); else await switchFile(file); },
+    reload: async () => { state.map = null; await load({ keepText: true }); },
+    recheck: async () => { state.map = null; await check(); renderEdit(); },
+    afterDelete: async (result) => { state.map = null; state.flow = null; if (result.removed === state.file || !state.guide?.files?.includes(state.file)) { state.file = "AGENTS.md"; state.text = ""; state.guide = null; } await load(); },
+    toast: (text, error, action) => toast(text, error, action),
+  };
+  const reflectNote = () => {
+    const parts = [];
+    if (state.guide?.running) parts.push(`실행 중인 세션 ${state.guide.running}개는 다음 새 대화부터 반영`);
+    if (state.guide?.worktrees) parts.push("워크트리 세션은 커밋·병합 뒤 반영");
+    return parts.length ? ` · ${parts.join(" · ")}` : "";
+  };
+
+  function openFileMenu(event) {
+    document.querySelector(".guide-file-menu")?.remove();
+    const menu = el("div", { class: "guide-popover guide-file-menu", role: "menu" },
+      el("button", { type: "button", role: "menuitem", class: "ghost", onclick: () => { menu.remove(); openDelete(branchCtx, state.file); } }, `${state.file} 삭제…`),
+      el("button", { type: "button", role: "menuitem", class: "ghost", onclick: () => { menu.remove(); openTrash(branchCtx); } }, "지운 지침 되살리기…"),
+      el("button", { type: "button", role: "menuitem", class: "ghost", onclick: () => { menu.remove(); openBranchWarnings(branchCtx); } }, "갈래 경고 보기…"));
+    if (!state.guide?.exists) menu.firstChild.disabled = true;
+    event.currentTarget.closest(".guide-filebar").append(menu);
+    const away = (e) => { if (!menu.contains(e.target) && e.target.id !== "g-file-more") { menu.remove(); document.removeEventListener("pointerdown", away, true); } };
+    document.addEventListener("pointerdown", away, true);
+  }
+
+  // 편집 보기 위 줄: 지금 보는 폴더·커밋하지 않은 지침·갈래 경고
+  function renderBranchBar() {
+    const bar = $("g-branchbar");
+    const guide = state.guide;
+    if (!bar || !guide) return;
+    const parts = [];
+    if (guide.worktrees) parts.push(el("span", { class: "muted" }, `원본 폴더를 보고 있습니다 · 워크트리 세션 ${guide.worktrees}개는 커밋·병합 뒤 반영`));
+    if (guide.uncommitted?.length) parts.push(el("span", { class: "warn-text", title: guide.uncommitted.join("\n") }, `커밋하지 않은 지침 ${guide.uncommitted.length}개`));
+    if (guide.branches) parts.push(el("button", { type: "button", class: "link warn-text", onclick: () => openBranchWarnings(branchCtx) }, `⚠ 갈래 경고 ${guide.branches}`));
+    fill(bar, ...parts.flatMap((p, i) => (i ? [el("span", { class: "muted" }, " · "), p] : [p])));
+    bar.hidden = !parts.length;
   }
 
   function renderTabCount() {

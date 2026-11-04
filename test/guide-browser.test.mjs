@@ -136,7 +136,7 @@ test("browser: 프로젝트 지침 탭 — 편집·검사·제안 적용·저장
     await evaluate("[...document.querySelectorAll('#g-warning-list .guide-warning')].find((c) => c.textContent.includes('연결 작업을 멈추게')).querySelector('button.primary').click()");
     await evaluate(until("document.querySelector('#g-text').value.includes('연결로 넘어온 작업은 승인 없이 바로 진행한다')"));
     await evaluate(until("[...document.querySelectorAll('#g-warning-list .guide-warning.fixed')].length === 1 && document.querySelector('#p-tab-guide').textContent === '2'"));
-    await evaluate("[...document.querySelectorAll('#g-warning-list .guide-warning')].find((c) => c.textContent.includes('없는 파일')).querySelector('button.primary').click()");
+    await evaluate("[...document.querySelectorAll('#g-warning-list .guide-warning')].find((c) => c.textContent.includes('없는 파일')).querySelectorAll('button').forEach((b) => { if (b.textContent === '링크 지우기') b.click(); })");
     await evaluate(until("document.querySelector('#g-text').value.includes('- C# 수정 시 Unity 규칙\\n')"));
     // 경고 하나(응답 끝 보고)가 남은 채 저장 → 막고 패널을 연다 → 무시하고 저장
     await evaluate(until("document.querySelector('#p-tab-guide').textContent === '1'"));
