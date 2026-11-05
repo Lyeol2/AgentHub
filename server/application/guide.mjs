@@ -7,7 +7,7 @@ import { writeFileAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { SESSION_GUIDE_DIR, parseSessionGuide, sessionGuideChecks, guideFileName, GUIDE_SECTIONS_SESSION } from "../session-guide.mjs";
 
 // 세션 지침의 권장 섹션(지침 탭 섹션 목록에 쓴다)
-const SESSION_HINTS = ["이 세션이 맡는 일을 한두 줄로 쓴다.", "고쳐도 되는 폴더·파일을 쓴다.", "건드리면 안 되는 범위를 쓴다.", "끝났다고 볼 기준을 쓴다.", "연결로 넘길 때 마지막 줄에 쓸 말을 따옴표로 쓴다. 예: 끝나면 \"검토 요청\""];
+const SESSION_HINTS = ["이 세션이 맡는 일을 한두 줄로 쓴다.", "고쳐도 되는 폴더·파일을 쓴다.", "건드리면 안 되는 범위를 쓴다.", "끝났다고 볼 기준을 쓴다.", "연결로 넘길 때 handoff 도구로 알릴 판정어를 따옴표로 쓰고 언제 쓰는지 적는다. 예: 끝나면 \"검토 요청\""];
 const SESSION_CATALOG = GUIDE_SECTIONS_SESSION.map((title, i) => ({ key: `session-${i}`, title, hint: SESSION_HINTS[i] }));
 const sessionKey = (title) => SESSION_CATALOG.find((c) => c.title.replace(/\s/g, "") === String(title).replace(/\s/g, ""))?.key ?? null;
 import { GUIDE_NAMES, folderSuggestions, checkFolder, defaultDocDir, docFileName, blankDoc, blankNested, insertDocLink, moveSections, dropReferences, guideSources, branchChecks } from "../guide-branches.mjs";
@@ -369,7 +369,7 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
     if (!title) throw new HttpError(400, "세션 지침 이름을 적어 주세요.", "session-guide-name");
     let rel = `${SESSION_GUIDE_DIR}/${guideFileName(title)}`;
     if (fs.existsSync(path.join(root, rel))) throw new HttpError(409, `${rel}이(가) 이미 있습니다.`, "guide-exists");
-    writeFileAtomic(path.join(root, rel), `---\nname: ${title}\nsummary: ""\n---\n\n## 맡는 일\n\n## 고쳐도 되는 범위\n\n## 하지 않는 것\n\n## 완료 기준\n\n## 마지막 줄 판정\n`);
+    writeFileAtomic(path.join(root, rel), `---\nname: ${title}\nsummary: ""\n---\n\n## 맡는 일\n\n## 고쳐도 되는 범위\n\n## 하지 않는 것\n\n## 완료 기준\n\n## 판정\n`);
     return { created: rel, ...view(root, rel) };
   }
   // 예전 역할을 모두 세션 지침으로 옮긴다.

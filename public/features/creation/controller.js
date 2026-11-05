@@ -44,7 +44,7 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     $("new-title").placeholder = chat ? "예: 여행 일정 짜기" : "예: 가방 UI 버그 수정";
     $("new-role").placeholder = chat
       ? "예: 친절한 영어 선생님. 틀린 표현은 고쳐 준다."
-      : "예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 마지막 줄에 '검토 요청'만 쓴다.";
+      : "예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 판정 '검토 요청'.";
     // 코딩 세션은 .agenthub/sessions/에 세션 지침 파일로 만든다.
     if ($("new-role-label")?.firstChild) $("new-role-label").firstChild.textContent = chat ? "역할 " : "세션 지침 ";
     if ($("new-role-hint")) $("new-role-hint").hidden = chat;

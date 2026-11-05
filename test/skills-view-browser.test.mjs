@@ -106,7 +106,7 @@ test("browser: 스킬 보기 — 목록·편집·참고 파일·검사·잠김 �
   const other = path.join(temp, "GBS");
   const put = (file, text) => { mkdirSync(path.dirname(file), { recursive: true }); writeFileSync(file, text); };
   const skill = (name, description, body = "# 본문\n1. 한다.") => `---\nname: ${name}\ndescription: "${description}"\n---\n\n${body}\n`;
-  put(path.join(project, ".agenthub", "skills", "idea-discussion", "SKILL.md"), skill("idea-discussion", "게임 아이디어를 토론하고 릴리스 계획을 세울 때 쓴다", "# 토론\n- [템플릿](references/template.md)\n- 답변 끝에 토론 요약 표를 붙인다."));
+  put(path.join(project, ".agenthub", "skills", "idea-discussion", "SKILL.md"), skill("idea-discussion", "게임 아이디어를 토론하고 릴리스 계획을 세울 때 쓴다", "# 토론\n- [템플릿](references/template.md)\n- 작업마다 완료 보고서를 쓴다."));
   put(path.join(project, ".claude", "skills", "unity-cli", "SKILL.md"), skill("unity-cli", "Unity CLI를 다룰 때 쓴다", "# Unity CLI\n\n1. 먼저 `unity --version`으로 설치를 확인한다.\n" + "- 명령 설명 줄\n".repeat(40)));
   put(path.join(project, ".claude", "skills", "unity-cli", "references", "cli-commands.md"), "# 명령 목록\n- build\n");
   put(path.join(project, ".claude", "skills", "unity-cli", "scripts", "probe.sh"), "echo probe\n");
@@ -164,10 +164,10 @@ test("browser: 스킬 보기 — 목록·편집·참고 파일·검사·잠김 �
     const titles = await evaluate("[...document.querySelectorAll('#gs-info .guide-warning strong')].map((s) => s.textContent).join(' | ')");
     assert.match(titles, /release와 발동 조건이 겹칩니다/);
     assert.match(titles, /없는 파일을 가리킵니다/);
-    assert.match(titles, /마지막 줄 판정을 밀어냅니다/);
+    assert.match(titles, /작업마다 커밋·완료보고서/);
     await shot("s02-check");
-    await evaluate("[...document.querySelectorAll('#gs-info .guide-warning')].find((c) => c.textContent.includes('마지막 줄 판정')).querySelector('button.primary').click()");
-    await evaluate(until("document.querySelector('.gs-text').value.includes('연결로 넘어온 작업은 판정 줄을 맨 마지막에 쓴다')"));
+    await evaluate("[...document.querySelectorAll('#gs-info .guide-warning')].find((c) => c.textContent.includes('작업마다 커밋')).querySelector('button.primary').click()");
+    await evaluate(until("document.querySelector('.gs-text').value.includes('작업마다 완료 보고서를 쓴다. (사용자가 직접 요청한 작업에만 적용한다.)')"));
     // 잠긴 공용 스킬: 배너 → 두 위치 비교 → 합치고 잠김 풀기
     // 고친 내용을 저장하지 않고 다른 스킬로 가면 버릴지 묻는다(여기서는 버린다).
     await evaluate("window.confirm = () => true");

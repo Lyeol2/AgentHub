@@ -134,7 +134,7 @@ test("browser: 세션 화면 정리와 세션 지침 — 한 줄 머리·⋯ 메
     assert.ok(await evaluate("document.querySelector('dialog.guide-branch-dialog input[value=role]').checked"));
     await evaluate(clickText("dialog.guide-branch-dialog[open] button", "확인"));
     await evaluate(until("!document.querySelector('#view-project').hidden && document.querySelector('#g-file')?.value === '.agenthub/sessions/기획.md'"));
-    assert.match(readFileSync(path.join(project, ".agenthub", "sessions", "기획.md"), "utf8"), /name: 기획[\s\S]*## 마지막 줄 판정\n- 끝나면 마지막 줄에 '자원 준비 완료'만 쓴다\./);
+    assert.match(readFileSync(path.join(project, ".agenthub", "sessions", "기획.md"), "utf8"), /name: 기획[\s\S]*## 판정\n- 끝나면 판정 '자원 준비 완료'\./);
     await evaluate(until("document.querySelector('#g-branchbar').textContent.includes('쓰는 세션 계획서 작성')"));
     // 판정과 연결 검사: 연결 키워드 '자원 대기'가 지침에 없다.
     await evaluate(until("document.querySelector('#p-tab-guide').textContent !== '' || document.querySelector('#g-status').textContent.includes('경고')"));
@@ -142,7 +142,7 @@ test("browser: 세션 화면 정리와 세션 지침 — 한 줄 머리·⋯ 메
     await evaluate(until("[...document.querySelectorAll('#g-warning-list .guide-warning')].some((c) => c.textContent.includes(\"연결 키워드 '자원 대기'가 지침에 없습니다\"))"));
     await shot("g03-guide-tab");
     // 지침을 고쳐 판정을 더하고 저장 → 세션 칩과 카드가 바뀐다.
-    await evaluate("(() => { const t = document.querySelector('#g-text'); t.value = t.value.replace(\"만 쓴다.\", \"만 쓴다.\\n- 아직 없으면 '자원 대기'\"); t.dispatchEvent(new Event('input')); })()");
+    await evaluate("(() => { const t = document.querySelector('#g-text'); t.value = t.value.replace(\"'자원 준비 완료'.\", \"'자원 준비 완료'.\\n- 아직 없으면 '자원 대기'\"); t.dispatchEvent(new Event('input')); })()");
     await evaluate("setTimeout(() => document.querySelector('#g-save').click(), 0), 1");
     await evaluate(until("document.querySelector('#g-toast').textContent.startsWith('.agenthub/sessions/기획.md를 저장했습니다')"));
     await evaluate("document.querySelector('#p-tabs [data-tab=flow]').click()");
@@ -151,7 +151,7 @@ test("browser: 세션 화면 정리와 세션 지침 — 한 줄 머리·⋯ 메
     await shot("g04-graph");
     await evaluate("[...document.querySelectorAll('#session-list button')].find((b) => b.textContent.includes('계획서 작성')).click()");
     await evaluate(until("document.querySelector('#s-meta').textContent.includes('기획 · ⟳ 다음 요청에 전달')"));
-    assert.match(await evaluate("document.querySelector('#s-info-guide').textContent"), /기획[\s\S]*마지막 줄 판정[\s\S]*자원 준비 완료[\s\S]*자원 대기/);
+    assert.match(await evaluate("document.querySelector('#s-info-guide').textContent"), /기획[\s\S]*판정[\s\S]*자원 준비 완료[\s\S]*자원 대기/);
     assert.equal(await evaluate("document.querySelector('#s-role').hidden"), true, "옮긴 뒤에는 예전 역할 단추를 숨긴다");
     await shot("g05-session-guide");
     // 요청에 붙는다(서버)

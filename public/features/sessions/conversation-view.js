@@ -318,7 +318,7 @@ export function createConversationView({ api, getSession, sessionById, selectSes
     for (const ev of turn.events) {
       if (ev.kind === "tool_result" && toolGroups.length) { toolGroups.shift().events.push(ev); continue; }
       // 사용자 결정과 오류는 접힌 작업 과정 안에 감추지 않는다.
-      const visible = ev === answer || ["user", "error", "question", "permission", "plan"].includes(ev.kind) || (ev.kind === "result" && !answer);
+      const visible = ev === answer || ["user", "error", "question", "permission", "plan", "handoff"].includes(ev.kind) || (ev.kind === "result" && !answer);
       if (visible) {
         appendRendered(list, ev, pendingTools);
         if (ev !== answer) work = null;
@@ -489,6 +489,13 @@ export function createConversationView({ api, getSession, sessionById, selectSes
           el("summary", {}, ev.call ? "📞 " : "✉ ", el("a", { href: "#", onclick: (e) => { e.preventDefault(); if (sessionById(ev.to)) selectSession(ev.to); } }, ev.toTitle),
             `${ev.call ? " 세션을 불렀습니다" : "에게 보낸 메시지"} · ${MESSAGE_VIA[ev.via] ?? ""}`),
           appendLinkedText(el("div", { class: "handoff-body" }), ev.text)));
+    }
+    if (ev.kind === "handoff") {
+      // handoff 도구로 알린 판정과 전달할 내용. 턴이 끝나면 이 판정으로 연결을 고른다.
+      const head = [ev.verdict ? `판정 "${ev.verdict}"` : "판정 없음", ev.content ? `전달할 내용 ${ev.content.length.toLocaleString()}자` : "이번 답변을 넘김"].join(" · ");
+      if (!ev.content) return el("li", { class: `${cls} handoff` }, el("span", { class: "muted" }, `⇢ ${head}`));
+      return el("li", { class: `${cls} handoff` },
+        el("details", {}, el("summary", {}, `⇢ ${head}`), appendLinkedText(el("div", { class: "handoff-body" }), ev.content)));
     }
     if (ev.kind === "user" && ev.from) {
       // 연결된 세션에서 넘어온 요청은 접어서 보여 준다.

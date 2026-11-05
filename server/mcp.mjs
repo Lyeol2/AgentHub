@@ -2,6 +2,7 @@
 // Claude·Codex CLI가 실행될 때 이 주소를 MCP 서버로 붙여, 에이전트가 작업 중에 다른 세션과 소통하게 한다.
 import { randomBytes } from "node:crypto";
 import { ASK_TIMEOUT_SEC, ASK_TIMEOUT_MAX } from "./policies/messaging.mjs";
+import { handoffKeywords, canonicalVerdict, pickLinks } from "./policies/workflows.mjs";
 
 const PROTOCOL = "2025-06-18";
 
@@ -66,7 +67,8 @@ async function dispatch(msg, session, tools, info) {
     case "ping":
       return result(id, {});
     case "tools/list":
-      return result(id, { tools: tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) });
+      // describe(session)가 있으면 세션마다 다른 설명(예: 이 세션의 판정어)을 보여 준다.
+      return result(id, { tools: tools.map(({ name, description, describe, inputSchema }) => ({ name, description: describe?.(session) ?? description, inputSchema })) });
     case "tools/call": {
       const tool = tools.find((t) => t.name === params.name);
       if (!tool) return failure(id, -32602, `없는 도구입니다: ${params.name}`);
@@ -83,6 +85,56 @@ async function dispatch(msg, session, tools, info) {
   }
 }
 
+
+// 연결로 넘길 판정과 전달할 내용을 알리는 도구. 바로 넘기지 않고 기록만 하며, 턴이 끝날 때 연결이 이 판정으로 고른다.
+// outgoing(session): 이 세션(과 이 세션이 든 세션 묶음)에서 나가는 연결. direct(session): 이 세션에서 바로 나가는 연결
+// title(id): 연결 끝 노드 이름. record(session, event): 세션 기록에 남긴다.
+export const HANDOFF_AUTO = ["success", "error", "always", "otherwise", "keyword"];
+const CONTENT_MAX = 200_000;
+export function createHandoffTool({ outgoing, direct = outgoing, title = (id) => id, record }) {
+  const auto = (session) => outgoing(session).filter((l) => l.enabled !== false && HANDOFF_AUTO.includes(l.when));
+  const choices = (session) => {
+    const links = direct(session).filter((l) => l.enabled !== false && l.when === "keyword");
+    return handoffKeywords(auto(session)).map((k) => {
+      const to = links.filter((l) => handoffKeywords([l]).includes(k)).map((l) => title(l.to));
+      return to.length ? `"${k}"(→ ${to.join(", ")})` : `"${k}"`;
+    });
+  };
+  const BASE = "작업을 마치고 연결로 다음 노드에 넘길 때 판정과 전달할 내용을 알린다. 바로 넘기지 않고 이번 턴이 끝날 때 판정에 맞는 연결로 넘긴다. 여러 번 부르면 마지막 것을 쓴다. 답변 끝에 판정을 따로 쓰지 않는다.";
+  return {
+    name: "handoff",
+    description: BASE,
+    describe(session) {
+      const list = choices(session);
+      if (list.length) return `${BASE} 이 세션의 판정어: ${list.join(", ")}. 이 중 하나를 verdict로 고른다.`;
+      return auto(session).length ? `${BASE} 이 세션에는 판정으로 가르는 연결이 없다. 넘길 글만 정하려면 verdict 없이 content만 보낸다.` : `${BASE} 지금 이 세션에는 자동으로 넘기는 연결이 없으므로 부르지 않는다.`;
+    },
+    inputSchema: {
+      type: "object",
+      properties: {
+        verdict: { type: "string", description: "판정어. 이 세션의 판정어 중 하나를 그대로 쓴다(판정으로 가르는 연결이 없으면 비운다)." },
+        content: { type: "string", description: "다음 노드가 받을 글. 받는 쪽이 이 글만 보고 이어서 일할 수 있게 결과·변경 파일·남은 일을 쓴다. 비우면 이번 답변을 넘긴다." },
+      },
+    },
+    run(session, { verdict = "", content = "" } = {}) {
+      if (!auto(session).length) throw new Error("이 세션에서 자동으로 넘기는 연결이 없다. handoff를 부르지 않고 작업을 마친다.");
+      const keywords = handoffKeywords(auto(session));
+      const said = String(verdict ?? "").trim();
+      const text = String(content ?? "").trim() ? String(content).slice(0, CONTENT_MAX) : "";
+      let picked = "";
+      if (said) {
+        if (!keywords.length) throw new Error("이 세션에는 판정으로 가르는 연결이 없다. verdict 없이 content만 보낸다.");
+        picked = canonicalVerdict(said, keywords);
+        if (!picked) throw new Error(`"${said.slice(0, 80)}"은(는) 이 세션의 판정어가 아니다. 다음 중 하나를 그대로 쓴다: ${choices(session).join(", ")}`);
+      }
+      record(session, { kind: "handoff", verdict: picked, ...(text ? { content: text } : {}) });
+      const to = pickLinks(direct(session), true, picked, true).map((l) => title(l.to));
+      const where = to.length ? `성공하면 "${to.join('", "')}"(으)로 넘긴다` : "지금 판정에 맞는 바로 다음 연결은 없다";
+      const missing = keywords.length && !picked ? ` 판정이 없어 키워드 연결(${choices(session).join(", ")})로는 넘기지 않는다.` : "";
+      return `${picked ? `판정 "${picked}"` : "판정 없이"}${text ? " 전달할 내용과 함께" : ""} 기록했다. 이번 턴이 끝나면 ${where}.${missing} 답변 끝에 판정을 따로 쓰지 않는다.`;
+    },
+  };
+}
 
 // MCP 도구의 schema와 사용자용 결과 형식은 전송 어댑터의 책임이다.
 export function createMessagingTools({ mailbox, board, notify = () => {} }) {

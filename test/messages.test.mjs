@@ -386,13 +386,13 @@ test("messages: 이번 턴에 부른 세션에는 연결로 다시 넘기지 않
   runner.running.add("a");
   mailbox.call(a, "검증", "계획서 검증해 줘");
   assert.deepEqual(runner.sent.map(([id]) => id), ["b"]);
-  a.events.push({ kind: "text", text: "넘겼습니다.\n자원 준비 완료" });
+  a.events.push({ kind: "text", text: "넘겼습니다." }, { kind: "handoff", verdict: "자원 준비 완료" });
   await finish(a);
   assert.deepEqual(runner.sent.map(([id]) => id), ["b", "c"], "부른 세션에는 같은 턴의 연결로 다시 보내지 않는다");
   assert.ok(a.events.some((e) => e.kind === "status" && /이미 불렀으므로/.test(e.text)));
   // 불린 세션이 끝난 뒤, 부르지 않은 다음 턴에서는 연결이 그대로 동작한다.
   runner.running.delete("b");
-  a.events.push({ kind: "user", text: "다시 정리해 줘" }, { kind: "text", text: "자원 준비 완료" });
+  a.events.push({ kind: "user", text: "다시 정리해 줘" }, { kind: "text", text: "정리했다." }, { kind: "handoff", verdict: "자원 준비 완료" });
   runner.running.add("a");
   await finish(a);
   assert.equal(runner.sent.filter(([id]) => id === "b").length, 2);

@@ -159,8 +159,11 @@ test("chain: 사용자 대기열은 턴이 끝나면 보내고, 멈추면 남겨
 async function fakeChain(linkList, answers) {
   const { EventEmitter } = await import("node:events");
   const { Chain } = await import("../server/chain.mjs");
-  const sessions = new Map(Object.entries(answers).map(([id, text]) =>
-    [id, { id, title: id.toUpperCase(), agent: "claude", cwd: "C:/a", events: [{ kind: "text", text }] }]));
+  // 답변은 글이거나 { text, handoff: { verdict, content } }(handoff 도구로 알린 판정)다.
+  const sessions = new Map(Object.entries(answers).map(([id, value]) => {
+    const { text, handoff } = typeof value === "string" ? { text: value } : value;
+    return [id, { id, title: id.toUpperCase(), agent: "claude", cwd: "C:/a", events: [{ kind: "text", text }, ...(handoff ? [{ kind: "handoff", ...handoff }] : [])] }];
+  }));
   const runner = Object.assign(new EventEmitter(), {
     sent: [], notes: [],
     isRunning: () => false,
@@ -172,12 +175,46 @@ async function fakeChain(linkList, answers) {
   return { chain, runner, sessions };
 }
 
-test("chain: 리뷰가 '수정 필요 없음'이라 써도 구현으로 되돌리지 않는다", async () => {
+test("chain: 키워드 연결은 handoff로 알린 판정으로만 고르고, 답변 글은 보지 않는다", async () => {
   const toImpl = { id: "l1", from: "review", to: "impl", when: "keyword", keyword: "수정 필요", enabled: true };
   const toDone = { id: "l2", from: "review", to: "done", when: "keyword", keyword: "통과", enabled: true };
-  const { chain, runner, sessions } = await fakeChain([toImpl, toDone], { review: "수정 필요 없음.\n\n통과", impl: "", done: "" });
+  const { chain, runner, sessions } = await fakeChain([toImpl, toDone], { review: { text: "수정 필요한 곳을 찾아봤다.\n\n수정 필요", handoff: { verdict: "통과" } }, impl: "", done: "" });
   await chain.onTurnEnd(sessions.get("review"), true);
   assert.deepEqual(runner.sent.map(([id]) => id), ["done"]);
+  assert.match(runner.sent[0][1], /판정: 통과/);
+});
+
+test("chain: 마지막 줄에 키워드를 써도 handoff가 없으면 키워드 연결로 넘기지 않는다", async () => {
+  const l = { id: "l1", from: "a", to: "b", when: "keyword", keyword: "검토 요청", enabled: true };
+  const other = { id: "l2", from: "a", to: "c", when: "otherwise", enabled: true };
+  const { chain, runner, sessions } = await fakeChain([l, other], { a: "다 했다.\n\n검토 요청", b: "", c: "" });
+  await chain.onTurnEnd(sessions.get("a"), true);
+  assert.deepEqual(runner.sent.map(([id]) => id), ["c"]);
+});
+
+test("chain: 판정어는 키워드와 같아야 맞고, 지난 턴의 handoff는 쓰지 않는다", async () => {
+  const l = { id: "l1", from: "a", to: "b", when: "keyword", keyword: "검토 요청", enabled: true };
+  const { chain, runner, sessions } = await fakeChain([l], { a: { text: "끝", handoff: { verdict: "검토" } }, b: "" });
+  await chain.onTurnEnd(sessions.get("a"), true);
+  assert.equal(runner.sent.length, 0);
+  assert.ok(runner.notes.some(([, text]) => text.includes('판정: "검토"')));
+  const a = sessions.get("a");
+  a.events.push({ kind: "handoff", verdict: "검토 요청" }, { kind: "user", text: "다음" }, { kind: "text", text: "둘째" });
+  await chain.onTurnEnd(a, true);
+  assert.equal(runner.sent.length, 0);
+  assert.ok(runner.notes.some(([, text]) => text.includes("판정 없음")));
+});
+
+test("chain: handoff로 알린 전달 내용을 답변 대신 넘긴다", async () => {
+  const l = { id: "l1", from: "a", to: "b", when: "keyword", keyword: "검토 요청", enabled: true };
+  const ok = { id: "l2", from: "a", to: "c", when: "always", enabled: true };
+  const { chain, runner, sessions } = await fakeChain([l, ok], { a: { text: "긴 작업 과정 설명", handoff: { verdict: "검토 요청", content: "server/a.mjs를 고쳤다. 리뷰해 달라." } }, b: "", c: "" });
+  await chain.onTurnEnd(sessions.get("a"), true);
+  assert.deepEqual(runner.sent.map(([id]) => id).sort(), ["b", "c"]);
+  for (const [, prompt] of runner.sent) {
+    assert.match(prompt, /전달 내용:\nserver\/a\.mjs를 고쳤다/);
+    assert.doesNotMatch(prompt, /긴 작업 과정 설명/);
+  }
 });
 
 test("chain: 아무 연결도 맞지 않으면 기록에 남기고 넘기지 않는다", async () => {

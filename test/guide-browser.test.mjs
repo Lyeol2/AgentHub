@@ -27,7 +27,7 @@ Electron + Node 데스크톱 앱. 여러 AI 세션을 연결해 함께 일하게
 - C# 수정 시 [Unity 규칙](docs/unity.md)
 
 ## 응답 방식
-- 응답 끝에 변경 파일과 다음 할 일을 보고한다.
+- 작업마다 완료 보고서를 쓴다.
 `;
 
 async function withBrowser(temp, url, run) {
@@ -106,7 +106,7 @@ test("browser: 프로젝트 지침 탭 — 편집·검사·제안 적용·저장
           { id: "a", type: "start", title: "요청" }, { id: "b", type: "step", title: "조사", detail: "관련 코드·문서 읽기", lines: [7, 7] },
           { id: "c", type: "decision", title: "작업 종류?" }, { id: "d", type: "step", title: "계획서", detail: "docs/plan에 계획서", lines: [8, 8] },
           { id: "e", type: "step", title: "승인", detail: "사용자 승인을 받음", lines: [9, 9] }, { id: "f", type: "step", title: "구현", detail: "기존 모듈 재사용" },
-          { id: "g", type: "step", title: "보고", detail: "응답 끝에 보고", lines: [19, 19] }, { id: "h", type: "step", title: "수정", detail: "문서만 고침" }, { id: "z", type: "end", title: "끝" }],
+          { id: "g", type: "step", title: "보고", detail: "작업마다 완료 보고서", lines: [19, 19] }, { id: "h", type: "step", title: "수정", detail: "문서만 고침" }, { id: "z", type: "end", title: "끝" }],
         edges: [{ from: "a", to: "b" }, { from: "b", to: "c" }, { from: "c", to: "d", label: "기능 추가" }, { from: "c", to: "h", label: "문서만" }, { from: "d", to: "e" }, { from: "e", to: "f" }, { from: "f", to: "g" }, { from: "g", to: "z" }, { from: "h", to: "z" }] });
       } } });
   const now = new Date().toISOString();
@@ -138,7 +138,7 @@ test("browser: 프로젝트 지침 탭 — 편집·검사·제안 적용·저장
     await evaluate(until("[...document.querySelectorAll('#g-warning-list .guide-warning.fixed')].length === 1 && document.querySelector('#p-tab-guide').textContent === '2'"));
     await evaluate("[...document.querySelectorAll('#g-warning-list .guide-warning')].find((c) => c.textContent.includes('없는 파일')).querySelectorAll('button').forEach((b) => { if (b.textContent === '링크 지우기') b.click(); })");
     await evaluate(until("document.querySelector('#g-text').value.includes('- C# 수정 시 Unity 규칙\\n')"));
-    // 경고 하나(응답 끝 보고)가 남은 채 저장 → 막고 패널을 연다 → 무시하고 저장
+    // 경고 하나(작업마다 완료 보고서)가 남은 채 저장 → 막고 패널을 연다 → 무시하고 저장
     await evaluate(until("document.querySelector('#p-tab-guide').textContent === '1'"));
     await evaluate("document.querySelector('#g-save').click()");
     await evaluate(until("document.querySelector('#g-toast').textContent.includes('경고 1개')"));
@@ -197,8 +197,8 @@ test("browser: 프로젝트 지침 탭 — 편집·검사·제안 적용·저장
     await shot("06-flow");
     await evaluate("(() => { const s = document.querySelector('#g-session'); s.value = 's2'; s.dispatchEvent(new Event('change')); })()");
     await evaluate(until("document.querySelector('#g-flow-notice').textContent.includes('이 세션이 연결로 받은 작업은')"));
-    // 저장한 지침에서는 승인 문장에 예외를 적었으므로 멈추지 않고, 응답 끝 보고만 판정 줄과 부딪힌다.
-    assert.match(await evaluate("document.querySelector('#g-flow-notice').textContent"), /멈추지 않습니다.*판정 줄과 부딪히는 칸 1개/);
+    // 저장한 지침에서는 승인 문장에 예외를 적었으므로 멈추지 않고, 작업마다 완료 보고서만 연결 작업과 부딪힌다.
+    assert.match(await evaluate("document.querySelector('#g-flow-notice').textContent"), /멈추지 않습니다.*연결 작업과 부딪히는 칸 1개/);
     assert.ok(await evaluate("document.querySelector('#g-flow .gf-node.conflict[data-id=g]') !== null"));
     await evaluate("document.querySelector('#g-flow-info button.primary').click()");
     await evaluate(until("!document.querySelector('[data-view-panel=edit]').hidden && !document.querySelector('#g-warnings').hidden"));

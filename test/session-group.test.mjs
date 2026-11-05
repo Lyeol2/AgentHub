@@ -4,7 +4,8 @@ import { EventEmitter } from "node:events";
 import { checkCommand } from "../server/commands.mjs";
 import { Chain, groupOutcome, groupHandoffText } from "../server/chain.mjs";
 
-const answered = (text) => [{ kind: "user", text: "해 줘" }, { kind: "text", text }];
+// 답변 끝 줄은 판정이 아니다. 판정은 handoff 도구로 알린 "완료"다.
+const answered = (text) => [{ kind: "user", text: "해 줘" }, { kind: "text", text }, { kind: "handoff", verdict: "완료" }];
 
 function setup({ links = [], extra = [] } = {}) {
   const sessions = new Map([

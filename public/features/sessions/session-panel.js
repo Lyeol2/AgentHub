@@ -87,7 +87,7 @@ export function createSessionPanel({ api, data, openEquipDialog, openSessionGuid
       s.guideFile ? [
         el("p", { class: "session-info-title" }, el("strong", {}, s.guideName || s.guideFile.split("/").pop()), s.guideMissing ? el("span", { class: "warn-text" }, " · 파일 없음") : null),
         s.guideSummary ? el("p", { class: "muted" }, s.guideSummary) : null,
-        s.guideVerdicts?.length ? el("p", { class: "session-verdicts" }, el("span", { class: "muted" }, "마지막 줄 판정 "), ...s.guideVerdicts.map((v) => el("span", { class: `session-verdict${mismatch.unlinked.includes(v) ? " unlinked" : ""}`, title: mismatch.unlinked.includes(v) ? "이 판정으로 가는 연결이 없습니다" : "" }, v))) : el("p", { class: "muted" }, "마지막 줄 판정이 없습니다."),
+        s.guideVerdicts?.length ? el("p", { class: "session-verdicts" }, el("span", { class: "muted" }, "판정 "), ...s.guideVerdicts.map((v) => el("span", { class: `session-verdict${mismatch.unlinked.includes(v) ? " unlinked" : ""}`, title: mismatch.unlinked.includes(v) ? "이 판정으로 가는 연결이 없습니다" : "" }, v))) : el("p", { class: "muted" }, "판정어가 없습니다."),
         mismatch.missing.length ? el("p", { class: "warn-text" }, `⚠ 연결 키워드 ${mismatch.missing.map((k) => `'${k}'`).join(", ")}가 지침에 없습니다`) : null,
         el("p", { class: "muted session-small" }, s.guideMissing ? GUIDE_STATE.missing : `${GUIDE_STATE[s.guideState] ?? "다음 요청에 전달"}${s.guideSentAt ? ` · ${time(s.guideSentAt)}` : ""}`),
         el("p", { class: "mono muted session-small", title: s.guideFile }, s.guideFile),
@@ -122,8 +122,8 @@ export function createSessionPanel({ api, data, openEquipDialog, openSessionGuid
     const close = () => { box.close(); box.remove(); };
     const error = el("p", { class: "error", role: "alert" });
     const options = [
-      s.role ? ["role", "예전 역할을 세션 지침으로 옮기기 (추천)", "역할 글을 .agenthub/sessions/에 파일로 옮기고, 마지막 줄 판정은 따로 섹션으로 나눕니다."] : null,
-      ["blank", "빈 틀로 새로 만들기", "맡는 일 · 고쳐도 되는 범위 · 하지 않는 것 · 완료 기준 · 마지막 줄 판정"],
+      s.role ? ["role", "예전 역할을 세션 지침으로 옮기기 (추천)", "역할 글을 .agenthub/sessions/에 파일로 옮기고, 판정은 따로 섹션으로 나눕니다."] : null,
+      ["blank", "빈 틀로 새로 만들기", "맡는 일 · 고쳐도 되는 범위 · 하지 않는 것 · 완료 기준 · 판정"],
       shared.length ? ["share", "다른 세션 지침 같이 쓰기", "여러 세션이 한 파일을 씁니다. 한쪽에서 고치면 모두 바뀝니다."] : null,
       s.guideFile ? ["unlink", "세션 지침 끊기", "파일은 지우지 않습니다."] : null,
     ].filter(Boolean);

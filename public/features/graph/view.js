@@ -16,7 +16,7 @@ export function createGraphView({ skillChips, restartSession, clearSessionError,
     for (const s of sessions) {
       // 세션 지침이 있으면 지침 이름·요약을, 없으면 예전 역할을 보인다.
       const role = s.guideFile ? [s.guideName, s.guideSummary].filter(Boolean).join(" · ") || s.guideFile.split("/").pop() : [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ");
-      const warn = s.guideFile ? (s.guideMissing ? "세션 지침 파일이 없습니다" : guideWarning(s) ? "연결 키워드가 세션 지침의 마지막 줄 판정에 없습니다" : "") : "";
+      const warn = s.guideFile ? (s.guideMissing ? "세션 지침 파일이 없습니다" : guideWarning(s) ? "연결 키워드가 세션 지침의 판정에 없습니다" : "") : "";
       const orchestrator = s.kind === "orchestrator";
       const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}${s.locked ? " locked" : ""}`, "data-id": s.id, title: s.guideSummary || s.role || s.title },
         el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null,

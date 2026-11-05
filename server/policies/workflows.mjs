@@ -2,7 +2,7 @@
 export const CONDITIONS = ["success", "keyword", "error", "always", "otherwise", "manual", "call", "ref"];
 // 화면의 조건 선택지(보이는 순서). 서버가 내려 주고 같은 목록으로 검사한다.
 export const CONDITION_LABELS = {
-  keyword: "답변 마지막 줄에 키워드가 있으면",
+  keyword: "판정(handoff)이 키워드와 맞으면",
   success: "턴이 성공하면",
   error: "턴이 실패하면",
   otherwise: "다른 연결이 모두 안 맞으면 (그 외)",
@@ -28,7 +28,30 @@ export function lastAnswer(session, max = ANSWER_MAX) {
   return text.length > max ? `… (앞부분 생략)\n${text.slice(-max)}` : text;
 }
 
-// 판정 줄: 답변의 마지막 글 줄. 마크다운 꾸밈(#, >, -, **, `)과 감싼 따옴표는 걷어 낸다.
+// 이번 턴에 에이전트가 handoff 도구로 알린 판정과 전달할 내용. 마지막 요청(사용자·넘겨받은 작업) 이후의 것만 본다.
+// 여러 번 알렸으면 마지막 것을 쓴다. 없으면 null
+export function turnHandoff(session) {
+  const events = session?.events ?? [];
+  for (let i = events.length - 1; i >= 0; i--) {
+    const event = events[i];
+    if (event.kind === "user" && !event.injected) return null;
+    if (event.kind === "handoff") return { verdict: String(event.verdict ?? ""), content: typeof event.content === "string" && event.content.trim() ? event.content : null };
+  }
+  return null;
+}
+
+// 세션에서 나가는 연결 중 판정으로 고를 수 있는 키워드 목록(중복 없이)
+export function handoffKeywords(links) {
+  return [...new Set(links.filter((l) => l.enabled !== false && l.when === "keyword").flatMap((l) => keywordList(l.keyword)))];
+}
+
+// 판정어가 키워드 목록 중 하나와 같은지(대소문자·앞뒤 공백 무시). 같으면 목록에 적힌 그대로 돌려준다.
+export function canonicalVerdict(verdict, keywords) {
+  const want = String(verdict ?? "").trim().toLowerCase();
+  return want ? keywords.find((k) => k.toLowerCase() === want) ?? null : null;
+}
+
+// 명령 노드 출력의 판정 줄: 마지막 글 줄. 세션은 판정 줄을 쓰지 않고 handoff 도구로 알린다. 마크다운 꾸밈(#, >, -, **, `)과 감싼 따옴표는 걷어 낸다.
 export function verdictLine(answer) {
   const lines = String(answer ?? "").split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !/^(```|~~~)/.test(l));
   return (lines.at(-1) ?? "")
@@ -57,15 +80,19 @@ export function hasKeyword(text, keyword) {
 
 // 연결 하나만 볼 때의 조건. "그 외"는 다른 연결과 함께 봐야 하므로 pickLinks에서 정한다.
 // ok: 턴 성공 여부. 사용자가 중지한 턴(null)은 넘기지 않는다.
-// verdict: 키워드를 찾을 글(세션은 답변 마지막 줄, 명령 노드는 출력 전체).
-export function matches(link, ok, verdict) {
+// verdict: 키워드를 찾을 글(명령 노드는 출력). exact면 세션이 handoff로 알린 판정어(줄마다 하나)와 키워드가 같아야 맞는다.
+export function matches(link, ok, verdict, exact = false) {
   if (!link.enabled || ok === null) return false;
   switch (link.when) {
     case "success": return ok;
     case "error": return !ok;
     case "always": return true;
     // 키워드는 에이전트가 직접 쓴 판정이므로 턴이 실패로 끝났어도 따른다.
-    case "keyword": return hasKeyword(verdict, link.keyword);
+    case "keyword": {
+      if (!exact) return hasKeyword(verdict, link.keyword);
+      const said = String(verdict ?? "").split("\n").map((v) => v.trim().toLowerCase()).filter(Boolean);
+      return keywordList(link.keyword).some((k) => said.includes(k.toLowerCase()));
+    }
     default: return false;
   }
 }
@@ -75,29 +102,32 @@ export function matches(link, ok, verdict) {
 // 2. 없으면 맞은 성공·실패 연결을 따라간다.
 // 3. 그것도 없으면 "그 외" 연결을 따라간다.
 // "항상" 연결은 이와 상관없이 함께 따라간다.
-export function pickLinks(links, ok, verdict) {
+export function pickLinks(links, ok, verdict, exact = false) {
   if (ok === null) return [];
   const on = links.filter((l) => l.enabled);
   const always = on.filter((l) => l.when === "always");
-  const keyword = on.filter((l) => l.when === "keyword" && matches(l, ok, verdict));
+  const keyword = on.filter((l) => l.when === "keyword" && matches(l, ok, verdict, exact));
   if (keyword.length) return [...keyword, ...always];
-  const plain = on.filter((l) => (l.when === "success" || l.when === "error") && matches(l, ok, verdict));
+  const plain = on.filter((l) => (l.when === "success" || l.when === "error") && matches(l, ok, verdict, exact));
   if (plain.length) return [...plain, ...always];
   return [...on.filter((l) => l.when === "otherwise"), ...always];
 }
 
 // 조건을 따지는 연결이 있는데 하나도 맞지 않았을 때 기록에 남길 설명. 남길 것이 없으면 null
-export function noMatchNote(links, verdict) {
+// session: 세션이면 handoff 판정 기준으로 설명한다(명령 노드는 출력의 마지막 줄).
+export function noMatchNote(links, verdict, session = false) {
   if (!links.some((l) => l.enabled && ["keyword", "success", "error"].includes(l.when))) return null;
+  if (session) return verdict ? `조건에 맞는 연결이 없어 넘기지 않았습니다 (판정: "${verdict.slice(0, 80)}")`
+    : `조건에 맞는 연결이 없어 넘기지 않았습니다 (판정 없음 · handoff 도구로 판정을 알리지 않았습니다)`;
   return `조건에 맞는 연결이 없어 넘기지 않았습니다 (마지막 줄: "${verdict.slice(0, 80) || "없음"}")`;
 }
 
 // 세션 묶음: 묶은 세션이 모두 진행 중이 아닐 때만 다음 노드로 넘어간다.
-// 성공은 묶은 세션 중 오류로 끝난 것이 없을 때이고, 키워드는 어느 한 세션의 마지막 줄에 있으면 맞는다.
+// 성공은 묶은 세션 중 오류로 끝난 것이 없을 때이고, 키워드는 어느 한 세션이 handoff로 알린 판정과 맞으면 맞는다.
 export function groupOutcome(members) {
   return {
     ok: members.every((s) => s.state !== "error"),
-    verdict: members.map((s) => verdictLine(lastAnswer(s))).filter(Boolean).join("\n"),
+    verdict: members.map((s) => turnHandoff(s)?.verdict ?? "").filter(Boolean).join("\n"),
   };
 }
 
@@ -121,7 +151,10 @@ export function groupHandoffText(group, members, link) {
   ].join("\n");
 }
 
+// 보낸 세션이 handoff로 전달할 내용을 알렸으면 그 글을 "전달 내용"으로, 아니면 마지막 답변을 넘긴다.
 export function handoffText(source, link, answer, files) {
+  const handoff = turnHandoff(source);
+  const given = handoff?.content && answer === handoff.content;
   // 세션 지침이 있으면 지침 이름과 한 줄 설명을, 없으면 예전 역할의 첫 줄을 알린다.
   const role = source.guideName ? `\n보낸 세션의 지침: ${source.guideName}${source.guideSummary ? ` — ${source.guideSummary}` : ""}` : source.role ? `\n보낸 세션의 역할: ${source.role.split(/\r?\n/)[0]}` : "";
   const branch = source.worktree ? ` (브랜치 ${source.worktree.branch})` : "";
@@ -133,7 +166,8 @@ export function handoffText(source, link, answer, files) {
     "변경 파일:",
     files.trim() || "(없음)",
     "",
-    "마지막 답변:",
+    ...(handoff?.verdict ? [`판정: ${handoff.verdict}`, ""] : []),
+    given ? "전달 내용:" : "마지막 답변:",
     answer || "(답변 없음)",
     "",
     link.note?.trim() || "이 결과를 이어받아 네 역할에 맞게 처리하라.",

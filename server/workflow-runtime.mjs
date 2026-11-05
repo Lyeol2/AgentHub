@@ -69,7 +69,8 @@ export class WorkflowRuntime {
     this.chain.controls?.steps?.delete(id);
   }
 
-  record(node, ok, text, flow = this.get(node)) {
+  // extra.verdict: 세션이 handoff로 알린 판정(세션 묶음이 키워드를 고를 때 쓴다)
+  record(node, ok, text, flow = this.get(node), extra = {}) {
     if (!flow) return;
     this.chain.controls?.finish(node, flow, { ok, output: text });
     if (flow.cancelled) return;
@@ -78,6 +79,7 @@ export class WorkflowRuntime {
       id: node.id, title: node.title, agent: node.agent ?? commandKind(node),
       cwd: node.cwd ?? node.lastRun?.cwd ?? node.projectPath,
       ok, text: String(text ?? "").slice(0, 200_000), revision: ++entry.revision,
+      ...(typeof extra.verdict === "string" ? { verdict: extra.verdict } : {}),
     });
   }
 

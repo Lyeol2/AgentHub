@@ -110,7 +110,7 @@ export function branchChecks(root) {
     }
     // 하위 지침의 연결 충돌(루트는 편집기가 검사한다)
     if (path.dirname(source).toLowerCase() !== root.toLowerCase()) {
-      for (const w of checkGuide(text, {})) if (["approval", "report-tail", "commit-every"].includes(w.kind)) push(source, { ...w, id: `branch-${w.id}`, detail: `하위 지침에 있어도 그 폴더를 다루는 연결 세션이 멈추거나 판정 줄이 밀립니다. ${w.detail}` });
+      for (const w of checkGuide(text, {})) if (["approval", "commit-every"].includes(w.kind)) push(source, { ...w, id: `branch-${w.id}`, detail: `하위 지침에 있어도 그 폴더를 다루는 연결 세션이 멈추거나 매 턴 커밋·보고서를 만듭니다. ${w.detail}` });
     }
   }
   for (const [doc, how] of docs) {
@@ -127,7 +127,7 @@ export function branchChecks(root) {
     }
     const deeper = guideLinks(text).filter((l) => !l.import && /\.md$/i.test(l.target));
     if (deeper.length) push(doc, { id: "link-depth", kind: "link-depth", level: "info", title: "링크가 두 단계로 이어집니다", detail: `이 문서가 다시 ${deeper.map((l) => l.target).slice(0, 3).join(", ")}로 이어집니다. 두 번째 문서는 거의 읽히지 않으니 한 단계로 줄이세요.`, line: deeper[0].line, quote: deeper[0].text });
-    for (const w of checkGuide(text, {})) if (["approval", "report-tail", "commit-every"].includes(w.kind)) push(doc, { ...w, id: `doc-${w.id}` });
+    for (const w of checkGuide(text, {})) if (["approval", "commit-every"].includes(w.kind)) push(doc, { ...w, id: `doc-${w.id}` });
   }
   // 짝 없는 하위 지침: 한 도구만 읽는다.
   const dirs = new Map();
