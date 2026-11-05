@@ -14,7 +14,7 @@ import { createFrameTask } from "../../shared/frame-task.js";
 import { createLabelPlacer } from "./edge-layout.js";
 
 import { guideMismatch } from "../sessions/session-panel.js";
-export function createGraphController({ projectTab, openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, clearCommandError, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, clearSessionError, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, data, navigation }) {
+export function createGraphController({ projectTab, openSessionWindow, api, goProject, selectSession, loadSessions, sessionById, commandById, nodeTitle, loadCommands, commandNode, runCommand, stopCommand, clearCommandError, removeCommand, openCommandDialog, openCommandOutput, skillChips, openSkillsManager, renderFlow, restartSession, clearSessionError, toggleSessionLock, openSessionMenu, openNew, cancelNodeCreation, saveGroupTemplate, openGroupTemplates, clearExecutionControls, openSessionGuide = null, data, navigation }) {
   const ui = {
     "graph": null,
     "graphSelected": new Set(),
@@ -22,7 +22,8 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     "deletingGraphNodes": null,
     "editingLink": null
   };
-  const view = createGraphView({ skillChips, restartSession, clearSessionError, toggleSessionLock, commandNode, guideWarning: (s) => guideMismatch(s, data.links).missing.length });
+  const view = createGraphView({ skillChips, restartSession, clearSessionError, toggleSessionLock, commandNode, guideWarning: (s) => guideMismatch(s, data.links).missing.length,
+    openGuide: openSessionGuide ? (s) => openSessionGuide(s.projectPath, s.guideFile) : null });
   // Hosts with graphTabId opt into tabs; a standalone embedded graph may omit them.
   const tabsEnabled = Object.hasOwn(navigation, "graphTabId");
   const tabViews = new Map();
@@ -757,7 +758,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
       return;
     }
     // 카드 안의 버튼(다시 시작, 스킬 칩, 명령 실행·중지)은 카드 선택·끌기와 따로 동작한다.
-    if (e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn")) return;
+    if (e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-guide-warn, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn")) return;
     e.preventDefault();
     const id = card.dataset.id;
     const start = canvasPoint(e);
@@ -1005,7 +1006,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     const frame = e.target.closest(".node-group");
     if (frame && !e.target.closest("button, .node-group-port")) { const group = nodeGroups.byId(frame.dataset.groupId); if (group) nodeGroups.edit(group); return; }
     const card = e.target.closest(".gcard, .gcmd");
-    if (!card || e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
+    if (!card || e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-guide-warn, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
     const cmd = commandById(card.dataset.id);
     if (cmd) openCommandDialog(cmd);
     else if (e.ctrlKey || e.metaKey || e.shiftKey) openSessionWindow(card.dataset.id);

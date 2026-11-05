@@ -48,8 +48,8 @@ button.session-chip:hover { border-color: var(--line-strong); background: var(--
 .session-skill-list { display: flex; flex-wrap: wrap; gap: 4px; }
 .session-meter { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .session-meter > div { height: 100%; background: var(--accent); }
-.gcard-role.guide { color: var(--text); }
-.gcard-role.warn { color: var(--warn); }
+.gcard-guide-warn { border: 0; background: none; color: var(--warn); font-size: 13px; line-height: 1; padding: 0 2px; cursor: pointer; }
+.gcard-guide-warn:hover { filter: brightness(1.2); }
 .guide-sg-users { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
 .guide-sg-dup { width: auto; font-size: 12px; padding: 2px 6px; }
 @media (max-width: 900px) {

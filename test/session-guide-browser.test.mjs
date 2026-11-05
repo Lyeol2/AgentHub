@@ -146,8 +146,12 @@ test("browser: 세션 화면 정리와 세션 지침 — 한 줄 머리·⋯ 메
     await evaluate("setTimeout(() => document.querySelector('#g-save').click(), 0), 1");
     await evaluate(until("document.querySelector('#g-toast').textContent.startsWith('.agenthub/sessions/기획.md를 저장했습니다')"));
     await evaluate("document.querySelector('#p-tabs [data-tab=flow]').click()");
-    await evaluate(until("document.querySelector('.gcard[data-id=s1] .gcard-role')?.textContent.startsWith('🧭 기획')"));
-    assert.ok(!(await evaluate("document.querySelector('.gcard[data-id=s1] .gcard-role').textContent.includes('⚠')")), "판정을 더하면 경고가 사라진다");
+    // 카드에는 지침 글을 싣지 않는다. 이름·요약은 마우스를 올리면 보이고, 문제가 있을 때만 ⚠가 뜬다.
+    await evaluate(until("document.querySelector('.gcard[data-id=s1]')?.title.includes('지침 기획')"));
+    assert.equal(await evaluate("document.querySelectorAll('.gcard-role').length"), 0, "카드에 지침·역할 줄이 없다");
+    assert.equal(await evaluate("document.querySelector('.gcard[data-id=s1] .gcard-guide-warn')"), null, "판정을 더하면 경고가 사라진다");
+    assert.equal(await evaluate("document.querySelector('.gcard[data-id=s2] .gcard-guide-warn')"), null, "지침이 없어도 '지침 없음'이나 ⚠를 띄우지 않는다");
+    assert.match(await evaluate("document.querySelector('#p-graph .edge-label')?.textContent ?? ''"), /판정 "자원 대기"/);
     await shot("g04-graph");
     await evaluate("[...document.querySelectorAll('#session-list button')].find((b) => b.textContent.includes('계획서 작성')).click()");
     await evaluate(until("document.querySelector('#s-meta').textContent.includes('기획 · ⟳ 다음 요청에 전달')"));
@@ -156,6 +160,17 @@ test("browser: 세션 화면 정리와 세션 지침 — 한 줄 머리·⋯ 메
     await shot("g05-session-guide");
     // 요청에 붙는다(서버)
     assert.match(hub.services.sessions.composeInput(hub.store.get("s1"), "일해"), /\[이 세션의 지침: 기획\][\s\S]*'자원 대기'/);
+    // 지침에 없는 판정어로 연결하면 카드에 ⚠가 뜨고, 누르면 그 지침을 연다.
+    const kw = hub.links.list().find((l) => l.from === "s1" && l.to === "s2");
+    const changed = await fetch(`http://127.0.0.1:${hub.port}/api/links/${kw.id}`, { method: "PUT", headers: { "x-agenthub": "1", "Content-Type": "application/json" }, body: JSON.stringify({ when: "keyword", keyword: "외부 확인" }) });
+    assert.ok(changed.ok, await changed.text());
+    await evaluate("document.querySelector('#s-crumb-project').click()");
+    await evaluate(until("!document.querySelector('#view-project').hidden"));
+    await evaluate("document.querySelector('#p-tabs [data-tab=flow]').click()");
+    await evaluate(until("document.querySelector('.gcard[data-id=s1] .gcard-guide-warn')"));
+    assert.match(await evaluate("document.querySelector('.gcard[data-id=s1] .gcard-guide-warn').title"), /판정에 없습니다/);
+    await evaluate("document.querySelector('.gcard[data-id=s1] .gcard-guide-warn').click()");
+    await evaluate(until("!document.querySelector('[data-panel=guide]').hidden && document.querySelector('#g-file')?.value === '.agenthub/sessions/기획.md'"));
     assert.deepEqual(errors, []);
   });
 });
