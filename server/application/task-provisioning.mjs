@@ -153,7 +153,7 @@ export function createTaskProvisioning({ IN_PLACE_BUSY, activeInPlace, assertAct
     const session = await sessionService().createSession({ project: projectService().ensureProject(task.projectPath),
       tabId: body.tabId, connectFrom: body.connectFrom, createdBy: body.createdBy,
       title: body.title ?? task.title, roleName: body.roleName, orchestrator: body.orchestrator,
-      role: body.role ?? task.role, agent: body.agent ?? task.agent ?? "claude",
+      role: body.role ?? task.role, guideText: body.guideText, guideFile: body.guideFile, agent: body.agent ?? task.agent ?? "claude",
       model: body.model ?? task.model, effort: body.effort ?? task.effort, permission: body.permission ?? task.permission },
     { worktree: { dir: task.cwd, branch: task.branch }, taskId: task.id });
     task.sessionIds.push(session.id);

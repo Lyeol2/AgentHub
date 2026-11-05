@@ -129,11 +129,20 @@ export function createGuideController({ api, navigation, selectSession, showGrap
   }
 
   // ── 불러오기 ─────────────────────────────────────────────────
+  // 다음 activate에서 열 파일(세션 화면의 "지침"이 탭을 열기 전에 정한다). 두 번 불러오며 순서가 엇갈리지 않게 한 번에 연다.
+  let pendingFile = null;
   async function activate(projectPath) {
     mount();
     if (state.project !== projectPath) {
       Object.assign(state, { project: projectPath, file: "AGENTS.md", guide: null, text: "", map: null, flow: null, mapSelected: null, flowSelected: null, session: "", panel: false, ignored: new Set(), fixed: [], saveError: null });
       stopBusy(); stopFlow();
+    }
+    if (pendingFile) {
+      const file = pendingFile;
+      pendingFile = null;
+      if (state.file !== file && dirty() && !confirm("저장하지 않은 변경이 있습니다. 버리고 다른 파일을 열까요?")) { show(state.view); await load(); return; }
+      state.view = "edit";
+      if (state.file !== file) Object.assign(state, { file, ignored: new Set(), fixed: [], saveError: null, flow: null, text: "", guide: null });
     }
     show(state.view);
     await load();
@@ -166,8 +175,13 @@ export function createGuideController({ api, navigation, selectSession, showGrap
   function renderEdit() {
     const guide = state.guide;
     if (!guide) return;
-    $("g-file").replaceChildren(...guide.files.map((file) => el("option", { value: file, ...(file === state.file ? { selected: "" } : {}) }, file)));
-    if (!guide.files.includes(state.file)) $("g-file").append(el("option", { value: state.file, selected: "" }, state.file));
+    // 프로젝트 지침과 세션 지침(.agenthub/sessions/*.md)을 묶어 보인다.
+    const option = (file, label = file) => el("option", { value: file, ...(file === state.file ? { selected: "" } : {}) }, label);
+    const sessionGuides = guide.sessionGuides ?? [];
+    $("g-file").replaceChildren(
+      el("optgroup", { label: "프로젝트 지침" }, ...guide.files.map((file) => option(file))),
+      ...(sessionGuides.length ? [el("optgroup", { label: "세션 지침" }, ...sessionGuides.map((g) => option(g.file, `${g.file.split("/").pop()} · 세션 ${g.users}개`)))] : []));
+    if (!guide.files.includes(state.file) && !sessionGuides.some((g) => g.file === state.file)) $("g-file").append(option(state.file));
     $("g-saved").textContent = guide.exists ? `마지막 저장 ${time(guide.savedAt)} · ${guide.lines}줄` : "아직 파일이 없습니다";
     renderBranchBar();
     const textarea = $("g-text");
@@ -547,7 +561,7 @@ export function createGuideController({ api, navigation, selectSession, showGrap
       return el("li", { class: edge.broken ? "broken" : "" }, el("button", { type: "button", class: "link", onclick: () => { state.mapSelected = id; paintMap(); } }, other?.kind === "doc" || other?.kind === "nested" || other?.kind === "root" ? other.id : other?.title ?? id),
         edge.label ? el("span", { class: "muted" }, ` · ${edge.label}`) : null, edge.broken ? el("span", { class: "guide-broken" }, "파일 없음") : null);
     };
-    const editable = node.file && /\.md$/i.test(node.file) && !node.broken && ["root", "claude", "nested", "doc"].includes(node.kind);
+    const editable = node.file && /\.md$/i.test(node.file) && !node.broken && ["root", "claude", "nested", "doc", "sguide"].includes(node.kind);
     fill(box, 
       el("p", { class: "muted guide-label" }, "선택한 노드"),
       el("h4", {}, node.title),
@@ -727,6 +741,25 @@ export function createGuideController({ api, navigation, selectSession, showGrap
     if (guide.worktrees) parts.push(el("span", { class: "muted" }, `원본 폴더를 보고 있습니다 · 워크트리 세션 ${guide.worktrees}개는 커밋·병합 뒤 반영`));
     if (guide.uncommitted?.length) parts.push(el("span", { class: "warn-text", title: guide.uncommitted.join("\n") }, `커밋하지 않은 지침 ${guide.uncommitted.length}개`));
     if (guide.branches) parts.push(el("button", { type: "button", class: "link warn-text", onclick: () => openBranchWarnings(branchCtx) }, `⚠ 갈래 경고 ${guide.branches}`));
+    // 세션 지침: 이 지침을 쓰는 세션(누르면 그래프에서 강조) · 전달 상태 · 복제해서 따로 쓰기
+    const sg = guide.sessionGuide;
+    if (sg) {
+      parts.unshift(el("span", { class: "guide-sg-users" }, el("strong", {}, "🧭 세션 지침"), " · 쓰는 세션 ",
+        ...(sg.users.length ? sg.users.map((u) => el("button", { type: "button", class: "link", title: `${u.title} · ${u.guideSentAt ? "전달됨" : "다음 요청에 전달"} · 누르면 세션 흐름에서 강조`, onclick: () => showGraph?.([u.id]) }, u.title)).flatMap((b, i) => (i ? [", ", b] : [b])) : [el("span", { class: "muted" }, "없음")]),
+        sg.users.length > 1 ? el("span", { class: "muted" }, ` · 고치면 ${sg.users.length}개 세션이 함께 바뀝니다`) : null));
+      if (sg.users.length > 1) parts.push(el("select", { class: "guide-sg-dup", "aria-label": "복제해서 따로 쓰기", onchange: async (e) => {
+        const id = e.target.value; e.target.value = "";
+        if (!id) return;
+        try { const out = await api("POST", `/api/guide/session-guides/duplicate?${new URLSearchParams({ path: state.project })}`, { file: state.file, sessionId: id }); toast(`${out.created}로 복제해 그 세션만 따로 씁니다`); await switchFile(out.created); }
+        catch (error) { toast(error.message, true); }
+      } }, el("option", { value: "" }, "복제해서 따로 쓰기…"), ...sg.users.map((u) => el("option", { value: u.id }, u.title))));
+    }
+    // 세션 지침으로 옮기지 않은 예전 역할
+    if (guide.pendingRoles) parts.push(el("button", { type: "button", class: "link", title: "역할 글을 .agenthub/sessions/에 세션 지침 파일로 옮깁니다", onclick: async () => {
+      if (!confirm(`역할이 있는 세션 ${guide.pendingRoles}개를 세션 지침 파일로 옮깁니다. 저장소의 .agenthub/sessions/에 파일이 생깁니다.`)) return;
+      try { const out = await api("POST", `/api/guide/session-guides/migrate?${new URLSearchParams({ path: state.project })}`); const ok = out.moved.filter((m) => m.file).length; toast(`세션 ${ok}개의 역할을 세션 지침으로 옮겼습니다`); await load(); }
+      catch (error) { toast(error.message, true); }
+    } }, `예전 역할 ${guide.pendingRoles}개를 세션 지침으로 옮기기`));
     fill(bar, ...parts.flatMap((p, i) => (i ? [el("span", { class: "muted" }, " · "), p] : [p])));
     bar.hidden = !parts.length;
   }
@@ -746,5 +779,9 @@ export function createGuideController({ api, navigation, selectSession, showGrap
     if (name) await skills.activate(projectPath, { select: name });
   }
 
-  return { activate, changed, showSkills, isDirty: () => !!dirty() || skills.isDirty() };
+  // 세션 화면의 "지침"에서 그 세션 지침 파일을 바로 연다.
+  function queueFile(file) { pendingFile = file; }
+  async function showFile(projectPath, file) { queueFile(file); await activate(projectPath); }
+
+  return { activate, changed, showSkills, showFile, queueFile, isDirty: () => !!dirty() || skills.isDirty() };
 }

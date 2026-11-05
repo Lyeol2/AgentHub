@@ -65,7 +65,7 @@ export function findTarget(sessions, from, to) {
   const others = sessions.filter((s) => s.id !== from.id && !s.chat);
   const byId = others.find((s) => s.id.toLowerCase() === key);
   if (byId) return byId;
-  const exact = others.filter((s) => s.title?.toLowerCase() === key || s.roleName?.toLowerCase() === key);
+  const exact = others.filter((s) => s.title?.toLowerCase() === key || s.roleName?.toLowerCase() === key || s.guideName?.toLowerCase() === key);
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) {
     throw new Error(`"${to}"인 세션이 여럿입니다. 세션 id로 보내세요: ${exact.map((s) => `${s.id}(${s.title})`).join(", ")}`);
@@ -78,8 +78,11 @@ export function findTarget(sessions, from, to) {
 }
 
 // 받는 세션에 들어갈 요청 글
+// 보낸 세션의 지침 이름(없으면 예전 역할 이름)
+const roleTag = (s) => (s.guideName ? ` · 지침 ${s.guideName}` : s.roleName ? ` · 역할 ${s.roleName}` : "");
+
 export function messageText(from, text, { ask = false } = {}) {
-  const role = from.roleName ? ` · 역할 ${from.roleName}` : "";
+  const role = roleTag(from);
   const reply = ask
     ? `"${from.title}" 세션이 답을 기다리고 있다. send_message(to: "${from.title}")로 답한다.`
     : `확인·감사만 하는 답장은 보내지 않는다. 요청받은 정보·결과 또는 상대 작업에 꼭 필요한 새 사실이 있을 때만 send_message(to: "${from.title}")로 답한다.`;
@@ -130,8 +133,8 @@ export function directoryText(others, callable = []) {
   if (!all.length) return "직접 연결된 다른 세션이 없습니다.";
   const talk = new Set(others.map((s) => s.id)), call = new Set(callable.map((s) => s.id));
   return all.map((s) => {
-    const role = s.roleName ? ` · 역할 ${s.roleName}` : "";
-    const first = s.role?.split(/\r?\n/).find((l) => l.trim())?.slice(0, 120);
+    const role = roleTag(s);
+    const first = (s.guideSummary || s.role?.split(/\r?\n/).find((l) => l.trim()))?.slice(0, 120);
     const can = [talk.has(s.id) ? "메시지" : "", call.has(s.id) ? "부르기(사용자가 요청할 때만)" : ""].filter(Boolean).join(" · ");
     return `- ${s.title} (id ${s.id}, ${s.agent}${role}, ${STATE_TEXT[s.state] ?? s.state}) · ${can}${first ? `\n  ${first}` : ""}`;
   }).join("\n");
@@ -157,14 +160,14 @@ export function mentionsSession(requests, target) {
   const text = requests.map((event) => event.text ?? "").join("\n").toLowerCase();
   const link = `agenthub://session/${target.id}`;
   if (requests.some((event) => (event.references ?? []).some((ref) => ref?.path === link)) || text.includes(link.toLowerCase())) return true;
-  const names = [target.title, target.roleName, ...String(target.title ?? "").split(/\s*·\s*/)]
+  const names = [target.title, target.roleName, target.guideName, ...String(target.title ?? "").split(/\s*·\s*/)]
     .map((name) => String(name ?? "").trim().toLowerCase()).filter((name) => name.length >= 2);
   return names.some((name) => text.includes(name));
 }
 
 // 불린 세션에 들어갈 요청 글
 export function callText(from, text, { wait = false } = {}) {
-  const role = from.roleName ? ` · 역할 ${from.roleName}` : "";
+  const role = roleTag(from);
   const reply = wait
     ? `"${from.title}" 세션이 결과를 기다리고 있다. 끝나면 send_message(to: "${from.title}")로 결과를 한 번 돌려준다.`
     : `끝나면 결과를 send_message(to: "${from.title}")로 한 번 돌려준다. 확인·감사만 하는 답장은 보내지 않는다.`;

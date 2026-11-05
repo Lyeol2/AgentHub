@@ -1,0 +1,59 @@
+/* 세션 화면: 한 줄 머리 · 상태 칩 줄 · 대화와 오른쪽 정보 패널 */
+.session-top { align-items: center; padding: 10px 24px; gap: 12px; }
+.session-top .title-row { gap: 8px; flex-wrap: nowrap; }
+.session-top h2 { font-size: 17px; }
+.session-crumb { margin: 0; white-space: nowrap; max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+.session-crumb a { color: var(--muted); text-decoration: none; }
+.session-crumb a:hover { color: var(--text); text-decoration: underline; }
+.crumb-sep { color: var(--faint); }
+.session-actions { flex-wrap: nowrap; }
+.session-actions > button { white-space: nowrap; }
+#s-stop:disabled { display: none; }
+#s-guide.warn { color: var(--warn); border-color: var(--warn); }
+#s-info-toggle.active { background: var(--accent-soft); border-color: var(--accent); }
+.session-more { position: relative; }
+.session-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 30; width: 230px; padding: 6px; display: grid; gap: 1px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius); background: var(--panel); box-shadow: 0 10px 30px var(--shadow); }
+.session-menu[hidden] { display: none; }
+.session-menu-label { margin: 6px 8px 2px; font-size: 11px; color: var(--faint); }
+.session-menu button, .session-menu .toggle { width: 100%; justify-content: flex-start; text-align: left; border: 0; padding: 6px 8px; margin: 0; border-radius: 4px; font-size: 13px; color: var(--text); }
+.session-menu button:hover:not(:disabled), .session-menu .toggle:hover { background: var(--hover); }
+.session-menu button:disabled, .session-menu button[hidden] { display: none; }
+.session-menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 0; width: 100%; }
+.session-menu .danger { color: var(--danger); }
+.session-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 24px 8px; border-bottom: 1px solid var(--line); background: var(--bg); flex: none; }
+.session-chip { display: inline-flex; align-items: center; gap: 5px; max-width: 360px; padding: 2px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+button.session-chip:hover { border-color: var(--line-strong); background: var(--hover); }
+.session-chip.warn { border-color: var(--warn); color: var(--warn); }
+.session-chip.muted { color: var(--muted); }
+.session-chip-label { flex: none; }
+.session-main { display: flex; flex: 1; min-height: 0; min-width: 0; }
+.session-stream { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; }
+.session-info { width: 280px; flex: none; overflow-y: auto; border-left: 1px solid var(--line); background: var(--panel); padding: 12px 14px; display: grid; gap: 14px; align-content: start; font-size: 12.5px; }
+.session-info[hidden] { display: none; }
+.session-info-block { display: grid; gap: 6px; }
+.session-info-block:empty { display: none; }
+.session-info-block h4 { margin: 0; font-size: 11.5px; color: var(--muted); font-weight: 600; letter-spacing: .02em; }
+.session-info-block p { margin: 0; overflow-wrap: anywhere; }
+.session-info-title { font-size: 13.5px; }
+.session-small { font-size: 11.5px; }
+.session-verdicts { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.session-verdict { padding: 0 7px; border-radius: 9px; border: 1px solid var(--accent); color: var(--accent); font-size: 11.5px; }
+.session-verdict.unlinked { border-color: var(--line-strong); color: var(--muted); }
+.session-role-preview { white-space: pre-wrap; padding: 6px 8px; border-radius: 6px; background: var(--panel-2); color: var(--muted); }
+.session-info-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.session-info .flow { display: flex; flex-wrap: wrap; gap: 4px; margin: 0; }
+.session-info .flow:empty::before { content: "연결이 없습니다."; color: var(--muted); }
+.session-info .flow-chip.warn { border-color: var(--warn); color: var(--warn); }
+.session-skill-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.session-meter { height: 4px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.session-meter > div { height: 100%; background: var(--accent); }
+.gcard-role.guide { color: var(--text); }
+.gcard-role.warn { color: var(--warn); }
+.guide-sg-users { display: inline-flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.guide-sg-dup { width: auto; font-size: 12px; padding: 2px 6px; }
+@media (max-width: 900px) {
+  .session-top { flex-direction: row; padding: 10px 16px; }
+  .session-chips { padding: 6px 16px 8px; }
+  .session-info { width: 240px; }
+}

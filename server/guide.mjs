@@ -293,9 +293,17 @@ export function guideMap(projectPath, { skills = [], sessions = [], links = [] }
     { id: "inject:artref", title: "아트 레퍼런스", sub: "요청마다 붙임", applies: (s) => links.some((l) => l.enabled !== false && l.to === s.id && l.when === "ref") },
   ];
   for (const session of sessions) {
-    if (!session.role && !(session.skills ?? []).length && !links.some((l) => l.from === session.id || l.to === session.id)) continue;
+    if (!session.role && !session.guideFile && !(session.skills ?? []).length && !links.some((l) => l.from === session.id || l.to === session.id)) continue;
     const id = `role:${session.id}`;
-    add({ id, kind: "role", title: session.title, sub: `${session.roleName ? `${session.roleName} · ` : ""}${session.agent === "codex" ? "Codex" : "Claude"}`, readers: session.agent === "codex" ? "Codex" : "Claude", sessionId: session.id, role: session.role ?? "" });
+    const label = session.guideName || session.roleName;
+    add({ id, kind: "role", title: session.title, sub: `${label ? `${label} · ` : ""}${session.agent === "codex" ? "Codex" : "Claude"}`, readers: session.agent === "codex" ? "Codex" : "Claude", sessionId: session.id, role: session.guideSummary || session.role || "" });
+    // 세션 지침 파일 → 그 지침을 쓰는 세션
+    if (session.guideFile) {
+      const file = path.join(projectPath, session.guideFile);
+      const guideId = session.guideFile;
+      add({ id: guideId, kind: "sguide", title: session.guideName || path.basename(guideId, ".md"), sub: guideId, file, readers: "이은 세션", lines: fs.existsSync(file) ? lineCount(file) : 0, broken: !fs.existsSync(file), assurance: "항상(이은 세션)" });
+      edges.push({ from: guideId, to: id, kind: "inject", label: "세션 지침" });
+    }
     for (const injection of injections) {
       if (!injection.applies(session)) continue;
       add({ id: injection.id, kind: "inject", title: injection.title, sub: injection.sub, readers: "AgentHub" });

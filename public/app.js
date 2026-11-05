@@ -202,6 +202,8 @@ const settings = createSettingsController({
 });
 const guide = createGuideController({ api, navigation, selectSession, showGraph: (ids) => { showProjectTab("flow"); highlightSessions(new Set(ids)); } });
 const openSkillsView = (name) => { showProjectTab("guide"); return guide.showSkills(navigation.project, name); };
+// 세션 화면의 "지침": 그 세션의 프로젝트로 가서 지침 탭에서 세션 지침 파일을 연다.
+const openSessionGuide = async (projectPath, file) => { await goProject(projectPath); guide.queueFile(file); showProjectTab("guide"); };
 const loadGuide = (...args) => guide.activate(...args);
 const projects = createProjectsController({
   sessionOpener, api, goDashboard, goProject, selectSession, loadGit, loadGuide, loadTasks, loadLinks, renderGraph, loadMessages, loadCommands, loadSkills, openSessionMenu, toggleSessionLock, openNew, data, navigation
@@ -237,7 +239,7 @@ const sessions = createSessionsController({
     showProjectTab("tasks");
     await tasks.openReference(id, projectPath);
   },
-  POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, data, navigation
+  POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, onSessionLocked, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, openSessionGuide: (...args) => openSessionGuide(...args), fillModels, fillEfforts, clearSelection, data, navigation
 });
 const account = createAccountController({
   api, openSetup,

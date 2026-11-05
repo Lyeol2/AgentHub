@@ -180,7 +180,7 @@ export function createHub(options = {}) {
   };
   services.flowAssistant = createFlowAssistantService({ store, commands, links, projects, sessions, graphTabs, commandService: services.commands,
     workflowService: workflows, cliPaths, ask, notify });
-  services.guide = createGuideService({ dataDir, projects, store, links, cliPaths, ask });
+  services.guide = createGuideService({ dataDir, projects, store, links, cliPaths, ask, sessions });
   services.taskAssistant = createTaskAssistantService({ projects, graphTabs, cliPaths, config, ask });
 
   // 꺼진 사용자 Codex MCP 서버는 세션 실행에서 빼 연결 재시도·오류를 막는다.

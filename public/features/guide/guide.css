@@ -179,6 +179,7 @@
 .gm-node.claude rect { stroke: var(--claude); }
 .gm-node.skill rect { stroke: var(--warn); }
 .gm-node.role rect { stroke: var(--orch); }
+.gm-node.sguide rect { stroke: var(--accent); stroke-dasharray: 6 2; }
 .gm-node.inject rect { stroke: var(--orch); stroke-dasharray: 4 3; }
 .gm-node.broken rect { stroke: var(--danger); stroke-dasharray: 4 3; fill: color-mix(in srgb, var(--danger) 10%, var(--panel-2)); }
 .gm-node.orphan { opacity: .4; }

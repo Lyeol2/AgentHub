@@ -122,7 +122,8 @@ export function groupHandoffText(group, members, link) {
 }
 
 export function handoffText(source, link, answer, files) {
-  const role = source.role ? `\n보낸 세션의 역할: ${source.role.split(/\r?\n/)[0]}` : "";
+  // 세션 지침이 있으면 지침 이름과 한 줄 설명을, 없으면 예전 역할의 첫 줄을 알린다.
+  const role = source.guideName ? `\n보낸 세션의 지침: ${source.guideName}${source.guideSummary ? ` — ${source.guideSummary}` : ""}` : source.role ? `\n보낸 세션의 역할: ${source.role.split(/\r?\n/)[0]}` : "";
   const branch = source.worktree ? ` (브랜치 ${source.worktree.branch})` : "";
   return [
     `[연결된 세션에서 넘어온 작업]`,

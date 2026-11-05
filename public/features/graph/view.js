@@ -4,7 +4,7 @@ import { firstLine } from "../../shared/store.js";
 import { sessionLockButton } from "../../shared/session-lock.js";
 import { SVG_NS } from "./model.js";
 
-export function createGraphView({ skillChips, restartSession, clearSessionError, commandNode, toggleSessionLock }) {
+export function createGraphView({ skillChips, restartSession, clearSessionError, commandNode, toggleSessionLock, guideWarning = () => 0 }) {
     function createCanvas(sessions, commands) {
     const canvas = el("div", { class: "graph-canvas" });
     const svg = document.createElementNS(SVG_NS, "svg");
@@ -14,15 +14,17 @@ export function createGraphView({ skillChips, restartSession, clearSessionError,
 
     const cards = new Map();
     for (const s of sessions) {
-      const role = [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ");
+      // 세션 지침이 있으면 지침 이름·요약을, 없으면 예전 역할을 보인다.
+      const role = s.guideFile ? [s.guideName, s.guideSummary].filter(Boolean).join(" · ") || s.guideFile.split("/").pop() : [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ");
+      const warn = s.guideFile ? (s.guideMissing ? "세션 지침 파일이 없습니다" : guideWarning(s) ? "연결 키워드가 세션 지침의 마지막 줄 판정에 없습니다" : "") : "";
       const orchestrator = s.kind === "orchestrator";
-      const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}${s.locked ? " locked" : ""}`, "data-id": s.id, title: s.role || s.title },
+      const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}${s.locked ? " locked" : ""}`, "data-id": s.id, title: s.guideSummary || s.role || s.title },
         el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null,
           s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : pill(s.state),
           subtaskPill(s),
           sessionLockButton(s, toggleSessionLock)),
         el("div", { class: "gcard-heading" }, el("div", { class: "gcard-title" }, s.title), unreadPill(s)),
-        el("div", { class: `gcard-role${role ? "" : " empty"}` }, role || "역할 없음"),
+        el("div", { class: `gcard-role${role ? "" : " empty"}${s.guideFile ? " guide" : ""}${warn ? " warn" : ""}`, ...(warn ? { title: warn } : {}) }, s.guideFile ? `🧭 ${role}${warn ? " ⚠" : ""}` : role || "지침 없음"),
         skillChips(s),
         el("div", { class: "gcard-foot" }, elapsedElement("session", s, true),
           el("span", { class: "gcard-life" }, lifePill(s),
