@@ -4,7 +4,7 @@ import { firstLine } from "../../shared/store.js";
 import { sessionLockButton } from "../../shared/session-lock.js";
 import { SVG_NS } from "./model.js";
 
-export function createGraphView({ skillChips, restartSession, clearSessionError, commandNode, toggleSessionLock, guideWarning = () => 0 }) {
+export function createGraphView({ skillChips, restartSession, clearSessionError, commandNode, toggleSessionLock, guideWarning = () => 0, openGuide = null }) {
     function createCanvas(sessions, commands) {
     const canvas = el("div", { class: "graph-canvas" });
     const svg = document.createElementNS(SVG_NS, "svg");
@@ -14,17 +14,19 @@ export function createGraphView({ skillChips, restartSession, clearSessionError,
 
     const cards = new Map();
     for (const s of sessions) {
-      // 세션 지침이 있으면 지침 이름·요약을, 없으면 예전 역할을 보인다.
+      // 카드에는 지침 글을 싣지 않는다. 지침 이름·요약은 마우스를 올리면 보이고, 문제가 있을 때만 ⚠를 띄운다.
       const role = s.guideFile ? [s.guideName, s.guideSummary].filter(Boolean).join(" · ") || s.guideFile.split("/").pop() : [s.roleName, firstLine(s.role)].filter(Boolean).join(" · ");
       const warn = s.guideFile ? (s.guideMissing ? "세션 지침 파일이 없습니다" : guideWarning(s) ? "연결 키워드가 세션 지침의 판정에 없습니다" : "") : "";
       const orchestrator = s.kind === "orchestrator";
-      const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}${s.locked ? " locked" : ""}`, "data-id": s.id, title: s.guideSummary || s.role || s.title },
+      const tip = role ? `${s.title} — ${s.guideFile ? "지침" : "역할"} ${role}` : s.title;
+      const warnMark = warn ? el("button", { type: "button", class: "gcard-guide-warn", title: `${warn}${openGuide ? " · 누르면 지침을 엽니다" : ""}`, "aria-label": `${s.title}: ${warn}`,
+        onclick: (e) => { e.stopPropagation(); openGuide?.(s); } }, "⚠") : null;
+      const card = el("div", { class: `gcard ${s.state}${orchestrator ? " orchestrator" : ""}${s.locked ? " locked" : ""}`, "data-id": s.id, title: tip },
         el("div", { class: "gcard-top" }, badge(s.agent), orchestrator ? el("span", { class: "pill orch" }, "지휘") : null,
           s.waiting ? el("span", { class: "pill q-pending", title: "답을 기다리는 질문이나 권한 요청이 있습니다" }, "답 대기") : pill(s.state),
-          subtaskPill(s),
+          subtaskPill(s), warnMark,
           sessionLockButton(s, toggleSessionLock)),
         el("div", { class: "gcard-heading" }, el("div", { class: "gcard-title" }, s.title), unreadPill(s)),
-        el("div", { class: `gcard-role${role ? "" : " empty"}${s.guideFile ? " guide" : ""}${warn ? " warn" : ""}`, ...(warn ? { title: warn } : {}) }, s.guideFile ? `🧭 ${role}${warn ? " ⚠" : ""}` : role || "지침 없음"),
         skillChips(s),
         el("div", { class: "gcard-foot" }, elapsedElement("session", s, true),
           el("span", { class: "gcard-life" }, lifePill(s),
