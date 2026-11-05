@@ -13,8 +13,8 @@ import { RunControls } from "./run-controls.mjs";
 import { renderTemplate } from "./flow-nodes.mjs";
 
 import { canContact, canCall } from "./policies/messaging.mjs";
-import { MAX_HOPS, lastAnswer, verdictLine, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
-export { CONDITIONS, CONDITION_LABELS, MAX_HOPS, lastAnswer, verdictLine, keywordList, hasKeyword, matches, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
+import { MAX_HOPS, lastAnswer, verdictLine, turnHandoff, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
+export { CONDITIONS, CONDITION_LABELS, MAX_HOPS, lastAnswer, verdictLine, turnHandoff, handoffKeywords, canonicalVerdict, keywordList, hasKeyword, matches, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
 
 // 명령 노드 실행 기록에 남기는 시작 세션 정보. 작업 마무리 노드가 taskId로 마무리할 작업을 찾는다.
 // 마지막 요청(사용자·넘겨받은 작업) 이후 이 세션이 call_session으로 부른 세션 id
@@ -104,14 +104,16 @@ export class Chain {
     const settled = !session.waiting && !started?.message;
     if (settled) {
       // 사용자에게 질문하고 답을 기다리는 턴은 끝난 작업이 아니므로 넘기지 않는다.
+      // 키워드 연결은 에이전트가 handoff 도구로 알린 판정으로만 고른다. 전달할 내용을 알렸으면 답변 대신 그 글을 넘긴다.
       const answer = lastAnswer(session);
       const completion = finalAnswer(session);
-      const verdict = verdictLine(answer);
-      this.workflow.record(session, ok, completion || answer, flow);
+      const handoff = turnHandoff(session);
+      const verdict = handoff?.verdict ?? "";
+      this.workflow.record(session, ok, completion || answer, flow, { verdict });
       const outgoing = this.links.from(session.id);
-      const picked = pickLinks(outgoing, ok, verdict);
+      const picked = pickLinks(outgoing, ok, verdict, true);
       if (!picked.length) {
-        const text = noMatchNote(outgoing, verdict);
+        const text = noMatchNote(outgoing, verdict, true);
         if (text) this.note(session, text);
       }
       const called = calledThisTurn(session);
@@ -123,7 +125,7 @@ export class Chain {
         }
         const kind = commandKind(this.node(link.to));
         // FigCraft 노드는 답변 끝의 명령 스크립트 전체가 필요하므로 줄이지 않는다.
-        const message = kind === "markdown" ? completion : kind === "figcraft" ? lastAnswer(session, Infinity) : answer;
+        const message = kind === "figcraft" ? lastAnswer(session, Infinity) : handoff?.content ?? (kind === "markdown" ? completion : answer);
         if (link.approve) this.hold(link, session, message, session.chainDepth ?? 0, flow);
         else await this.deliver(link, session.chainDepth ?? 0, message, null, flow);
       }
@@ -393,15 +395,16 @@ export class Chain {
     const members = this.groupMembers(group);
     if (!flow) {
       flow = this.newFlow();
-      for (const member of members) this.workflow.record(member, isCommandId(member.id) ? member.lastRun?.ok === true : member.state !== "error", isCommandId(member.id) ? this.nodeOutput(member) : finalAnswer(member) || lastAnswer(member), flow);
+      for (const member of members) this.workflow.record(member, isCommandId(member.id) ? member.lastRun?.ok === true : member.state !== "error", isCommandId(member.id) ? this.nodeOutput(member) : finalAnswer(member) || lastAnswer(member), flow, isCommandId(member.id) ? {} : { verdict: turnHandoff(member)?.verdict ?? "" });
     }
     const snapshots = this.workflow.groupResults(group, flow);
     if (flow && !snapshots) return { busy: members, picked: 0 };
     if (!members.length) return { busy: [], picked: 0 };
     const ok = snapshots ? snapshots.every((result) => result.ok)
       : members.every((node) => isCommandId(node.id) ? node.lastRun?.ok === true || !!node.lastRun?.cleared : node.state !== "error");
-    const verdict = snapshots ? snapshots.map((result) => verdictLine(result.text)).join("\n")
-      : members.map((node) => verdictLine(this.nodeOutput(node))).join("\n");
+    // 세션은 handoff로 알린 판정, 명령 노드는 출력의 마지막 줄에서 키워드를 찾는다.
+    const verdict = snapshots ? snapshots.map((result) => result.verdict ?? verdictLine(result.text)).join("\n")
+      : members.map((node) => isCommandId(node.id) ? verdictLine(this.nodeOutput(node)) : turnHandoff(node)?.verdict ?? "").join("\n");
     const depth = Math.max(0, ...members.map((node) => node.chainDepth ?? 0));
     if (flow) { this.workflow.consume(group, flow, snapshots); this.setFlow(group, flow); }
     const picked = pickLinks(this.links.from(group.id), ok, verdict);

@@ -68,7 +68,7 @@ export function checkSkillText(skill, { projectPath, others = [], roots = [] } =
     });
   }
   // AgentHub 연결과 부딪히는 문장
-  for (const warning of checkGuide(body, {})) if (["approval", "report-tail", "commit-every"].includes(warning.kind)) warnings.push(warning);
+  for (const warning of checkGuide(body, {})) if (["approval", "commit-every"].includes(warning.kind)) warnings.push(warning);
   // 긴 본문
   const bytes = Buffer.byteLength(body);
   if (bytes > LONG_BYTES || lines.length > LONG_LINES) warnings.push({ id: "long", kind: "long", level: "info", title: `본문이 ${(bytes / 1024).toFixed(1)}KB · ${lines.length}줄입니다`, detail: "자주 안 쓰는 절차는 references/의 파일로 옮기고 링크하면 매번 읽는 양이 줄어듭니다.", line: 0, quote: "" });

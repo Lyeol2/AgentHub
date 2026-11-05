@@ -61,13 +61,13 @@ test("guide branches: 갈래 검사와 읽힘 보장", (t) => {
   put(path.join(root, "docs", "big.md"), "# 큰 문서\n" + "- 줄\n".repeat(800));
   put(path.join(root, "AGENTS.md"), ROOT + "- [링크만](docs/plain.md)\n");
   put(path.join(root, "docs", "plain.md"), "# 링크만\n- 다음도 보라 [더](docs/deeper.md)\n- 승인받은 뒤에만 구현한다.\n");
-  put(path.join(root, "server", "AGENTS.md"), "# 서버\n- 응답 끝에 변경 파일을 보고한다.\n");
+  put(path.join(root, "server", "AGENTS.md"), "# 서버\n- 작업이 끝나면 커밋한다.\n");
   const files = Object.fromEntries(branchChecks(root).map((f) => [f.file, f.warnings.map((w) => w.kind)]));
   assert.deepEqual(files["docs/unity.md"], ["rule-in-doc"], "링크 문서에만 있는 '하지 않는다' 규칙");
   assert.ok(files["AGENTS.md"].includes("no-condition"));
   assert.ok(files["CLAUDE.md"].includes("big-import"));
   assert.ok(files["docs/plain.md"].includes("link-depth") && files["docs/plain.md"].includes("approval"));
-  assert.ok(files["server/AGENTS.md"].includes("report-tail") && files["server/AGENTS.md"].includes("unpaired"));
+  assert.ok(files["server/AGENTS.md"].includes("commit-every") && files["server/AGENTS.md"].includes("unpaired"));
   const map = guideMap(root, {});
   const node = (id) => map.nodes.find((n) => n.id === id);
   assert.deepEqual([node("AGENTS.md").assurance, node("CLAUDE.md").assurance, node("server/AGENTS.md").assurance, node("docs/unity.md").assurance, node("docs/big.md").assurance, node("docs/plain.md").assurance],

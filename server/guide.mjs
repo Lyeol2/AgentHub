@@ -61,12 +61,11 @@ export function sectionTemplate(key) {
 }
 
 // ── 저장 전 검사 ──────────────────────────────────────────────
-// AgentHub의 연결(다음 세션으로 넘기기)과 부딪히는 문장. 연결로 넘어온 작업에도 그대로 적용되면 흐름이 멈추거나 판정 줄이 밀린다.
+// AgentHub의 연결(다음 세션으로 넘기기)과 부딪히는 문장. 연결로 넘어온 작업에도 그대로 적용되면 흐름이 멈추거나 매 턴 커밋·보고서를 만든다.
+// 판정은 답변 끝 줄이 아니라 handoff 도구로 알리므로, 응답 끝 보고 문장은 더 이상 연결과 부딪히지 않는다.
 const CONFLICTS = [
   { kind: "approval", title: "연결 작업을 멈추게 합니다", pattern: /승인\s*(을|를)?\s*받(은|고|기)?\s*(뒤|후|다음)|승인\s*(전|없이)(에는|는)?\s*.{0,12}(진행|구현|변경|시작).{0,6}(않|말|금지)|승인한\s*(뒤|후|다음)에만|approv(al|ed)\s+before/i,
     detail: "연결로 넘어온 작업은 승인을 기다리면 다음 세션으로 넘어가지 않습니다.", note: " (사용자가 직접 요청한 작업에만 적용한다. 연결로 넘어온 작업은 승인 없이 바로 진행한다.)" },
-  { kind: "report-tail", title: "마지막 줄 판정을 밀어냅니다", pattern: /(응답|답변|보고)\s*(의)?\s*(끝|마지막)(에|에는)?.{0,30}(보고|쓴다|적는다|포함|붙인다|덧붙인다|단다)|(끝에|마지막에)\s*.{0,20}(보고한다|요약한다)/,
-    detail: "응답 끝에 보고를 붙이면, 연결 세션이 마지막 줄에 쓰는 판정(키워드)이 밀려 다음 세션으로 넘어가지 않습니다.", note: " 단, 연결로 넘어온 작업은 판정 줄을 맨 마지막에 쓴다." },
   { kind: "commit-every", title: "작업마다 커밋·완료보고서", pattern: /(작업|요청)(마다|이\s*끝나면|이\s*완료되면|을\s*마치면).{0,30}(커밋|완료\s*보고서)|완료\s*보고서를?\s*(작성|쓴다)/,
     detail: "역할이 좁은 연결 세션까지 매 턴 커밋·보고서를 만들려 합니다.", note: " (사용자가 직접 요청한 작업에만 적용한다.)" },
 ];
@@ -359,7 +358,7 @@ export function parseFlow(answer, lineTotal) {
   return { nodes, edges };
 }
 
-// 세션이 연결로 받은 작업을 이 순서도대로 할 때 멈추는 칸과 판정 줄과 부딪히는 칸.
+// 세션이 연결로 받은 작업을 이 순서도대로 할 때 멈추는 칸과 연결 작업과 부딪히는 칸(매 턴 커밋·보고서).
 // stop: 승인 대기 문장을 근거로 한 첫 칸 / after: 그 칸 뒤로 이어지는 칸 / conflicts: 응답 끝 보고·작업마다 커밋 칸
 export function flowHighlights(flow, warnings) {
   const hit = (node, kinds) => warnings.find((w) => kinds.includes(w.kind) && node.lines.length && w.line >= node.lines[0] && w.line <= node.lines[1]);
@@ -376,7 +375,7 @@ export function flowHighlights(flow, warnings) {
     for (const id of [...after]) if (flow.edges.some((e) => e.to === id && !after.has(e.from) && e.from !== stopNode.id)) after.delete(id);
   }
   const conflicts = flow.nodes.flatMap((node) => {
-    const warning = hit(node, ["report-tail", "commit-every"]);
+    const warning = hit(node, ["commit-every"]);
     return warning ? [{ id: node.id, warning }] : [];
   });
   return { stop: stopNode ? { id: stopNode.id, warning: hit(stopNode, ["approval"]) } : null, after: [...after], conflicts };
@@ -392,7 +391,7 @@ export function draftPrompt({ name, existing, context }) {
 - 각 섹션은 짧은 목록으로 쓴다. 한 섹션은 30줄을 넘기지 않는다. 자세한 내용은 저장소의 문서를 링크한다(존재하는 파일만).
 - 필독 문서는 "- <작업> 시 [문서 이름](상대 경로)" 형식으로 쓴다.
 - 한국어로 쓴다. 코드 식별자·경로는 원문 그대로 쓴다.
-- AgentHub 연결과 부딪히지 않게 쓴다: 승인·완료보고서·커밋을 요구하면 "사용자가 직접 요청한 작업에만 적용한다. 연결로 넘어온 작업은 승인 없이 진행하고 판정 줄을 맨 마지막에 쓴다"를 함께 쓴다.
+- AgentHub 연결과 부딪히지 않게 쓴다: 승인·완료보고서·커밋을 요구하면 "사용자가 직접 요청한 작업에만 적용한다. 연결로 넘어온 작업은 승인 없이 진행하고 판정은 handoff 도구로 알린다"를 함께 쓴다.
 ${existing ? "- 아래 [지금 지침]이 있다. 맞는 내용은 문장을 그대로 두고, 틀리거나 빠진 것만 고친다." : ""}
 
 [저장소에서 먼저 찾은 것]
@@ -404,7 +403,7 @@ ${existing ? `\n[지금 지침]\n${existing}\n` : ""}
 export function rewritePrompt({ section, request, whole }) {
   return `너는 AGENTS.md의 한 섹션만 다시 쓴다. 파일은 고치지 않는다.
 [요청] ${request || "더 짧고 분명하게"}
-[규칙] "## 제목" 줄을 그대로 두고 그 섹션 내용만 쓴다. 다른 섹션은 쓰지 않는다. 한국어로 쓴다. 승인·보고·커밋 규칙을 쓰면 "연결로 넘어온 작업은 승인 없이 진행하고 판정 줄을 맨 마지막에 쓴다"를 함께 쓴다.
+[규칙] "## 제목" 줄을 그대로 두고 그 섹션 내용만 쓴다. 다른 섹션은 쓰지 않는다. 한국어로 쓴다. 승인·보고·커밋 규칙을 쓰면 "연결로 넘어온 작업은 승인 없이 진행하고 판정은 handoff 도구로 알린다"를 함께 쓴다.
 [다시 쓸 섹션]
 ${section}
 

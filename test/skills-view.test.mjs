@@ -23,7 +23,7 @@ const skill = (name, description, body = "# 본문\n1. 한다.") => `---\nname: 
 
 const project = path.join(root, "AgentHub");
 const other = path.join(root, "GBS");
-write(path.join(project, ".agenthub", "skills", "idea-discussion", "SKILL.md"), skill("idea-discussion", "게임 아이디어를 토론하고 릴리스 계획을 세울 때 쓴다", `# 토론\n- [템플릿](references/template.md)\n- 참고: ${path.join(other, "Docs", "idea.md")}\n- 답변 끝에 토론 요약 표를 붙인다.`));
+write(path.join(project, ".agenthub", "skills", "idea-discussion", "SKILL.md"), skill("idea-discussion", "게임 아이디어를 토론하고 릴리스 계획을 세울 때 쓴다", `# 토론\n- [템플릿](references/template.md)\n- 참고: ${path.join(other, "Docs", "idea.md")}\n- 작업마다 완료 보고서를 쓴다.`));
 write(path.join(project, ".claude", "skills", "unity-cli", "SKILL.md"), skill("unity-cli", "Unity CLI를 다룰 때 쓴다", "# Unity\n" + "- 줄\n".repeat(520)));
 write(path.join(project, ".claude", "skills", "unity-cli", "references", "cli-commands.md"), "# 명령\n");
 write(path.join(project, ".claude", "skills", "unity-cli", "scripts", "probe.sh"), "echo hi\n");
@@ -55,7 +55,7 @@ test("skills: 검사는 앞머리·발동 충돌·깨진 링크·다른 프로�
   const warnings = checkSkillText({ name: "idea-discussion", folder: "idea-discussion", description: parsed.description, body: parsed.body, file },
     { projectPath: project, others: [{ name: "release", description: "새 버전을 릴리스할 때 쓴다. 릴리스 계획도 세운다" }], roots: [other] });
   const kinds = warnings.map((w) => w.kind);
-  for (const kind of ["trigger", "broken-link", "foreign-path", "report-tail"]) assert.ok(kinds.includes(kind), `${kind} in ${kinds}`);
+  for (const kind of ["trigger", "broken-link", "foreign-path", "commit-every"]) assert.ok(kinds.includes(kind), `${kind} in ${kinds}`);
   assert.equal(warnings.find((w) => w.kind === "foreign-path").title, "다른 프로젝트에만 있는 경로");
   assert.ok(overlap("릴리스 계획을 세울 때", "릴리스 계획도 세운다") > 0.3);
   const bad = checkSkillText({ name: "Bad_Name", folder: "bad", description: "", body: "- 줄\n".repeat(600) }, {});

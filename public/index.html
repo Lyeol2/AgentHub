@@ -471,7 +471,7 @@
         <button type="button" class="ghost sm" id="new-worktree-branch-refresh">목록 새로고침</button>
       </div>
       <label>제목 <input name="title" id="new-title" placeholder="예: 가방 UI 버그 수정"></label>
-      <label id="new-role-label">세션 지침 <textarea name="role" id="new-role" rows="3" placeholder="예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 마지막 줄에 '검토 요청'만 쓴다."></textarea></label>
+      <label id="new-role-label">세션 지침 <textarea name="role" id="new-role" rows="3" placeholder="예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 판정 '검토 요청'."></textarea></label>
       <p class="hint" id="new-role-hint">적으면 .agenthub/sessions/에 이 세션만의 지침 파일을 만듭니다. 나중에 지침 탭에서 AGENTS.md처럼 고칩니다.</p>
       <div class="two">
         <label>모델 <input name="model" id="new-model" list="new-models" placeholder="CLI 기본값" spellcheck="false" autocomplete="off"></label>
@@ -571,7 +571,7 @@
       <div id="link-keyword-row" class="link-keyword-row">
         <label>키워드 <input name="keyword" id="link-keyword" placeholder="예: 검토 요청 (여러 개는 쉼표로)"></label>
         <div id="link-keyword-chips" class="link-keyword-chips" title="보내는 세션의 역할에 적힌 말입니다. 누르면 키워드 칸에 넣습니다."></div>
-        <p class="hint">답변의 마지막 줄만 봅니다. "수정 필요 없음"처럼 키워드 뒤에 부정이 붙으면 맞지 않은 것으로 봅니다.</p>
+        <p class="hint">세션은 작업을 마칠 때 handoff 도구로 알린 판정이 키워드와 같아야 넘어갑니다. 명령 노드는 출력의 마지막 줄에서 찾습니다.</p>
       </div>
       <div id="link-siblings" class="link-siblings" hidden>
         <span class="muted">이 세션에서 나가는 다른 연결</span>

@@ -13,6 +13,8 @@ import { orchestratorInput } from "../orchestrator.mjs";
 import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
+import { handoffKeywords } from "../policies/workflows.mjs";
+import { HANDOFF_AUTO } from "../mcp.mjs";
 import { HttpError } from "./errors.mjs";
 import { sessionReadState } from "../session-read.mjs";
 import { projectSettings } from "../project-settings.mjs";
@@ -169,6 +171,24 @@ export function createSessionService({
     } catch { /* 다음 요청에 전체 안내를 붙인다. */ }
   });
 
+  // 나가는 자동 연결이 있으면 요청마다 handoff 도구로 판정을 알리라고 붙인다(판정어가 바뀌어도 바로 따르게).
+  function handoffNotice(session) {
+    if (!links?.from) return "";
+    const direct = links.from(session.id);
+    const all = [...direct, ...(chain.groupsOf?.(session.id) ?? []).flatMap((group) => links.from(group.id))]
+      .filter((l) => l.enabled !== false && HANDOFF_AUTO.includes(l.when));
+    if (!all.length) return "";
+    const words = handoffKeywords(all);
+    const title = (id) => chain.node?.(id)?.title ?? id;
+    const list = words.map((k) => {
+      const to = direct.filter((l) => l.enabled !== false && l.when === "keyword" && handoffKeywords([l]).includes(k)).map((l) => title(l.to));
+      return to.length ? `"${k}"(→ ${to.join(", ")})` : `"${k}"`;
+    });
+    return words.length
+      ? `[연결로 넘기기]\n이 작업을 마치면 agenthub MCP의 handoff 도구로 판정(verdict)과 다음 노드가 받을 내용(content)을 알린다. 판정어: ${list.join(", ")}. 판정을 알리지 않으면 키워드 연결로 넘어가지 않는다. 답변 끝에 판정 줄을 따로 쓰지 않는다.`
+      : "[연결로 넘기기]\n이 작업은 끝나면 연결로 다음 노드에 넘어간다. 넘길 글을 직접 정하려면 agenthub MCP의 handoff 도구에 content만 보낸다. 보내지 않으면 이번 답변을 넘긴다.";
+  }
+
   function composeBase(session, prompt) {
     if (!session.chat) chain.assertGitAvailable?.(session);
     if (session.chat) {
@@ -188,6 +208,8 @@ export function createSessionService({
         : `이 세션은 프로젝트 원본 폴더(${session.projectPath})에서 작업한다. 같은 폴더를 쓰는 세션과 같은 파일을 고칠 때는 겹치지 않게 조율한다.`;
       input = `[AgentHub 작업 폴더]\n${folder} 다른 작업 폴더가 필요하면 사용자가 AgentHub에서 워크트리를 선택하고 이름을 지정해 세션을 만든다.\n\n${input}`;
     }
+    const notice = handoffNotice(session);
+    if (notice) input = `${input}\n\n${notice}`;
     // 세션 사이 소통 규칙도 CLI 대화마다 한 번 붙인다.
     if (!session.agentSessionId || !session.messageGuide) {
       session.messageGuide = true;

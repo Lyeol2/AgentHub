@@ -15,7 +15,7 @@ import { createRunService } from "./application/runs.mjs";
 import { createGroupTemplateService } from "./application/group-templates.mjs";
 import { Mailbox, createBoardStore } from "./messages.mjs";
 import { createMessagingService } from "./application/messaging.mjs";
-import { McpTokens, createMessagingTools } from "./mcp.mjs";
+import { McpTokens, createMessagingTools, createHandoffTool } from "./mcp.mjs";
 import { Setup } from "./setup.mjs";
 import { CliAutoUpdater } from "./cli-auto-update.mjs";
 import { askOnce, selectOneShotAgent } from "./one-shot.mjs";
@@ -205,7 +205,13 @@ export function createHub(options = {}) {
     }
     return { url, configFile };
   };
-  const tools = createMessagingTools({ mailbox, board, notify });
+  const handoffTool = createHandoffTool({
+    direct: (session) => links.from(session.id),
+    outgoing: (session) => [...links.from(session.id), ...chain.groupsOf(session.id).flatMap((group) => links.from(group.id))],
+    title: (id) => chain.node(id)?.title ?? id,
+    record: (session, event) => runner.append(session, event),
+  });
+  const tools = [...createMessagingTools({ mailbox, board, notify }), handoffTool];
   const handleApi = createApiHandler({ services, events });
   const handleMcp = createMcpHandler({ tokens: mcpTokens, store, tools, version });
   const server = createHttpServer({

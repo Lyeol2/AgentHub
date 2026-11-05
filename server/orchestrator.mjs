@@ -13,7 +13,7 @@ const STATE_TEXT = { idle: "대기", running: "실행 중", error: "오류", int
 const PLAN_EXAMPLE = `\`\`\`${PLAN_FENCE}
 {
   "sessions": [
-    { "key": "ui", "agent": "claude", "title": "정렬 버튼 UI", "roleText": "요청받은 기능을 구현한다. 끝나면 마지막 줄에 \\"검토 요청\\"만 쓴다.", "prompt": "가방 화면에 정렬 버튼을 추가한다. ..." },
+    { "key": "ui", "agent": "claude", "title": "정렬 버튼 UI", "roleText": "요청받은 기능을 구현한다. 끝나면 판정 \\"검토 요청\\"을 알린다.", "prompt": "가방 화면에 정렬 버튼을 추가한다. ..." },
     { "key": "review", "agent": "codex", "permission": "read-only", "title": "정렬 버튼 리뷰", "roleText": "코드를 고치지 않고 변경을 검토한다." }
   ],
   "links": [
@@ -36,7 +36,7 @@ ${PLAN_EXAMPLE}
 - 새 세션은 agent(claude|codex)·permission·roleText를 적는다. 생략하면 claude · 기본 권한이다. title, model도 적을 수 있다.
 - 새 세션에 prompt를 적으면 만든 뒤 바로 보낸다.
 - links: from·to에는 key, 세션 id, 또는 "${ORCHESTRATOR}"(너 자신)를 쓴다. when은 ${CONDITIONS.join("|")}이고 keyword 조건이면 keyword를 적는다(여러 개는 쉼표로 나눈다). note는 받는 세션에 줄 지시다.
-- 한 세션에서 나가는 연결은 if/else처럼 고른다: 답변 마지막 줄에 키워드가 맞은 연결 → 없으면 success/error 연결 → 그것도 없으면 otherwise 연결. always는 언제나 함께 넘긴다. 키워드로 가르려면 그 세션의 prompt에 마지막 줄에 쓸 판정을 적어 준다.
+- 한 세션에서 나가는 연결은 if/else처럼 고른다: 세션이 handoff 도구로 알린 판정과 키워드가 맞은 연결 → 없으면 success/error 연결 → 그것도 없으면 otherwise 연결. always는 언제나 함께 넘긴다. 키워드로 가르려면 그 세션의 roleText나 prompt에 언제 어떤 판정어를 알릴지 적어 준다(세션은 판정어 목록을 자동으로 안내받는다).
 - 이미 이어진 두 세션 사이의 연결을 다시 적으면 그 조건으로 고친다.
 - 결과를 다시 받아야 하면 그 세션에서 "${ORCHESTRATOR}"로 가는 연결을 만든다. 결과는 다음 요청으로 들어온다.
 - send: 이미 있는 세션에 요청을 보낸다. { "to": "<key 또는 id>", "prompt": "..." }

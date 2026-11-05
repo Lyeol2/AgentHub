@@ -51,7 +51,7 @@ test("guide: 연결 흐름과 부딪히는 문장·깨진 링크·긴 섹션·�
   const warnings = checkGuide(long, { file, projectPath: root, skills: [{ name: "git-commit" }] });
   const kinds = warnings.map((w) => `${w.kind}:${w.line}`);
   assert.ok(kinds.includes("approval:9"), kinds.join(" "));
-  assert.ok(kinds.includes("report-tail:16"));
+  assert.ok(!kinds.some((k) => k.startsWith("report-tail:")), "판정은 handoff 도구로 알리므로 응답 끝 보고는 연결과 부딪히지 않는다");
   assert.ok(kinds.includes("commit-every:17"));
   assert.ok(kinds.includes("broken-link:13"), "없는 docs/unity.md");
   assert.ok(!kinds.includes("broken-link:12"), "있는 파일은 괜찮다");

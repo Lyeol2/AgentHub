@@ -47,7 +47,7 @@ ${outline}
 {"summary": "무엇을 할지 한 문장", "actions": [ ... ]}
 
 actions 항목(순서대로 실행한다):
-- {"type": "create_session", "key": "rev", "title": "리뷰", "agent": "claude|codex", "permission": "(선택)", "roleName": "(선택) 짧은 역할 이름", "role": "맡는 일·고쳐도 되는 범위·완료 기준·마지막 줄에 쓸 판정"}
+- {"type": "create_session", "key": "rev", "title": "리뷰", "agent": "claude|codex", "permission": "(선택)", "roleName": "(선택) 짧은 역할 이름", "role": "맡는 일·고쳐도 되는 범위·완료 기준·handoff로 알릴 판정어"}
   claude 권한: ${AGENTS.claude.PERMISSION_MODES.join(", ")} / codex 권한: ${AGENTS.codex.PERMISSION_MODES.join(", ")}. 검토만 하는 세션은 읽기 전용 권한을 쓴다.
 - {"type": "create_node", "key": "test", "kind": "${ASSISTANT_NODE_KINDS.join("|")}", "title": "...", ...종류별 값}
   command: "command"(셸 명령, Windows면 PowerShell 문법) · button: "prompt"(연결된 세션에 보낼 요청) · notify: "message" · webhook: "url", "method", "body"
@@ -63,7 +63,7 @@ actions 항목(순서대로 실행한다):
 - {"type": "send", "to": "<세션>", "prompt": "지금 보낼 요청"} 사용자가 일을 시키라고 했을 때만 쓴다.
 <노드>와 <세션>에는 위 목록의 id나 이번 목록에서 만든 key를 쓴다. key는 영문·숫자·_·-다.
 버튼·입력 폼·파일 감시·웹훅 받기·시간 예약은 시작점이라 들어오는 연결을 받지 않고, Markdown 출력에서는 나가는 연결을 만들지 않는다.
-키워드로 넘기려면 보내는 세션의 역할에 "마지막 줄에 '검토 요청'만 쓴다"처럼 판정을 적고 같은 키워드로 연결한다.
+키워드로 넘기려면 보내는 세션의 역할에 "끝나면 판정 '검토 요청'"처럼 판정어를 적고 같은 키워드로 연결한다. 세션은 작업을 마치면 handoff 도구로 그 판정을 알린다.
 
 사용자 요청: ${request}`;
 }

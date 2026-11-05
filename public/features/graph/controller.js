@@ -1044,9 +1044,9 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
   }
 
   // 보내는 세션의 역할에서 따옴표로 감싼 말("검토 요청", "통과" …)을 키워드 후보로 꺼낸다.
-  // 역할 지시에 마지막 줄에 쓸 판정을 적어 두므로 그 말이 곧 분기 키워드다.
+  // 역할 지시에 handoff로 알릴 판정을 적어 두므로 그 말이 곧 분기 키워드다.
   function keywordSuggestions(nodeId) {
-    // 판정을 말하는 줄("마지막 줄에 … 쓴다")만 본다. 다른 줄의 따옴표 말은 분기와 상관없다.
+    // 판정을 말하는 줄("판정 …", 예전 "마지막 줄에 …")만 본다. 다른 줄의 따옴표 말은 분기와 상관없다.
     // 세션 지침이 있으면 그 판정어를 쓴다.
     const session = sessionById(nodeId);
     if (session?.guideVerdicts?.length) return [...session.guideVerdicts];

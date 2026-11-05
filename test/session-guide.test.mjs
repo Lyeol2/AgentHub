@@ -58,7 +58,9 @@ test("session guide: 판정어·역할 옮기기·판정과 연결 검사", () =
   const moved = guideFromRole("사용자 요청을 받아 계획서를 쓴다.\n- 고쳐도 되는 범위: Docs만.\n- 끝나면 마지막 줄에 '자원 준비 완료'만 쓴다.", { name: "기획" });
   assert.equal(moved.name, "기획");
   assert.equal(moved.summary, "사용자 요청을 받아 계획서를 쓴다.");
-  assert.match(moved.body, /^## 맡는 일\n사용자 요청을[\s\S]*## 마지막 줄 판정\n- 끝나면 마지막 줄에 '자원 준비 완료'만 쓴다\.$/);
+  assert.match(moved.body, /^## 맡는 일\n사용자 요청을[\s\S]*## 판정\n- 끝나면 판정 '자원 준비 완료'\.$/);
+  assert.deepEqual(verdictWords(moved.body), ["자원 준비 완료"]);
+  assert.deepEqual(verdictWords("## 판정\n- 끝나면 \"검토 요청\"\n## 기타\n- \"무시\""), ["검토 요청"], "새 섹션 이름");
   const links = [{ from: "s1", to: "s2", when: "keyword", keyword: "자원 대기", enabled: true }, { from: "s1", to: "s3", when: "keyword", keyword: "보완 필요", enabled: true }];
   const warnings = sessionGuideChecks(GUIDE, { users: [{ id: "s1" }], links });
   assert.deepEqual(warnings.map((w) => w.id).sort(), ["verdict-missing:보완 필요", "verdict-unlinked:자원 준비 완료"]);

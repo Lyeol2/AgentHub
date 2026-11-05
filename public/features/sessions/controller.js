@@ -54,7 +54,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
         // 세션 지침의 판정어에 없는 키워드 연결은 ⚠로 알린다.
         const off = l.when === "keyword" && guideMismatch(s, [l]).missing.length > 0;
         const node = chip(l.to, `→ ${sessionById(l.to).title} · ${linkLabel(l)}${off ? " ⚠" : ""}`, l);
-        if (off) { node.classList.add("warn"); node.title = "이 키워드가 세션 지침의 마지막 줄 판정에 없습니다"; }
+        if (off) { node.classList.add("warn"); node.title = "이 키워드가 세션 지침의 판정에 없습니다"; }
         return node;
       }),
     );

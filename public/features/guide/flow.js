@@ -132,7 +132,7 @@ export function renderFlow(flow, { selected, highlights, onSelect }) {
       else if (node.lines?.length) g.append(svg("text", { x: p.w - 8, y: 41, "text-anchor": "end", class: "gf-line" }, `↗ ${node.lines[0]}행`));
     }
     // 멈춤·충돌 설명 말풍선
-    const bubble = node.id === stopId ? ["연결 작업은 여기서 사용자 승인을 기다립니다", "stop"] : conflict.has(node.id) ? [conflict.get(node.id).kind === "report-tail" ? "응답 끝 보고가 마지막 줄 판정을 밀어냅니다" : "연결 세션도 커밋·보고서를 만들려 합니다", "conflict"] : null;
+    const bubble = node.id === stopId ? ["연결 작업은 여기서 사용자 승인을 기다립니다", "stop"] : conflict.has(node.id) ? ["연결 세션도 커밋·보고서를 만들려 합니다", "conflict"] : null;
     if (bubble) g.append(svg("g", { class: `gf-bubble ${bubble[1]}`, transform: `translate(${p.w + 10} ${p.h / 2 - 15})` }, svg("rect", { width: 150, height: 30, rx: 5 }), svg("text", { x: 8, y: 13 }, bubble[0].slice(0, 20)), svg("text", { x: 8, y: 25 }, clip(bubble[0].slice(20), 21))));
     const pick = () => onSelect?.(node.id);
     g.addEventListener("click", pick);

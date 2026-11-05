@@ -636,7 +636,7 @@ export function createGuideController({ api, navigation, selectSession, showGrap
       const stopNode = h.stop && flow.nodes.find((n) => n.id === h.stop.id);
       notice.append(el("div", { class: "guide-banner flow-hit" }, el("span", {}, "이 세션이 연결로 받은 작업은 "),
         stopNode ? el("strong", { class: "danger-text" }, stopNode.title) : null, stopNode ? el("span", {}, "에서 멈춥니다") : el("span", {}, "멈추지 않습니다"),
-        h.conflicts.length ? el("span", {}, ` · 판정 줄과 부딪히는 칸 `) : null, h.conflicts.length ? el("strong", { class: "warn-text" }, `${h.conflicts.length}개`) : null));
+        h.conflicts.length ? el("span", {}, ` · 연결 작업과 부딪히는 칸 `) : null, h.conflicts.length ? el("strong", { class: "warn-text" }, `${h.conflicts.length}개`) : null));
     } else if (h) notice.append(el("div", { class: "guide-banner ok" }, el("span", {}, "✓ 이 세션이 연결로 받은 작업은 멈추지 않고 다음 세션으로 넘어갑니다.")));
     fill(box, renderFlow(flow, { selected: state.flowSelected, highlights: h, onSelect: (id) => { state.flowSelected = id; paintFlow(); } }));
     renderFlowInfo();
@@ -664,7 +664,7 @@ export function createGuideController({ api, navigation, selectSession, showGrap
         el("p", { class: "muted guide-label" }, `근거 · ${sessionTitle}`),
         ...(stopNode ? [el("h4", { class: "danger-text" }, `⏸ ${stopNode.title}에서 멈춤`), el("p", { class: "muted" }, "연결로 받은 작업은 사용자가 승인할 때까지 다음 세션으로 넘어가지 않습니다."),
           el("div", { class: "guide-quote" }, h.stop.warning.quote), lineLink([h.stop.warning.line, h.stop.warning.line])] : []),
-        ...h.conflicts.flatMap((c) => [el("hr"), el("h4", { class: "warn-text" }, `⚠ ${flow.nodes.find((n) => n.id === c.id)?.title}와 판정 줄 충돌`), el("p", { class: "muted" }, c.warning.detail), el("div", { class: "guide-quote" }, c.warning.quote), lineLink([c.warning.line, c.warning.line])]),
+        ...h.conflicts.flatMap((c) => [el("hr"), el("h4", { class: "warn-text" }, `⚠ ${flow.nodes.find((n) => n.id === c.id)?.title}와 연결 작업 충돌`), el("p", { class: "muted" }, c.warning.detail), el("div", { class: "guide-quote" }, c.warning.quote), lineLink([c.warning.line, c.warning.line])]),
         el("span", { class: "spacer" }),
         el("button", { type: "button", class: "primary guide-wide", onclick: async () => { show("edit"); if (state.file !== flow.file) await switchFile(flow.file); state.panel = true; renderEdit(); } }, "편집 보기에서 고치기"));
       return;

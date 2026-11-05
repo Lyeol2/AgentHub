@@ -298,7 +298,7 @@ export function createSkillService({ config, projects, sessions, store = null, c
 - 앞머리: --- name: <이름> / description: "<무엇을 하는지와 언제 쓰는지, 범위 밖 일 한 문장. 한 줄>" ---
 - 본문: 짧은 제목, 번호 매긴 절차, 하지 않는 것, 결과 보고 형식. 300줄을 넘기지 않는다.
 - 아래 기존 스킬과 발동 조건이 겹치지 않게 description에 범위 밖 일을 적는다.
-- AgentHub 연결과 부딪히지 않게: 승인·보고·커밋을 요구하면 "연결로 넘어온 작업은 승인 없이 진행하고 판정 줄을 맨 마지막에 쓴다"를 함께 쓴다.
+- AgentHub 연결과 부딪히지 않게: 승인·보고·커밋을 요구하면 "연결로 넘어온 작업은 승인 없이 진행하고 판정은 handoff 도구로 알린다"를 함께 쓴다.
 [기존 스킬]
 ${others || "(없음)"}
 [답] SKILL.md 전체를 \`\`\`markdown 블록 하나로만 쓴다.`;

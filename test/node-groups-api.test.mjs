@@ -71,10 +71,11 @@ async function fixture(t) {
   });
   f.list = async (projectPath = project) => (await f.ok("GET", "/node-groups?path=" + encodeURIComponent(projectPath))).groups;
   f.restart = async () => { await f.hub.shutdown(); f.hub = await start(); };
-  f.complete = async (id, answer, success = true) => {
+  // verdict: 에이전트가 handoff 도구로 알린 판정(키워드 연결은 이것으로만 고른다)
+  f.complete = async (id, answer, success = true, verdict = null) => {
     const session = f.hub.store.get(id);
     f.runner.running.delete(id);
-    session.events.push({ kind: "user", text: "작업" }, { kind: "text", text: answer }, { kind: "result", text: "턴 완료" });
+    session.events.push({ kind: "user", text: "작업" }, { kind: "text", text: answer }, ...(verdict ? [{ kind: "handoff", verdict }] : []), { kind: "result", text: "턴 완료" });
     await f.hub.chain.onTurnEnd(session, success);
   };
   return f;
@@ -180,7 +181,7 @@ test("node groups execution: collapsed input aliases preserve approval snapshots
   const group = await f.group(["target"], { ports: [{ id: "start", direction: "input", nodeId: "target", label: "검토 시작" }] });
   const link = await f.ok("POST", "/links", { from: "source", to: group.id, toPort: "start", when: "keyword", keyword: "검토", approve: true, note: "한 번만 실행하세요." });
   assert.equal(link.to, "target");
-  await f.complete("source", "검토할 첫 결과");
+  await f.complete("source", "검토할 첫 결과", true, "검토");
   assert.equal(f.runner.calls.length, 0);
   const snapshot = structuredClone(f.hub.links.get(link.id).pending);
   assert.match(snapshot.answer, /검토할 첫 결과/);
@@ -295,7 +296,7 @@ test("node groups API: distinct outputs may reach one receiver, preserve routing
   ]) {
     f.runner.running.clear();
     const previous = f.runner.calls.length;
-    await f.complete("source", answer, success);
+    await f.complete("source", answer, success, ["검토", "배포"].includes(answer) ? answer : null);
     assert.equal(f.runner.calls.length, previous + 1, "one matching output must launch exactly one turn");
     assert.equal(f.runner.calls.at(-1).id, "target");
     assert.match(f.runner.calls.at(-1).prompt, new RegExp("경로:" + expected));
