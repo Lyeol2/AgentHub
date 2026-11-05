@@ -1,9 +1,9 @@
 // 지침 지도: 노드를 종류별 열로 놓고(루트·CLAUDE → 하위 지침 → 문서 → 스킬 → 주입 안내 → 세션 역할) 선으로 잇는다.
 const NS = "http://www.w3.org/2000/svg";
 const W = 180, H = 46, GAP_Y = 18, COL = 230, PAD = 40;
-const COLUMN = { claude: 0, root: 0, nested: 1, doc: 2, skill: 3, inject: 4, role: 5 };
-export const KIND_LABEL = { root: "루트 지침", claude: "CLAUDE.md", nested: "하위 지침", doc: "링크된 문서", skill: "스킬", inject: "AgentHub 주입 안내", role: "세션 역할" };
-const ICON = { root: "▣", claude: "◆", nested: "▣", doc: "▤", skill: "⚡", inject: "⧉", role: "👤" };
+const COLUMN = { claude: 0, root: 0, nested: 1, doc: 2, skill: 3, sguide: 4, inject: 4, role: 5 };
+export const KIND_LABEL = { root: "루트 지침", claude: "CLAUDE.md", nested: "하위 지침", doc: "링크된 문서", skill: "스킬", sguide: "세션 지침", inject: "AgentHub 주입 안내", role: "세션" };
+const ICON = { root: "▣", claude: "◆", nested: "▣", doc: "▤", skill: "⚡", sguide: "🧭", inject: "⧉", role: "👤" };
 
 const svg = (tag, attrs = {}, ...children) => {
   const node = document.createElementNS(NS, tag);

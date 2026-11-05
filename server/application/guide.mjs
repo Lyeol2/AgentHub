@@ -4,6 +4,12 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { writeFileAtomic } from "../infrastructure/persistence/json-file.mjs";
+import { SESSION_GUIDE_DIR, parseSessionGuide, sessionGuideChecks, guideFileName, GUIDE_SECTIONS_SESSION } from "../session-guide.mjs";
+
+// 세션 지침의 권장 섹션(지침 탭 섹션 목록에 쓴다)
+const SESSION_HINTS = ["이 세션이 맡는 일을 한두 줄로 쓴다.", "고쳐도 되는 폴더·파일을 쓴다.", "건드리면 안 되는 범위를 쓴다.", "끝났다고 볼 기준을 쓴다.", "연결로 넘길 때 마지막 줄에 쓸 말을 따옴표로 쓴다. 예: 끝나면 \"검토 요청\""];
+const SESSION_CATALOG = GUIDE_SECTIONS_SESSION.map((title, i) => ({ key: `session-${i}`, title, hint: SESSION_HINTS[i] }));
+const sessionKey = (title) => SESSION_CATALOG.find((c) => c.title.replace(/\s/g, "") === String(title).replace(/\s/g, ""))?.key ?? null;
 import { GUIDE_NAMES, folderSuggestions, checkFolder, defaultDocDir, docFileName, blankDoc, blankNested, insertDocLink, moveSections, dropReferences, guideSources, branchChecks } from "../guide-branches.mjs";
 import { askOnce } from "../one-shot.mjs";
 import { listSkills } from "../skills.mjs";
@@ -20,7 +26,7 @@ const FLOW_TIMEOUT = 300_000;
 const TRASH_KEEP = 20;
 const slash = (value) => value.split(path.sep).join("/");
 
-export function createGuideService({ dataDir, projects, store, links, cliPaths, ask = askOnce }) {
+export function createGuideService({ dataDir, projects, store, links, cliPaths, ask = askOnce, sessions = null }) {
   const flowDir = path.join(dataDir, "guide-flows");
   const trashDir = path.join(dataDir, "guide-trash");
   // git 읽기(추적 여부·바뀐 지침). git 저장소가 아니거나 git이 없으면 null
@@ -55,6 +61,20 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
     for (const file of findNestedGuides(root)) files.push(path.relative(root, file).replaceAll("\\", "/"));
     return files;
   }
+  // 세션 지침 파일(.agenthub/sessions/*.md)
+  const isSessionGuide = (rel) => rel.toLowerCase().startsWith(SESSION_GUIDE_DIR.toLowerCase() + "/");
+  function sessionGuideFiles(root) {
+    try { return fs.readdirSync(path.join(root, SESSION_GUIDE_DIR)).filter((n) => /\.md$/i.test(n)).sort().map((n) => `${SESSION_GUIDE_DIR}/${n}`); } catch { return []; }
+  }
+  const guideUsers = (root, rel) => projectSessions(root).filter((s) => s.guideFile?.toLowerCase() === rel.toLowerCase());
+  function sessionGuideInfo(root, rel, text) {
+    const parsed = parseSessionGuide(text ?? "");
+    return { name: parsed.name, summary: parsed.summary, verdicts: parsed.verdicts,
+      users: guideUsers(root, rel).map((s) => ({ id: s.id, title: s.title, agent: s.agent, state: s.state, guideState: s.guideState ?? null, guideSentAt: s.guideSentAt ?? null, worktree: !!s.worktree })) };
+  }
+  const sessionChecks = (root, rel, text) => sessionGuideChecks(text, { users: guideUsers(root, rel), links: links.list() });
+  // 세션 지침이면 섹션 키를 세션 지침 권장 섹션에 맞춘다.
+  const sectionsFor = (rel, text) => isSessionGuide(rel) ? parseSections(text).map((s) => ({ ...s, key: sessionKey(s.title) })) : parseSections(text);
 
   function view(projectPath, file) {
     const root = project(projectPath);
@@ -64,8 +84,12 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
     return {
       projectPath: root, file: rel, exists: text !== null, text: text ?? "", hash: text === null ? null : hashText(text),
       savedAt: stat?.mtime.toISOString() ?? null, lines: text === null ? 0 : text.split(/\r?\n/).length,
-      sections: parseSections(text ?? ""), warnings: text === null ? [] : checkGuide(text, { file: full, projectPath: root, skills: skillsOf(root) }),
-      claude: claudeStatus(root), files: guideFiles(root), catalog: GUIDE_SECTIONS.map(({ key, title, hint }) => ({ key, title, hint })),
+      sections: sectionsFor(rel, text ?? ""), warnings: text === null ? [] : [...checkGuide(text, { file: full, projectPath: root, skills: skillsOf(root) }), ...(isSessionGuide(rel) ? sessionChecks(root, rel, text) : [])],
+      ...(isSessionGuide(rel) ? { catalogKind: "session" } : {}),
+      claude: claudeStatus(root), files: guideFiles(root), sessionGuides: sessionGuideFiles(root).map((file) => ({ file, users: guideUsers(root, file).length })),
+      ...(isSessionGuide(rel) ? { sessionGuide: sessionGuideInfo(root, rel, text) } : {}),
+      // 세션 지침으로 옮기지 않은 예전 역할
+      pendingRoles: projectSessions(root).filter((s) => s.role && !s.guideFile && s.kind !== "orchestrator").length, catalog: isSessionGuide(rel) ? SESSION_CATALOG : GUIDE_SECTIONS.map(({ key, title, hint }) => ({ key, title, hint })),
       blank: blankGuide(path.basename(root)),
       // 반영 시점 안내: 실행 중인 세션은 다음 새 대화부터, 워크트리 세션은 커밋·병합 뒤 읽는다.
       running: projectSessions(root).filter((s) => s.state === "running").length,
@@ -77,9 +101,9 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
 
   function check({ projectPath, file, text } = {}) {
     const root = project(projectPath);
-    const { full } = target(root, file);
+    const { full, rel } = target(root, file);
     const value = String(text ?? "");
-    return { sections: parseSections(value), warnings: checkGuide(value, { file: full, projectPath: root, skills: skillsOf(root) }) };
+    return { sections: sectionsFor(rel, value), warnings: [...checkGuide(value, { file: full, projectPath: root, skills: skillsOf(root) }), ...(isSessionGuide(rel) ? sessionChecks(root, rel, value) : [])] };
   }
 
   // 다른 곳(에디터·다른 세션)에서 바뀐 파일은 덮어쓰지 않는다. force면 덮어쓴다.
@@ -93,6 +117,8 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
     try {
       writeFileAtomic(full, value);
     } catch (error) { throw new HttpError(500, `저장하지 못했습니다: ${error.code ?? error.message}`, "guide-write"); }
+    // 세션 지침을 고치면 그 지침을 쓰는 세션의 이름·요약을 맞추고, 다음 요청에 다시 붙는다(파일 지문이 바뀜).
+    if (isSessionGuide(rel)) sessions?.refreshGuides?.(root);
     return view(root, rel);
   }
 
@@ -331,5 +357,48 @@ export function createGuideService({ dataDir, projects, store, links, cliPaths, 
 
   function checkAll({ projectPath } = {}) { return { files: branchChecks(project(projectPath)) }; }
 
-  return { view, check, save, linkClaude, mergeClaude, draft, rewrite, map, getFlow, drawFlow, folders, createGuide, createDoc, removeFile, trash, restore, impact, checkAll };
+  // ── 세션 지침 ────────────────────────────────────────────────
+  // 새 세션 지침: sessionId를 주면 그 세션에 잇는다(역할이 있으면 from=role로 옮긴다).
+  function createSessionGuide({ projectPath, name, sessionId, from = "blank" } = {}) {
+    const root = project(projectPath);
+    if (sessionId) {
+      const result = sessions.createGuide(sessionId, { from, name });
+      return { created: result.file, ...view(root, result.file) };
+    }
+    const title = String(name ?? "").trim();
+    if (!title) throw new HttpError(400, "세션 지침 이름을 적어 주세요.", "session-guide-name");
+    let rel = `${SESSION_GUIDE_DIR}/${guideFileName(title)}`;
+    if (fs.existsSync(path.join(root, rel))) throw new HttpError(409, `${rel}이(가) 이미 있습니다.`, "guide-exists");
+    writeFileAtomic(path.join(root, rel), `---\nname: ${title}\nsummary: ""\n---\n\n## 맡는 일\n\n## 고쳐도 되는 범위\n\n## 하지 않는 것\n\n## 완료 기준\n\n## 마지막 줄 판정\n`);
+    return { created: rel, ...view(root, rel) };
+  }
+  // 예전 역할을 모두 세션 지침으로 옮긴다.
+  function migrateRoles({ projectPath } = {}) {
+    const root = project(projectPath);
+    const moved = [];
+    for (const s of projectSessions(root).filter((x) => x.role && !x.guideFile && x.kind !== "orchestrator")) {
+      try { moved.push({ id: s.id, title: s.title, file: sessions.createGuide(s.id, { from: "role" }).file }); }
+      catch (error) { moved.push({ id: s.id, title: s.title, error: error.message }); }
+    }
+    return { moved, ...view(root, moved.find((m) => m.file)?.file ?? "AGENTS.md") };
+  }
+  // 같이 쓰던 세션 지침을 복제해 이 세션만 따로 쓴다.
+  function duplicateSessionGuide({ projectPath, file, sessionId } = {}) {
+    const root = project(projectPath);
+    const { full, rel } = target(root, file);
+    if (!isSessionGuide(rel)) throw new HttpError(400, "세션 지침만 복제할 수 있습니다.");
+    const text = read(full);
+    if (text === null) throw new HttpError(404, "파일이 없습니다.");
+    const session = store.get(sessionId);
+    if (!session) throw new HttpError(404, "세션이 없습니다.");
+    const parsed = parseSessionGuide(text);
+    const title = `${parsed.name || path.basename(rel, ".md")} (${session.title})`;
+    let next = `${SESSION_GUIDE_DIR}/${guideFileName(title)}`;
+    for (let i = 2; fs.existsSync(path.join(root, next)); i++) next = `${SESSION_GUIDE_DIR}/${guideFileName(`${title}-${i}`)}`;
+    writeFileAtomic(path.join(root, next), text.replace(/^(---\r?\n[\s\S]*?^name:\s*).*$/m, `$1${title}`));
+    sessions.update(sessionId, { guideFile: next });
+    return { created: next, ...view(root, next) };
+  }
+
+  return { view, check, save, linkClaude, mergeClaude, draft, rewrite, map, getFlow, drawFlow, folders, createGuide, createDoc, removeFile, trash, restore, impact, checkAll, createSessionGuide, migrateRoles, duplicateSessionGuide };
 }

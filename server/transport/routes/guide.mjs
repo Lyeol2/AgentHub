@@ -21,5 +21,9 @@ export function guideRoutes(s) {
     ["GET", "guide/trash", (ctx) => s.trash(where(ctx))],
     ["POST", "guide/restore", (ctx) => s.restore({ ...ctx.body, ...where(ctx) })],
     ["GET", "guide/check-all", (ctx) => s.checkAll(where(ctx))],
+    // 세션 지침
+    ["POST", "guide/session-guides", (ctx) => s.createSessionGuide({ ...ctx.body, ...where(ctx) })],
+    ["POST", "guide/session-guides/migrate", (ctx) => s.migrateRoles(where(ctx))],
+    ["POST", "guide/session-guides/duplicate", (ctx) => s.duplicateSessionGuide({ ...ctx.body, ...where(ctx) })],
   ];
 }

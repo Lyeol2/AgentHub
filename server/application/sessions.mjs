@@ -7,6 +7,8 @@ import { isGitRepo, createWorktree, validateWorktreeName, removeWorktree, headCo
 import { AGENT_NAME, handoverText, mapPermission } from "../handover.mjs";
 import { discoverSessions, loadHistory, deleteSessionRecords } from "../discover.mjs";
 import { ROLE_MAX, withRole } from "../role.mjs";
+import { withSessionGuide, readSessionGuide, cacheGuide, guideCompactNotice, guideFromRole, formatSessionGuide, guideFileName, SESSION_GUIDE_DIR, blankSessionGuide } from "../session-guide.mjs";
+import { writeFileAtomic } from "../infrastructure/persistence/json-file.mjs";
 import { orchestratorInput } from "../orchestrator.mjs";
 import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
@@ -158,6 +160,8 @@ export function createSessionService({
 
   // 작업 중에 대화가 요약되면 진행 중인 작업에 "레퍼런스를 다시 열라"고 끼워 넣는다. 붙일 수 없으면 다음 요청의 전체 안내로 대신한다.
   runner.on?.("compacted", (session) => {
+    // 세션 지침: 진행 중인 턴에 다시 따르라고 짧게 알리고, 다음 요청에 전체를 다시 붙인다.
+    try { if (session.guideFile && runner.canInject?.(session)) runner.inject(session, guideCompactNotice(session.guideName), { notice: "session-guide" }); } catch { /* 다음 요청에 붙인다. */ }
     try {
       const refs = references(session);
       if (!refs.length || !runner.canInject?.(session)) return;
@@ -173,7 +177,7 @@ export function createSessionService({
       const intro = AGENTS[session.agent].CHAT_INTRO;
       return intro && !session.agentSessionId ? `${intro}\n\n${input}` : input;
     }
-    let input = withReferences(session, withSkills(session, session.kind !== "orchestrator" ? withRole(session, prompt) : orchestratorInput(session, prompt, {
+    let input = withReferences(session, withSkills(session, session.kind !== "orchestrator" ? withSessionGuide(session, prompt) : orchestratorInput(session, prompt, {
       sessions: projectSessions(session.projectPath).filter((item) => !graphTabs || graphTabs.tabFor(item) === graphTabs.tabFor(session)),
     })));
     // 이전 버전의 원본 전용 안내를 받은 CLI 대화에도 현재 작업 폴더를 다시 알린다.
@@ -195,6 +199,50 @@ export function createSessionService({
     if (session.agentSessionId && session.askGuide) return input;
     session.askGuide = true;
     return `${QUESTION_GUIDE}\n\n${input}`;
+  }
+
+  // ── 세션 지침 ────────────────────────────────────────────────
+  function checkGuidePath(session, file) {
+    const value = String(file ?? "").trim().replaceAll("\\", "/");
+    if (!/^\.agenthub\/sessions\/[^/]+\.md$/i.test(value)) throw new HttpError(400, "세션 지침은 .agenthub/sessions/ 안의 .md 파일이어야 합니다.", "session-guide-path");
+    return value;
+  }
+  function linkGuide(session, file) {
+    if (!file) {
+      if (session.guideFile && session.agentSessionId) session.roleChanged = !!session.role;
+      for (const key of ["guideFile", "guideName", "guideSummary", "guideVerdicts", "guideMissing", "guideSentHash", "guideSentAt", "guideState"]) delete session[key];
+      return;
+    }
+    const value = checkGuidePath(session, file);
+    if (value === session.guideFile) return;
+    session.guideFile = value;
+    // 대화 중에 이으면 다음 요청에 붙인다.
+    session.guideSentHash = session.agentSessionId ? "linked" : undefined;
+    session.guideState = "pending";
+    cacheGuide(session);
+  }
+  // 세션 지침 파일을 만들고 잇는다. from: blank | role(예전 역할을 옮김) | text(새 세션 창에 적은 글)
+  function createGuideFile(session, { from = "blank", name, text } = {}) {
+    if (session.chat) throw new HttpError(400, "일반 채팅에는 세션 지침을 두지 않습니다.");
+    const root = session.cwd || session.projectPath;
+    const title = String(name || session.roleName || session.title || "세션").trim();
+    const content = from === "role" ? guideFromRole(session.role, { name: session.roleName || title, title })
+      : from === "text" ? guideFromRole(text, { name: title, title }) : blankSessionGuide(title);
+    let rel = `${SESSION_GUIDE_DIR}/${guideFileName(title)}`;
+    for (let i = 2; fs.existsSync(path.join(root, rel)); i++) rel = `${SESSION_GUIDE_DIR}/${guideFileName(`${title}-${i}`)}`;
+    writeFileAtomic(path.join(root, rel), formatSessionGuide(content));
+    linkGuide(session, rel);
+    // 옮긴 역할은 비운다(세션 지침이 대신한다).
+    if (from === "role") { session.role = ""; delete session.roleChanged; }
+    store.touch(session);
+    broadcast("sessions", {});
+    return { file: rel, ...summary(session) };
+  }
+  function createGuide(id, body = {}) { return createGuideFile(getSession(id), body); }
+  // 파일을 고친 뒤 그 지침을 쓰는 세션들의 캐시를 맞춘다.
+  function refreshGuides(projectPath) {
+    for (const s of store.list()) if (s.guideFile && !s.chat && (!projectPath || samePath(s.projectPath, projectPath))) cacheGuide(s);
+    broadcast("sessions", {});
   }
 
   // 세션에 이은 스킬을 바꾼다. 대화 중에 바꾸면 다음 요청에 바뀐 목록을 다시 알린다.
@@ -236,7 +284,8 @@ export function createSessionService({
   // chat: 프로젝트 없이 빈 폴더에서 도구 없이 대화만 하는 일반 채팅(project는 null).
   // 기본은 원본 폴더다. isolate:true와 사용자가 지정한 이름이 있을 때만 새 worktree를 만든다.
   // 두 번째 인수는 재생성할 때 기존 작업 폴더를 이어 쓰는 내부 전용 값이다.
-  async function createSession({ project, title, role, roleName, orchestrator, createdBy, connectFrom, tabId, chat, isolate = false, worktreeName, ...options }, { worktree: existingWorktree = null, taskId = null } = {}) {
+  // guideFile: 같이 쓸 세션 지침(.agenthub/sessions/*.md) / guideText: 새 세션 지침으로 만들 글(새 세션 창)
+  async function createSession({ project, title, role, roleName, orchestrator, createdBy, connectFrom, tabId, chat, isolate = false, worktreeName, guideFile, guideText, ...options }, { worktree: existingWorktree = null, taskId = null } = {}) {
     chat = !!chat;
     const resolvedTabId = !chat && graphTabs ? graphTabs.resolve(project.path, tabId, connectFrom ?? createdBy) : null;
     if (chat && orchestrator) throw new HttpError(400, "일반 채팅은 오케스트레이터로 만들 수 없습니다.");
@@ -298,6 +347,8 @@ export function createSessionService({
       events: [],
     };
     store.add(session);
+    if (!chat && guideFile) linkGuide(session, guideFile);
+    else if (!chat && String(guideText ?? "").trim()) createGuideFile(session, { from: "text", text: guideText, name: roleName || title });
     return session;
   }
 
@@ -733,6 +784,8 @@ export function createSessionService({
       if (role !== (session.role ?? "") && session.agentSessionId) session.roleChanged = true;
       session.role = role;
     }
+    // 세션 지침 잇기·끊기(작업 폴더 기준 .agenthub/sessions/*.md)
+    if (body.guideFile !== undefined && !session.chat) linkGuide(session, body.guideFile);
     if (body.graphPos !== undefined) {
       const { x, y } = body.graphPos ?? {};
       session.graphPos = Number.isFinite(x) && Number.isFinite(y) ? { x: Math.max(0, x), y: Math.max(0, y) } : null;
@@ -949,7 +1002,7 @@ export function createSessionService({
       : "워크트리 폴더가 없습니다. 서버를 다시 시작해 원본 폴더로 전환한 뒤 재생성하세요.");
     const created = await createSession({
       project: session.chat ? null : ensureProject(session.projectPath),
-      title: session.title, role: session.role, roleName: session.roleName,
+      title: session.title, role: session.role, roleName: session.roleName, guideFile: session.guideFile,
       orchestrator: session.kind === "orchestrator", createdBy: session.createdBy,
       ...(graphTabs && !session.chat ? { tabId: graphTabs.tabFor(session) } : {}),
       chat: session.chat, agent: session.agent, model: session.model, effort: session.effort, permission: session.permission,
@@ -1023,7 +1076,7 @@ export function createSessionService({
     list: () => store.list().map((s) => summary(settleState(s))), detail, detailMeta, markRead,
     create, importSession, update, sendMessage, files, readRecordInto, uploadAttachment, attachmentContent, artifact, artifactContent, artifactPreview, exportRecord, listRecords, importRecord, queueAction, decidePlan, answerQuestion, answerPermission,
     stop, stopSubtask, mcpStatus, reconnectMcp, reloadMcp, pause, resume, restart, clearError, recreate, diff, remove,
-    getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills,
+    getSession, createSession, composeInput, startTurn, checkSessionOptions, setSessionSkills, createGuide, refreshGuides,
     dropMissingSkills, cleanupSession, cliSessionIds, hideRecords,
     finishHandover(session) {
       if (session.handover && session.agentSessionId) delete session.handover;

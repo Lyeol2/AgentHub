@@ -634,6 +634,9 @@ export class Runner extends EventEmitter {
         setImmediate(() => this.emit("compacted", session));
         // 첫 요청에 붙인 스킬 안내가 요약되며 빠질 수 있으므로 다음 요청에 다시 붙인다.
         if (session.skills?.length) session.skillsChanged = true;
+        // 세션 지침(또는 예전 역할)도 다음 요청에 다시 붙인다.
+        if (session.guideFile) session.guideCompacted = true;
+        else if (session.role) session.roleCompacted = true;
         delete event.compact;
       }
       if (event.context) {

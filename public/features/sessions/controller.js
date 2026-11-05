@@ -14,13 +14,16 @@ import { createSubtasksView } from "./subtasks-view.js";
 import { mergeSubtasks, countSubtasks } from "../../shared/subtasks.js";
 import { createMcpDialog } from "./mcp-dialog.js";
 import { mergeSessionRead } from "../../shared/session-read.js";
+import { createSessionPanel, guideMismatch } from "./session-panel.js";
 
-export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
+export function createSessionsController({ POPUP, openWindow, openSessionWindow, api, show, goDashboard, goProject, selectSession, eventsList, loadStatus, loadSessions, sessionById, loadLinks, openEquipDialog, openSessionGuide = null, fillModels, fillEfforts, clearSelection, onSessionLocked = () => {}, onTaskReference, data, navigation }) {
   const ui = {
     "chatDraft": null
   };
   const subtasksView = createSubtasksView({ api, getSession: () => data.current });
   const mcpDialog = createMcpDialog({ api, getSession: () => navigation.view === "session" ? data.current : null });
+  // 상태 칩·정보 패널·⋯ 메뉴·세션 지침 창
+  const panel = createSessionPanel({ api, data, openEquipDialog, openSessionGuide, onRestart: () => $("s-restart").click(), POPUP });
   const { renderEvents, appendEvent, settleEvents, updateEvent, appendDraft, updateSubtaskLinks } = createConversationView({
     api, getSession: () => data.current, sessionById, selectSession, onTaskReference, onSubtaskFocus: (id) => subtasksView.focus(id),
     onPlanDecision: (id, plan, body) => api("POST", `/api/sessions/${id}/plans/${plan}`, body),
@@ -45,11 +48,17 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     const references = data.links.filter((l) => l.to === s.id && l.when === "ref").map((l) => ({ link: l, node: (data.commands ?? []).find((c) => c.id === l.from) })).filter((item) => item.node);
     const outgoing = data.links.filter((l) => l.from === s.id && sessionById(l.to));
     $("s-flow").replaceChildren(
-      ...(s.role ? [el("span", { class: "flow-role", title: s.role }, `${s.roleName || "역할"} · ${firstLine(s.role)}`)] : []),
       ...references.map(({ link, node }) => el("span", { class: `flow-chip artref-chip${link.enabled ? "" : " off"}`, title: `${node.folderPath ?? node.folder} · 요청마다 이 레퍼런스 폴더를 알려 줍니다` }, `🎨 ${node.title}`)),
       ...incoming.map((l) => chip(l.from, `← ${sessionById(l.from).title} · ${linkLabel(l)}`, l)),
-      ...outgoing.map((l) => chip(l.to, `→ ${sessionById(l.to).title} · ${linkLabel(l)}`, l)),
+      ...outgoing.map((l) => {
+        // 세션 지침의 판정어에 없는 키워드 연결은 ⚠로 알린다.
+        const off = l.when === "keyword" && guideMismatch(s, [l]).missing.length > 0;
+        const node = chip(l.to, `→ ${sessionById(l.to).title} · ${linkLabel(l)}${off ? " ⚠" : ""}`, l);
+        if (off) { node.classList.add("warn"); node.title = "이 키워드가 세션 지침의 마지막 줄 판정에 없습니다"; }
+        return node;
+      }),
     );
+    panel.render(s);
   }
 
   function renderSession() {
@@ -75,15 +84,8 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     renderState();
     renderSubtasks();
 
-    const meta = [
-      s.chat ? "도구 없이 대화만" : s.worktree ? `작업 폴더 ${s.cwd} (브랜치 ${s.worktree.branch})` : `원본 폴더 ${s.cwd}${s.branch ? ` (브랜치 ${s.branch})` : ""}`,
-      s.chat ? null : `권한 ${permissionLabel(s.permission)}`,
-      `모델 ${s.model || "기본값"}`,
-      `추론 ${s.effort || "기본값"}`,
-      s.agentSessionId ? `CLI 세션 ${s.agentSessionId.slice(0, 8)}` : null,
-    ].filter(Boolean);
-    $("s-meta").textContent = meta.join("  ·  ");
-    $("s-meta").title = s.agentSessionId ?? "";
+    // 폴더·권한·모델·세션 지침은 상태 칩 줄에, 지침·연결·스킬·수명은 정보 패널에 보인다.
+    panel.render(s);
     $("s-diff").disabled = !s.baseCommit;
     $("s-diff").hidden = !!s.chat;
     $("s-export").hidden = !!s.chat;
@@ -213,12 +215,13 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     if (!active) stopping.delete(s.id);
     const halting = active && stopping.has(s.id);
     $("s-stop").disabled = halting || (!active && s.state !== "paused");
-    $("s-stop").textContent = halting ? "중지하는 중…" : "중지";
+    $("s-stop").textContent = halting ? "중지하는 중…" : "■ 중지";
     // 도구 호출의 "실행 중" 표시는 턴이 도는 동안에만 보인다.
     $("s-events").classList.toggle("running", running);
     settleEvents($("s-events"));
     $("s-restart").disabled = running || s.state === "background" || !s.agentSessionId;
     renderLife("s-life", s);
+    if (!s.chat) panel.renderInfo(s);
     renderComposer("s", s);
     renderRunActivity();
   }
@@ -516,6 +519,7 @@ export function createSessionsController({ POPUP, openWindow, openSessionWindow,
     }
   }
   $("s-restart").addEventListener("click", () => restartSession());
+  $("s-guide").addEventListener("click", () => data.current && panel.openGuide(data.current));
 
   // 오류 표시만 지운다. 대화와 연결은 그대로 둔다. 화면은 서버가 보내는 session 이벤트로 새로 그린다.
   async function clearSessionError(s) {

@@ -44,7 +44,10 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
     $("new-title").placeholder = chat ? "예: 여행 일정 짜기" : "예: 가방 UI 버그 수정";
     $("new-role").placeholder = chat
       ? "예: 친절한 영어 선생님. 틀린 표현은 고쳐 준다."
-      : "예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 '검토 요청'이라고 쓴다.";
+      : "예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 마지막 줄에 '검토 요청'만 쓴다.";
+    // 코딩 세션은 .agenthub/sessions/에 세션 지침 파일로 만든다.
+    if ($("new-role-label")?.firstChild) $("new-role-label").firstChild.textContent = chat ? "역할 " : "세션 지침 ";
+    if ($("new-role-hint")) $("new-role-hint").hidden = chat;
     fillPermissions();
     fillModels("new-models", agent);
     // 모델 이름은 AI마다 다르므로 AI별로 마지막에 쓴 값을 채운다.
@@ -235,6 +238,8 @@ export function createCreationController({ api, loadStatus, loadSessions, loadPr
       delete body.workBranch;
     }
     if (body.chat) delete body.projectPath;
+    // 코딩 세션의 지침 칸은 세션 지침 파일(.agenthub/sessions/)로 만든다. 일반 채팅·오케스트레이터는 예전처럼 역할로 둔다.
+    else if (!body.orchestrator && String(body.role ?? "").trim()) { body.guideText = body.role; delete body.role; }
     else if (context?.tabId && samePath(context.tabProjectPath, body.projectPath)) body.tabId = context.tabId;
     const saveDefaults = form.has("saveDefaults") && !body.chat && !body.orchestrator;
     delete body.saveDefaults;

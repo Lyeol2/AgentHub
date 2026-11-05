@@ -16,6 +16,7 @@
   <link rel="stylesheet" href="/features/guide/guide.css">
   <link rel="stylesheet" href="/features/guide/skills.css">
   <link rel="stylesheet" href="/features/guide/branches.css">
+  <link rel="stylesheet" href="/features/sessions/session-view.css">
   <link rel="stylesheet" href="/features/sessions/reports.css">
 </head>
 <body>
@@ -317,40 +318,62 @@
 
     <!-- 세션 -->
     <section id="view-session" class="view session" hidden>
-      <header class="topbar">
+      <header class="topbar session-top">
         <div class="session-title">
-          <div class="crumb"><a href="#" id="s-crumb-project"></a><span id="s-crumb"></span></div>
           <div class="title-row">
+            <span class="crumb session-crumb"><a href="#" id="s-crumb-project" title="세션 흐름으로"></a><span id="s-crumb"></span></span>
+            <span class="crumb-sep" aria-hidden="true">›</span>
             <span id="s-agent" class="badge"></span>
             <h2 id="s-title"></h2>
             <span id="s-kind" class="pill orch" hidden>오케스트레이터</span>
             <span id="s-state" class="pill"></span>
-          <time id="s-elapsed" class="pill run-elapsed" role="timer" aria-live="off" hidden></time>
+            <time id="s-elapsed" class="pill run-elapsed" role="timer" aria-live="off" hidden></time>
             <span id="s-life" class="pill life"></span>
           </div>
-          <div class="sub" id="s-meta"></div>
-          <div class="flow" id="s-flow"></div>
         </div>
-        <div class="actions">
-          <label class="toggle" title="도구 호출(명령·파일 읽기 등)의 입력과 출력을 펼쳐 둡니다. 하나씩 펼치려면 그 줄을 누르세요."><input type="checkbox" id="s-expand-tools"> 도구 펼치기</label>
-          <label class="toggle"><input type="checkbox" id="s-show-log"> 로그</label>
-          <button id="s-back" class="ghost">흐름</button>
-          <button id="s-popout" class="ghost" title="이 세션을 별도 창으로 엽니다">새 창으로</button>
-          <button id="s-config" class="ghost">설정</button>
-          <button id="s-role" class="ghost">역할</button>
-          <button id="s-diff" class="ghost">변경 보기</button>
-          <button id="s-export" class="ghost" title="세션을 docs/agenthub에 .agenthub 세션 파일이나 Markdown 문서로 저장합니다">기록 내보내기</button>
-          <button id="s-import" class="ghost" title="내보낸 기록(.agenthub·.md)을 새 세션으로 불러오거나 이 세션에 읽힙니다">기록 가져오기</button>
-          <button id="s-stop" class="ghost" title="멈추고 넘어온 작업을 버립니다">중지</button>
-          <button id="s-restart" class="ghost" title="CLI 대화를 새로 시작해 컨텍스트를 비웁니다. 기록·역할·연결은 그대로 둡니다.">다시 시작</button>
-          <button id="s-delete" class="ghost danger">삭제</button>
+        <div class="actions session-actions">
+          <button id="s-stop" class="ghost danger-outline" title="멈추고 넘어온 작업을 버립니다">■ 중지</button>
+          <button id="s-guide" class="ghost" title="이 세션에만 더하는 지침(.agenthub/sessions/*.md)">🧭 지침</button>
+          <button id="s-info-toggle" class="ghost" aria-controls="s-info" aria-pressed="true" title="세션 정보 패널(지침·연결·스킬·수명)">정보</button>
+          <div class="session-more">
+            <button id="s-more" class="ghost" aria-haspopup="menu" aria-expanded="false" aria-controls="s-menu" title="더 보기">⋯</button>
+            <div id="s-menu" class="session-menu" role="menu" hidden>
+              <p class="session-menu-label">보기</p>
+              <label class="toggle" title="도구 호출(명령·파일 읽기 등)의 입력과 출력을 펼쳐 둡니다. 하나씩 펼치려면 그 줄을 누르세요."><input type="checkbox" id="s-expand-tools"> 도구 펼치기</label>
+              <label class="toggle"><input type="checkbox" id="s-show-log"> 로그 보기</label>
+              <button id="s-popout" class="ghost" role="menuitem" title="이 세션을 별도 창으로 엽니다">새 창으로</button>
+              <button id="s-back" class="ghost" role="menuitem">세션 흐름으로</button>
+              <p class="session-menu-label">작업</p>
+              <button id="s-diff" class="ghost" role="menuitem">변경 보기</button>
+              <button id="s-restart" class="ghost" role="menuitem" title="CLI 대화를 새로 시작해 컨텍스트를 비웁니다. 기록·지침·연결은 그대로 둡니다.">다시 시작</button>
+              <p class="session-menu-label">기록</p>
+              <button id="s-export" class="ghost" role="menuitem" title="세션을 docs/agenthub에 .agenthub 세션 파일이나 Markdown 문서로 저장합니다">기록 내보내기</button>
+              <button id="s-import" class="ghost" role="menuitem" title="내보낸 기록(.agenthub·.md)을 새 세션으로 불러오거나 이 세션에 읽힙니다">기록 가져오기</button>
+              <p class="session-menu-label">설정</p>
+              <button id="s-config" class="ghost" role="menuitem">세션 설정</button>
+              <button id="s-role" class="ghost" role="menuitem" title="세션 지침으로 옮기기 전의 예전 역할">역할 (예전)</button>
+              <hr>
+              <button id="s-delete" class="ghost danger" role="menuitem">삭제</button>
+            </div>
+          </div>
         </div>
       </header>
+      <div class="session-chips" id="s-meta"></div>
       <p id="s-export-result" class="export-result" role="status" hidden></p>
-      <ol id="s-events" class="events"></ol>
-      <section id="s-subtasks" class="subtasks" aria-label="하위 작업" hidden></section>
-      <div id="s-activity" class="run-activity" role="status" hidden></div>
-      <ul id="s-queue" class="queue" hidden></ul>
+      <div class="session-main">
+        <div class="session-stream">
+          <ol id="s-events" class="events"></ol>
+          <section id="s-subtasks" class="subtasks" aria-label="하위 작업" hidden></section>
+          <div id="s-activity" class="run-activity" role="status" hidden></div>
+          <ul id="s-queue" class="queue" hidden></ul>
+        </div>
+        <aside id="s-info" class="session-info" aria-label="세션 정보">
+          <section class="session-info-block" id="s-info-guide"></section>
+          <section class="session-info-block"><h4>연결</h4><div class="flow" id="s-flow"></div></section>
+          <section class="session-info-block" id="s-info-skills"></section>
+          <section class="session-info-block" id="s-info-life"></section>
+        </aside>
+      </div>
       <form id="s-form" class="composer">
         <div class="composer-body">
           <ul id="s-attachments" class="attachment-tray" aria-label="첨부 파일" hidden></ul>
@@ -448,7 +471,8 @@
         <button type="button" class="ghost sm" id="new-worktree-branch-refresh">목록 새로고침</button>
       </div>
       <label>제목 <input name="title" id="new-title" placeholder="예: 가방 UI 버그 수정"></label>
-      <label>역할 <textarea name="role" id="new-role" rows="3" placeholder="예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 '검토 요청'이라고 쓴다."></textarea></label>
+      <label id="new-role-label">세션 지침 <textarea name="role" id="new-role" rows="3" placeholder="예: 프론트엔드 담당. server/는 건드리지 않는다. 끝나면 마지막 줄에 '검토 요청'만 쓴다."></textarea></label>
+      <p class="hint" id="new-role-hint">적으면 .agenthub/sessions/에 이 세션만의 지침 파일을 만듭니다. 나중에 지침 탭에서 AGENTS.md처럼 고칩니다.</p>
       <div class="two">
         <label>모델 <input name="model" id="new-model" list="new-models" placeholder="CLI 기본값" spellcheck="false" autocomplete="off"></label>
         <label>추론 강도 <select name="effort" id="new-effort"></select></label>
