@@ -11,6 +11,7 @@ import { finalAnswer, writeMessageOutput } from "./utility-output.mjs";
 import { WorkflowRuntime } from "./workflow-runtime.mjs";
 import { RunControls } from "./run-controls.mjs";
 import { renderTemplate } from "./flow-nodes.mjs";
+import { imageRun, IMAGE_HISTORY_MAX } from "./image-preview.mjs";
 
 import { canContact, canCall } from "./policies/messaging.mjs";
 import { MAX_HOPS, lastAnswer, verdictLine, turnHandoff, pickLinks, noMatchNote, handoffText, groupOutcome, groupHandoffText } from "./policies/workflows.mjs";
@@ -199,12 +200,19 @@ export class Chain {
     const sourceKind = isCommandId(source.id) ? commandKind(source) : "session";
     const targetKind = isCommandId(target.id) ? commandKind(target) : "session";
     // Utility nodes keep their direction even when an old or hand-edited link bypasses API validation.
-    if (sourceKind === "markdown" || ["button", "input", "watch", "schedule", "webhook-in"].includes(targetKind)) return;
+    if (["markdown", "image"].includes(sourceKind) || ["button", "input", "watch", "schedule", "webhook-in"].includes(targetKind)) return;
     // Saving a terminal message does not launch another turn, so it must still work at the hop limit.
     if (targetKind === "markdown") {
       this.setFlow(target, flow);
       if (sourceKind === "group") this.printMessage(target, this.groupOrigin(source), answer ?? this.groupFinal(source, flow));
       else this.printMessage(target, { ...source, cwd: source.cwd ?? source.lastRun?.cwd ?? source.projectPath }, answer ?? (sourceKind === "session" ? finalAnswer(source) : source.lastRun?.outputText ?? source.lastRun?.tail ?? ""));
+      return;
+    }
+    // 이미지 미리보기도 받기만 하는 끝 노드라 단계 수와 상관없이 보인다.
+    if (targetKind === "image") {
+      this.setFlow(target, flow);
+      const origin = sourceKind === "group" ? this.groupOrigin(source) : { ...source, cwd: source.cwd ?? source.lastRun?.cwd ?? source.projectPath };
+      this.showImages(target, origin, answer ?? (sourceKind === "group" ? this.groupFinal(source, flow) : sourceKind === "session" ? (turnHandoff(source)?.content ?? lastAnswer(source)) : source.lastRun?.outputText ?? source.lastRun?.tail ?? ""));
       return;
     }
     if (depth >= MAX_HOPS) {
@@ -419,7 +427,7 @@ export class Chain {
     this.notify("commands");
     this.workflow.record(group, ok, text, flow);
     for (const link of picked) {
-      const message = commandKind(this.node(link.to)) === "markdown" ? this.groupFinal(group, flow, snapshots) : await this.groupText(group, link, members, flow, snapshots);
+      const message = ["markdown", "image"].includes(commandKind(this.node(link.to))) ? this.groupFinal(group, flow, snapshots) : await this.groupText(group, link, members, flow, snapshots);
       if (this.disposed || flow?.cancelled) break;
       if (link.approve) this.hold(link, group, message, depth, flow);
       else await this.deliver(link, depth, message, null, flow);
@@ -448,6 +456,7 @@ export class Chain {
     if (kind === "button") return this.runButton(cmd, depth, flow).catch((error) => this.failFlowDelivery(cmd, error, flow));
     if (commandKind(cmd) === "group") return this.fireGroup(cmd);
     if (commandKind(cmd) === "markdown") throw new Error("MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
+    if (commandKind(cmd) === "image") throw new Error("이미지 미리보기 노드는 연결로 받은 이미지 경로를 보여 줍니다.");
     if (this.runs.has(cmd.id)) {
       return this.workflow.enqueue(cmd, { origin, depth, prompt, flow });
     }
@@ -702,6 +711,21 @@ export class Chain {
       } else this.controls.finish(cmd, flow, { ok: false, output: prompt, stopped: true });
       this.workflow.settle();
     }
+  }
+
+  // 받은 글에서 이미지 경로를 찾아 기록한다. 상대 경로는 보낸 노드의 작업 폴더 기준이고, 프로젝트·작업 폴더 안의 파일만 연다.
+  showImages(cmd, source, text) {
+    const flow = this.flowFor(cmd);
+    this.controls.begin(cmd, flow, text, { source: { id: source.id, title: source.title, cwd: source.cwd }, cwd: source.cwd });
+    const run = imageRun(text, { base: source.cwd ?? cmd.projectPath, roots: [cmd.projectPath, source.cwd, source.projectPath], origin: source });
+    const shown = run.images.filter((image) => !image.error).length;
+    const history = [run, ...(cmd.history ?? [])].slice(0, IMAGE_HISTORY_MAX);
+    const lastRun = { startedAt: run.at, cwd: source.cwd, originId: source.id, originTitle: source.title, stopped: false, timedOut: false, durationMs: 0,
+      ok: run.ok, exitCode: run.ok ? 0 : 1, tail: run.ok ? `이미지 ${shown}개${run.images.length > shown ? ` · 열 수 없음 ${run.images.length - shown}개` : ""}` : run.error, ...(run.ok ? {} : { error: run.error }) };
+    this.commands.update(cmd, { state: run.ok ? "success" : "error", lastRun, history, live: null, queued: null });
+    this.note(source, run.ok ? `이미지 미리보기 "${cmd.title}"에 이미지 ${shown}개를 보냈습니다.` : `이미지 미리보기 "${cmd.title}": ${run.error}`);
+    this.workflow.record(cmd, run.ok, run.ok ? text : run.error, flow);
+    this.notify("commands");
   }
 
   printMessage(cmd, source, text) {

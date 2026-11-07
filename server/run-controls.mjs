@@ -280,6 +280,9 @@ export class RunControls {
       node.paused = false;
       node.waiting = false;
       c.enqueue(node, step.input, { ...(step.options?.meta ?? {}), flow }, 0);
+    } else if (kind === "image") {
+      c.setFlow(node, flow);
+      c.showImages(node, step.options?.source ?? { id: node.id, title: node.title, cwd: step.cwd ?? node.projectPath }, step.input);
     } else if (kind === "markdown") {
       c.setFlow(node, flow);
       c.printMessage(node, step.options?.source ?? { id: node.id, title: node.title, cwd: step.cwd ?? node.projectPath }, step.input);

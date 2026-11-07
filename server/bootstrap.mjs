@@ -209,6 +209,7 @@ export function createHub(options = {}) {
     direct: (session) => links.from(session.id),
     outgoing: (session) => [...links.from(session.id), ...chain.groupsOf(session.id).flatMap((group) => links.from(group.id))],
     title: (id) => chain.node(id)?.title ?? id,
+    kind: (id) => chain.node(id)?.kind ?? "",
     record: (session, event) => runner.append(session, event),
   });
   const tools = [...createMessagingTools({ mailbox, board, notify }), handoffTool];

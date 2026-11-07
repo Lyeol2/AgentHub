@@ -2,6 +2,7 @@ import path from "node:path";
 import { askOnce } from "../one-shot.mjs";
 import { newCommandId, checkCommand, commandKind, shells, generatePrompt, parseGenerated } from "../commands.mjs";
 import { readMessageOutput } from "../utility-output.mjs";
+import { openRecordedImage } from "../image-preview.mjs";
 import { listGitNodeBranches } from "../git-nodes.mjs";
 import { HttpError } from "./errors.mjs";
 import { FLOW_MEMBER_KINDS, inputValues, newHookToken } from "../flow-nodes.mjs";
@@ -146,6 +147,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     const command = getCommand(id);
     if (commandKind(command) === "artref") throw new HttpError(400, "아트 레퍼런스 노드는 실행하지 않습니다. 세션에 이어 두면 세션이 요청을 받을 때 함께 읽습니다.");
     if (commandKind(command) === "markdown") throw new HttpError(400, "MD 출력 노드는 연결된 세션의 완료 메시지를 받아 실행합니다.");
+    if (commandKind(command) === "image") throw new HttpError(400, "이미지 미리보기 노드는 연결로 받은 이미지 경로를 보여 줍니다.");
     if (commandKind(command) === "group") {
       const result = await chain.fireGroup(command);
       if (result.busy.length) throw new HttpError(409, `아직 진행 중인 세션이 있어 넘길 수 없습니다: ${result.busy.map((s) => s.title).join(", ")}`);
@@ -172,6 +174,17 @@ export function createCommandService({ commands, chain, links, store, projects, 
     catch (error) {
       throw new HttpError(["OUTPUT_NOT_FOUND", "ENOENT"].includes(error.code) ? 404 : 400, error.message);
     }
+  }
+
+  // 이미지 미리보기 노드가 받아 둔 기록의 이미지만 연다(run: 0이 가장 최근, index: 그 기록 안의 순서).
+  function previewImage(id, run, index) {
+    const command = getCommand(id);
+    if (commandKind(command) !== "image") throw new HttpError(400, "이미지 미리보기 노드가 아닙니다.");
+    const record = (command.history ?? [])[Number(run) || 0];
+    const file = record ? openRecordedImage(record, Number(index) || 0) : null;
+    if (!file) throw new HttpError(404, "이 노드가 받은 이미지가 아닙니다.");
+    if (file.error) throw new HttpError(file.error === "파일이 없습니다" ? 404 : 403, file.error);
+    return file;
   }
 
   function stop(id) {
@@ -314,5 +327,5 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { nodes: created };
   }
 
-  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, receiveHook, gen3dFile, gen3dForward, gen3dExpand, figcraftOpen, addReferenceImage, referenceImage };
+  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, previewImage, receiveHook, gen3dFile, gen3dForward, gen3dExpand, figcraftOpen, addReferenceImage, referenceImage };
 }
