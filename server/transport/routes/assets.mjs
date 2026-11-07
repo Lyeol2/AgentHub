@@ -14,6 +14,12 @@ export function assetRoutes({ commands: c, skills: s }) {
     ["POST", "commands/:id/stop", ({ params }) => c.stop(params.id)],
     ["POST", "commands/:id/clear-error", ({ params }) => c.clearError(params.id)],
     ["GET", "commands/:id/output", ({ params }) => c.output(params.id)],
+    // 이미지 미리보기 노드가 받은 이미지. 기록에 있는 경로만 연다.
+    ["GET", "commands/:id/image", ({ params, query, req, res }) => {
+      const file = c.previewImage(params.id, query.get("run"), query.get("index"));
+      return sendFileRange(req, res, file.realPath, { "Content-Type": file.mimeType, "Cache-Control": "private, no-store",
+        "X-Content-Type-Options": "nosniff", "Content-Security-Policy": "sandbox; default-src 'none'", "Content-Disposition": "inline" });
+    }],
     ["GET", "commands/:id/gen3d/file", ({ params, query, req, res }) => {
       const file = c.gen3dFile(params.id, query.get("path"));
       const inline = /^image\//.test(file.mimeType) || file.mimeType === "video/mp4";

@@ -168,6 +168,7 @@ export function createWorkflowService({ store, runner, links, commands, chain, p
     if (["button", "input", "watch", "schedule", "webhook-in"].includes(commandKind(to))) throw new HttpError(400, "버튼·입력 폼·파일 감시·시간 예약·웹훅 받기 노드는 시작점이므로 들어오는 연결을 만들 수 없습니다.");
     if (isCommandId(to.id) && commandKind(to) === "artref") throw new HttpError(400, "아트 레퍼런스 노드로 들어오는 연결은 만들 수 없습니다. 레퍼런스에서 세션으로 이으세요.");
     if (commandKind(from) === "markdown") throw new HttpError(400, "MD 출력 노드는 완료 메시지를 저장하는 마지막 노드입니다.");
+    if (commandKind(from) === "image") throw new HttpError(400, "이미지 미리보기 노드는 받은 이미지를 보여 주는 마지막 노드입니다.");
     if (from.chat || to.chat) throw new HttpError(400, "일반 채팅 세션은 연결할 수 없습니다.");
     if (from.id === to.id) throw new HttpError(400, "같은 세션끼리는 연결할 수 없습니다.");
     if (!samePath(from.projectPath, to.projectPath)) throw new HttpError(400, "같은 프로젝트의 세션끼리만 연결할 수 있습니다.");

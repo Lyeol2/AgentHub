@@ -336,7 +336,7 @@ export function createNodeGroups({ api, data, navigation, ui, history, renderGra
     const error = el("p", { class: "error", role: "alert" });
     const rebuildCandidates = () => {
       const previous = candidate.value;
-      candidate.replaceChildren(...nodes().filter((item) => chosen.has(item.id) && (direction.value === "input" ? !isSourceOnly(item) : item.kind !== "markdown")).map((item) => el("option", { value: item.id }, `${item.title} · ${kind(item)}`)));
+      candidate.replaceChildren(...nodes().filter((item) => chosen.has(item.id) && (direction.value === "input" ? !isSourceOnly(item) : !["markdown", "image"].includes(item.kind))).map((item) => el("option", { value: item.id }, `${item.title} · ${kind(item)}`)));
       if ([...candidate.options].some((option) => option.value === previous)) candidate.value = previous;
       const previousCondition = condition.value;
       const allowed = conditionOptions.filter((item) => !resultOnlyOutputs(node(candidate.value)) || ["success", "error", "always", "manual"].includes(item.id));

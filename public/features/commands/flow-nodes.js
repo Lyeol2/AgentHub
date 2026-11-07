@@ -4,7 +4,7 @@ import { createFigcraftForm } from "./figcraft-form.js";
 import { createArtrefForm } from "./artref-form.js";
 
 export const FLOW_KINDS = ["input", "repeat", "transform", "watch", "schedule", "notify", "task", "webhook", "webhook-in", "gen3d", "figcraft", "artref"];
-export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", schedule: "시간 예약", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기", gen3d: "3D 생성", figcraft: "FigCraft", artref: "아트 레퍼런스" };
+export const KIND_LABEL = { command: "명령", button: "버튼", markdown: "MD 출력", image: "이미지 미리보기", group: "결과 모으기", git: "GIT", input: "입력 폼", repeat: "반복 제어", transform: "결과 가공", watch: "파일 감시", schedule: "시간 예약", notify: "알림", task: "작업", webhook: "웹훅 보내기", "webhook-in": "웹훅 받기", gen3d: "3D 생성", figcraft: "FigCraft", artref: "아트 레퍼런스" };
 export const kindOf = (node) => Object.hasOwn(KIND_LABEL, node?.kind) ? node.kind : "command";
 // 명령 노드는 kind가 없으므로 id로 세션과 구분한다.
 export const hasBranchPorts = (node) => ["git", "task", "repeat"].includes(node?.kind) || (!!node?.id?.startsWith("cmd-") && kindOf(node) === "command");

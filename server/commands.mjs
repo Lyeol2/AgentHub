@@ -13,7 +13,7 @@ const isWindows = process.platform === "win32";
 export const COMMAND_PREFIX = "cmd-";
 export const isCommandId = (id) => typeof id === "string" && id.startsWith(COMMAND_PREFIX);
 export const commandKind = (command) => command?.kind ?? "command";
-export const COMMAND_KINDS = ["command", "button", "markdown", "group", "git", "task", ...FLOW_NODE_KINDS];
+export const COMMAND_KINDS = ["command", "button", "markdown", "image", "group", "git", "task", ...FLOW_NODE_KINDS];
 export const TASK_ACTIONS = ["start", "finish"]; // 새 작업 | 작업 마무리
 export const GROUP_MAX = 20; // 세션 묶음 하나에 넣을 수 있는 세션 수
 export const CWD_MODES = ["source", "project"]; // 보낸 세션의 작업 폴더 | 프로젝트 폴더
@@ -204,6 +204,7 @@ export function checkCommand(body, current = {}) {
     return { kind, title: title || "실행 버튼", prompt };
   }
   if (kind === "markdown") return { kind, title: title || "MD 출력", cwdMode };
+  if (kind === "image") return { kind, title: title || "이미지 미리보기" };
   if (kind === "group") {
     const members = [...new Set((Array.isArray(body.members) ? body.members : current.members ?? []).map(String))];
     if (!members.length) throw new Error("결과를 모을 노드를 하나 이상 고르세요.");

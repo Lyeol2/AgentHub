@@ -91,7 +91,9 @@ async function dispatch(msg, session, tools, info) {
 // title(id): 연결 끝 노드 이름. record(session, event): 세션 기록에 남긴다.
 export const HANDOFF_AUTO = ["success", "error", "always", "otherwise", "keyword"];
 const CONTENT_MAX = 200_000;
-export function createHandoffTool({ outgoing, direct = outgoing, title = (id) => id, record }) {
+export const IMAGE_HANDOFF_HINT = "이미지 미리보기 노드로 넘길 때는 content에 보여 줄 이미지 파일 경로를 한 줄에 하나씩 쓴다(작업 폴더 기준 상대 경로나 절대 경로).";
+export function createHandoffTool({ outgoing, direct = outgoing, title = (id) => id, kind = () => "", record }) {
+  const imageHint = (session) => direct(session).some((l) => l.enabled !== false && HANDOFF_AUTO.includes(l.when) && kind(l.to) === "image") ? ` ${IMAGE_HANDOFF_HINT}` : "";
   const auto = (session) => outgoing(session).filter((l) => l.enabled !== false && HANDOFF_AUTO.includes(l.when));
   const choices = (session) => {
     const links = direct(session).filter((l) => l.enabled !== false && l.when === "keyword");
@@ -106,8 +108,8 @@ export function createHandoffTool({ outgoing, direct = outgoing, title = (id) =>
     description: BASE,
     describe(session) {
       const list = choices(session);
-      if (list.length) return `${BASE} 이 세션의 판정어: ${list.join(", ")}. 이 중 하나를 verdict로 고른다.`;
-      return auto(session).length ? `${BASE} 이 세션에는 판정으로 가르는 연결이 없다. 넘길 글만 정하려면 verdict 없이 content만 보낸다.` : `${BASE} 지금 이 세션에는 자동으로 넘기는 연결이 없으므로 부르지 않는다.`;
+      if (list.length) return `${BASE} 이 세션의 판정어: ${list.join(", ")}. 이 중 하나를 verdict로 고른다.${imageHint(session)}`;
+      return auto(session).length ? `${BASE} 이 세션에는 판정으로 가르는 연결이 없다. 넘길 글만 정하려면 verdict 없이 content만 보낸다.${imageHint(session)}` : `${BASE} 지금 이 세션에는 자동으로 넘기는 연결이 없으므로 부르지 않는다.`;
     },
     inputSchema: {
       type: "object",

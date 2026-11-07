@@ -33,6 +33,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     git: "기존 로컬 브랜치의 작업 폴더를 준비하거나, 소스 브랜치의 커밋을 대상 브랜치에 병합합니다. 실제 Git 상태에 따라 성공·실패 연결로 넘깁니다. 병합 충돌은 취소 후 실패로 넘깁니다.",
     command: "연결로 넘어오면 실행합니다. 종료 코드 0이면 '성공 시', 아니면 '실패 시' 연결로 넘어가고, 받는 세션에는 출력 마지막 부분이 함께 갑니다. 실행 전에 확인하려면 들어오는 연결에 '넘기기 전에 승인 받기'를 켜세요.",
     button: "실행 버튼을 누르면 연결된 세션에 아래 프롬프트를 보내 실행합니다. 오른쪽 손잡이를 세션에 연결하세요. 연결에 승인을 설정했다면 승인 후 실행합니다.",
+    image: "연결로 받은 글에서 이미지 파일 경로를 찾아 미리 봅니다. 세션은 handoff 도구의 전달 내용에 경로를 한 줄에 하나씩 쓰면 됩니다(없으면 마지막 답변에서 찾습니다). 상대 경로는 보낸 세션의 작업 폴더 기준이고, 프로젝트·작업 폴더 안의 png·jpg·gif·webp·avif·bmp만 엽니다. 최근 10번 받은 기록을 결과 보기에서 볼 수 있습니다.",
     markdown: "연결된 세션이 완료되면 마지막 답변 원문을 AI 처리 없이 .md 파일로 저장합니다. 선택한 폴더의 docs/agenthub/outputs에 완료할 때마다 새 파일을 만들며, 결과 보기에서 최근 파일을 확인할 수 있습니다.",
     group: "AI 세션·명령·GIT·입력 폼·반복 제어·결과 가공의 결과를 함께 모읍니다. 묶음으로 들어온 요청을 모든 멤버에 보내고, 이번 실행의 멤버 결과가 모두 끝나면 다음 노드로 넘깁니다. 하나라도 실패하면 실패 출력으로 넘깁니다. 이전 실행의 결과는 섞지 않습니다.",
   };
@@ -102,6 +103,12 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       if (busy.length) return `진행 중 ${busy.length}/${members.length} · 모두 끝나면 넘김`;
       return run ? `모두 끝남 · ${run.ok ? "넘김" : "실패로 넘김"} · ${timeAgo(run.startedAt)}` : "모두 끝남 · 넘길 수 있음";
     }
+    if (kindOf(c) === "image") {
+      const last = c.history?.[0];
+      if (!last) return "연결로 이미지 경로를 기다리는 중";
+      const shown = last.images.filter((image) => !image.error).length;
+      return last.ok ? `이미지 ${shown}개${last.images.length > shown ? ` · ⚠ ${last.images.length - shown}개` : ""} · ${timeAgo(last.at)}` : `${last.error} · ${timeAgo(last.at)}`;
+    }
     if (kindOf(c) === "markdown") return running ? "메시지 저장 중" : run?.output ? `저장됨 · ${timeAgo(run.startedAt)}` : run?.error || "세션 완료 기다리는 중";
     if (kindOf(c) === "button") return running ? "연결된 세션에 보내는 중" : run ? `${run.ok ? "전달 완료" : "전달 실패"} · ${timeAgo(run.startedAt)}` : "눌러서 연결된 세션 실행";
     return running ? `실행 중 · ${firstLine(c.live?.tail?.split(/\r?\n/).at(-1) ?? "") || "출력 기다리는 중"}`
@@ -132,8 +139,51 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
       el("span", { class: "gcard-handle", title: "끌어서 다음 세션이나 노드에 연결" }));
   }
 
+  // 이미지 미리보기 노드가 받은 이미지 주소와 미리보기 창 목록
+  const imageUrl = (c, run, index) => `/api/commands/${encodeURIComponent(c.id)}/image?run=${run}&index=${index}&v=${encodeURIComponent(String(c.history?.[run]?.images?.[index]?.mtimeMs ?? ""))}`;
+  const imageGallery = (c, run) => (c.history?.[run]?.images ?? []).map((image, index) => image.error ? null : { url: imageUrl(c, run, index), label: image.name, kind: "image" }).filter(Boolean);
+  function openImageAt(c, run, index) {
+    const gallery = imageGallery(c, run);
+    const url = imageUrl(c, run, index);
+    nodeViewer.open(gallery.find((item) => item.url === url) ?? gallery[0], { id: "" }, gallery);
+  }
+
+  // 이미지 미리보기 카드: 마지막으로 받은 이미지를 썸네일로 보이고, 누르면 미리보기 창에서 크게 본다.
+  function imageNode(c) {
+    const last = c.history?.[0];
+    const images = last?.images ?? [];
+    const ok = images.map((image, index) => ({ image, index })).filter(({ image }) => !image.error);
+    const bad = images.filter((image) => image.error);
+    const action = el("button", { type: "button", class: "gcmd-btn", title: c.history?.length ? "받은 기록 보기" : "이미지를 받으면 볼 수 있습니다", "aria-label": c.title + " 결과 보기", onclick: () => openCommandOutput(c) }, "결과 보기");
+    action.disabled = !c.history?.length;
+    return el("div", { class: "gcmd gcmd-image " + c.state, "data-id": c.id, "data-kind": "image", title: c.title + (last?.originTitle ? `\n보낸 노드: ${last.originTitle}` : "") + "\n\n두 번 누르면 편집합니다." },
+      el("div", { class: "gcard-top" }, el("span", { class: "pill cmd image" }, KIND_LABEL.image), el("span", { class: "gcmd-shell" }, last?.originTitle ?? "이미지"), el("span", { class: "pill cmd-" + c.state }, COMMAND_STATE[c.state] ?? c.state)),
+      el("div", { class: "gcard-title" }, c.title),
+      // 카드 높이가 정해져 있으므로 썸네일 한 줄에 열 수 없는 경로 표시까지 담는다.
+      el("div", { class: "image-card-thumbs" },
+        ...ok.slice(0, 4).map(({ image, index }, i) => el("button", { type: "button", class: "image-card-thumb", title: `${image.name} 크게 보기`, onclick: (e) => { e.stopPropagation(); openImageAt(c, 0, index); } },
+          el("img", { src: imageUrl(c, 0, index), alt: image.name, loading: "lazy" }), i === 3 && ok.length > 4 ? el("span", { class: "image-card-more" }, `+${ok.length - 4}`) : null)),
+        bad.length ? el("span", { class: "image-card-bad", title: bad.map((image) => `${image.path}: ${image.error}`).join("\n") }, `⚠ ${bad[0].name}${bad.length > 1 ? ` 외 ${bad.length - 1}개` : ""}`)
+          : !ok.length ? el("span", { class: "gcmd-code" }, last ? last.error ?? "보여 줄 이미지가 없습니다" : "세션의 handoff 전달 내용에 이미지 경로를 쓰면 여기에 보입니다") : null),
+      el("div", { class: "gcmd-foot" }, el("span", { class: "gcmd-result" }, el("span", { class: "gcmd-result-text" }, commandNodeFoot(c))), action));
+  }
+
+  // 받은 기록(최근 것부터): 기록마다 보낸 노드·시각·썸네일·열 수 없는 경로
+  function renderImageHistory(c) {
+    const runs = c.history ?? [];
+    return el("ol", { class: "image-history" }, ...runs.map((run, r) => el("li", { class: `image-run${run.ok ? "" : " failed"}` },
+      el("div", { class: "image-run-meta" }, el("strong", {}, run.ok ? `이미지 ${run.images.filter((image) => !image.error).length}개` : "실패"),
+        el("span", { class: "muted", title: run.at }, ` · ${timeAgo(run.at)}${run.originTitle ? ` · ${run.originTitle}에서` : ""}`)),
+      run.error ? el("div", { class: "error" }, run.error) : null,
+      el("div", { class: "image-run-thumbs" }, ...run.images.map((image, index) => image.error
+        ? el("span", { class: "image-run-bad", title: image.path }, `⚠ ${image.name} · ${image.error}`)
+        : el("button", { type: "button", class: "image-card-thumb", title: `${image.path} 크게 보기`, onclick: () => openImageAt(c, r, index) }, el("img", { src: imageUrl(c, r, index), alt: image.name, loading: "lazy" })))),
+      run.text ? el("pre", { class: "image-run-text" }, run.text) : null)));
+  }
+
   function commandNode(c) {
     if (kindOf(c) === "group") return groupNode(c);
+    if (kindOf(c) === "image") return imageNode(c);
     const running = ["running", "watching"].includes(c.state) || isScheduleArmed(c);
     const kind = kindOf(c);
     const output = c.lastRun?.output;
@@ -159,7 +209,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   async function runCommand(c, extra = null) {
     if (isScheduleArmed(c)) return stopCommand(c);
     if (kindOf(c) === "watch" && c.state === "watching") return stopCommand(c);
-    if (kindOf(c) === "markdown") return openCommandOutput(c);
+    if (["markdown", "image"].includes(kindOf(c))) return openCommandOutput(c);
     if (pendingRuns.has(c.id) || (["button", "git", "task"].includes(kindOf(c)) && c.state === "running")) return;
     if (kindOf(c) === "group" && !groupProgress(c).ready) return showError({ message: "묶은 세션 중 진행 중인 노드가 있어 아직 넘길 수 없습니다.", hint: "묶은 세션이 모두 끝난 뒤 다시 넘기세요." }, { action: "그룹 넘기기" });
     const values = kindOf(c) === "input" ? await flowForms.collect(c) : undefined;
@@ -213,7 +263,7 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
   // 같은 프로젝트의 실행 가능한 노드를 모은다.
   function renderGroupMembers(selected) {
     const inTab = (node) => selected.has(node.id) || !navigation.graphTabId || (node.tabId ?? data.defaultGraphTabId) === navigation.graphTabId;
-    const nodes = [...data.sessions.filter((s) => !s.chat && samePath(s.projectPath, navigation.project) && inTab(s)), ...(data.commands ?? []).filter((c) => !["button", "markdown", "watch", "schedule", "webhook-in", "group"].includes(kindOf(c)) && samePath(c.projectPath, navigation.project) && inTab(c))];
+    const nodes = [...data.sessions.filter((s) => !s.chat && samePath(s.projectPath, navigation.project) && inTab(s)), ...(data.commands ?? []).filter((c) => !["button", "markdown", "image", "watch", "schedule", "webhook-in", "group"].includes(kindOf(c)) && samePath(c.projectPath, navigation.project) && inTab(c))];
     $("group-members").replaceChildren(...(nodes.length ? nodes.map((node) => el("li", {}, el("label", { class: "check" }, el("input", { type: "checkbox", value: node.id, ...(selected.has(node.id) ? { checked: "" } : {}) }), " " + node.title, el("span", { class: "muted" }, " · " + (node.agent ?? KIND_LABEL[kindOf(node)]))))) : [el("li", { class: "muted" }, "이 프로젝트에 모을 수 있는 노드가 없습니다.")]));
   }
 
@@ -341,8 +391,8 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
     const box = $("command-last");
     $("command-output").hidden = kind === "schedule" && !cmd?.live?.tail && !run?.tail && !run?.error;
     const running = ["running", "watching"].includes(cmd?.state) || isScheduleArmed(cmd);
-    $("command-run").hidden = !cmd || kind === "artref" || (kind === "markdown" && !run?.output);
-    $("command-run").textContent = kind === "schedule" ? running ? "예약 중지" : "예약 시작" : kind === "markdown" ? "결과 보기" : kind === "watch" ? running ? "감시 중지" : "감시 시작" : kind === "input" ? "입력하고 실행" : kind === "webhook-in" ? "시험 실행" : kind === "group" ? "지금 넘기기" : kind === "button" ? running ? "전달 중" : "지금 실행" : running ? "중지" : "지금 실행";
+    $("command-run").hidden = !cmd || kind === "artref" || (kind === "markdown" && !run?.output) || (kind === "image" && !cmd?.history?.length);
+    $("command-run").textContent = kind === "schedule" ? running ? "예약 중지" : "예약 시작" : ["markdown", "image"].includes(kind) ? "결과 보기" : kind === "watch" ? running ? "감시 중지" : "감시 시작" : kind === "input" ? "입력하고 실행" : kind === "webhook-in" ? "시험 실행" : kind === "group" ? "지금 넘기기" : kind === "button" ? running ? "전달 중" : "지금 실행" : running ? "중지" : "지금 실행";
     $("command-run").disabled = pendingRuns.has(cmd?.id) || (kind === "button" && running) || (kind === "group" && !!cmd && !groupProgress(cmd).ready);
     if (!cmd || (!run && !running)) {
       box.hidden = true;
@@ -386,6 +436,20 @@ export function createCommandsController({ api, loadLinks, renderGraph, connectC
 
   async function openCommandOutput(cmd) {
     if (!cmd || (!cmd.lastRun && !cmd.live)) return;
+    if (kindOf(cmd) === "image") {
+      releaseOutputDownload();
+      ui.viewingOutput = { id: cmd.id, projectPath: navigation.project };
+      $("command-result-heading").textContent = cmd.title + " · 받은 이미지";
+      $("command-result-path").textContent = `최근 ${cmd.history?.length ?? 0}번 받은 기록`;
+      $("command-result-preview").replaceChildren(renderImageHistory(cmd));
+      $("command-result-raw").textContent = "";
+      $("command-result-status").textContent = "";
+      $("command-result-rendered").hidden = true;
+      $("command-result-source").hidden = true;
+      setOutputMode(false);
+      if (!$("command-result-dialog").open) $("command-result-dialog").showModal();
+      return;
+    }
     if (kindOf(cmd) !== "markdown") {
       releaseOutputDownload();
       ui.viewingOutput = { id: cmd.id, projectPath: navigation.project };

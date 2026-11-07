@@ -14,7 +14,7 @@ import { QUESTION_GUIDE, answerPrompt, hasAnswer } from "../question.mjs";
 import { listSkills, withSkills } from "../skills.mjs";
 import { MESSAGE_GUIDE } from "../policies/messaging.mjs";
 import { handoffKeywords } from "../policies/workflows.mjs";
-import { HANDOFF_AUTO } from "../mcp.mjs";
+import { HANDOFF_AUTO, IMAGE_HANDOFF_HINT } from "../mcp.mjs";
 import { HttpError } from "./errors.mjs";
 import { sessionReadState } from "../session-read.mjs";
 import { projectSettings } from "../project-settings.mjs";
@@ -180,13 +180,14 @@ export function createSessionService({
     if (!all.length) return "";
     const words = handoffKeywords(all);
     const title = (id) => chain.node?.(id)?.title ?? id;
+    const image = direct.some((l) => l.enabled !== false && HANDOFF_AUTO.includes(l.when) && chain.node?.(l.to)?.kind === "image") ? ` ${IMAGE_HANDOFF_HINT}` : "";
     const list = words.map((k) => {
       const to = direct.filter((l) => l.enabled !== false && l.when === "keyword" && handoffKeywords([l]).includes(k)).map((l) => title(l.to));
       return to.length ? `"${k}"(→ ${to.join(", ")})` : `"${k}"`;
     });
     return words.length
-      ? `[연결로 넘기기]\n이 작업을 마치면 agenthub MCP의 handoff 도구로 판정(verdict)과 다음 노드가 받을 내용(content)을 알린다. 판정어: ${list.join(", ")}. 판정을 알리지 않으면 키워드 연결로 넘어가지 않는다. 답변 끝에 판정 줄을 따로 쓰지 않는다.`
-      : "[연결로 넘기기]\n이 작업은 끝나면 연결로 다음 노드에 넘어간다. 넘길 글을 직접 정하려면 agenthub MCP의 handoff 도구에 content만 보낸다. 보내지 않으면 이번 답변을 넘긴다.";
+      ? `[연결로 넘기기]\n이 작업을 마치면 agenthub MCP의 handoff 도구로 판정(verdict)과 다음 노드가 받을 내용(content)을 알린다. 판정어: ${list.join(", ")}. 판정을 알리지 않으면 키워드 연결로 넘어가지 않는다. 답변 끝에 판정 줄을 따로 쓰지 않는다.${image}`
+      : `[연결로 넘기기]\n이 작업은 끝나면 연결로 다음 노드에 넘어간다. 넘길 글을 직접 정하려면 agenthub MCP의 handoff 도구에 content만 보낸다. 보내지 않으면 이번 답변을 넘긴다.${image}`;
   }
 
   function composeBase(session, prompt) {

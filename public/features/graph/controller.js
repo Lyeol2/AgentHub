@@ -299,10 +299,11 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
         ...moving,
         kind === "markdown"
           ? ["결과 보기", () => openCommandOutput(cmd), { disabled: !cmd.lastRun?.output }]
+          : kind === "image" ? ["결과 보기", () => openCommandOutput(cmd), { disabled: !cmd.history?.length }]
           : kind === "schedule" ? [running ? "예약 중지" : "예약 시작", () => running ? stopCommand(cmd) : runCommand(cmd)]
           : kind === "group" ? ["지금 넘기기", () => runCommand(cmd), { title: "모을 노드가 모두 끝났을 때 넘깁니다" }]
             : running ? ["중지", () => stopCommand(cmd)] : ["지금 실행", () => runCommand(cmd)],
-        ...(kind !== "markdown" && (cmd.lastRun || cmd.live) ? [["결과 보기", () => openCommandOutput(cmd)]] : []),
+        ...(!["markdown", "image"].includes(kind) && (cmd.lastRun || cmd.live) ? [["결과 보기", () => openCommandOutput(cmd)]] : []),
         ...(cmd.state === "error" ? [["오류 해제", () => clearCommandError(cmd), { title: "오류 표시만 지웁니다. 마지막 실행 기록은 남습니다." }]] : []),
         ["편집", () => openCommandDialog(cmd)],
         null,
@@ -332,7 +333,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     const node = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, connectFrom, kind, { connectWhen, connectKeyword }))];
     const start = (label, kind) => [label, inProject(() => openCommandDialog(null, pos, null, kind))];
     // 고른 세션 카드가 있으면 그 세션들을 미리 골라 둔다.
-    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "watch", "schedule", "webhook-in", "group"].includes(node.kind); });
+    const picked = [...ui.graphSelected].filter((id) => { const node = sessionById(id) ?? commandById(id); return node && !node.chat && !["button", "markdown", "image", "watch", "schedule", "webhook-in", "group"].includes(node.kind); });
     const collect = [picked.length > 1 && !connectFrom ? `선택한 노드 ${picked.length}개 결과 모으기` : "새 결과 모으기",
       inProject(() => openCommandDialog(null, pos, connectFrom, "group", { members: connectFrom ? [] : picked, connectWhen, connectKeyword }))];
     // 종류별로 묶는다. 시작점 노드는 들어오는 연결을 받을 수 없으므로 손잡이에서 열었을 때는 뺀다.
@@ -344,7 +345,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
         ["새 작업", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "start" }))],
         ["작업 마무리", inProject(() => openCommandDialog(null, pos, connectFrom, "task", { connectWhen, connectKeyword, taskAction: "finish" }))]]],
       ["흐름 제어", [node("새 반복 제어", "repeat"), node("새 결과 가공", "transform"), collect]],
-      ["출력", [node("새 알림", "notify"), node("새 웹훅 보내기", "webhook"), node("새 Markdown 출력", "markdown")]],
+      ["출력", [node("새 알림", "notify"), node("새 웹훅 보내기", "webhook"), node("새 Markdown 출력", "markdown"), node("새 이미지 미리보기", "image")]],
       // 통합 노드는 여러 단계를 이어 실행하고, 단계 노드는 한 단계씩 나눠 쓴다.
       ["3D 생성", [
         ["3D 통합 (모양→다듬기→형태 정리)", inProject(() => openCommandDialog(null, pos, connectFrom, "gen3d", { connectWhen, connectKeyword, gen3d: { steps: ["generate", "refine", "remesh"] } }))],
@@ -758,7 +759,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
       return;
     }
     // 카드 안의 버튼(다시 시작, 스킬 칩, 명령 실행·중지)은 카드 선택·끌기와 따로 동작한다.
-    if (e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-guide-warn, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn")) return;
+    if (e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-guide-warn, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .image-card-thumb")) return;
     e.preventDefault();
     const id = card.dataset.id;
     const start = canvasPoint(e);
@@ -1006,7 +1007,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     const frame = e.target.closest(".node-group");
     if (frame && !e.target.closest("button, .node-group-port")) { const group = nodeGroups.byId(frame.dataset.groupId); if (group) nodeGroups.edit(group); return; }
     const card = e.target.closest(".gcard, .gcmd");
-    if (!card || e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-guide-warn, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .gcard-handle, .edge-label")) return;
+    if (!card || e.target.closest(".gcard-restart, .gcard-clear-error, .gcard-guide-warn, .gcard-lock, .session-lock, .gcard-skills, .gcmd-btn, .image-card-thumb, .gcard-handle, .edge-label")) return;
     const cmd = commandById(card.dataset.id);
     if (cmd) openCommandDialog(cmd);
     else if (e.ctrlKey || e.metaKey || e.shiftKey) openSessionWindow(card.dataset.id);
@@ -1069,6 +1070,7 @@ export function createGraphController({ projectTab, openSessionWindow, api, goPr
     const source = commandById(from);
     const target = commandById(to);
     if (source?.kind === "markdown") return showError({ message: "Markdown 출력 노드는 완료 메시지를 받는 노드입니다.", hint: "Markdown 출력 노드로 들어오는 방향으로 연결하세요." }, { action: "연결" });
+    if (source?.kind === "image") return showError({ message: "이미지 미리보기 노드는 받은 이미지를 보여 주는 마지막 노드입니다.", hint: "이미지 미리보기 노드로 들어오는 방향으로 연결하세요." }, { action: "연결" });
     if (isSourceOnly(target)) return showError({ message: KIND_LABEL[target.kind] + " 노드는 흐름의 시작점입니다.", hint: "이 노드에서 나가는 방향으로 연결하고, 카드에서 직접 실행해 주세요." }, { action: "연결" });
     ui.editingLink = { link, from, to };
     $("link-names").textContent = `${nodeTitle(from)} → ${nodeTitle(to)}`;

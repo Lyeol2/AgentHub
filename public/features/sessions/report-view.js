@@ -167,7 +167,7 @@ export function createReportView({ api, getSession, sessionById = () => null, se
         renderNavigation(ref, session, gallery);
         return;
       }
-      if (ref.kind === "image" && /^(https?:\/\/|\/api\/sessions\/[^/]+\/attachments\/|\/api\/commands\/[^/]+\/gen3d\/file\?)/.test(ref.url)) {
+      if (ref.kind === "image" && /^(https?:\/\/|\/api\/sessions\/[^/]+\/attachments\/|\/api\/commands\/[^/]+\/(?:gen3d\/file|image)\?)/.test(ref.url)) {
         message.textContent = "";
         renderImage(ref.url, ref.label);
         toolbar.append(el("a", { class: "ghost sm", href: ref.url, target: "_blank", rel: "noopener noreferrer" }, "원본 열기"));
