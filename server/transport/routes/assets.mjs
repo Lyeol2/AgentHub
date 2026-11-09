@@ -32,6 +32,7 @@ export function assetRoutes({ commands: c, skills: s }) {
     ["POST", "commands/:id/gen3d/expand", ({ params }) => c.gen3dExpand(params.id)],
     ["POST", "commands/:id/figcraft/open", ({ params, body }) => c.figcraftOpen(params.id, body)],
     ["POST", "commands/:id/artref/images", ({ params, body }) => c.addReferenceImage(params.id, body), { maxBodyBytes: 28_100_000 }],
+    ["DELETE", "commands/:id/artref/image", ({ params, query }) => c.removeReferenceImage(params.id, query.get("name"))],
     ["GET", "commands/:id/artref/image", ({ params, query, req, res }) => {
       const file = c.referenceImage(params.id, query.get("name"));
       const type = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif", ".svg": "image/svg+xml" }[path.extname(file).toLowerCase()] ?? "application/octet-stream";

@@ -94,13 +94,32 @@ test("browser: 아트 레퍼런스 노드를 만들고 이미지·메모를 넣�
     await evaluate(until("document.querySelector('#command-dialog').open && !document.querySelector('#artref-files').disabled"));
     await evaluate(`(() => { const input = document.querySelector('#artref-files'); const data = Uint8Array.from(atob(${JSON.stringify(PNG)}), (c) => c.charCodeAt(0)); const files = new DataTransfer(); files.items.add(new File([data], 'mood.png', { type: 'image/png' })); input.files = files.files; input.dispatchEvent(new Event('change')); })()`);
     await evaluate(until("document.querySelector('#artref-images .artref-image img')?.naturalWidth === 1"));
+    // 이미지 삭제: 취소하면 그대로, 확인하면 지우고 다른 이미지의 저장 전 메모는 남긴다.
+    await evaluate(`(() => { const input = document.querySelector('#artref-files'); const data = Uint8Array.from(atob(${JSON.stringify(PNG)}), (c) => c.charCodeAt(0)); const files = new DataTransfer(); files.items.add(new File([data], 'extra.png', { type: 'image/png' })); input.files = files.files; input.dispatchEvent(new Event('change')); })()`);
+    await evaluate(until("document.querySelector('.artref-image[data-name=\"extra.png\"] img')?.naturalWidth === 1"));
+    await evaluate("document.querySelector('.artref-image[data-name=\"mood.png\"] .artref-note').value = '저장 전 메모'");
+    const openDelete = "document.querySelector('.artref-image[data-name=\"extra.png\"] .artref-delete').click()";
+    await evaluate(openDelete);
+    await evaluate(until("document.querySelector('.confirm-dialog')?.open"));
+    assert.match(await evaluate("document.querySelector('.confirm-dialog').textContent"), /extra\.png[\s\S]*되돌릴 수 없습니다/, "브라우저 실행은 영구 삭제를 알린다");
+    await evaluate("document.querySelector('.confirm-dialog button[value=cancel]').click()");
+    await evaluate(until("!document.querySelector('.confirm-dialog')"));
+    assert.ok(await evaluate("!!document.querySelector('.artref-image[data-name=\"extra.png\"]')"), "취소하면 그대로다");
+    assert.ok(readFileSync(path.join(project, "references", "브랜드-무드", "extra.png")).length > 0);
+    await evaluate(openDelete);
+    await evaluate(until("document.querySelector('.confirm-dialog')?.open"));
+    await evaluate("document.querySelector('.confirm-dialog [data-confirm-ok]').click()");
+    await evaluate(until("!document.querySelector('.artref-image[data-name=\"extra.png\"]') && document.querySelector('#command-dialog').open"));
+    assert.equal(await evaluate("document.querySelector('.artref-image[data-name=\"mood.png\"] .artref-note').value"), "저장 전 메모");
+    assert.throws(() => readFileSync(path.join(project, "references", "브랜드-무드", "extra.png")), /ENOENT/);
     await evaluate("(() => { const row = document.querySelector('#artref-images .artref-image'); row.querySelector('.artref-note').value = '전체 톤'; row.querySelector('.artref-tags').value = '색, 분위기'; document.querySelector('#command-save').click(); })()");
     await evaluate(until("!document.querySelector('#command-dialog').open"));
     const folder = path.join(project, "references", "브랜드-무드");
     const index = readFileSync(path.join(folder, "INDEX.md"), "utf8");
     assert.match(index, /## 스타일\n따뜻한 파스텔/);
     assert.match(index, /- mood\.png — 전체 톤 · \[색, 분위기\] · 1×1/);
-    await evaluate(until(`${card}?.querySelector('.artref-card-thumbs img')?.naturalWidth === 1`));
+    assert.ok(!index.includes("extra.png"), "지운 이미지는 INDEX.md에서 빠진다");
+    await evaluate(until(`${card}?.querySelector('.artref-card-thumbs img')?.naturalWidth === 1 && ${card}.querySelectorAll('.artref-card-thumbs img').length === 1`));
     // 세션에 잇기: 손잡이를 세션 카드에 놓는다.
     await evaluate(`(() => { const handle = ${card}.querySelector('.gcard-handle'); const target = document.querySelector('.gcard[data-id=s1]').getBoundingClientRect(); const from = handle.getBoundingClientRect(); const opts = (x, y) => ({ bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: 1 }); handle.dispatchEvent(new PointerEvent('pointerdown', opts(from.left + 2, from.top + 2))); window.dispatchEvent(new PointerEvent('pointermove', opts(target.left + 30, target.top + 30))); window.dispatchEvent(new PointerEvent('pointerup', opts(target.left + 30, target.top + 30))); })()`);
     // 연결 설정 창: 레퍼런스에서 나가는 연결은 "참고"만 고를 수 있다.

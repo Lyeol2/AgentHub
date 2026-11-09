@@ -42,7 +42,7 @@ async function start() {
   Menu.setApplicationMenu(null);
   try {
     const { createHub } = await import("../server/bootstrap.mjs");
-    server = createHub();
+    server = createHub({ deps: { trashItem: (filename) => shell.trashItem(filename) } });
     await server.start();
   } catch (err) {
     const detail = err.code === "EADDRINUSE"

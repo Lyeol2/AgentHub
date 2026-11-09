@@ -115,6 +115,13 @@ export function artrefImageFile(node, name) {
   return path.join(artrefFolder(node), value);
 }
 
+// 목록에 보이는 이미지만 지운다. trash가 있으면 휴지통으로 보내고, 실패하면 영구 삭제로 넘어가지 않고 오류를 올린다.
+export async function removeArtrefImage(node, name, { trash = null } = {}) {
+  const file = artrefImageFile(node, name);
+  if (trash) await trash(file);
+  else fs.unlinkSync(file); // Node 24의 rmSync는 Windows 한글 경로에서 프로세스를 죽인다.
+}
+
 // ── 세션에 붙이는 안내 ─────────────────────────────────────────
 const shortLine = (ref) => `- ${ref.title}: ${ref.folder} (먼저 ${ARTREF_INDEX}) · 이미지 ${ref.images.length}장${ref.style ? ` · ${ref.style.split(/\r?\n/)[0].slice(0, 120)}` : ""}`;
 
