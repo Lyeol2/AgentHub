@@ -11,9 +11,10 @@ import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import { GEN3D_STEPS, GEN3D_PROVIDERS, modelText } from "../gen3d.mjs";
 import { resultText as figcraftText, openInFigcraft } from "../figcraft.mjs";
-import { syncArtref, listArtrefImages, addArtrefImage, artrefImageFile, artrefFolder } from "../artref.mjs";
+import { syncArtref, listArtrefImages, addArtrefImage, removeArtrefImage, artrefImageFile, artrefFolder } from "../artref.mjs";
 
-export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, graphTabs, ask = askOnce, notify: broadcast, figcraft = null }) {
+// trashItem: 파일을 휴지통으로 보내는 함수. 데스크톱 앱에서만 넘어온다.
+export function createCommandService({ commands, chain, links, store, projects, cliPaths, nodeGroups, graphTabs, ask = askOnce, notify: broadcast, figcraft = null, trashItem = null }) {
   const { ensureProject } = projects;
   const allowHook = createHookRateLimit();
   const view = (command) => graphTabs ? { ...command, tabId: graphTabs.tabFor(command) } : command;
@@ -38,7 +39,7 @@ export function createCommandService({ commands, chain, links, store, projects, 
     if (commandKind(command) !== "artref") return view(command);
     let images = [];
     try { images = listArtrefImages(command); } catch { /* 폴더가 없으면 빈 목록 */ }
-    return { ...view(command), folderPath: artrefFolder(command), images };
+    return { ...view(command), folderPath: artrefFolder(command), images, canTrash: !!trashItem };
   }
 
   // 폴더를 만들고 INDEX.md를 맞춘다. 실패해도(권한 등) 노드 저장은 막지 않고 오류를 알린다.
@@ -255,6 +256,19 @@ export function createCommandService({ commands, chain, links, store, projects, 
     catch (error) { throw new HttpError(404, error.message); }
   }
 
+  // 파일을 먼저 지우고, 지워졌을 때만 메모를 뺀다. 같은 이름을 다시 넣어도 옛 메모가 되살아나지 않는다.
+  async function removeReferenceImage(id, name) {
+    referenceImage(id, name);
+    const command = artrefNode(id);
+    try { await removeArtrefImage(command, name, { trash: trashItem }); }
+    catch (error) { throw new HttpError(409, `이미지를 지우지 못했습니다. 다른 프로그램이 파일을 쓰고 있는지 확인하세요: ${error.message}`); }
+    const { [name]: removed, ...items } = command.items ?? {};
+    commands.update(command, { items });
+    syncReference(command);
+    broadcast("commands", {});
+    return { images: listArtrefImages(command) };
+  }
+
   // 결과 기록이 있는 노드(3D 생성·FigCraft)
   function resultNode(id) {
     const command = getCommand(id);
@@ -327,5 +341,5 @@ export function createCommandService({ commands, chain, links, store, projects, 
     return { nodes: created };
   }
 
-  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, previewImage, receiveHook, gen3dFile, gen3dForward, gen3dExpand, figcraftOpen, addReferenceImage, referenceImage };
+  return { list, gitBranches, generate, create, update, remove, run, stop, clearError, output, previewImage, receiveHook, gen3dFile, gen3dForward, gen3dExpand, figcraftOpen, addReferenceImage, referenceImage, removeReferenceImage };
 }

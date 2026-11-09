@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { checkArtrefNode, syncArtref, addArtrefImage, listArtrefImages, artrefNotice } from "../server/artref.mjs";
+import { checkArtrefNode, syncArtref, addArtrefImage, removeArtrefImage, listArtrefImages, artrefNotice } from "../server/artref.mjs";
 import { buildArgs } from "../server/agents/claude.mjs";
 import { createHub } from "../server/bootstrap.mjs";
 
@@ -36,6 +36,80 @@ test("artref: 노드 설정·폴더·INDEX.md·이미지 넣기", (t) => {
   assert.equal(syncArtref(node).key, first.key, "바뀐 것이 없으면 같은 지문");
   node.items["chars/hero.png"] = { note: "주인공", tags: [] };
   assert.notEqual(syncArtref(node).key, first.key, "메모가 바뀌면 지문이 바뀐다");
+});
+
+test("artref: 목록에 있는 이미지만 지우고, 휴지통이 실패하면 파일을 남긴다", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-artref-rm-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const node = { id: "cmd-1", projectPath: root, ...checkArtrefNode({ title: "삭제" }) };
+  const folder = path.join(root, "references", "삭제");
+  addArtrefImage(node, { name: "a.png", data: PNG });
+  addArtrefImage(node, { name: "b.png", data: PNG });
+  fs.mkdirSync(path.join(folder, "chars"));
+  fs.writeFileSync(path.join(folder, "chars", "hero.png"), Buffer.from(PNG, "base64"));
+  fs.writeFileSync(path.join(root, "outside.png"), Buffer.from(PNG, "base64"));
+  syncArtref(node);
+  for (const name of ["../../outside.png", "INDEX.md", "없음.png", "", null]) await assert.rejects(removeArtrefImage(node, name), /이미지가 아닙니다/);
+  assert.ok(fs.existsSync(path.join(root, "outside.png")) && fs.existsSync(path.join(folder, "INDEX.md")), "목록 밖 파일은 그대로다");
+  await assert.rejects(removeArtrefImage(node, "a.png", { trash: async () => { throw new Error("휴지통 실패"); } }), /휴지통 실패/);
+  assert.ok(fs.existsSync(path.join(folder, "a.png")), "휴지통이 실패하면 영구 삭제로 넘어가지 않는다");
+  const trashed = [];
+  await removeArtrefImage(node, "a.png", { trash: async (file) => { trashed.push(file); fs.unlinkSync(file); } });
+  assert.deepEqual(trashed, [path.join(folder, "a.png")]);
+  await removeArtrefImage(node, "chars/hero.png");
+  assert.deepEqual(listArtrefImages(node), ["b.png"]);
+});
+
+test("artref API: 삭제하면 메모·INDEX.md가 함께 바뀌고 연결된 세션은 전체 안내를 받는다", { timeout: 30000 }, async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "agenthub-artref-del-"));
+  const projectPath = path.join(root, "project");
+  fs.mkdirSync(projectPath);
+  let failTrash = false;
+  const trashed = [];
+  const trashItem = async (file) => {
+    if (failTrash) throw new Error("파일 사용 중");
+    trashed.push(path.basename(file));
+    fs.unlinkSync(file);
+  };
+  const hub = createHub({ port: 0, dataDir: path.join(root, "data"), warmup: false, cliAutoUpdate: false, config: { projects: [{ name: "p", path: projectPath }] },
+    deps: { cliPaths: () => ({ claude: null, codex: null }), discoverProjects: () => [], logger: { log() {} }, trashItem } });
+  const session = { id: "s1", title: "디자인", agent: "claude", permission: "default", projectPath, projectName: "p", cwd: projectPath, state: "idle", worktree: null, skills: [], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), events: [] };
+  hub.store.add(session);
+  await hub.start();
+  t.after(async () => { await hub.shutdown(); fs.rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 200 }); });
+  const api = async (method, route, body) => {
+    const response = await fetch(`http://127.0.0.1:${hub.port}/api/${route}`, { method, headers: { "x-agenthub": "1", "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const value = await response.json();
+    if (!response.ok) throw Object.assign(new Error(value.error), { status: response.status });
+    return value;
+  };
+  const ref = await api("POST", "commands", { kind: "artref", projectPath, title: "무드" });
+  for (const name of ["a.png", "b.png"]) await api("POST", `commands/${ref.id}/artref/images`, { name, data: PNG });
+  await api("PUT", `commands/${ref.id}`, { items: { "a.png": { note: "지울 메모", tags: [] }, "b.png": { note: "남길 메모", tags: [] } } });
+  await api("POST", "links", { from: ref.id, to: "s1" });
+  const remove = (name) => api("DELETE", `commands/${ref.id}/artref/image?name=${encodeURIComponent(name)}`);
+  const folder = path.join(projectPath, "references", "무드");
+  const listed = async () => (await api("GET", `commands?path=${encodeURIComponent(projectPath)}`)).commands.find((item) => item.id === ref.id);
+  const compose = (prompt) => hub.services.sessions.composeInput(session, prompt);
+  assert.equal((await listed()).canTrash, true);
+  compose("첫 요청");
+  session.agentSessionId = "conversation-1";
+  assert.match(compose("둘째 요청"), /^\[아트 레퍼런스\] /);
+  await assert.rejects(remove("../../x.png"), (error) => error.status === 404);
+  failTrash = true;
+  await assert.rejects(remove("a.png"), (error) => error.status === 409 && /파일 사용 중/.test(error.message));
+  assert.ok(fs.existsSync(path.join(folder, "a.png")));
+  assert.equal((await listed()).items["a.png"].note, "지울 메모", "휴지통이 실패하면 메모도 그대로다");
+  failTrash = false;
+  assert.deepEqual((await remove("a.png")).images, ["b.png"]);
+  assert.deepEqual(trashed, ["a.png"]);
+  const index = fs.readFileSync(path.join(folder, "INDEX.md"), "utf8");
+  assert.ok(!index.includes("a.png") && index.includes("남길 메모"));
+  assert.match(compose("셋째 요청"), /\[아트 레퍼런스 안내\] 레퍼런스가 바뀌었다\.[\s\S]*이미지 1장/, "지운 뒤에는 전체 안내");
+  await api("POST", `commands/${ref.id}/artref/images`, { name: "a.png", data: PNG });
+  const again = await listed();
+  assert.equal(again.items["a.png"], undefined, "같은 이름을 다시 넣어도 옛 메모가 되살아나지 않는다");
+  assert.equal(again.items["b.png"].note, "남길 메모");
 });
 
 test("artref: 짧은 안내와 전체 안내의 문구", () => {
