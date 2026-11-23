@@ -33,7 +33,7 @@ const openSessionWindow = (id) => {
   return openWindow(`session=${encodeURIComponent(id)}`);
 };
 const sessionOpener = (id) => (event) => {
-  if (event.button === 1 || event.ctrlKey || event.shiftKey) openSessionWindow(id);
+  if (event.button === 1 || event.ctrlKey || event.metaKey || event.shiftKey) openSessionWindow(id);
   else if (event.button === 0) selectSession(id);
 };
 const sessionById = (id) => indexById(data.sessions).get(id);

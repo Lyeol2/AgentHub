@@ -4,6 +4,7 @@ import path from "node:path";
 import { execFileSync, spawn } from "node:child_process";
 
 const isWindows = process.platform === "win32";
+const isMac = process.platform === "darwin";
 
 // 설치 프로그램이 다시 실행한 앱처럼 환경 변수가 줄어든 채 뜨는 경우가 있어 홈 폴더 기준 값으로 보완한다.
 const HOME = os.homedir();
@@ -65,7 +66,14 @@ export function missingFolder(error, cwd) {
 }
 
 // cmd.exe나 npm shim을 거쳐 실행한 자식 프로세스까지 함께 끝낸다.
-export function killProcessTree(pid) {
+// macOS·Linux는 detached로 띄운 프로세스 그룹 전체에, 그룹이 아니면 그 프로세스에만 신호를 보낸다.
+export function killProcessTree(pid, signal = "SIGTERM") {
+  if (!Number.isInteger(pid)) return;
+  if (!isWindows) {
+    try { process.kill(-pid, signal); return; } catch {}
+    try { process.kill(pid, signal); } catch {}
+    return;
+  }
   spawn(systemFile("taskkill.exe"), ["/pid", String(pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
 }
 
@@ -88,12 +96,49 @@ function registryPathDirs() {
   return registryPath;
 }
 
+// macOS에서 Finder·Dock으로 연 앱은 셸 설정(~/.zprofile, ~/.zshrc)의 PATH를 받지 못하고 /usr/bin:/bin만 가진다.
+// 로그인 셸에 PATH를 물어 Homebrew·npm·nvm 등으로 설치한 claude·codex·node·git을 찾는다.
+let shellPath = null;
+let shellAt = 0;
+const SHELL_MARK = "__AGENTHUB_PATH__";
+export function loginShellPathDirs({ platform = process.platform, env = process.env, run = execFileSync } = {}) {
+  if (platform !== "darwin") return [];
+  if (shellPath === null || Date.now() - shellAt >= PATH_TTL) {
+    shellAt = Date.now();
+    shellPath = [];
+    const shell = env.SHELL && path.isAbsolute(env.SHELL) ? env.SHELL : "/bin/zsh";
+    try {
+      // -i: .zshrc(nvm 등)까지 읽는다. 셸 설정이 출력하는 다른 글과 섞이지 않게 표시로 감싼다.
+      const out = run(shell, ["-ilc", `printf '${SHELL_MARK}%s${SHELL_MARK}' "$PATH"`], {
+        encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"],
+        env: { ...env, DISABLE_AUTO_UPDATE: "true", ZSH_DISABLE_COMPFIX: "true" },
+      });
+      const value = String(out).split(SHELL_MARK)[1] ?? "";
+      shellPath = value.split(":").filter((dir) => dir && path.isAbsolute(dir));
+    } catch {
+      // 셸 설정 오류·시간 초과면 알려진 설치 폴더만 쓴다.
+    }
+  }
+  return shellPath;
+}
+
+// macOS에서 CLI·Node가 흔히 설치되는 폴더(Homebrew, 공식 설치 스크립트, npm 전역, Volta, Bun)
+const MAC_DIRS = isMac ? [
+  "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin",
+  path.join(HOME, ".local", "bin"), path.join(HOME, ".npm-global", "bin"),
+  path.join(HOME, ".volta", "bin"), path.join(HOME, ".bun", "bin"),
+] : [];
+
 function pathDirs(env = process.env) {
   const entries = [
     ...(envValue(env, "PATH") ?? "").split(path.delimiter),
     ...registryPathDirs(),
+    ...loginShellPathDirs(),
+    ...MAC_DIRS,
     ...(isWindows ? [path.join(APPDATA, "npm"), path.join(process.env.ProgramFiles || "C:\\Program Files", "nodejs"), path.join(LOCALAPPDATA, "Programs", "nodejs")] : []),
     envValue(env, "NPM_CONFIG_PREFIX"),
+    // macOS·Linux의 npm 전역 실행 파일은 <prefix>/bin에 생긴다.
+    !isWindows && envValue(env, "NPM_CONFIG_PREFIX") && path.join(envValue(env, "NPM_CONFIG_PREFIX"), "bin"),
   ];
   const seen = new Set();
   return entries.filter(Boolean).map(normalizeCliPath).filter((dir) => {
@@ -169,6 +214,7 @@ const EXTRA_DIRS = {
 // 앱을 켠 뒤 설치한 CLI도 찾도록 레지스트리 PATH를 다시 읽게 한다.
 export function refreshPath() {
   registryPath = null;
+  shellPath = null;
   versionCache.clear();
   authCache.clear();
 }
@@ -305,6 +351,7 @@ export function forgetAuth() {
 export function openLogin(agent, file) {
   const args = agent === "claude" ? "auth login" : "login";
   forgetAuth();
+  if (isMac) return openMacTerminal(`${shellQuote(file)} ${args}`, "AgentHub login");
   if (!isWindows) throw new Error(`터미널에서 직접 실행하세요: "${file}" ${args}`);
   const line = `start "AgentHub login" cmd /k ""${file}" ${args}"`;
   const child = spawnCli(envValue(process.env, "ComSpec") || systemFile("cmd.exe"), ["/d", "/c", line], {
@@ -314,4 +361,32 @@ export function openLogin(agent, file) {
   });
   child.on("error", () => {});
   child.unref();
+}
+
+const shellQuote = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
+
+// macOS: 임시 .command 파일을 터미널 앱으로 연다. 자동화 권한(AppleScript) 없이 새 터미널 창에서 실행된다.
+// 창은 끝난 뒤에도 남겨 두어 오류를 읽을 수 있게 한다. 명령은 검증된 CLI 경로와 고정 인자로만 만든다.
+export function openMacTerminal(command, title = "AgentHub") {
+  const file = path.join(os.tmpdir(), `agenthub-${process.pid}-${Date.now()}.command`);
+  const pathLine = `export PATH=${shellQuote(pathDirs().join(":"))}`;
+  fs.writeFileSync(file, [
+    "#!/bin/zsh",
+    `printf '\\033]0;%s\\007' ${shellQuote(title)}`,
+    pathLine,
+    `rm -f ${shellQuote(file)}`,
+    command,
+    "echo",
+    "echo '끝났습니다. 이 창은 닫아도 됩니다.'",
+    "",
+  ].join("\n"), { mode: 0o700 });
+  const child = spawn("/usr/bin/open", ["-a", "Terminal", file], { detached: true, stdio: "ignore" });
+  child.on("error", () => {});
+  child.unref();
+}
+
+// 데스크톱 앱(Finder에서 실행)이 git·sh 명령 노드 등에서도 셸과 같은 PATH를 쓰도록 process.env.PATH를 채운다.
+export function applyShellPath() {
+  if (!isMac) return;
+  process.env.PATH = pathDirs().join(path.delimiter);
 }

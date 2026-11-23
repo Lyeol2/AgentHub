@@ -1,6 +1,6 @@
 # AgentHub
 
-Claude Code와 Codex 세션을 한 화면에서 만들고 이어 가는 Windows 데스크톱 앱이다. 여러 AI 세션에 일을 나눠 맡기고, 한 세션의 결과를 다음 세션으로 자동으로 넘길 수 있다.
+Claude Code와 Codex 세션을 한 화면에서 만들고 이어 가는 Windows·macOS 데스크톱 앱이다. 여러 AI 세션에 일을 나눠 맡기고, 한 세션의 결과를 다음 세션으로 자동으로 넘길 수 있다.
 
 각 AI의 CLI를 대신 실행하므로 이미 로그인한 구독 계정의 사용량 안에서 동작한다. API 키는 쓰지 않는다.
 
@@ -39,6 +39,7 @@ Claude Code와 Codex 세션을 한 화면에서 만들고 이어 가는 Windows 
 
 - `AgentHub-Setup-<버전>.exe`: 설치형. 자동 업데이트를 받는다.
 - `AgentHub-<버전>-portable.exe`: 설치 없이 실행한다.
+- `AgentHub-<버전>-mac-arm64.dmg`(Apple Silicon)·`AgentHub-<버전>-mac-x64.dmg`(Intel): macOS용. 열어서 AgentHub를 응용 프로그램 폴더로 끌어 놓는다. 서명하지 않은 빌드는 처음 한 번 Finder에서 우클릭 → **열기**로 연다.
 
 필요한 것은 다음과 같다.
 
@@ -47,14 +48,15 @@ Claude Code와 Codex 세션을 한 화면에서 만들고 이어 가는 Windows 
 
 CLI가 없거나 로그인이 안 됐으면 앱 안에서 설치·로그인할 수 있다. 사이드바의 CLI 상태에 뜨는 **설치**·**로그인** 버튼이나 **설정 → CLI 경로 → 설치·업데이트·로그인**에서 Claude Code·Codex·GitHub CLI를 다룬다.
 
-- 설치는 winget으로 한다. winget이 없거나 실행되지 않으면 먼저 자동으로 준비·복구하고, **Windows 패키지 관리자 (winget)** 항목에서 따로 **설치·복구**할 수도 있다. 그래도 안 되면 Claude Code는 공식 설치 스크립트, Codex는 npm으로 설치한다.
+- macOS에서는 Claude Code를 공식 설치 스크립트로, Codex를 npm 또는 Homebrew로, GitHub CLI를 Homebrew로 설치한다. 로그인 버튼은 터미널 앱 새 창에서 CLI 로그인을 연다. Finder에서 연 앱도 터미널과 같은 PATH(Homebrew·npm·nvm 등)에서 CLI를 찾는다.
+- Windows에서는 winget으로 설치한다. winget이 없거나 실행되지 않으면 먼저 자동으로 준비·복구하고, **Windows 패키지 관리자 (winget)** 항목에서 따로 **설치·복구**할 수도 있다. 그래도 안 되면 Claude Code는 공식 설치 스크립트, Codex는 npm으로 설치한다.
 - 자동 설치가 안 되면 각 항목의 **수동 설치**에서 공식 다운로드 페이지와 설치 명령을 확인하고 복사할 수 있다.
 - 로그인은 각 CLI의 브라우저 로그인을 실행하고, 로그인 주소와 일회용 코드를 창에 보여 준다. Claude가 코드를 붙여 넣으라고 하면 창에서 입력한다.
 - **Codex·Claude CLI 자동 업데이트**는 기본으로 켜져 있다. 앱 시작 30초 후와 12시간마다 설치된 CLI를 업데이트하며, 실행 중인 작업이 있으면 끝날 때까지 미룬다. 설정에서 끄거나 각 CLI 카드의 **업데이트**로 직접 실행할 수도 있다.
 - 업데이트는 기존 설치 방식과 경로를 따른다. npm·winget 또는 Claude 공식 설치를 확인할 수 없는 실행 파일과 다른 앱이 관리하는 CLI는 수동 업데이트 안내를 표시한다. 업데이트 방법은 [Codex 공식 안내](https://developers.openai.com/cookbook/examples/codex/using_goals_in_codex)와 [Claude Code 공식 안내](https://code.claude.com/docs/en/setup#update-manually)를 따른다.
 - 진행 출력이 실시간으로 보이고, 끝나면 CLI 경로·버전·로그인 상태를 다시 확인한다. **새로고침**을 누르면 최신 상태를 새로 읽는다. 조회·설치·업데이트 오류가 나도 오류 카드에서 새로고침할 수 있고, 업데이트 실패는 **업데이트 다시 시도**로 재실행한다. 자동으로 찾지 못하면 설정에서 실행 파일을 직접 지정할 수 있다.
 
-설치본의 세션 기록과 설정은 `%APPDATA%\AgentHub\data`에 저장된다. 창을 닫으면 실행 중인 AI를 멈추고 세션을 저장한 뒤 종료한다. 강제 종료 등으로 데이터 파일이 깨져도 그 파일만 데이터 폴더의 `corrupted/`로 옮기고 나머지로 시작한다.
+설치본의 세션 기록과 설정은 Windows는 `%APPDATA%\AgentHub\data`, macOS는 `~/Library/Application Support/AgentHub/data`에 저장된다. 창을 닫으면 실행 중인 AI를 멈추고 세션을 저장한 뒤 종료한다. 강제 종료 등으로 데이터 파일이 깨져도 그 파일만 데이터 폴더의 `corrupted/`로 옮기고 나머지로 시작한다.
 
 ## 처음 시작하기
 

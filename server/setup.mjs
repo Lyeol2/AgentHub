@@ -5,15 +5,15 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { locateCli, locateCommand, spawnCli, refreshPath, cliVersion, cliAuth, forgetAuth } from "./cli.mjs";
+import { locateCli, locateCommand, spawnCli, refreshPath, cliVersion, cliAuth, forgetAuth, killProcessTree } from "./cli.mjs";
 import { findWinget, installedWingetPaths, resolveWinget, wingetBootstrapPlan } from "./winget.mjs";
 
 const isWindows = process.platform === "win32";
 
 export const TOOLS = {
-  claude: { label: "Claude Code", winget: "Anthropic.ClaudeCode", login: ["auth", "login"] },
-  codex: { label: "Codex", winget: "OpenAI.Codex", login: ["login"] },
-  gh: { label: "GitHub CLI", winget: "GitHub.cli", login: ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"] },
+  claude: { label: "Claude Code", winget: "Anthropic.ClaudeCode", brew: ["--cask", "claude-code"], login: ["auth", "login"] },
+  codex: { label: "Codex", winget: "OpenAI.Codex", brew: ["--cask", "codex"], login: ["login"] },
+  gh: { label: "GitHub CLI", winget: "GitHub.cli", brew: ["gh"], login: ["auth", "login", "--hostname", "github.com", "--git-protocol", "https", "--web"] },
 };
 
 const LOG_MAX = 20000;
@@ -35,6 +35,12 @@ function findNpm() {
   return locateCommand(isWindows ? "npm.cmd" : "npm");
 }
 
+// macOS Homebrew(Apple Silicon은 /opt/homebrew, Intel은 /usr/local)
+function findBrew() {
+  if (process.platform !== "darwin") return null;
+  return locateCommand("brew", ["/opt/homebrew/bin", "/usr/local/bin"]);
+}
+
 function smallFile(file) {
   try { return fs.statSync(file).size <= 128_000 ? fs.readFileSync(file, "utf8") : ""; }
   catch { return ""; }
@@ -51,6 +57,7 @@ export function updateInstallation(tool, file, { windows = isWindows, homeDir = 
   const normalized = (value) => paths.normalize(value).replaceAll("\\", "/");
   const original = normalized(file), actual = normalized(resolved);
   if (windows && actual.toLowerCase().includes(`/winget/packages/${TOOLS[tool].winget.toLowerCase()}_`)) return { how: "winget" };
+  if (!windows && /\/(?:Cellar|Caskroom)\//.test(actual)) return { how: "brew" };
   if (tool === "codex" || tool === "claude") {
     const packageName = tool === "codex" ? "@openai/codex" : "@anthropic-ai/claude-code";
     const packageMatch = actual.match(tool === "codex"
@@ -81,8 +88,11 @@ export function updateInstallation(tool, file, { windows = isWindows, homeDir = 
   return { reason: "이 CLI의 설치 방식을 확인할 수 없습니다. 직접 지정한 파일이나 다른 앱이 관리하는 CLI는 기존 설치 방법으로 업데이트하세요." };
 }
 
-export function updatePlan(tool, file, { installation = updateInstallation(tool, file), winget = findWinget(), npm = findNpm() } = {}) {
+export function updatePlan(tool, file, { installation = updateInstallation(tool, file), winget = findWinget(), npm = findNpm(), brew = findBrew() } = {}) {
   if (installation.reason) return installation;
+  if (installation.how === "brew") return brew ? {
+    how: "brew", file: brew, args: ["upgrade", ...TOOLS[tool].brew],
+  } : { reason: "현재 CLI를 설치한 Homebrew를 찾지 못했습니다. brew 경로를 확인하세요." };
   if (installation.how === "winget") return winget ? {
     how: "winget", file: winget,
     args: ["upgrade", "--id", TOOLS[tool].winget, "--exact", "--source", "winget", "--silent",
@@ -96,8 +106,15 @@ export function updatePlan(tool, file, { installation = updateInstallation(tool,
 }
 
 // 설치 방법. winget을 먼저 쓰고, 없으면 각 CLI의 다른 공식 방법을 쓴다. 방법이 없으면 null.
-export function installPlan(tool, { winget = findWinget(), npm = findNpm(), windows = isWindows } = {}) {
+export function installPlan(tool, { winget = findWinget(), npm = findNpm(), brew = findBrew(), windows = isWindows, mac = process.platform === "darwin" } = {}) {
   if (!Object.hasOwn(TOOLS, tool)) return null;
+  if (mac && !windows) {
+    // Claude Code 공식 설치 스크립트(~/.local/bin에 설치, 자체 업데이트)
+    if (tool === "claude") return { how: "install.sh", file: "/bin/bash", args: ["-c", "curl -fsSL https://claude.ai/install.sh | bash"] };
+    if (tool === "codex" && npm) return { how: "npm", file: npm, args: ["install", "-g", "@openai/codex"] };
+    if (brew) return { how: "brew", file: brew, args: ["install", ...TOOLS[tool].brew], env: { HOMEBREW_NO_AUTO_UPDATE: "1", NONINTERACTIVE: "1" } };
+    return null;
+  }
   if (winget) {
     return {
       how: "winget",
@@ -144,14 +161,37 @@ export const MANUAL_INSTALL = {
   },
 };
 
+export const MANUAL_INSTALL_MAC = {
+  claude: {
+    links: [{ label: "Claude Code 공식 설치 안내", url: "https://code.claude.com/docs/en/setup" }],
+    command: "curl -fsSL https://claude.ai/install.sh | bash",
+    note: "터미널에서 공식 설치 명령을 실행하세요. Homebrew를 쓰면 brew install --cask claude-code 로도 설치할 수 있습니다.",
+  },
+  codex: {
+    links: [
+      { label: "Codex CLI 공식 설치 안내", url: "https://developers.openai.com/codex/cli" },
+      { label: "Homebrew 설치", url: "https://brew.sh/" },
+    ],
+    command: "brew install --cask codex",
+    note: "Homebrew로 설치하거나, Node.js가 있으면 npm install -g @openai/codex 로 설치하세요.",
+  },
+  gh: {
+    links: [{ label: "GitHub CLI 공식 다운로드", url: "https://cli.github.com/" }, { label: "Homebrew 설치", url: "https://brew.sh/" }],
+    command: "brew install gh",
+    note: "Homebrew로 설치하거나 공식 페이지에서 macOS 설치 파일을 내려받으세요.",
+  },
+};
+
 // 도구마다 한 번에 하나의 작업(설치·업데이트·로그인)만 돈다.
 export class Setup extends EventEmitter {
-  constructor({ cliPath, wingetPath = findWinget, wingetPackages = installedWingetPaths, npmPath = findNpm, version = cliVersion, auth = cliAuth, platform = process.platform, installTimeoutMs = INSTALL_TIMEOUT_MS, updateTimeoutMs = installTimeoutMs, isBusy = () => false, homeDir = os.homedir() }) {
+  constructor({ cliPath, wingetPath = findWinget, wingetPackages = installedWingetPaths, npmPath = findNpm, brewPath = findBrew, version = cliVersion, auth = cliAuth, platform = process.platform, installTimeoutMs = INSTALL_TIMEOUT_MS, updateTimeoutMs = installTimeoutMs, isBusy = () => false, homeDir = os.homedir() }) {
     super();
     this.cliPath = cliPath; // (tool) → 실행 파일 경로(설정에서 직접 지정한 경로 포함)
     this.wingetPath = wingetPath;
     this.wingetPackages = wingetPackages;
     this.npmPath = npmPath;
+    this.brewPath = brewPath;
+    this.mac = platform === "darwin";
     this.version = version;
     this.auth = auth;
     this.windows = platform === "win32";
@@ -170,10 +210,10 @@ export class Setup extends EventEmitter {
     const tools = await Promise.all(Object.entries(TOOLS).map(async ([id, t]) => {
       const file = this.cliPath(id);
       const [version, loggedIn] = await Promise.all([this.version(file, { fresh }), this.auth(id, file, { fresh })]);
-      const plan = installPlan(id, { winget: wingetState?.version ? wingetState.path : null, npm: this.npmPath(), windows: this.windows });
+      const plan = installPlan(id, { winget: wingetState?.version ? wingetState.path : null, npm: this.npmPath(), brew: this.brewPath(), windows: this.windows, mac: this.mac });
       const update = ["claude", "codex"].includes(id)
-        ? updatePlan(id, file, { installation: updateInstallation(id, file, this), winget: wingetState?.version ? wingetState.path : null, npm: this.npmPath() }) : null;
-      return { id, label: t.label, path: file, version, loggedIn, installable: this.windows || !!plan, manual: MANUAL_INSTALL[id],
+        ? updatePlan(id, file, { installation: updateInstallation(id, file, this), winget: wingetState?.version ? wingetState.path : null, npm: this.npmPath(), brew: this.brewPath() }) : null;
+      return { id, label: t.label, path: file, version, loggedIn, installable: this.windows || !!plan, manual: (this.mac ? MANUAL_INSTALL_MAC : MANUAL_INSTALL)[id],
         ...(update ? { updatable: Boolean(version && !update.reason), updateReason: update.reason ?? (version ? null : "CLI 실행을 확인하지 못했습니다. 다시 확인하세요.") } : {}) };
     }));
     const winget = wingetState ? { id: "winget", label: "Windows 패키지 관리자 (winget)", ...wingetState, installable: true, manual: MANUAL_INSTALL.winget } : null;
@@ -185,7 +225,7 @@ export class Setup extends EventEmitter {
   }
 
   jobList() {
-    return Object.fromEntries([...this.jobs].map(([tool, { child, ...job }]) => [tool, job]));
+    return Object.fromEntries([...this.jobs].map(([tool, { child, env, ...job }]) => [tool, job]));
   }
 
   changed() {
@@ -233,7 +273,7 @@ export class Setup extends EventEmitter {
     try {
       child = ["install", "update"].includes(job.kind) && /winget\.exe$/i.test(file)
         ? spawn(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", `"chcp 65001 >nul & "${file}" ${args.join(" ")}"`], { windowsHide: true, windowsVerbatimArguments: true, stdio: ["pipe", "pipe", "pipe"] })
-        : spawnCli(file, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1" } });
+        : spawnCli(file, args, { windowsHide: true, detached: !this.windows, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, NO_COLOR: "1", ...(job.env ?? {}) } });
     } catch (error) { return Promise.reject(error); }
     job.child = child;
     let opened = false;
@@ -327,10 +367,11 @@ export class Setup extends EventEmitter {
       catch (error) { this.addLog(job, `winget 준비 실패: ${error.message}\n다른 공식 설치 방법을 확인합니다.\n`); }
     }
     if (job.canceled || job.state !== "running") return;
-    const options = { winget, npm: this.npmPath(), windows: this.windows };
+    const options = { winget, npm: this.npmPath(), brew: this.brewPath(), windows: this.windows, mac: this.mac };
     const plan = installPlan(tool, options);
     if (!plan) throw new Error(`${TOOLS[tool].label}의 자동 설치를 진행할 수 없습니다. 공식 다운로드를 이용해 수동 설치하세요.`);
     this.addLog(job, `${plan.how}으로 ${TOOLS[tool].label} 설치를 시작합니다.\n`);
+    job.env = plan.env;
     let code;
     try { code = await this.run(tool, job, plan.file, plan.args); }
     catch (error) { this.addLog(job, `설치 명령 실행 실패: ${error.message}\n`); code = null; }
@@ -387,7 +428,7 @@ export class Setup extends EventEmitter {
   async updateCli(tool, job, file, installation) {
     const winget = installation.how === "winget" ? await this.detectWinget({ fresh: true }) : null;
     if (job.canceled || job.state !== "running") return;
-    const plan = updatePlan(tool, file, { installation, winget: winget?.version ? winget.path : null, npm: this.npmPath() });
+    const plan = updatePlan(tool, file, { installation, winget: winget?.version ? winget.path : null, npm: this.npmPath(), brew: this.brewPath() });
     if (plan.reason) throw new Error(plan.reason);
     // Config may change while probing the package manager; never update the old selection.
     if (this.cliPath(tool) !== file) throw new Error("CLI 경로가 변경되었습니다. 다시 확인한 뒤 업데이트하세요.");
@@ -437,6 +478,7 @@ export class Setup extends EventEmitter {
 
   kill(child) {
     if (this.windows && Number.isInteger(child.pid)) spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], { windowsHide: true, stdio: "ignore" }).on("error", () => {});
+    else if (Number.isInteger(child.pid)) killProcessTree(child.pid);
     else child.kill("SIGTERM");
   }
 }

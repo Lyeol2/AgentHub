@@ -222,7 +222,7 @@ export function createSettingsView({ openSetup, setupAction, refreshSetup, updat
       note = el("span", { class: "note" }, "업데이트는 데스크톱 앱에서 할 수 있습니다.");
     } else if (u.portable) {
       action = button("새 버전 받기", "check");
-      note = el("span", { class: "note" }, "포터블 버전은 릴리스 페이지에서 직접 받습니다.");
+      note = el("span", { class: "note" }, u.mac ? "macOS 버전은 릴리스 페이지에서 직접 받습니다." : "포터블 버전은 릴리스 페이지에서 직접 받습니다.");
     } else if (!u.supported) {
       note = el("span", { class: "note" }, "개발 모드에서는 업데이트하지 않습니다.");
     } else {

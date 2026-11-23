@@ -38,6 +38,7 @@ function findPwsh() {
 
 // 이 PC에서 고를 수 있는 셸. 첫 번째가 기본값이다.
 export function shells() {
+  if (process.platform === "darwin") return [{ id: "zsh", label: "zsh" }, { id: "bash", label: "bash" }, { id: "sh", label: "sh" }];
   if (!isWindows) return [{ id: "sh", label: "sh" }];
   const list = [{ id: "powershell", label: "PowerShell" }, { id: "cmd", label: "CMD" }];
   if (findPwsh()) list.push({ id: "pwsh", label: "PowerShell 7" });
@@ -73,13 +74,14 @@ function shellInvocation(shell, command) {
     fs.writeFileSync(file, `@echo off\r\nchcp 65001 >nul\r\n${command.replace(/\r?\n/g, "\r\n")}\r\nexit /b %errorlevel%\r\n`);
     return { file: process.env.ComSpec ?? "cmd.exe", args: ["/d", "/c", `"${file}"`], verbatim: true, cleanup: file };
   }
+  if (shell === "zsh" || shell === "bash") return { file: `/bin/${shell}`, args: ["-c", command] };
   return { file: "/bin/sh", args: ["-c", command] };
 }
 
+// macOS·Linux는 셸을 새 프로세스 그룹으로 띄워(detached) 셸이 띄운 빌드·테스트 프로세스까지 함께 멈춘다.
 function killTree(child) {
   if (!child?.pid) return;
-  if (isWindows) killProcessTree(child.pid);
-  else child.kill("SIGTERM");
+  killProcessTree(child.pid);
 }
 
 // 출력 마지막 부분(다음 세션에 넘기거나 카드에 보인다)
@@ -99,6 +101,7 @@ export function runShell({ shell, command, cwd, timeoutSec = TIMEOUT_DEFAULT, on
     cwd,
     windowsHide: true,
     windowsVerbatimArguments: !!verbatim,
+    detached: !isWindows,
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, ...env, NO_COLOR: "1", FORCE_COLOR: "0", PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" },
   });

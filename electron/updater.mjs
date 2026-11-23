@@ -13,11 +13,14 @@ export class Updater extends EventEmitter {
   constructor({ beforeInstall = async () => {}, onInstallError = () => {} } = {}) {
     super();
     // 포터블 실행 파일은 자기 자신을 바꿀 수 없으므로 릴리스 페이지만 열어 준다.
-    this.portable = !!process.env.PORTABLE_EXECUTABLE_DIR;
+    // macOS 앱은 코드 서명 없이 자동 업데이트할 수 없어 포터블처럼 릴리스 페이지에서 새 버전을 받는다.
+    this.mac = process.platform === "darwin";
+    this.portable = !!process.env.PORTABLE_EXECUTABLE_DIR || this.mac;
     this.state = {
       desktop: true,
       supported: app.isPackaged && !this.portable,
       portable: this.portable,
+      mac: this.mac,
       current: app.getVersion(),
       status: "idle", // idle | checking | none | available | downloading | ready | error
       latest: null,

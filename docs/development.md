@@ -15,6 +15,26 @@ npm run app
 
 `npm run app`은 소스에서 바로 앱을 띄운다. 이때는 저장소의 `data/`를 쓴다. 설치 파일은 `npm run dist`로 만든다.
 
+### macOS 빌드
+
+```bash
+npm install
+npm run dist:mac
+```
+
+`dist/`에 `AgentHub-<버전>-mac-arm64.dmg`(Apple Silicon)·`-mac-x64.dmg`(Intel)와 `.zip`이 생긴다. 서명 인증서가 없으면 서명하지 않은 앱이 만들어지므로, 다른 Mac에서 처음 열 때는 Finder에서 앱을 우클릭 → **열기**로 연다(또는 `xattr -dr com.apple.quarantine /Applications/AgentHub.app`). 서명·공증 없이는 앱 안 자동 업데이트를 쓸 수 없어 macOS 버전은 포터블처럼 릴리스 페이지에서 새 버전을 받는다.
+
+macOS 전용 동작은 다음과 같다.
+
+- Finder·Dock에서 연 앱은 셸의 PATH를 받지 못하므로 시작할 때 로그인 셸(`$SHELL -ilc`)에 PATH를 물어 `process.env.PATH`를 채운다(`server/cli.mjs`의 `applyShellPath`). Homebrew(`/opt/homebrew/bin`, `/usr/local/bin`)·`~/.local/bin`·npm 전역 폴더도 함께 찾는다.
+- CLI 설치: Claude Code는 공식 설치 스크립트(`curl -fsSL https://claude.ai/install.sh | bash`), Codex는 npm이 있으면 npm, 없으면 Homebrew, GitHub CLI는 Homebrew로 설치한다. Homebrew로 설치한 CLI는 `brew upgrade`로 업데이트한다.
+- **로그인**(사이드바)은 터미널 앱 새 창에서 CLI 로그인 명령을 연다.
+- 명령 노드 셸은 zsh·bash·sh 중에서 고른다. 시간 초과·중지 때는 셸이 띄운 하위 프로세스까지 함께 멈춘다.
+- 앱 메뉴(⌘C·⌘V·⌘Q 등 기본 단축키)를 두고, ⌘R은 새로고침, ⌥⌘I는 개발자 도구다.
+- 기록은 `~/Library/Application Support/AgentHub/data`에 저장한다.
+
+`build/icon.icns`는 `build/icon.png`에서 `sips`·`iconutil`로 만든다.
+
 ### 브라우저
 
 ```bash

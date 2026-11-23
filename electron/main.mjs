@@ -7,7 +7,9 @@ import { createClipboardFileAccess, readClipboardFiles } from "./clipboard-files
 import { createArtifactAccess } from "./artifacts.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ICON = path.join(HERE, "..", "build", "icon.ico");
+const IS_MAC = process.platform === "darwin";
+// Windows는 .ico, macOS·Linux 창·Dock은 .png를 쓴다(패키지한 macOS 앱은 번들의 .icns를 쓴다).
+const ICON = path.join(HERE, "..", "build", process.platform === "win32" ? "icon.ico" : "icon.png");
 const PRELOAD = path.join(HERE, "preload.cjs");
 const clipboardAccess = createClipboardFileAccess(() => readClipboardFiles(clipboard));
 ipcMain.handle("agenthub:clipboard-files", (event) => clipboardAccess.read(event));
@@ -38,9 +40,35 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(start);
 }
 
+// macOS는 앱 메뉴가 있어야 ⌘C·⌘V·⌘A·⌘Z·⌘Q 같은 기본 단축키가 동작한다. Windows는 예전처럼 메뉴 막대를 숨긴다.
+function applicationMenu() {
+  if (!IS_MAC) return null;
+  return Menu.buildFromTemplate([
+    { role: "appMenu" },
+    { role: "editMenu" },
+    {
+      label: "보기",
+      submenu: [
+        { role: "reload", label: "새로고침" },
+        { role: "toggleDevTools", label: "개발자 도구" },
+        { type: "separator" },
+        { role: "resetZoom", label: "실제 크기" },
+        { role: "zoomIn", label: "확대" },
+        { role: "zoomOut", label: "축소" },
+        { type: "separator" },
+        { role: "togglefullscreen", label: "전체 화면" },
+      ],
+    },
+    { role: "windowMenu" },
+  ]);
+}
+
 async function start() {
-  Menu.setApplicationMenu(null);
+  Menu.setApplicationMenu(applicationMenu());
+  if (IS_MAC && !app.isPackaged) app.dock?.setIcon(ICON);
   try {
+    // Finder·Dock에서 연 앱도 터미널과 같은 PATH(Homebrew·npm·nvm)로 claude·codex·git을 찾는다.
+    if (IS_MAC) (await import("../server/cli.mjs")).applyShellPath();
     const { createHub } = await import("../server/bootstrap.mjs");
     server = createHub({ deps: { trashItem: (filename) => shell.trashItem(filename) } });
     await server.start();
@@ -121,12 +149,18 @@ function guard(contents, base) {
   });
   contents.on("before-input-event", (event, input) => {
     if (input.type !== "keyDown") return;
-    if (input.key === "F5" || (input.control && input.key.toLowerCase() === "r")) contents.reload();
-    if (input.key === "F12") contents.toggleDevTools();
+    // macOS는 메뉴의 ⌘R·⌥⌘I가 처리한다.
+    if (input.key === "F5" || (!IS_MAC && input.control && input.key.toLowerCase() === "r")) contents.reload();
+    if (input.key === "F12" || (IS_MAC && input.meta && input.alt && input.key.toLowerCase() === "i")) contents.toggleDevTools();
   });
 }
 
+// 창을 닫으면 실행 중인 AI를 멈추고 기록을 저장한 뒤 종료한다(macOS도 같은 동작).
 app.on("window-all-closed", () => app.quit());
+// macOS Dock 아이콘을 눌렀을 때 창이 없으면 다시 연다.
+app.on("activate", () => {
+  if (!win && server?.port) createWindow(`http://127.0.0.1:${server.port}/`);
+});
 let quitting = false;
 app.on("before-quit", event => {
   if (quitting || !server) return;
