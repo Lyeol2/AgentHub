@@ -10,3 +10,4 @@ release.local.json
 release-notes.draft.md
 # 테스트·작업 중 생기는 임시 파일
 .tmp/
+.DS_Store

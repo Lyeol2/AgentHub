@@ -2,7 +2,8 @@
 // 사용법: npm run release [patch|minor|major|x.y.z] [--test] (인수 > 현재 HEAD의 준비 초안 > patch)
 // 같은 코드(문서만 다른 커밋 포함)가 이미 npm test 전체를 통과했으면 테스트를 건너뛴다. --test면 늘 다시 돌린다.
 // 마지막 커밋을 임시 작업 트리에 꺼내 빌드하므로 커밋하지 않은 변경은 릴리스에 들어가지 않고 그대로 남는다.
-// 필요: package.json·package-lock.json에 커밋하지 않은 변경이 없을 것, GitHub CLI(gh) 로그인
+// 필요: package.json·package-lock.json에 커밋하지 않은 변경이 없을 것, GitHub CLI(gh) 로그인(GH_PATH로 위치를 지정할 수 있다)
+// macOS에서 실행하면 Windows 설치 파일과 함께 macOS dmg·zip도 빌드해 올린다.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,7 +16,7 @@ const run = (cmd, args, opts = {}) =>
 const read = (cmd, args, opts = {}) => execFileSync(cmd, args, { encoding: "utf8", ...opts }).trim();
 
 function findGh() {
-  const candidates = [path.join(process.env.ProgramFiles ?? "C:\Program Files", "GitHub CLI", "gh.exe")];
+  const candidates = [process.env.GH_PATH, path.join(process.env.ProgramFiles ?? "C:\Program Files", "GitHub CLI", "gh.exe"), "/opt/homebrew/bin/gh", "/usr/local/bin/gh"].filter(Boolean);
   for (const file of candidates) if (fs.existsSync(file)) return file;
   return "gh";
 }
@@ -62,12 +63,19 @@ try {
   const tag = `v${version}`;
 
   run("npx", ["electron-builder", "--win", "--publish", "never"], inTree);
+  // macOS에서 릴리스하면 macOS 앱(dmg·zip, Apple Silicon·Intel)도 함께 올린다. macOS 빌드는 macOS에서만 만들 수 있다.
+  const withMac = process.platform === "darwin";
+  if (withMac) run("npx", ["electron-builder", "--mac", "--publish", "never"], inTree);
 
   const files = [
     `dist/AgentHub-Setup-${version}.exe`,
     `dist/AgentHub-Setup-${version}.exe.blockmap`,
     "dist/latest.yml",
     `dist/AgentHub-${version}-portable.exe`,
+    ...(withMac ? ["arm64", "x64"].flatMap((arch) => [
+      `dist/AgentHub-${version}-mac-${arch}.dmg`,
+      `dist/AgentHub-${version}-mac-${arch}.zip`,
+    ]).concat("dist/latest-mac.yml") : []),
   ].map((file) => path.join(dir, file));
   for (const file of files) {
     if (!fs.existsSync(file)) throw new Error(`빌드 결과가 없습니다: ${file}`);
